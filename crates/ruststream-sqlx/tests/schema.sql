@@ -23,3 +23,9 @@ CREATE TABLE plain_jobs (
 );
 
 CREATE TABLE plain_jobs_dead (LIKE plain_jobs INCLUDING DEFAULTS);
+
+-- A table whose struct names a column the table does not have.
+CREATE TABLE broken_jobs (
+    id      BIGSERIAL PRIMARY KEY,
+    payload BYTEA NOT NULL
+);

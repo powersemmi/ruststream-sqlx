@@ -49,7 +49,10 @@ where
         return Err(SqlxBrokerError::Closed);
     }
     let mut conn = shared.pool.acquire().await.map_err(failed)?;
-    Row::publish(&mut conn, message).await.map_err(failed)
+    Row::publish(&mut conn, message).await.map_err(failed)?;
+    #[cfg(feature = "testing")]
+    shared.harness.record(message);
+    Ok(())
 }
 
 /// The typed publish policy of a row with [`Publish`]: a message published through it becomes a
@@ -60,11 +63,13 @@ where
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
-/// use ruststream_sqlx::{Inbox, Publish, Repository, SqlxBroker};
+/// use ruststream::OutgoingMessage;
+/// use ruststream::prelude::*;
+/// use ruststream_sqlx::{Inbox, InboxQueue, Publish, Repository, SqlxBroker};
+/// use serde::{Deserialize, Serialize};
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
 /// #[derive(Inbox, sqlx::FromRow)]
@@ -92,13 +97,27 @@ where
 ///     }
 /// }
 ///
-/// // A welcome scheduled from an HTTP endpoint: a row of `jobs` in group `welcome`, written with
-/// // no route to look up.
-/// pub async fn welcome(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
-///     let connected = SqlxBroker::new(pool).connect().await?;
-///     let jobs = Repository::<Job>::default().pair(&connected).await?;
-///     jobs.publish(OutgoingMessage::new("welcome", br#"{"email":"a@b"}"#), None).await?;
-///     Ok(())
+/// #[derive(Deserialize)]
+/// struct Signup {
+///     email: String,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "welcome")]
+/// struct Welcome {
+///     email: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<Job>::new("signups"), reply)]
+/// async fn greet(signup: &Signup) -> Welcome {
+///     Welcome { email: signup.email.clone() }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("signup", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         // The welcome becomes a row of `jobs` in group `welcome`, with no route to look up.
+///         b.include(greet).out_reply(Repository::<Job>::default());
+///     })
 /// }
 /// # }
 /// # fn main() {}
@@ -313,11 +332,13 @@ impl<DB: Database> Routes<DB> {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
-/// use ruststream_sqlx::{Inbox, Publish, Routed, SqlxBroker};
+/// use ruststream::OutgoingMessage;
+/// use ruststream::prelude::*;
+/// use ruststream_sqlx::{Inbox, InboxQueue, Publish, Routed, SqlxBroker};
+/// use serde::{Deserialize, Serialize};
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
 /// #[derive(Inbox, sqlx::FromRow)]
@@ -345,12 +366,27 @@ impl<DB: Database> Routes<DB> {
 ///     }
 /// }
 ///
-/// // Invoices become rows of `jobs`: the route leads the name there.
-/// pub async fn invoice(pool: PgPool) -> Result<(), Box<dyn std::error::Error>> {
-///     let connected = SqlxBroker::new(pool).route::<Job>("invoices").connect().await?;
-///     let publisher = Routed.pair(&connected).await?;
-///     publisher.publish(OutgoingMessage::new("invoices", br#"{"order":7}"#), None).await?;
-///     Ok(())
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "invoices")]
+/// struct Invoice {
+///     order: u64,
+/// }
+///
+/// #[subscriber(InboxQueue::<Job>::new("orders"), reply)]
+/// async fn bill(order: &Order) -> Invoice {
+///     Invoice { order: order.id }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     let broker = SqlxBroker::new(pool).route::<Job>("invoices");
+///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
+///         b.include(bill).out_reply(Routed);
+///     })
 /// }
 /// # }
 /// # fn main() {}

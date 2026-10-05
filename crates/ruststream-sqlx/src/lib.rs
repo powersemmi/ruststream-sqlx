@@ -20,13 +20,16 @@ mod inbox;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltInDialect, Claim, Clock, ClosedSqlxBroker, ConnectedSqlxBroker,
-    DatabaseClock, DeadLetter, Discard, Fetch, HeaderColumn, InboxRow, Insert, KeyColumn,
-    PayloadRow, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
-    RetryAfter, Routed, RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
-    TimeSource,
+    DatabaseClock, DeadLetter, Discard, Fetch, HeaderColumn, InboxDelivery, InboxQueue, InboxRow,
+    InboxSubscriber, Insert, KeyColumn, PayloadRow, Publish, QueueDatabase, QueueTime, Repository,
+    RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker, SqlxBrokerError,
+    SystemClock, TimeColumn, TimeSource,
 };
 
 /// What `#[derive(Inbox)]` generates against. Machinery; never named by a service.
+#[cfg(feature = "inbox")]
+pub use inbox::keys;
+
 #[cfg(feature = "inbox")]
 #[doc(hidden)]
 pub mod __private {

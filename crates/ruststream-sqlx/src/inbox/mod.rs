@@ -3,10 +3,16 @@
 mod broker;
 mod columns;
 mod database;
+mod delivery;
 pub(crate) mod engine;
 mod error;
 mod events;
+pub mod keys;
 mod publish;
+mod queue;
+mod subscriber;
+#[cfg(feature = "testing")]
+mod testing;
 mod time;
 
 use std::fmt::Debug;
@@ -18,9 +24,12 @@ pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
 #[cfg(feature = "postgres")]
 pub use database::OnPostgres;
 pub use database::{BuiltInDialect, QueueDatabase};
+pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{Ack, Claim, DeadLetter, Discard, Fetch, Insert, Publish, Retry, RetryAfter};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
+pub use queue::InboxQueue;
+pub use subscriber::InboxSubscriber;
 pub use time::{Clock, DatabaseClock, QueueTime, SystemClock, TimeColumn, TimeSource};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.

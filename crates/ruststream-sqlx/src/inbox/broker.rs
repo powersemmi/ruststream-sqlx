@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::future::{Future, ready};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::{Broker, ConnectedBroker};
@@ -39,25 +39,71 @@ impl DialectHandle {
 ///
 /// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
 /// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
-/// database. Publishing writes tables through [`Repository`](crate::Repository) policies or
-/// through the routes this builder records.
+/// database. Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors;
+/// publishing writes them through [`Repository`](crate::Repository) policies or through the
+/// routes this builder records.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// # #[cfg(feature = "postgres")]
-/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-/// use ruststream::{Broker, ConnectedBroker};
-/// use ruststream_sqlx::SqlxBroker;
-/// use sqlx::postgres::PgPoolOptions;
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream::prelude::*;
+/// use ruststream_sqlx::{Inbox, InboxQueue, Publish, SqlxBroker};
+/// use serde::Deserialize;
+/// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+/// use sqlx::{PgConnection, Postgres};
 ///
-/// // A pool built without I/O; the service owns it and closes it.
-/// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
-/// let connected = SqlxBroker::new(pool.clone()).connect().await?;
-/// connected.shutdown().await?;
-/// pool.close().await;
-/// # Ok(())
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Publish<Postgres> for SendEmail {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO email_jobs (name, payload) VALUES ($1, $2)")
+///             .bind(message.name())
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     // A pool built without I/O; the service owns it and closes it.
+///     let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
+///         SqlxBroker::new(pool).route::<SendEmail>("emails"),
+///         |b| {
+///             b.include(send);
+///         },
+///     )
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub struct SqlxBroker<DB: Database> {
     pool: Pool<DB>,
@@ -194,7 +240,8 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     }
 
     /// How long a subscription waits between claims that found its queue empty; one second
-    /// unless set. A subscription's own interval overrides it.
+    /// unless set. A subscription's own [`poll_interval`](crate::InboxQueue::poll_interval)
+    /// overrides it.
     ///
     /// # Examples
     ///
@@ -240,8 +287,14 @@ pub(crate) struct Shared<DB: Database> {
     pub(crate) pool: Pool<DB>,
     pub(crate) dialect: DialectHandle,
     pub(crate) routes: Routes<DB>,
+    pub(crate) poll_interval: Duration,
     /// The `Closed` flag: cancelled by `shutdown`, read with one atomic load per publish.
     pub(crate) closed: CancellationToken,
+    /// The queues this connection reads, by table and name.
+    pub(crate) queues: Mutex<Vec<(&'static str, String)>>,
+    /// The test harness's books of this connection.
+    #[cfg(feature = "testing")]
+    pub(crate) harness: super::testing::Harness,
 }
 
 /// The connected inbox broker: the typed witness that the database answered.
@@ -282,7 +335,11 @@ impl<DB: Database> From<SqlxBroker<DB>> for ConnectedSqlxBroker<DB> {
                 pool: broker.pool,
                 dialect: broker.dialect,
                 routes: broker.routes,
+                poll_interval: broker.poll_interval,
                 closed: CancellationToken::new(),
+                queues: Mutex::new(Vec::new()),
+                #[cfg(feature = "testing")]
+                harness: super::testing::Harness::default(),
             }),
         }
     }

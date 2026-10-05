@@ -3,12 +3,14 @@
 //!
 //! Nothing here is named by a service; the derive and the broker are its only callers.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::future::Future;
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::HeaderMap;
-use ruststream_sqlx_dialect::Param;
+use ruststream_sqlx_dialect::{Param, Statement};
 use sqlx::{Arguments, Database, Decode, Encode, Error, FromRow, Type};
 
 use super::InboxRow;
@@ -592,6 +594,55 @@ const _: fn() = || {
     debug::<Shape>();
 };
 
+/// Statements and names for the life of the process, shared by every subscription that builds the
+/// same one. Interned rather than reference-counted: a delivery reaches its statements with no
+/// atomic per message, and a process builds few distinct statements, one set per table and
+/// declaration.
+static STATEMENTS: LazyLock<Mutex<HashMap<&'static str, &'static [Param]>>> =
+    LazyLock::new(Mutex::default);
+static NAMES: LazyLock<Mutex<HashSet<&'static str>>> = LazyLock::new(Mutex::default);
+
+/// `statement` for the life of the process.
+pub(crate) fn intern(statement: &Statement) -> Stmt {
+    let mut interned = STATEMENTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((&sql, &params)) = interned.get_key_value(statement.sql()) {
+        return Stmt { sql, params };
+    }
+    let sql: &'static str = Box::leak(statement.sql().into());
+    let params: &'static [Param] = Box::leak(statement.params().into());
+    interned.insert(sql, params);
+    drop(interned);
+    Stmt { sql, params }
+}
+
+/// `name` for the life of the process.
+pub(crate) fn intern_name(name: &str) -> &'static str {
+    let mut interned = NAMES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(&name) = interned.get(name) {
+        return name;
+    }
+    let name: &'static str = Box::leak(name.into());
+    interned.insert(name);
+    drop(interned);
+    name
+}
+
+impl Prepared {
+    /// Every statement it holds, for the startup check.
+    pub(crate) fn statements(&self) -> impl Iterator<Item = Stmt> {
+        [
+            self.claim,
+            self.fetch,
+            self.ack,
+            self.retry,
+            self.retry_after,
+            self.discard,
+            self.dead_letter,
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
