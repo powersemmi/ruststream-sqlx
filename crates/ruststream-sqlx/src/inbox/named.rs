@@ -191,7 +191,9 @@ type NamedStream<DB> =
 /// leads to.
 ///
 /// It claims as an [`InboxSubscriber`](crate::InboxSubscriber) does, with the broker's poll
-/// interval; each poll of its stream is one dynamic call.
+/// interval; each poll of its stream is one dynamic call. A mount that declares `max_attempts(..)`
+/// or `dead_letter(..)` on a name is refused at startup: an [`InboxQueue`](crate::InboxQueue)
+/// descriptor takes those.
 ///
 /// # Examples
 ///
