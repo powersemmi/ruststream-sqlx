@@ -18,7 +18,31 @@ pub use ruststream_sqlx_dialect as dialect;
 mod inbox;
 
 #[cfg(feature = "inbox")]
-pub use inbox::InboxRow;
+pub use inbox::{
+    Ack, AttemptColumn, BuiltInDialect, Claim, Clock, DatabaseClock, DeadLetter, Discard, Fetch,
+    HeaderColumn, InboxRow, Insert, KeyColumn, PayloadRow, Publish, QueueDatabase, QueueTime,
+    Retry, RetryAfter, SystemClock, TimeColumn, TimeSource,
+};
+
+/// What `#[derive(Inbox)]` generates against. Machinery; never named by a service.
+#[cfg(feature = "inbox")]
+#[doc(hidden)]
+pub mod __private {
+    pub use ruststream::HeaderMap;
+    pub use ruststream_sqlx_dialect::Param;
+    pub use sqlx;
+    #[cfg(feature = "postgres")]
+    pub use sqlx::Postgres;
+
+    #[cfg(feature = "postgres")]
+    pub use crate::inbox::OnPostgres;
+    pub use crate::inbox::QueueDatabase;
+    pub use crate::inbox::engine::{
+        Claimed, Claiming, Event, Events, Now, Prepared, Released, Settling, Shape, Stmt, TimeFor,
+        Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids, later,
+        match_claimed, micros, now, put, retry, retry_after,
+    };
+}
 
 /// Describes a queue table with a struct and implements [`InboxRow`] for it.
 ///

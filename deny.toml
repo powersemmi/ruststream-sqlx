@@ -14,9 +14,12 @@ ignore = []
 # Apache-2.0/MIT-compatible permissive licenses only.
 allow = [
     "Apache-2.0",
+    "MIT",
     # unicode-ident (behind syn and proc-macro2) is (MIT OR Apache-2.0) AND Unicode-3.0; the
     # Unicode license only covers the embedded character tables and is permissive.
     "Unicode-3.0",
+    # foldhash, behind sqlx's hash maps: OSI-approved and permissive.
+    "Zlib",
 ]
 
 [bans]

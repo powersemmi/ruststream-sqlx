@@ -1,0 +1,23 @@
+error: unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, `retry_after`, `discard` or `dead_letter`
+ --> tests/ui/custom.rs:4:32
+  |
+4 | #[inbox(table = "jobs", custom(lock))]
+  |                                ^^^^
+
+error: `publish` has no default to hand over: implement `Publish` for the struct without listing it
+  --> tests/ui/custom.rs:11:32
+   |
+11 | #[inbox(table = "jobs", custom(publish))]
+   |                                ^^^^^^^
+
+error: `ack` is listed twice
+  --> tests/ui/custom.rs:18:37
+   |
+18 | #[inbox(table = "jobs", custom(ack, ack))]
+   |                                     ^^^
+
+error: `clock` is given twice
+  --> tests/ui/custom.rs:25:46
+   |
+25 | #[inbox(table = "jobs", clock = SystemClock, clock = SystemClock)]
+   |                                              ^^^^^^^^^^^^^^^^^^^

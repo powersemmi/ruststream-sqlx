@@ -5,7 +5,9 @@
 
 #![forbid(unsafe_code)]
 
+mod events;
 mod inbox;
+mod insert;
 mod naming;
 mod parse;
 mod template;
