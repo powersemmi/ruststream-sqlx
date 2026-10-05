@@ -19,9 +19,10 @@
 //! A dialect whose claim only selects the rows says so ([`Dialect::claim_writes_lease`]), and each
 //! claimed row is then stamped with its lease ([`Dialect::stamp`]).
 //!
-//! [`Postgres`] is built in, behind the `postgres` feature, and builds the statements of the row
-//! lock and lease forms. A database without a built-in dialect is served by a type of the
-//! service's own that implements [`Dialect`].
+//! [`Postgres`] and [`MySql`] are built in, behind the `postgres` and `mysql` features, and build
+//! the statements of the row lock and lease forms; [`MySql`] serves MariaDB too. A database
+//! without a built-in dialect is served by a type of the service's own that implements
+//! [`Dialect`].
 //!
 //! # Examples
 //!
@@ -46,21 +47,25 @@
 mod column;
 mod dialect;
 mod form;
+#[cfg(feature = "mysql")]
+mod mysql;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod role;
 mod spec;
 mod statement;
 mod table_name;
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 mod writer;
 
 pub use column::Column;
 pub use dialect::Dialect;
 pub use form::{Form, KeyPart};
+#[cfg(feature = "mysql")]
+pub use mysql::MySql;
 #[cfg(feature = "postgres")]
 pub use postgres::Postgres;
 pub use role::Role;
 pub use spec::TableSpec;
-pub use statement::{ClaimShape, Param, Statement, StatementError};
+pub use statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 pub use table_name::{ParseTableNameError, TableName};

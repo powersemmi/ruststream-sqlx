@@ -1,12 +1,14 @@
-//! Statement text assembled through a dialect's quoting and placeholders.
+//! Statement text assembled through a dialect's quoting, placeholders and clock, and the
+//! statements every built-in dialect writes the same way.
 
 use std::num::NonZeroUsize;
 
 use crate::column::Column;
 use crate::dialect::Dialect;
+use crate::form::Form;
 use crate::role::Role;
 use crate::spec::TableSpec;
-use crate::statement::{ClaimShape, Param, Statement};
+use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
 
 /// The keys a claim orders by before the id, the most significant first.
@@ -27,6 +29,295 @@ fn read_by_role<'a>(spec: &TableSpec<'a>) -> impl Iterator<Item = (Role, Column<
         .filter_map(|&role| spec.column(role).map(|column| (role, column)))
 }
 
+/// Whether `name` fits in `limit`, measured the way the database measures it.
+fn fits(name: &str, limit: NameLimit) -> bool {
+    match limit {
+        NameLimit::Bytes(most) => name.len() <= usize::from(most),
+        NameLimit::Characters(most) => name.chars().count() <= usize::from(most),
+    }
+}
+
+/// The name of the column that plays `role`, which `statement` cannot do without.
+fn required<'a>(
+    spec: &TableSpec<'a>,
+    role: Role,
+    statement: &'static str,
+) -> Result<&'a str, StatementError> {
+    spec.column(role)
+        .map(|column| column.name())
+        .ok_or(StatementError::MissingRole { statement, role })
+}
+
+/// A form the built-in dialects build statements for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Built<'a> {
+    /// The claim's transaction holds the row.
+    RowLock,
+    /// The expiry in this column holds the row.
+    Lease(Column<'a>),
+}
+
+/// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, how an
+/// insert of no column reads, and the database's own clock.
+///
+/// The provided methods check a table against the dialect and build the statements every
+/// built-in dialect writes the same way, through its quoting, placeholders and clock.
+pub(crate) trait BuiltIn: Dialect {
+    /// The longest name the database keeps.
+    const NAME_LIMIT: NameLimit;
+
+    /// What follows the table in an insert that writes no column, so every column takes its
+    /// default.
+    const DEFAULT_ROW: &'static str;
+
+    /// The database's current time.
+    fn database_now(&self) -> &'static str;
+
+    /// Writes the database's current time plus [`Param::Delay`] microseconds.
+    fn database_later(&self, sql: &mut SqlWriter<'_, Self>);
+
+    /// Refuses a name longer than the database keeps.
+    fn names_fit<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), StatementError> {
+        names
+            .into_iter()
+            .find(|name| !fits(name, Self::NAME_LIMIT))
+            .map_or(Ok(()), |name| {
+                Err(StatementError::IdentifierTooLong {
+                    dialect: self.name(),
+                    identifier: name.to_owned(),
+                    limit: Self::NAME_LIMIT,
+                })
+            })
+    }
+
+    /// Every name a statement of `spec` writes.
+    fn spec_fits(&self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
+        self.names_fit(
+            spec.schema()
+                .into_iter()
+                .chain([spec.table()])
+                .chain(spec.columns().map(|column| column.name())),
+        )
+    }
+
+    /// The table's form, when the built-in dialects build it: the row lock, or a lease on the
+    /// crate's clock.
+    fn form<'a>(&self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
+        self.spec_fits(spec)?;
+        match spec.form() {
+            Form::RowLock => Ok(Built::RowLock),
+            // Settlement matches the expiry the claim wrote, and the claim knows it only when the
+            // crate's clock computes it.
+            Form::Lease(_) if spec.uses_database_clock() => {
+                Err(StatementError::LeaseOnDatabaseClock {
+                    dialect: self.name(),
+                })
+            }
+            Form::Lease(expiry) => Ok(Built::Lease(expiry)),
+            other => Err(StatementError::UnsupportedForm {
+                dialect: self.name(),
+                form: other.name(),
+            }),
+        }
+    }
+
+    /// The table's form, for a claim: a FIFO group is refused, because the built-in claims skip
+    /// locked rows and would skip a group's head.
+    fn claim_form<'a>(&self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
+        let form = self.form(spec)?;
+        if spec.is_fifo() {
+            return Err(StatementError::UnsupportedFifo {
+                dialect: self.name(),
+            });
+        }
+        Ok(form)
+    }
+
+    /// The lease column of a lease table; every other form is refused.
+    fn lease<'a>(&self, spec: &TableSpec<'a>) -> Result<Column<'a>, StatementError> {
+        match self.form(spec)? {
+            Built::Lease(expiry) => Ok(expiry),
+            Built::RowLock => Err(StatementError::UnsupportedForm {
+                dialect: self.name(),
+                form: spec.form().name(),
+            }),
+        }
+    }
+
+    /// Checks that a row of `spec` can move into `target`: the form is built, a lease table
+    /// names every column, and the target's names fit.
+    fn movable(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<(), StatementError> {
+        if matches!(self.form(spec)?, Built::Lease(_)) && spec.selects_all() {
+            // The moved row arrives without a lease, and `*` cannot put `NULL` in the lease
+            // column's place.
+            return Err(StatementError::Flattened {
+                statement: "dead_letter_table",
+            });
+        }
+        self.names_fit(target.schema().into_iter().chain([target.table()]))
+    }
+
+    /// Acknowledgement and drop: the row is deleted, or marked finished.
+    fn finish_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.form(spec)?;
+        let mut sql = SqlWriter::new(self);
+        match spec.column(Role::ProcessedAt) {
+            Some(processed_at) => sql
+                .push("UPDATE ")
+                .table(spec)
+                .push(" SET ")
+                .ident(processed_at.name())
+                .push(" = ")
+                .now(spec)
+                .release(spec),
+            None => sql.push("DELETE FROM ").table(spec),
+        };
+        sql.settled_row(spec);
+        Ok(sql.finish())
+    }
+
+    /// The release for another attempt at once, or `None` when the release needs no statement.
+    fn retry_statement(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        let form = self.form(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ").table(spec).push(" SET ");
+        match form {
+            // The claim counted the attempt; the release only frees the row.
+            Built::Lease(expiry) => sql.ident(expiry.name()).push(" = NULL"),
+            Built::RowLock => match spec.column(Role::Attempt) {
+                Some(attempt) => sql.increment(attempt.name()),
+                // The rollback releases the row, and there is no attempt to count.
+                None => return Ok(None),
+            },
+        };
+        sql.settled_row(spec);
+        Ok(Some(sql.finish()))
+    }
+
+    /// The release for another attempt after a delay.
+    fn retry_after_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let form = self.form(spec)?;
+        let retry_after = required(spec, Role::RetryAfter, "retry_after")?;
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(retry_after)
+            .push(" = ")
+            .later(spec);
+        match form {
+            Built::RowLock => {
+                if let Some(attempt) = spec.column(Role::Attempt) {
+                    sql.push(", ").increment(attempt.name());
+                }
+            }
+            // The claim counted the attempt.
+            Built::Lease(_) => {
+                sql.release(spec);
+            }
+        }
+        sql.settled_row(spec);
+        Ok(sql.finish())
+    }
+
+    /// The move of a row whose attempts are spent to another group.
+    fn dead_letter_group_statement(
+        &self,
+        spec: &TableSpec<'_>,
+    ) -> Result<Statement, StatementError> {
+        self.form(spec)?;
+        let group = required(spec, Role::Group, "dead_letter_group")?;
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(group)
+            .push(" = ")
+            .param(Param::Destination)
+            .release(spec)
+            .settled_row(spec);
+        Ok(sql.finish())
+    }
+
+    /// The extension of a delivery's lease while the row still holds its token.
+    fn extend_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let expiry = self.lease(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(expiry.name())
+            .push(" = ")
+            .param(Param::Lease)
+            .settled_row(spec);
+        Ok(sql.finish())
+    }
+
+    /// The lease of one claimed row, written while no lease holds the row.
+    fn stamp_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let expiry = self.lease(spec)?;
+        let id = spec.id().name();
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(expiry.name())
+            .push(" = ")
+            .param(Param::Lease);
+        if let Some(attempt) = spec.column(Role::Attempt) {
+            sql.push(", ").increment(attempt.name());
+        }
+        sql.push(" WHERE ")
+            .ident(id)
+            .push(" = ")
+            .param(Param::Id)
+            .push(" AND ")
+            .lease_free(expiry.name());
+        Ok(sql.finish())
+    }
+
+    /// The insert of a row: every column the database does not fill.
+    fn insert_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.spec_fits(spec)?;
+        if spec.selects_all() {
+            return Err(StatementError::Flattened {
+                statement: "insert",
+            });
+        }
+        let mut sql = SqlWriter::new(self);
+        sql.push("INSERT INTO ").table(spec);
+        let written: Vec<(usize, &str)> = spec
+            .columns()
+            .enumerate()
+            .filter(|(_, column)| !column.is_generated())
+            .map(|(position, column)| (position, column.name()))
+            .collect();
+        if written.is_empty() {
+            sql.push(Self::DEFAULT_ROW);
+            return Ok(sql.finish());
+        }
+        sql.push(" (");
+        for (index, (_, name)) in written.iter().enumerate() {
+            if index > 0 {
+                sql.push(", ");
+            }
+            sql.ident(name);
+        }
+        sql.push(") VALUES (");
+        for (index, (position, _)) in written.iter().enumerate() {
+            if index > 0 {
+                sql.push(", ");
+            }
+            sql.param(Param::Column(*position));
+        }
+        sql.push(")");
+        Ok(sql.finish())
+    }
+}
+
 /// One statement being written: the SQL text, and the parameters its placeholders bind so far.
 pub(crate) struct SqlWriter<'d, D: ?Sized> {
     dialect: &'d D,
@@ -36,7 +327,7 @@ pub(crate) struct SqlWriter<'d, D: ?Sized> {
 
 impl<'d, D> SqlWriter<'d, D>
 where
-    D: Dialect + ?Sized,
+    D: BuiltIn + ?Sized,
 {
     pub(crate) fn new(dialect: &'d D) -> Self {
         Self {
@@ -83,9 +374,9 @@ where
 
     /// The current time: a bound [`Param::Now`], or the database's own clock when the table reads
     /// it.
-    pub(crate) fn now(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
+    pub(crate) fn now(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         if spec.uses_database_clock() {
-            self.push(database_now)
+            self.push(self.dialect.database_now())
         } else {
             self.param(Param::Now)
         }
@@ -93,12 +384,11 @@ where
 
     /// The time a delayed retry comes back: a bound [`Param::RetryAfter`], or the database's
     /// clock plus [`Param::Delay`] microseconds.
-    pub(crate) fn later(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
+    pub(crate) fn later(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         if spec.uses_database_clock() {
-            self.push(database_now)
-                .push(" + ")
-                .param(Param::Delay)
-                .push(" * interval '1 microsecond'")
+            let dialect = self.dialect;
+            dialect.database_later(self);
+            self
         } else {
             self.param(Param::RetryAfter)
         }
@@ -155,6 +445,7 @@ where
 
     /// The names [`role_columns`](Self::role_columns) gives its columns, as a select over its
     /// rows reads them.
+    #[cfg(feature = "postgres")]
     fn role_names(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         for (index, (role, _)) in read_by_role(spec).enumerate() {
             if index > 0 {
@@ -167,7 +458,7 @@ where
 
     /// The conditions a row meets to be claimed, each present only with its column: the
     /// subscription's group, a time that has come, no finish mark, no lease in force.
-    pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
+    pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         let mut keyword = " WHERE ";
         if let Some(group) = spec.column(Role::Group) {
             self.push(keyword)
@@ -180,7 +471,7 @@ where
             self.push(keyword)
                 .ident(retry_after.name())
                 .push(" <= ")
-                .now(spec, database_now);
+                .now(spec);
             keyword = " AND ";
         }
         if let Some(processed_at) = spec.column(Role::ProcessedAt) {
@@ -204,6 +495,15 @@ where
             .push(" <= ")
             .param(Param::LeaseNow)
             .push(")")
+    }
+
+    /// The row a settlement names: its id, and in the lease form the delivery's token.
+    pub(crate) fn settled_row(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        self.push(" WHERE ")
+            .ident(spec.id().name())
+            .push(" = ")
+            .param(Param::Id)
+            .held(spec)
     }
 
     /// In the lease form, the condition that the row still holds the delivery's lease
@@ -247,10 +547,10 @@ where
 
     /// A claim's select after its columns: the claimable rows of the table in claim order, at
     /// most [`Param::Limit`] of them, locked by `lock`.
-    fn claimed_rows(&mut self, spec: &TableSpec<'_>, database_now: &str, lock: &str) -> &mut Self {
+    fn claimed_rows(&mut self, spec: &TableSpec<'_>, lock: &str) -> &mut Self {
         self.push(" FROM ")
             .table(spec)
-            .claimable(spec, database_now)
+            .claimable(spec)
             .claim_order(spec, spec.id().name())
             .push(" LIMIT ")
             .param(Param::Limit)
@@ -263,23 +563,22 @@ where
         &mut self,
         spec: &TableSpec<'_>,
         shape: ClaimShape,
-        database_now: &str,
         lock: &str,
     ) -> &mut Self {
         self.push("SELECT ")
             .claimed_columns(spec, shape)
-            .claimed_rows(spec, database_now, lock)
+            .claimed_rows(spec, lock)
     }
 
     /// The lease claim in one statement: the claim's select under `lock`, an update that writes
     /// the claimed rows' lease ([`Param::Lease`]) into `expiry` and counts their attempt, and the
     /// rows as the select read them, in claim order.
+    #[cfg(feature = "postgres")]
     pub(crate) fn lease_claim(
         &mut self,
         spec: &TableSpec<'_>,
         shape: ClaimShape,
         expiry: &str,
-        database_now: &str,
         lock: &str,
     ) -> &mut Self {
         let id = spec.id().name();
@@ -296,7 +595,7 @@ where
                 self.push(", ").ident(column.name());
             }
         }
-        self.claimed_rows(spec, database_now, lock)
+        self.claimed_rows(spec, lock)
             .push("), __stamped AS (UPDATE ")
             .table(spec)
             .push(" AS __row SET ")

@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Param, Postgres, Role, Statement, StatementError,
-    TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, KeyPart, NameLimit, Param, Postgres, Role, Statement,
+    StatementError, TableName, TableSpec,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -156,6 +156,11 @@ fn the_claim_refuses_what_the_row_lock_form_cannot_do() {
             dialect: "postgres"
         })
     );
+}
+
+#[test]
+fn a_claim_transaction_opens_with_a_plain_begin() {
+    assert_eq!(Postgres.begin_claim(), None);
 }
 
 #[test]
@@ -321,7 +326,7 @@ fn a_name_longer_than_63_bytes_is_refused() {
     let refused = |identifier: &str| StatementError::IdentifierTooLong {
         dialect: "postgres",
         identifier: identifier.to_owned(),
-        limit: 63,
+        limit: NameLimit::Bytes(63),
     };
 
     let table = TableSpec::new(&long, Column::new("job_id"), Form::RowLock);

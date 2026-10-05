@@ -1,5 +1,7 @@
 //! What a dialect produces: the text of a statement and the values its placeholders bind.
 
+use std::fmt::{self, Display, Formatter};
+
 use thiserror::Error;
 
 use crate::role::Role;
@@ -184,6 +186,53 @@ pub enum ClaimShape {
     Roles,
 }
 
+/// The longest name a database keeps, in the unit it measures names by.
+///
+/// Postgres measures a name in bytes, MySQL and MariaDB in characters, so a name of accented
+/// letters can fit one database and not the other.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_sqlx_dialect::{NameLimit, StatementError};
+///
+/// // A SQL Server dialect of the service's own refuses a name over 128 characters.
+/// fn checked(name: &str) -> Result<&str, StatementError> {
+///     if name.chars().count() <= 128 {
+///         return Ok(name);
+///     }
+///     Err(StatementError::IdentifierTooLong {
+///         dialect: "mssql",
+///         identifier: name.to_owned(),
+///         limit: NameLimit::Characters(128),
+///     })
+/// }
+///
+/// let name = "n".repeat(129);
+/// let refused = checked(&name).map_err(|refused| refused.to_string());
+/// assert!(refused.is_err_and(|message| {
+///     message.ends_with("is longer than the 128 characters the mssql dialect allows in a name")
+/// }));
+/// ```
+// A `u16` holds every database's limit and keeps `StatementError` at 56 bytes: a `usize` would
+// grow it, and every error that carries it, by eight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NameLimit {
+    /// At most this many bytes of UTF-8.
+    Bytes(u16),
+    /// At most this many characters.
+    Characters(u16),
+}
+
+impl Display for NameLimit {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bytes(limit) => write!(f, "{limit} bytes"),
+            Self::Characters(limit) => write!(f, "{limit} characters"),
+        }
+    }
+}
+
 /// Why a dialect cannot build a statement for a table.
 ///
 /// A broker builds a subscription's statements when the subscription starts, so a refusal stops
@@ -253,17 +302,15 @@ pub enum StatementError {
         dialect: &'static str,
     },
     /// A table, schema or column name is longer than the database allows. Postgres would cut it
-    /// short without a word and address another object.
-    #[error(
-        "`{identifier}` is longer than the {limit} bytes the {dialect} dialect allows in a name"
-    )]
+    /// short without a word and address another object; MySQL would refuse the statement.
+    #[error("`{identifier}` is longer than the {limit} the {dialect} dialect allows in a name")]
     IdentifierTooLong {
         /// The dialect's name.
         dialect: &'static str,
         /// The name that is too long.
         identifier: String,
-        /// The longest name the database keeps whole, in bytes.
-        limit: usize,
+        /// The longest name the database keeps, in the unit it measures names by.
+        limit: NameLimit,
     },
     /// The statement needs every column, and the struct flattens another whose columns the
     /// description cannot see.
@@ -314,7 +361,7 @@ pub enum StatementError {
 
 #[cfg(test)]
 mod tests {
-    use super::{Param, Statement, StatementError};
+    use super::{NameLimit, Param, Statement, StatementError};
     use crate::role::Role;
 
     #[test]
@@ -364,10 +411,19 @@ mod tests {
             StatementError::IdentifierTooLong {
                 dialect: "postgres",
                 identifier: "jobs".to_owned(),
-                limit: 63,
+                limit: NameLimit::Bytes(63),
             }
             .to_string(),
             "`jobs` is longer than the 63 bytes the postgres dialect allows in a name"
+        );
+        assert_eq!(
+            StatementError::IdentifierTooLong {
+                dialect: "mysql",
+                identifier: "jobs".to_owned(),
+                limit: NameLimit::Characters(64),
+            }
+            .to_string(),
+            "`jobs` is longer than the 64 characters the mysql dialect allows in a name"
         );
         assert_eq!(
             StatementError::Flattened {

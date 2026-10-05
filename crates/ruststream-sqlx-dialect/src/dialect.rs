@@ -20,8 +20,9 @@ use crate::table_name::TableName;
 /// wrote is the delivery's ownership token ([`Param::Held`](crate::Param::Held)): every settlement
 /// and the extension name the row and that token, so a delivery whose lease ran out, and whose
 /// row another claim took, changes nothing. Beside its statements a dialect tells whether its
-/// claim writes the lease ([`claim_writes_lease`](Self::claim_writes_lease)) and which servers its
-/// statements run on ([`check_server`](Self::check_server)).
+/// claim writes the lease ([`claim_writes_lease`](Self::claim_writes_lease)), which servers its
+/// statements run on ([`check_server`](Self::check_server)), and how a claim's transaction opens
+/// ([`begin_claim`](Self::begin_claim)).
 ///
 /// # Examples
 ///
@@ -137,7 +138,7 @@ pub trait Dialect: Debug + Send + Sync {
     ///
     /// [`StatementError::UnsupportedFetch`] when the dialect cannot read rows by a list of ids, so
     /// a claim of the service's own needs a fetch of its own too. Postgres builds it for every
-    /// table.
+    /// table; MySQL refuses it.
     ///
     /// # Examples
     ///
@@ -539,6 +540,36 @@ pub trait Dialect: Debug + Send + Sync {
     fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
         let _ = (spec, version);
         Ok(())
+    }
+
+    /// The statement that opens a claim's transaction in place of `BEGIN`, or `None` when `BEGIN`
+    /// opens it.
+    ///
+    /// A claim that runs in a transaction (the row lock form, and a lease claim that only selects
+    /// its rows) opens it with this statement, which leaves the connection inside a transaction
+    /// as `BEGIN` does. MySQL opens it at READ COMMITTED, so a claim locks no gaps between rows
+    /// and holds back no insert into the table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "mysql"))] {
+    /// use ruststream_sqlx_dialect::{Dialect, MySql, Postgres};
+    ///
+    /// // What a broker sends to open a claim's transaction.
+    /// fn opening(dialect: &dyn Dialect) -> &'static str {
+    ///     dialect.begin_claim().unwrap_or("BEGIN")
+    /// }
+    ///
+    /// assert_eq!(opening(&Postgres), "BEGIN");
+    /// assert_eq!(
+    ///     opening(&MySql),
+    ///     "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION",
+    /// );
+    /// # }
+    /// ```
+    fn begin_claim(&self) -> Option<&'static str> {
+        None
     }
 }
 
