@@ -4,6 +4,7 @@
 use proc_macro2::{Span, TokenTree};
 use ruststream_sqlx_dialect::Role;
 use syn::ext::IdentExt;
+use syn::meta::ParseNestedMeta;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -32,9 +33,43 @@ pub(crate) struct Custom {
     pub(crate) retry_after: bool,
     pub(crate) discard: bool,
     pub(crate) dead_letter: bool,
+    /// Where `extend` is listed: an event of the lease form only, which the struct is checked
+    /// for.
+    pub(crate) extend: Option<Span>,
 }
 
 impl Custom {
+    /// Reads one event of `custom(..)`.
+    fn list(&mut self, event: &ParseNestedMeta<'_>) -> syn::Result<()> {
+        let word = event
+            .path
+            .get_ident()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        if word == "publish" {
+            return Err(event.error(
+                "`publish` has no default to hand over: implement `Publish` for the struct \
+                 without listing it",
+            ));
+        }
+        if word == "extend" {
+            if self.extend.replace(event.path.span()).is_some() {
+                return Err(event.error("`extend` is listed twice"));
+            }
+            return Ok(());
+        }
+        let Some(slot) = self.slot(&word) else {
+            return Err(event.error(
+                "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
+                 `retry_after`, `discard`, `dead_letter` or `extend`",
+            ));
+        };
+        if std::mem::replace(slot, true) {
+            return Err(event.error(format!("`{word}` is listed twice")));
+        }
+        Ok(())
+    }
+
     /// The switch of the event `word` names.
     fn slot(&mut self, word: &str) -> Option<&mut bool> {
         Some(match word {
@@ -185,29 +220,7 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
                     return Err(meta.error("`custom` is given twice"));
                 }
                 custom_seen = true;
-                return meta.parse_nested_meta(|event| {
-                    let word = event
-                        .path
-                        .get_ident()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    if word == "publish" {
-                        return Err(event.error(
-                            "`publish` has no default to hand over: implement `Publish` for the \
-                             struct without listing it",
-                        ));
-                    }
-                    let Some(slot) = custom.slot(&word) else {
-                        return Err(event.error(
-                            "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, \
-                             `retry`, `retry_after`, `discard` or `dead_letter`",
-                        ));
-                    };
-                    if std::mem::replace(slot, true) {
-                        return Err(event.error(format!("`{word}` is listed twice")));
-                    }
-                    Ok(())
-                });
+                return meta.parse_nested_meta(|event| custom.list(&event));
             }
             if key == "clock" {
                 let path: syn::Path = meta.value()?.parse()?;
@@ -664,7 +677,7 @@ mod tests {
             (
                 parse_quote! { #[inbox(table = "jobs", custom(lock))] struct Job { #[field(id)] id: i64 } },
                 "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
-                 `retry_after`, `discard` or `dead_letter`",
+                 `retry_after`, `discard`, `dead_letter` or `extend`",
             ),
             (
                 parse_quote! { #[inbox(table = "jobs", custom(publish))] struct Job { #[field(id)] id: i64 } },
@@ -721,7 +734,17 @@ mod tests {
         let custom = inbox.table.custom;
         assert!(custom.fetch && custom.dead_letter);
         assert!(!custom.claim && !custom.ack && !custom.retry);
-        assert!(!custom.retry_after && !custom.discard);
+        assert!(!custom.retry_after && !custom.discard && custom.extend.is_none());
+        let leased: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(extend))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert!(self::inbox(&leased)?.table.custom.extend.is_some());
+        let twice: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(extend, extend))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(error(&twice), "`extend` is listed twice");
         let clock = inbox
             .table
             .clock

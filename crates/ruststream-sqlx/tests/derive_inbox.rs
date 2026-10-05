@@ -4,6 +4,8 @@
 
 use std::time::SystemTime;
 
+#[cfg(feature = "chrono")]
+use chrono::{DateTime, Utc};
 use ruststream_sqlx::dialect::{Column, Form, KeyPart, Role, TableSpec};
 use ruststream_sqlx::{Inbox, InboxRow};
 
@@ -122,6 +124,8 @@ fn the_partition_key_and_the_headers_reach_their_slots() {
     );
 }
 
+// A lease is written in a time type the crate computes in, which a time feature brings.
+#[cfg(feature = "chrono")]
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
 #[cfg_attr(
@@ -135,9 +139,10 @@ struct Leased {
     #[field(id)]
     id: i64,
     #[field(locked_until)]
-    locked_until: Option<SystemTime>,
+    locked_until: Option<DateTime<Utc>>,
 }
 
+#[cfg(feature = "chrono")]
 #[test]
 fn a_locked_until_field_selects_the_lease_form() {
     assert_eq!(

@@ -159,7 +159,8 @@ pub(crate) fn insert(
                         #sql,
                         arguments,
                     )
-                    .await
+                    .await?;
+                    ::core::result::Result::Ok(())
                 }
             }
         }

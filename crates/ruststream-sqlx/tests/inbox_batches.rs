@@ -76,6 +76,45 @@ live::matrix! {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_batch_whose_last_delivery_drops_unsettled_keeps_the_others_settlements() {
+        let Some(db) = database().await else { return };
+        db.fragile(&["a", "b"]).await;
+        // A lease of a second: a leased row a dropped delivery held returns within the test.
+        let connected = SqlxBroker::new(db.pool.clone())
+            .poll_interval(Duration::from_millis(20))
+            .lease(Duration::from_secs(1))
+            .connect()
+            .await
+            .expect("the broker connects");
+        let mut subscriber = InboxQueue::<Fragile>::new("fragile")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut batches = pin!(subscriber.batches(nonzero!(2_usize)));
+            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let [a, b]: [_; 2] = batch.try_into().expect("two deliveries");
+            a.ack().await.expect("the first acknowledges");
+            drop(b);
+
+            // The next claim passes over the batch's rows until the batch lets go of them (its
+            // transaction ends, or the dropped delivery's lease runs out), then finds `b` alone.
+            let again = batches.next().await.expect("a batch").expect("the claim");
+            let payloads: Vec<&[u8]> = again.iter().map(IncomingMessage::payload).collect();
+            assert_eq!(payloads, [b"b".as_slice()]);
+        }
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
+        db.finish().await;
+    }
+}
+
+// The form decides what a failed settlement does to the rest of its batch, so each form states it
+// with rows of its own.
+live::stands! {
+    use crate::live::rows::{lease, row_lock};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_settlement_rolls_its_whole_batch_back() {
         let Some(db) = database().await else { return };
         let ids = db.fragile(&["a", "b", "c"]).await;
@@ -85,7 +124,7 @@ live::matrix! {
             .connect()
             .await
             .expect("the broker connects");
-        let mut subscriber = InboxQueue::<Fragile>::new("fragile")
+        let mut subscriber = InboxQueue::<row_lock::Fragile>::new("fragile")
             .subscribe(&connected)
             .await
             .expect("the subscription opens");
@@ -120,31 +159,50 @@ live::matrix! {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_batch_whose_last_delivery_drops_unsettled_keeps_the_others_settlements() {
+    async fn a_failed_settlement_leaves_the_other_settlements_of_a_leased_batch_in_place() {
         let Some(db) = database().await else { return };
-        db.fragile(&["a", "b"]).await;
+        let ids = db.fragile(&["a", "b", "c"]).await;
+        // `b` is still referenced, so its acknowledgement fails.
+        db.reference(ids[1]).await;
         let connected = SqlxBroker::new(db.pool.clone())
-            .poll_interval(Duration::from_millis(20))
             .connect()
             .await
             .expect("the broker connects");
-        let mut subscriber = InboxQueue::<Fragile>::new("fragile")
+        let mut subscriber = InboxQueue::<lease::Fragile>::new("fragile")
             .subscribe(&connected)
             .await
             .expect("the subscription opens");
-        {
-            let mut batches = pin!(subscriber.batches(nonzero!(2_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
-            let [a, b]: [_; 2] = batch.try_into().expect("two deliveries");
-            a.ack().await.expect("the first acknowledges");
-            drop(b);
+        let batch = pin!(subscriber.batches(nonzero!(3_usize)))
+            .next()
+            .await
+            .expect("a batch")
+            .expect("the claim");
+        let [a, b, c]: [_; 3] = batch.try_into().expect("three deliveries");
 
-            // The next claim passes over the batch's rows until its transaction ends, then finds
-            // `b` alone.
-            let again = batches.next().await.expect("a batch").expect("the claim");
-            let payloads: Vec<&[u8]> = again.iter().map(IncomingMessage::payload).collect();
-            assert_eq!(payloads, [b"b".as_slice()]);
-        }
+        a.ack().await.expect("the first acknowledgement commits");
+        let refused = b
+            .ack()
+            .await
+            .expect_err("a referenced job cannot be deleted");
+        let source = match &refused {
+            AckError::Broker(source) => source.downcast_ref::<SqlxBrokerError>(),
+            _ => None,
+        };
+        assert!(
+            matches!(
+                source,
+                Some(SqlxBrokerError::Sqlx {
+                    statement: "ack",
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+        c.ack()
+            .await
+            .expect("a leased delivery settles on its own, whatever its batch did");
+        // Each settlement committed on its own: only the job whose acknowledgement failed stays.
+        assert_eq!(db.fragile_rows().await, ["b"]);
         drop(subscriber);
         connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;

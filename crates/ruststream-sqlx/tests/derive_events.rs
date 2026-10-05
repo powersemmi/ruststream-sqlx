@@ -12,10 +12,10 @@ use std::collections::BTreeMap;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use ruststream_sqlx::__private::{Event, Events, IdAt, Now, Param, Prepared, Queue, Shape, Values};
 use ruststream_sqlx::{
-    Ack, Clock, DatabaseClock, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow,
+    Ack, Clock, DatabaseClock, Extend, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow,
 };
 use sqlx::postgres::PgArguments;
 use sqlx::types::Json;
@@ -118,11 +118,12 @@ static EMAILS: LazyLock<Queue> = LazyLock::new(|| Queue {
     kinds: None,
     prepared: Prepared::default(),
     poll_interval: Duration::from_secs(1),
+    lease: None,
     max_attempts: None,
     dead_letter: None,
 });
 
-fn values(event: Event, id: &i64) -> Values<'_, SendEmail> {
+fn values(event: Event, id: &i64) -> Values<'_, Postgres, SendEmail> {
     Values {
         event,
         queue: &EMAILS,
@@ -132,6 +133,8 @@ fn values(event: Event, id: &i64) -> Values<'_, SendEmail> {
         delay: Duration::from_secs(30),
         destination: "emails.dead",
         now: Now::default(),
+        lease: None,
+        held: None,
     }
 }
 
@@ -208,6 +211,152 @@ fn listed_events_are_the_services_own() {
     assert_eq!(<Assembled as Events<Postgres>>::kinds(), None);
     assert!(Assembled::SPEC.uses_database_clock());
     assert!(!SendEmail::SPEC.uses_database_clock());
+}
+
+/// A table in the lease form.
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "jobs")]
+struct Leased {
+    #[field(id)]
+    id: i64,
+    #[field(attempt)]
+    attempt: i16,
+    #[field(locked_until)]
+    locked_until: Option<DateTime<Utc>>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+/// The subscription of `jobs`, with a lease of thirty seconds.
+static JOBS: LazyLock<Queue> = LazyLock::new(|| Queue {
+    name: "jobs",
+    table: "jobs",
+    row: "Leased",
+    spec: Leased::SPEC,
+    id_at: IdAt::First,
+    native_retry_after: false,
+    kinds: None,
+    prepared: Prepared::default(),
+    poll_interval: Duration::from_secs(1),
+    lease: Some(Duration::from_secs(30)),
+    max_attempts: None,
+    dead_letter: None,
+});
+
+#[test]
+fn a_lease_ends_on_a_whole_second_a_lease_later() -> Result<(), sqlx::Error> {
+    let before = Utc::now();
+    let expiry = <Leased as Events<Postgres>>::expiry(&JOBS, Now::default())?;
+    assert_eq!(
+        expiry.timestamp_subsec_nanos(),
+        0,
+        "the token is a whole second"
+    );
+    assert!(expiry >= before + TimeDelta::seconds(30));
+    assert!(expiry <= Utc::now() + TimeDelta::seconds(31));
+    // A table in another form takes no lease, and its token is nothing.
+    <SendEmail as Events<Postgres>>::expiry(&EMAILS, Now::default())?;
+    // A queue that holds no lease cannot tell a lease row's expiry.
+    let refused = <Leased as Events<Postgres>>::expiry(&EMAILS, Now::default());
+    assert!(
+        matches!(refused, Err(sqlx::Error::Configuration(_))),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sqlx::Error> {
+    let id = 7;
+    let expiry = <Leased as Events<Postgres>>::expiry(&JOBS, Now::default())?;
+    let extension = Values {
+        event: Event::Extend,
+        queue: &JOBS,
+        limit: 1,
+        id: Some(&id),
+        ids: &[],
+        delay: Duration::ZERO,
+        destination: "",
+        now: Now::default(),
+        lease: Some(expiry),
+        held: Some(expiry),
+    };
+    let mut extend = PgArguments::default();
+    for param in [Param::Lease, Param::Id, Param::Held, Param::LeaseNow] {
+        assert!(<Leased as Events<Postgres>>::bind(
+            param,
+            &mut extend,
+            &extension
+        )?);
+    }
+    assert_eq!(extend.len(), 4);
+    // A claim writes a lease and holds none yet; a settlement holds one and writes none.
+    let claim = Values {
+        held: None,
+        ..extension
+    };
+    assert!(!<Leased as Events<Postgres>>::bind(
+        Param::Held,
+        &mut extend,
+        &claim
+    )?);
+    let settlement = Values {
+        lease: None,
+        ..claim
+    };
+    assert!(!<Leased as Events<Postgres>>::bind(
+        Param::Lease,
+        &mut extend,
+        &settlement
+    )?);
+    // A row lock row has no lease to bind.
+    assert!(!<SendEmail as Events<Postgres>>::bind(
+        Param::Lease,
+        &mut extend,
+        &values(Event::Ack, &id)
+    )?);
+    // By name, a lease row reads through its own code.
+    assert_eq!(<Leased as Events<Postgres>>::kinds(), None);
+    let _ = |row: Leased| (row.id, row.attempt, row.locked_until, row.payload);
+    Ok(())
+}
+
+/// A lease table whose extension is the service's own.
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "jobs", custom(extend))]
+struct Extended {
+    #[field(id)]
+    id: i64,
+    #[field(locked_until)]
+    locked_until: Option<DateTime<Utc>>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+impl Extend<Postgres> for Extended {
+    async fn extend(
+        conn: &mut PgConnection,
+        id: &i64,
+        held: &DateTime<Utc>,
+        until: &DateTime<Utc>,
+    ) -> Result<bool, sqlx::Error> {
+        let extended =
+            sqlx::query("UPDATE jobs SET locked_until = $1 WHERE id = $2 AND locked_until = $3")
+                .bind(until)
+                .bind(id)
+                .bind(held)
+                .execute(conn)
+                .await?;
+        Ok(extended.rows_affected() == 1)
+    }
+}
+
+#[test]
+fn an_extension_listed_in_custom_is_the_services_own() {
+    let shape = <Extended as Events<Postgres>>::SHAPE;
+    assert!(shape.custom_extend);
+    assert!(!shape.custom_ack && !<Leased as Events<Postgres>>::SHAPE.custom_extend);
+    let _ = |row: Extended| (row.id, row.locked_until, row.payload);
 }
 
 #[test]

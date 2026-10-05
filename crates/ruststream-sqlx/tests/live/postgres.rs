@@ -103,6 +103,16 @@ impl Database<Db> {
         }
     }
 
+    /// The first plain job's `attempt`, and whether a lease holds it: `locked_until` is set.
+    pub(crate) async fn plain_lease(&self) -> (i16, bool) {
+        sqlx::query_as(
+            "SELECT attempt, locked_until IS NOT NULL FROM plain_jobs ORDER BY id LIMIT 1",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .expect("the row reads")
+    }
+
     /// The payloads of `table`, in id order.
     pub(crate) async fn plain_rows(&self, table: &'static str) -> Vec<Vec<u8>> {
         sqlx::query_scalar(AssertSqlSafe(format!(

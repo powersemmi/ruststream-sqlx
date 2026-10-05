@@ -54,15 +54,16 @@ impl TimeRole {
 
 /// The answer to "can a by-name subscription read and bind this row from its description alone":
 /// the kinds of its columns, or `None` when an event is the service's own, for the described path
-/// runs the crate's defaults only.
+/// runs the crate's defaults only, or when the row holds a lease, which the role columns do not
+/// bind.
 fn kinds(
     inbox: &Inbox<'_>,
     clock: &Path,
     id_ty: &Type,
-    custom: bool,
+    own_code: bool,
     [retry_after, processed_at]: [Option<&TimeRole>; 2],
 ) -> TokenStream2 {
-    if custom {
+    if own_code {
         return quote!(::core::option::Option::None);
     }
     let p = quote!(::ruststream_sqlx::__private);
@@ -196,6 +197,50 @@ pub(crate) fn events(
         }
     });
 
+    // The lease form: the expiry a claim writes and a settlement matches is the token, in the
+    // type the `locked_until` field holds.
+    let leased = playing(inbox, Role::LockedUntil).is_some();
+    let lease = quote!(<Self as #r::LeaseRow>::Lease);
+    let (token, expiry, lease_arms) = if leased {
+        predicates.push(parse_quote!(
+            #lease: for<'__q> #p::sqlx::Encode<'__q, __DB> + #p::sqlx::Type<__DB>
+        ));
+        (
+            lease.clone(),
+            quote!(#p::expiry::<#clock, #lease>(queue, now)),
+            Some(quote! {
+                (#p::Param::LeaseNow, _) => {
+                    let now = #p::now::<#clock, #lease>(values.now, values.event)?;
+                    #p::put::<__DB, _>(arguments, now)?;
+                    true
+                }
+                (#p::Param::Lease, _) => match values.lease {
+                    ::core::option::Option::Some(lease) => {
+                        #p::put::<__DB, _>(arguments, lease)?;
+                        true
+                    }
+                    ::core::option::Option::None => false,
+                },
+                (#p::Param::Held, _) => match values.held {
+                    ::core::option::Option::Some(held) => {
+                        #p::put::<__DB, _>(arguments, held)?;
+                        true
+                    }
+                    ::core::option::Option::None => false,
+                },
+            }),
+        )
+    } else {
+        (
+            quote!(()),
+            quote!({
+                let _ = (queue, now);
+                ::core::result::Result::Ok(())
+            }),
+            None,
+        )
+    };
+
     // Matching fetched rows to claimed ids compares ids.
     if custom.claim || custom.fetch {
         let column = via(id_ty);
@@ -231,14 +276,15 @@ pub(crate) fn events(
     event_bound(custom.retry_after, quote!(RetryAfter), &mut predicates);
     event_bound(custom.discard, quote!(Discard), &mut predicates);
     event_bound(custom.dead_letter, quote!(DeadLetter), &mut predicates);
+    event_bound(custom.extend.is_some(), quote!(Extend), &mut predicates);
 
     let claim = match (custom.claim, custom.fetch) {
-        (false, false) => quote!(#p::claim_rows::<__DB, Self>(conn, cx, out)),
+        (false, false) => quote!(#p::claim_rows::<__DB, Self>(conn, cx, lease, out)),
         (claim, fetch) => {
             let ids = if claim {
                 quote!(<Self as #r::Claim<__DB>>::claim(&mut *conn, cx.queue.name, cx.limit).await?)
             } else {
-                quote!(#p::claim_ids::<__DB, Self>(&mut *conn, cx).await?)
+                quote!(#p::claim_ids::<__DB, Self>(&mut *conn, cx, lease).await?)
             };
             // The service's fetch decodes its own rows; the crate's hands over those it could
             // not decode too.
@@ -249,11 +295,15 @@ pub(crate) fn events(
                 )
             } else {
                 (
-                    quote!(#p::fetch_by_ids::<__DB, Self>(&mut *conn, cx, &ids).await?),
+                    quote!(#p::fetch_by_ids::<__DB, Self>(&mut *conn, cx, lease, &ids).await?),
                     quote!(match_claimed),
                 )
             };
+            // A claim and a fetch of the service's own bind no lease: the crate stamps the rows
+            // they take.
+            let unbound = (claim && fetch).then(|| quote!(let _ = lease;));
             quote!(async move {
+                #unbound
                 let ids = #ids;
                 let fetched = #rows;
                 #p::#matched::<__DB, Self>(ids, fetched, out);
@@ -261,34 +311,51 @@ pub(crate) fn events(
             })
         }
     };
+    // The service's own event settles without the lease: the crate confirms it first.
+    let own = |call: TokenStream2| {
+        quote!(async move {
+            let _ = (cx, held);
+            #call.await?;
+            ::core::result::Result::Ok(#p::Settled::Written)
+        })
+    };
     let ack = if custom.ack {
-        quote!({ let _ = cx; <Self as #r::Ack<__DB>>::ack(conn, id) })
+        own(quote!(<Self as #r::Ack<__DB>>::ack(conn, id)))
     } else {
-        quote!(#p::ack::<__DB, Self>(conn, cx, id))
+        quote!(#p::ack::<__DB, Self>(conn, cx, id, held))
     };
     let retry = if custom.retry {
-        quote!(async move {
-            let _ = cx;
-            <Self as #r::Retry<__DB>>::retry(conn, id).await?;
-            ::core::result::Result::Ok(#p::Released::Written)
-        })
+        own(quote!(<Self as #r::Retry<__DB>>::retry(conn, id)))
     } else {
-        quote!(#p::retry::<__DB, Self>(conn, cx, id))
+        quote!(#p::retry::<__DB, Self>(conn, cx, id, held))
     };
     let retry_after_call = if custom.retry_after {
-        quote!({ let _ = cx; <Self as #r::RetryAfter<__DB>>::retry_after(conn, id, delay) })
+        own(quote!(<Self as #r::RetryAfter<__DB>>::retry_after(conn, id, delay)))
     } else {
-        quote!(#p::retry_after::<__DB, Self>(conn, cx, id, delay))
+        quote!(#p::retry_after::<__DB, Self>(conn, cx, id, held, delay))
     };
     let discard = if custom.discard {
-        quote!({ let _ = cx; <Self as #r::Discard<__DB>>::discard(conn, id) })
+        own(quote!(<Self as #r::Discard<__DB>>::discard(conn, id)))
     } else {
-        quote!(#p::discard::<__DB, Self>(conn, cx, id))
+        quote!(#p::discard::<__DB, Self>(conn, cx, id, held))
     };
     let dead_letter = if custom.dead_letter {
-        quote!({ let _ = cx; <Self as #r::DeadLetter<__DB>>::dead_letter(conn, id, destination) })
+        own(quote!(<Self as #r::DeadLetter<__DB>>::dead_letter(conn, id, destination)))
     } else {
-        quote!(#p::dead_letter::<__DB, Self>(conn, cx, id, destination))
+        quote!(#p::dead_letter::<__DB, Self>(conn, cx, id, held, destination))
+    };
+    let extend = if custom.extend.is_some() {
+        quote!(async move {
+            let _ = cx;
+            let extended = <Self as #r::Extend<__DB>>::extend(conn, id, held, until).await?;
+            ::core::result::Result::Ok(if extended {
+                #p::Settled::Written
+            } else {
+                #p::Settled::Lost
+            })
+        })
+    } else {
+        quote!(#p::extend::<__DB, Self>(conn, cx, id, held, until))
     };
 
     let flags = [
@@ -299,12 +366,13 @@ pub(crate) fn events(
         custom.retry_after,
         custom.discard,
         custom.dead_letter,
+        custom.extend.is_some(),
     ];
     let kinds = kinds(
         inbox,
         &clock,
         id_ty,
-        flags.contains(&true),
+        flags.contains(&true) || leased,
         [retry_after.as_ref(), processed_at.as_ref()],
     );
     let [
@@ -315,6 +383,7 @@ pub(crate) fn events(
         c_retry_after,
         c_discard,
         c_dead,
+        c_extend,
     ] = flags;
 
     let mut generics = generics.clone();
@@ -333,7 +402,10 @@ pub(crate) fn events(
                 custom_retry_after: #c_retry_after,
                 custom_discard: #c_discard,
                 custom_dead_letter: #c_dead,
+                custom_extend: #c_extend,
             };
+
+            type Token = #token;
 
             fn kinds() -> ::core::option::Option<#p::Kinds> {
                 #kinds
@@ -362,7 +434,7 @@ pub(crate) fn events(
             fn bind(
                 param: #p::Param,
                 arguments: &mut <__DB as #p::sqlx::Database>::Arguments,
-                values: &#p::Values<'_, Self>,
+                values: &#p::Values<'_, __DB, Self>,
             ) -> ::core::result::Result<bool, #p::sqlx::Error> {
                 ::core::result::Result::Ok(match (param, values.event) {
                     (#p::Param::Id, _) => match values.id {
@@ -390,14 +462,23 @@ pub(crate) fn events(
                     }
                     #retry_after_arms
                     #processed_at_arms
+                    #lease_arms
                     #ids_arm
                     _ => false,
                 })
             }
 
+            fn expiry(
+                queue: &'static #p::Queue,
+                now: #p::Now,
+            ) -> ::core::result::Result<<Self as #p::Events<__DB>>::Token, #p::sqlx::Error> {
+                #expiry
+            }
+
             fn claim<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Claiming,
+                lease: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
                 out: &'__a mut ::std::vec::Vec<#p::Claimed<Self>>,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {
@@ -408,8 +489,10 @@ pub(crate) fn events(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Settling,
                 id: &'__a <Self as #p::QueueRow>::Id,
-            ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
-                   + ::core::marker::Send + '__a {
+                held: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
                 #ack
             }
 
@@ -417,8 +500,9 @@ pub(crate) fn events(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Settling,
                 id: &'__a <Self as #p::QueueRow>::Id,
+                held: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
             ) -> impl ::core::future::Future<
-                Output = ::core::result::Result<#p::Released, #p::sqlx::Error>,
+                Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
             > + ::core::marker::Send + '__a {
                 #retry
             }
@@ -427,9 +511,11 @@ pub(crate) fn events(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Settling,
                 id: &'__a <Self as #p::QueueRow>::Id,
+                held: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
                 delay: ::core::time::Duration,
-            ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
-                   + ::core::marker::Send + '__a {
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
                 #retry_after_call
             }
 
@@ -437,8 +523,10 @@ pub(crate) fn events(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Settling,
                 id: &'__a <Self as #p::QueueRow>::Id,
-            ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
-                   + ::core::marker::Send + '__a {
+                held: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
                 #discard
             }
 
@@ -446,10 +534,24 @@ pub(crate) fn events(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Settling,
                 id: &'__a <Self as #p::QueueRow>::Id,
+                held: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
                 destination: &'__a str,
-            ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
-                   + ::core::marker::Send + '__a {
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
                 #dead_letter
+            }
+
+            fn extend<'__a>(
+                conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
+                cx: &'__a #p::Settling,
+                id: &'__a <Self as #p::QueueRow>::Id,
+                held: &'__a <Self as #p::Events<__DB>>::Token,
+                until: &'__a <Self as #p::Events<__DB>>::Token,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
+                #extend
             }
         }
     }

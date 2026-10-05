@@ -121,6 +121,25 @@ pub enum SqlxBrokerError {
         /// The row type.
         row: &'static str,
     },
+    /// A settlement in the lease form found its row under another lease, so it took no effect.
+    ///
+    /// Ownership of a leased row ends with its lease, not with its holder: a handler still
+    /// running when its lease runs out shares the row with the next claim, and the lease its
+    /// claim wrote, the ownership token, only stops the late holder from settling.
+    #[error(
+        "subscription `{subscription}` on table `{table}` ({row}): the lease on row {id} ran out \
+         and another claim took it; this settlement did not take effect"
+    )]
+    LeaseLost {
+        /// The subscription.
+        subscription: String,
+        /// The table, qualified with its schema.
+        table: String,
+        /// The row type.
+        row: &'static str,
+        /// The row's id, as logs name it.
+        id: String,
+    },
     /// The service's `Publish` failed.
     #[error("publishing to `{name}` into table `{table}` ({row}) failed: {source}")]
     Publish {
@@ -179,6 +198,17 @@ mod tests {
         assert_eq!(
             SqlxBrokerError::Closed.to_string(),
             "the inbox broker is shut down"
+        );
+        let lost = SqlxBrokerError::LeaseLost {
+            subscription: "emails".to_owned(),
+            table: "email_jobs".to_owned(),
+            row: "SendEmail",
+            id: "7".to_owned(),
+        };
+        assert_eq!(
+            lost.to_string(),
+            "subscription `emails` on table `email_jobs` (SendEmail): the lease on row 7 ran out \
+             and another claim took it; this settlement did not take effect"
         );
     }
 }

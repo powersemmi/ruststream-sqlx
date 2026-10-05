@@ -71,8 +71,10 @@ live::matrix! {
         let ids = db.fragile(&["a"]).await;
         // A reference stands, so the acknowledgement's delete fails.
         db.reference(ids[0]).await;
+        // A lease of a second: a leased row whose settlement failed returns within the test.
         let connected = SqlxBroker::new(db.pool.clone())
             .poll_interval(Duration::from_millis(20))
+            .lease(Duration::from_secs(1))
             .connect()
             .await
             .expect("the broker connects");
@@ -97,7 +99,8 @@ live::matrix! {
                     if table == "fragile_jobs"),
                 "{refused:?}"
             );
-            // The settlement rolled back, so the row is claimed again.
+            // The settlement took no effect, so the row is claimed again: at once after the
+            // rollback of its transaction, or once its lease runs out.
             let again = deliveries
                 .next()
                 .await

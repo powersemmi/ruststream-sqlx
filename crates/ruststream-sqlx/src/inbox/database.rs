@@ -5,6 +5,7 @@ use std::future::Future;
 use futures::TryStreamExt;
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::Row as _;
+use sqlx::any::AnyQueryResult;
 use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, FromRow, IntoArguments,
     SqlStr, Type,
@@ -14,9 +15,11 @@ use super::QueueRow;
 use super::engine::{Claimed, IdAt};
 
 /// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
-/// statements bind, and runs statements on a connection.
+/// statements bind, runs statements on a connection, and reports the rows a statement changed.
 ///
-/// Every database whose sqlx driver does so implements it; Postgres does.
+/// Every database whose sqlx driver does so implements it; Postgres does. The rows a statement
+/// changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx converts its result
+/// into; a driver outside sqlx provides that conversion for its own result type.
 ///
 /// # Examples
 ///
@@ -39,13 +42,13 @@ pub trait QueueDatabase: Database {
     #[doc(hidden)]
     fn bind_i64(arguments: &mut Self::Arguments, value: i64) -> Result<(), Error>;
 
-    /// Runs a statement. Machinery.
+    /// Runs a statement and returns the rows it changed. Machinery.
     #[doc(hidden)]
     fn execute<'c>(
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
+    ) -> impl Future<Output = Result<u64, Error>> + Send + 'c;
 
     /// Runs a claim or a fetch of whole rows into `out`: a row its struct does not decode is
     /// [`Claimed::Undecodable`], its id read alone at `id_at`. Machinery.
@@ -88,6 +91,7 @@ where
     for<'q> i64: Encode<'q, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
     for<'a> &'a str: ColumnIndex<DB::Row>,
+    DB::QueryResult: Into<AnyQueryResult>,
 {
     fn bind_str(arguments: &mut Self::Arguments, value: &str) -> Result<(), Error> {
         arguments.add(value).map_err(Error::Encode)
@@ -101,9 +105,9 @@ where
         conn: &mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
-    ) -> Result<(), Error> {
-        sqlx::query_with(sql, arguments).execute(conn).await?;
-        Ok(())
+    ) -> Result<u64, Error> {
+        let result: AnyQueryResult = sqlx::query_with(sql, arguments).execute(conn).await?.into();
+        Ok(result.rows_affected())
     }
 
     async fn fetch_rows<'c, Row>(

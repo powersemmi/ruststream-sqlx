@@ -9,6 +9,7 @@ mod error;
 mod events;
 pub mod keys;
 pub(crate) mod kinds;
+mod lease;
 pub(crate) mod named;
 mod publish;
 pub(crate) mod queue;
@@ -28,12 +29,14 @@ pub use database::OnPostgres;
 pub use database::{BuiltInDialect, QueueDatabase};
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
-pub use events::{Ack, Claim, DeadLetter, Discard, Fetch, Insert, Publish, Retry, RetryAfter};
+pub use events::{
+    Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Publish, Retry, RetryAfter,
+};
 pub use named::{NamedDelivery, NamedSubscriber};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use subscriber::InboxSubscriber;
-pub use time::{Clock, DatabaseClock, QueueTime, SystemClock, TimeColumn, TimeSource};
+pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.
 ///

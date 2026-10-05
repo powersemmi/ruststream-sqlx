@@ -76,6 +76,17 @@ macro_rules! matrix {
             use crate::live::rows::row_lock::*;
             $($items)*
         }
+
+        #[cfg(feature = "postgres")]
+        mod postgres_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::postgres::{Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
     };
 }
 

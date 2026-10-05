@@ -28,6 +28,10 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
     /// Which events the service implements itself.
     const SHAPE: Shape;
 
+    /// The lease a delivery holds: the expiry its claim wrote into `locked_until`, which its
+    /// settlements match; `()` for a table in another form.
+    type Token: Copy + Debug + Send + Sync + 'static;
+
     /// The kinds a by-name subscription reads and binds the row's columns by, or `None` when it
     /// needs the row's own code: an event of the service's own, or a column type outside them.
     fn kinds() -> Option<Kinds>;
@@ -56,52 +60,76 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
     fn bind(
         param: Param,
         arguments: &mut DB::Arguments,
-        values: &Values<'_, Self>,
+        values: &Values<'_, DB, Self>,
     ) -> Result<bool, Error>;
 
-    /// Claims up to `cx.limit` rows into `out`.
+    /// The end of a lease the queue's claim takes now: its lease after now, rounded up to a whole
+    /// second; `()` for a table in another form.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Configuration`] where the queue holds no lease or reads the database's clock.
+    fn expiry(queue: &'static Queue, now: Now) -> Result<Self::Token, Error>;
+
+    /// Claims up to `cx.limit` rows into `out`; in the lease form the claim writes `lease`.
     fn claim<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
+        lease: Option<&'a Self::Token>,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 
-    /// The `ack` event.
+    /// The `ack` event; in the lease form `held` is the delivery's lease.
     fn ack<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a Self::Id,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
+        held: Option<&'a Self::Token>,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
 
     /// The `retry` event; says whether it wrote anything for the commit to keep.
     fn retry<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a Self::Id,
-    ) -> impl Future<Output = Result<Released, Error>> + Send + 'a;
+        held: Option<&'a Self::Token>,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
 
     /// The `retry_after` event.
     fn retry_after<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a Self::Id,
+        held: Option<&'a Self::Token>,
         delay: Duration,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
 
     /// The `discard` event.
     fn discard<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a Self::Id,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
+        held: Option<&'a Self::Token>,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
 
     /// The `dead_letter` event.
     fn dead_letter<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a Self::Id,
+        held: Option<&'a Self::Token>,
         destination: &'a str,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
+
+    /// The `extend` event: writes `until` while the row holds `held`, and is [`Settled::Lost`]
+    /// once it no longer does.
+    fn extend<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Settling,
+        id: &'a Self::Id,
+        held: &'a Self::Token,
+        until: &'a Self::Token,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
 }
 
 /// Which events a row's service implements itself.
@@ -123,6 +151,8 @@ pub struct Shape {
     pub custom_discard: bool,
     /// `custom(dead_letter)`.
     pub custom_dead_letter: bool,
+    /// `custom(extend)`.
+    pub custom_extend: bool,
 }
 
 /// The event a statement serves, for binding and for messages.
@@ -142,6 +172,10 @@ pub enum Event {
     Discard,
     /// A spent delivery's move.
     DeadLetter,
+    /// Leasing a row a claim selected: a claim that only selects stamps each row.
+    Stamp,
+    /// Extending a delivery's lease, or confirming it.
+    Extend,
 }
 
 impl Event {
@@ -156,13 +190,15 @@ impl Event {
             Self::RetryAfter => "retry_after",
             Self::Discard => "discard",
             Self::DeadLetter => "dead_letter",
+            Self::Stamp => "stamp",
+            Self::Extend => "extend",
         }
     }
 }
 
 /// The values one statement may bind, by meaning.
 #[derive(Debug)]
-pub struct Values<'a, Row: QueueRow> {
+pub struct Values<'a, DB: QueueDatabase, Row: Events<DB>> {
     /// The event the statement serves.
     pub event: Event,
     /// The subscription: its name (its group, or the table's address) and what it knows of the
@@ -180,10 +216,14 @@ pub struct Values<'a, Row: QueueRow> {
     pub destination: &'a str,
     /// Where "now" comes from.
     pub now: Now,
+    /// The lease a claim, a stamp or an extension writes.
+    pub lease: Option<Row::Token>,
+    /// The lease a settlement or an extension matches: the delivery's ownership token.
+    pub held: Option<Row::Token>,
 }
 
-impl<'a, Row: QueueRow> Values<'a, Row> {
-    const fn claiming(cx: Claiming, event: Event) -> Self {
+impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
+    const fn claiming(cx: Claiming, event: Event, lease: Option<Row::Token>) -> Self {
         Self {
             event,
             queue: cx.queue,
@@ -193,10 +233,17 @@ impl<'a, Row: QueueRow> Values<'a, Row> {
             delay: Duration::ZERO,
             destination: "",
             now: cx.now,
+            lease,
+            held: None,
         }
     }
 
-    const fn settling(cx: Settling, event: Event, id: &'a Row::Id) -> Self {
+    const fn settling(
+        cx: Settling,
+        event: Event,
+        id: &'a Row::Id,
+        held: Option<Row::Token>,
+    ) -> Self {
         Self {
             event,
             queue: cx.queue,
@@ -206,6 +253,8 @@ impl<'a, Row: QueueRow> Values<'a, Row> {
             delay: Duration::ZERO,
             destination: "",
             now: cx.now,
+            lease: None,
+            held,
         }
     }
 }
@@ -251,13 +300,16 @@ impl IdAt {
     }
 }
 
-/// What a settlement wrote, which decides between the commit and the rollback.
+/// What a settlement did, which decides between the commit and the rollback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Released {
+pub enum Settled {
     /// A statement ran; the commit keeps it.
     Written,
     /// Nothing ran; the rollback releases the row.
     Untouched,
+    /// The statement changed no row: in the lease form the row no longer holds the delivery's
+    /// lease, and the settlement took no effect.
+    Lost,
 }
 
 /// One statement a subscription prepared: its text and the parameters it binds, interned for the
@@ -287,6 +339,16 @@ pub struct Prepared {
     pub discard: Option<Stmt>,
     /// The declared dead-letter move.
     pub dead_letter: Option<Stmt>,
+    /// The second statement of a dead-letter move the dialect splits in two; the transaction of
+    /// the first runs it.
+    pub dead_letter_then: Option<Stmt>,
+    /// Extending a delivery's lease, in the lease form.
+    pub extend: Option<Stmt>,
+    /// Leasing one claimed row, where the claim only selects.
+    pub stamp: Option<Stmt>,
+    /// Whether the claim only selects its rows, so the claim's transaction stamps each one: a
+    /// claim of the service's own, or a dialect whose lease claim writes no lease.
+    pub stamps: bool,
 }
 
 /// A claim in progress.
@@ -415,6 +477,21 @@ pub fn later<Source: TimeSource, T: QueueTime>(
     Ok(self::now::<Source, T>(now, event)?.after(delay))
 }
 
+/// The end of a lease taken now: the queue's lease after now, rounded up to a whole second, in
+/// the lease column's time type.
+///
+/// # Errors
+///
+/// [`Error::Configuration`] where the queue holds no lease, and as [`now`].
+pub fn expiry<Source: TimeSource, T: QueueTime>(queue: &Queue, now: Now) -> Result<T, Error> {
+    let lease = queue
+        .lease
+        .ok_or_else(|| unbound(Param::Lease, Event::Claim))?;
+    Ok(self::now::<Source, T>(now, Event::Claim)?
+        .after(lease)
+        .rounded_up())
+}
+
 /// A delay in whole microseconds, saturating.
 #[must_use]
 pub fn micros(delay: Duration) -> i64 {
@@ -437,7 +514,7 @@ fn unprepared(event: Event) -> Error {
     Error::Configuration(format!("the subscription prepared no {} statement", event.name()).into())
 }
 
-fn arguments<DB, Row>(statement: Stmt, values: &Values<'_, Row>) -> Result<DB::Arguments, Error>
+fn arguments<DB, Row>(statement: Stmt, values: &Values<'_, DB, Row>) -> Result<DB::Arguments, Error>
 where
     DB: QueueDatabase,
     Row: Events<DB>,
@@ -459,6 +536,7 @@ where
 pub async fn claim_rows<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
+    lease: Option<&Row::Token>,
     out: &mut Vec<Claimed<Row>>,
 ) -> Result<(), Error>
 where
@@ -471,7 +549,10 @@ where
         .prepared
         .claim
         .ok_or_else(|| unprepared(Event::Claim))?;
-    let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim))?;
+    let arguments = arguments::<DB, Row>(
+        statement,
+        &Values::claiming(*cx, Event::Claim, lease.copied()),
+    )?;
     DB::fetch_rows(conn, statement.sql, arguments, cx.queue.id_at, out).await
 }
 
@@ -483,6 +564,7 @@ where
 pub async fn claim_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
+    lease: Option<&Row::Token>,
 ) -> Result<Vec<Row::Id>, Error>
 where
     DB: QueueDatabase,
@@ -494,7 +576,10 @@ where
         .prepared
         .claim
         .ok_or_else(|| unprepared(Event::Claim))?;
-    let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim))?;
+    let arguments = arguments::<DB, Row>(
+        statement,
+        &Values::claiming(*cx, Event::Claim, lease.copied()),
+    )?;
     DB::fetch_ids(conn, statement.sql, arguments).await
 }
 
@@ -508,6 +593,7 @@ where
 pub async fn fetch_by_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
+    lease: Option<&Row::Token>,
     ids: &[Row::Id],
 ) -> Result<Vec<Claimed<Row>>, Error>
 where
@@ -522,7 +608,7 @@ where
         .ok_or_else(|| unprepared(Event::Fetch))?;
     let values = Values {
         ids,
-        ..Values::claiming(*cx, Event::Fetch)
+        ..Values::claiming(*cx, Event::Fetch, lease.copied())
     };
     let arguments = arguments::<DB, Row>(statement, &values)?;
     let mut fetched = Vec::with_capacity(ids.len());
@@ -576,11 +662,12 @@ fn pair<Row, Entry>(
     }
 }
 
+/// Runs `statement` with `values` and returns the rows it changed.
 async fn run<DB, Row>(
     conn: &mut DB::Connection,
     statement: Option<Stmt>,
-    values: Values<'_, Row>,
-) -> Result<(), Error>
+    values: Values<'_, DB, Row>,
+) -> Result<u64, Error>
 where
     DB: QueueDatabase,
     Row: Events<DB>,
@@ -588,6 +675,17 @@ where
     let statement = statement.ok_or_else(|| unprepared(values.event))?;
     let arguments = arguments::<DB, Row>(statement, &values)?;
     DB::execute(conn, statement.sql, arguments).await
+}
+
+/// What a settlement statement of `queue` that changed `changed` rows did.
+const fn settled(queue: &Queue, changed: u64) -> Settled {
+    // Why the form decides: a statement names the row and its token only in the lease form, where
+    // a row that changed nothing holds another lease; a row lock settlement commits whatever ran.
+    if queue.lease.is_some() && changed == 0 {
+        Settled::Lost
+    } else {
+        Settled::Written
+    }
 }
 
 /// The default `ack`.
@@ -599,13 +697,11 @@ pub async fn ack<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
-) -> Result<(), Error> {
-    run::<DB, Row>(
-        conn,
-        cx.queue.prepared.ack,
-        Values::settling(*cx, Event::Ack, id),
-    )
-    .await
+    held: Option<&Row::Token>,
+) -> Result<Settled, Error> {
+    let values = Values::settling(*cx, Event::Ack, id, held.copied());
+    let changed = run::<DB, Row>(conn, cx.queue.prepared.ack, values).await?;
+    Ok(settled(cx.queue, changed))
 }
 
 /// The default `retry()`.
@@ -617,17 +713,14 @@ pub async fn retry<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
-) -> Result<Released, Error> {
+    held: Option<&Row::Token>,
+) -> Result<Settled, Error> {
     let Some(statement) = cx.queue.prepared.retry else {
-        return Ok(Released::Untouched);
+        return Ok(Settled::Untouched);
     };
-    run::<DB, Row>(
-        conn,
-        Some(statement),
-        Values::settling(*cx, Event::Retry, id),
-    )
-    .await?;
-    Ok(Released::Written)
+    let values = Values::settling(*cx, Event::Retry, id, held.copied());
+    let changed = run::<DB, Row>(conn, Some(statement), values).await?;
+    Ok(settled(cx.queue, changed))
 }
 
 /// The default `retry_after(d)`.
@@ -639,13 +732,15 @@ pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
+    held: Option<&Row::Token>,
     delay: Duration,
-) -> Result<(), Error> {
+) -> Result<Settled, Error> {
     let values = Values {
         delay,
-        ..Values::settling(*cx, Event::RetryAfter, id)
+        ..Values::settling(*cx, Event::RetryAfter, id, held.copied())
     };
-    run::<DB, Row>(conn, cx.queue.prepared.retry_after, values).await
+    let changed = run::<DB, Row>(conn, cx.queue.prepared.retry_after, values).await?;
+    Ok(settled(cx.queue, changed))
 }
 
 /// The default `drop`.
@@ -657,16 +752,15 @@ pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
-) -> Result<(), Error> {
-    run::<DB, Row>(
-        conn,
-        cx.queue.prepared.discard,
-        Values::settling(*cx, Event::Discard, id),
-    )
-    .await
+    held: Option<&Row::Token>,
+) -> Result<Settled, Error> {
+    let values = Values::settling(*cx, Event::Discard, id, held.copied());
+    let changed = run::<DB, Row>(conn, cx.queue.prepared.discard, values).await?;
+    Ok(settled(cx.queue, changed))
 }
 
-/// The default dead-letter move.
+/// The default dead-letter move: one statement, or two where the dialect splits the move, the
+/// second run only once the first moved the row.
 ///
 /// # Errors
 ///
@@ -675,13 +769,62 @@ pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
+    held: Option<&Row::Token>,
     destination: &str,
-) -> Result<(), Error> {
+) -> Result<Settled, Error> {
     let values = Values {
         destination,
-        ..Values::settling(*cx, Event::DeadLetter, id)
+        ..Values::settling(*cx, Event::DeadLetter, id, held.copied())
     };
-    run::<DB, Row>(conn, cx.queue.prepared.dead_letter, values).await
+    let changed = run::<DB, Row>(conn, cx.queue.prepared.dead_letter, values).await?;
+    let moved = settled(cx.queue, changed);
+    if let (Settled::Written, Some(then)) = (moved, cx.queue.prepared.dead_letter_then) {
+        let values = Values {
+            destination,
+            ..Values::settling(*cx, Event::DeadLetter, id, held.copied())
+        };
+        run::<DB, Row>(conn, Some(then), values).await?;
+    }
+    Ok(moved)
+}
+
+/// The default extension: writes `until` into the lease while the row holds `held`.
+///
+/// # Errors
+///
+/// The database's error.
+pub async fn extend<DB: QueueDatabase, Row: Events<DB>>(
+    conn: &mut DB::Connection,
+    cx: &Settling,
+    id: &Row::Id,
+    held: &Row::Token,
+    until: &Row::Token,
+) -> Result<Settled, Error> {
+    let values = Values {
+        lease: Some(*until),
+        ..Values::settling(*cx, Event::Extend, id, Some(*held))
+    };
+    let changed = run::<DB, Row>(conn, cx.queue.prepared.extend, values).await?;
+    Ok(settled(cx.queue, changed))
+}
+
+/// Leases the claimed row `id` with `lease`, inside the claim's transaction; `false` when another
+/// lease holds the row, which the claim then passes over.
+///
+/// # Errors
+///
+/// The database's error.
+pub(crate) async fn stamp<DB: QueueDatabase, Row: Events<DB>>(
+    conn: &mut DB::Connection,
+    cx: &Claiming,
+    id: &Row::Id,
+    lease: &Row::Token,
+) -> Result<bool, Error> {
+    let values = Values {
+        id: Some(id),
+        ..Values::claiming(*cx, Event::Stamp, Some(*lease))
+    };
+    Ok(run::<DB, Row>(conn, cx.queue.prepared.stamp, values).await? > 0)
 }
 
 impl<Row: QueueRow> Claimed<Row> {
@@ -746,6 +889,9 @@ impl Prepared {
             self.retry_after,
             self.discard,
             self.dead_letter,
+            self.dead_letter_then,
+            self.extend,
+            self.stamp,
         ]
         .into_iter()
         .flatten()

@@ -28,7 +28,7 @@ use super::delivery::InboxDelivery;
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::publish::table_of;
-use super::queue::{Description, open};
+use super::queue::{Description, Timing, open};
 use super::subscriber::InboxSubscriber;
 use super::{InboxRow, PayloadRow};
 
@@ -353,8 +353,14 @@ where
 {
     Box::pin(async move {
         let description = Description::of::<DB, Row>();
-        let subscriber =
-            open::<DB, Row>(shared, name, None, &RetryDeclaration::new(), &description).await?;
+        let subscriber = open::<DB, Row>(
+            shared,
+            name,
+            Timing::default(),
+            &RetryDeclaration::new(),
+            &description,
+        )
+        .await?;
         let stream = subscriber
             .into_stream()
             .map(|delivery| delivery.map(|delivery| -> Box<dyn Erased> { Box::new(delivery) }));
@@ -386,7 +392,7 @@ impl<DB: NamedDatabase> Subscribe for ConnectedSqlxBroker<DB> {
             let subscriber = open::<DB, NamedRow>(
                 &self.shared,
                 name,
-                None,
+                Timing::default(),
                 &RetryDeclaration::new(),
                 &description.by_role(),
             )

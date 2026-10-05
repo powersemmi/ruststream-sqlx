@@ -90,12 +90,19 @@
 //! whose statement always fails rolls back on every attempt and returns all of its rows, until
 //! the service's SQL or schema is fixed.
 //!
-//! A message in work holds a connection of the pool until it settles, a batch holds one for all
-//! its messages, and a publish takes one more for its insert. A subscription with `workers(n)`
-//! holds up to n + 1 connections, and handlers that publish need room for their inserts on top: a
-//! pool without that room makes them wait for its `acquire_timeout`. The name selects a
-//! group where the table has one; without a group the table is one queue. The bytes reach the
-//! codec lent from the row. What a handler answers decides the row's fate:
+//! A table with a `#[field(locked_until)]` field is claimed by lease instead ([`LeaseRow`]): the
+//! claim writes the lease's expiry, counts the attempt and commits at once, so the handler runs
+//! outside any transaction. A settlement takes effect only while the row still holds that expiry,
+//! and one that finds the row under another lease fails with [`SqlxBrokerError::LeaseLost`]. Each
+//! delivery of a batch settles on its own.
+//!
+//! In the row lock form a message in work holds a connection of the pool until it settles, a
+//! batch holds one for all its messages, and a publish takes one more for its insert. A
+//! subscription with `workers(n)` holds up to n + 1 connections, and handlers that publish need
+//! room for their inserts on top: a pool without that room makes them wait for its
+//! `acquire_timeout`. In the lease form a message takes a connection only to settle. The name
+//! selects a group where the table has one; without a group the table is one queue. The bytes
+//! reach the codec lent from the row. What a handler answers decides the row's fate:
 //!
 //! - `ack()` deletes the row, or sets `processed_at` where the table has it;
 //! - `retry()` releases the row at once, and its `attempt` grows;
@@ -193,10 +200,11 @@ pub mod prelude;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltInDialect, Claim, Clock, ClosedSqlxBroker, ConnectedSqlxBroker,
-    DatabaseClock, DeadLetter, Discard, Fetch, HeaderColumn, InboxDelivery, InboxQueue, InboxRow,
-    InboxSubscriber, Insert, KeyColumn, NamedDelivery, NamedSubscriber, PayloadRow, Publish,
-    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
-    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn, InboxDelivery, InboxQueue,
+    InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow, NamedDelivery, NamedSubscriber,
+    PayloadRow, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
+    RetryAfter, Routed, RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
+    TimeSource,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -215,9 +223,10 @@ pub mod __private {
     #[cfg(feature = "postgres")]
     pub use crate::inbox::OnPostgres;
     pub use crate::inbox::engine::{
-        Claimed, Claiming, Event, Events, IdAt, Now, Prepared, Released, Settling, Shape, Stmt,
-        TimeFor, Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids,
-        first_header, later, match_claimed, match_rows, micros, now, put, retry, retry_after,
+        Claimed, Claiming, Event, Events, IdAt, Now, Prepared, Settled, Settling, Shape, Stmt,
+        TimeFor, Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, expiry, extend,
+        fetch_by_ids, first_header, later, match_claimed, match_rows, micros, now, put, retry,
+        retry_after,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{
@@ -308,6 +317,8 @@ pub mod __private {
 /// A struct that cannot drive a queue does not compile, and the error points at the field or
 /// the name that causes it: no `id`, a role played twice, a column named twice, a role or
 /// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until` or
-/// `fifo = true` beside `advisory_lock`, a lock key naming no field, a dot in `table` or `schema`.
+/// `fifo = true` beside `advisory_lock`, `extend` in `custom(..)` without `locked_until`,
+/// `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in `table` or
+/// `schema`.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;

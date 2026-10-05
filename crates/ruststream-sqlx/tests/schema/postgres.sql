@@ -115,10 +115,12 @@ CREATE TABLE flat_jobs (
 );
 
 -- A queue whose acknowledgement is the service's own: it marks the row instead of deleting it.
+-- Its lease form reads `locked_until`.
 CREATE TABLE acked_jobs (
-    id      BIGSERIAL PRIMARY KEY,
-    acked   BOOLEAN NOT NULL DEFAULT false,
-    payload BYTEA NOT NULL
+    id           BIGSERIAL PRIMARY KEY,
+    acked        BOOLEAN NOT NULL DEFAULT false,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
 );
 
 -- Role columns of the other types a by-name subscription reads: an INTEGER id and attempt, a byte

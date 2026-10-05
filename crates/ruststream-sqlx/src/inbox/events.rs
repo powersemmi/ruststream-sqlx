@@ -8,13 +8,15 @@ use ruststream::OutgoingMessage;
 use sqlx::{Database, Error};
 
 use super::InboxRow;
+use super::time::LeaseRow;
 
 /// Claims up to `limit` rows of the queue `queue` and returns their ids, inside the claim's
 /// transaction.
 ///
 /// The derive builds it from the roles; a service lists `claim` in `custom(..)` to take it over,
 /// for a database without a built-in dialect or a claim of its own. The crate then reads the
-/// rows with [`Fetch`].
+/// rows with [`Fetch`]. In the lease form the crate also leases each id the claim returns, in the
+/// same transaction, and passes over an id whose row another lease holds.
 ///
 /// # Examples
 ///
@@ -220,11 +222,11 @@ macro_rules! settle_event {
             note = $note
         )]
         pub trait $trait<DB: Database>: InboxRow {
-            #[doc = concat!("Runs the `", $event, "` event for the row `id`, inside the delivery's transaction; the crate commits it.")]
+            #[doc = concat!("Runs the `", $event, "` event for the row `id` inside a transaction the crate commits: the claim's, or in the lease form one that first confirms the row still holds the delivery's lease.")]
             #[doc = ""]
             #[doc = "# Errors"]
             #[doc = ""]
-            #[doc = "The database's error; the transaction rolls back and the row returns to the queue."]
+            #[doc = "The database's error; the transaction rolls back, and the row returns to the queue at once, or in the lease form once its lease runs out."]
             #[doc = ""]
             #[doc = "# Examples"]
             #[doc = ""]
@@ -281,7 +283,11 @@ settle_event!(
 
 settle_event!(
     /// Releases a row for another attempt at once: the derive counts the attempt, or leaves the
-    /// row for the rollback to release.
+    /// row for the rollback to release; in the lease form it clears the lease.
+    ///
+    /// In the lease form the row comes back once `locked_until` no longer holds it: the service's
+    /// own retry clears the column to release the row at once, and otherwise the row waits for its
+    /// lease to run out.
     Retry, retry, "retry",
     gate = "feature = \"postgres\"",
     body = "        sqlx::query(\"UPDATE jobs SET tries = tries + 1 WHERE id = $1\")
@@ -352,6 +358,100 @@ settle_event!(
     note = "implement `DeadLetter<{DB}>` for `{Self}`, or drop `dead_letter` from `custom(..)`",
     destination: &str = "\"jobs.dead\""
 );
+
+/// Extends the lease on a row: writes `until` into `locked_until` while the row still holds
+/// `held`, and says whether it did.
+///
+/// The derive builds it for every table with a `#[field(locked_until)]` field; a service lists
+/// `extend` in `custom(..)` to take it over, for a database without a built-in dialect. The crate
+/// also runs it with `until` equal to `held` to confirm a delivery's lease, inside the transaction
+/// where an event of the service's own then runs.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::{Extend, Inbox};
+/// use sqlx::{PgConnection, Postgres};
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", custom(extend))]
+/// pub struct Job {
+///     #[field(id)]
+///     id: i64,
+///     #[field(locked_until)]
+///     locked_until: Option<DateTime<Utc>>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Extend<Postgres> for Job {
+///     async fn extend(
+///         conn: &mut PgConnection,
+///         id: &i64,
+///         held: &DateTime<Utc>,
+///         until: &DateTime<Utc>,
+///     ) -> Result<bool, sqlx::Error> {
+///         // The row keeps its lease only while it holds the expiry the delivery knows.
+///         let extended =
+///             sqlx::query("UPDATE jobs SET locked_until = $1 WHERE id = $2 AND locked_until = $3")
+///                 .bind(until)
+///                 .bind(id)
+///                 .bind(held)
+///                 .execute(conn)
+///                 .await?;
+///         Ok(extended.rows_affected() == 1)
+///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` lists `extend` in `#[inbox(custom(..))]` and does not implement `Extend<{DB}>`",
+    label = "the service's own extension is missing",
+    note = "implement `Extend<{DB}>` for `{Self}`, or drop `extend` from `custom(..)`"
+)]
+pub trait Extend<DB: Database>: LeaseRow {
+    /// Writes `until` into the lease of the row `id` while it still holds `held`; `true` when it
+    /// did, `false` when the row no longer holds `held`.
+    ///
+    /// # Errors
+    ///
+    /// The database's error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "chrono"))] {
+    /// use ruststream_sqlx::Extend;
+    /// use sqlx::{PgConnection, Postgres};
+    ///
+    /// // A confirmation that the delivery still holds its row: the lease written over itself.
+    /// async fn still_held<Row: Extend<Postgres>>(
+    ///     conn: &mut PgConnection,
+    ///     id: &Row::Id,
+    ///     held: &Row::Lease,
+    /// ) -> Result<bool, sqlx::Error> {
+    ///     Row::extend(conn, id, held, held).await
+    /// }
+    /// # let _ = still_held::<Never>;
+    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
+    /// # #[inbox(table = "t", custom(extend))]
+    /// # struct Never { #[field(id)] id: i64, #[field(locked_until)] locked_until: Option<chrono::DateTime<chrono::Utc>>, #[field(payload)] payload: Vec<u8> }
+    /// # impl Extend<Postgres> for Never {
+    /// #     async fn extend(_: &mut PgConnection, _: &i64, _: &chrono::DateTime<chrono::Utc>, _: &chrono::DateTime<chrono::Utc>) -> Result<bool, sqlx::Error> { Ok(true) }
+    /// # }
+    /// # }
+    /// ```
+    fn extend(
+        conn: &mut DB::Connection,
+        id: &Self::Id,
+        held: &Self::Lease,
+        until: &Self::Lease,
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
+}
 
 /// Writes a published message into the table: the name, the bytes and the headers reach the
 /// service's SQL, which lays them out in its columns.

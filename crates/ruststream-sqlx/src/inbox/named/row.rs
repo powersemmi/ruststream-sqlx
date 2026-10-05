@@ -15,11 +15,12 @@ use time::OffsetDateTime;
 
 use super::database::NamedDatabase;
 use crate::inbox::engine::{
-    self, Claimed, Claiming, Event, Events, Released, Settling, Shape, Values,
+    self, Claimed, Claiming, Event, Events, Now, Settled, Settling, Shape, Values,
 };
 use crate::inbox::kinds::Kinds;
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::kinds::{ClockKind, TimeKind};
+use crate::inbox::queue::Queue;
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::time::{QueueTime, SystemClock};
 use crate::inbox::{PayloadRow, QueueRow};
@@ -250,7 +251,7 @@ impl PayloadRow for NamedRow {
 #[cfg(any(feature = "chrono", feature = "time"))]
 fn bind_now<DB: NamedDatabase>(
     arguments: &mut DB::Arguments,
-    values: &Values<'_, NamedRow>,
+    values: &Values<'_, DB, NamedRow>,
     column: fn(Kinds) -> Option<TimeKind>,
     delay: Option<Duration>,
 ) -> Result<bool, Error> {
@@ -274,7 +275,7 @@ fn bind_now<DB: NamedDatabase>(
 #[cfg(any(feature = "chrono", feature = "time"))]
 fn bind_at<DB: NamedDatabase, Time: QueueTime>(
     arguments: &mut DB::Arguments,
-    values: &Values<'_, NamedRow>,
+    values: &Values<'_, DB, NamedRow>,
     delay: Option<Duration>,
     named: fn(Time) -> NamedTime,
 ) -> Result<bool, Error> {
@@ -295,7 +296,12 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         custom_retry_after: false,
         custom_discard: false,
         custom_dead_letter: false,
+        custom_extend: false,
     };
+
+    // A by-name subscription reads a lease table through the route's own row, which holds the
+    // lease's type: the role columns hold no lease.
+    type Token = ();
 
     fn kinds() -> Option<Kinds> {
         // The route's own row answers when the subscription opens.
@@ -326,7 +332,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
     fn bind(
         param: Param,
         arguments: &mut DB::Arguments,
-        values: &Values<'_, Self>,
+        values: &Values<'_, DB, Self>,
     ) -> Result<bool, Error> {
         Ok(match (param, values.event) {
             (Param::Id, _) => match values.id {
@@ -373,13 +379,18 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         })
     }
 
+    fn expiry(_queue: &'static Queue, _now: Now) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn claim<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
+        lease: Option<&'a ()>,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> Result<(), Error> {
         let claimed = out.len();
-        engine::claim_rows::<DB, Self>(conn, cx, out).await?;
+        engine::claim_rows::<DB, Self>(conn, cx, lease, out).await?;
         if let Some(kinds) = cx.queue.kinds {
             for row in &mut out[claimed..] {
                 hold_to(kinds, row)?;
@@ -392,42 +403,57 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        engine::ack::<DB, Self>(conn, cx, id)
+        held: Option<&'a ()>,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
+        engine::ack::<DB, Self>(conn, cx, id, held)
     }
 
     fn retry<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-    ) -> impl Future<Output = Result<Released, Error>> + Send + 'a {
-        engine::retry::<DB, Self>(conn, cx, id)
+        held: Option<&'a ()>,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
+        engine::retry::<DB, Self>(conn, cx, id, held)
     }
 
     fn retry_after<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
+        held: Option<&'a ()>,
         delay: Duration,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        engine::retry_after::<DB, Self>(conn, cx, id, delay)
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
+        engine::retry_after::<DB, Self>(conn, cx, id, held, delay)
     }
 
     fn discard<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        engine::discard::<DB, Self>(conn, cx, id)
+        held: Option<&'a ()>,
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
+        engine::discard::<DB, Self>(conn, cx, id, held)
     }
 
     fn dead_letter<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
+        held: Option<&'a ()>,
         destination: &'a str,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        engine::dead_letter::<DB, Self>(conn, cx, id, destination)
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
+        engine::dead_letter::<DB, Self>(conn, cx, id, held, destination)
+    }
+
+    fn extend<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Settling,
+        id: &'a NamedId,
+        held: &'a (),
+        until: &'a (),
+    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
+        engine::extend::<DB, Self>(conn, cx, id, held, until)
     }
 }
 
@@ -598,6 +624,7 @@ mod tests {
                 kinds,
                 prepared: Prepared::default(),
                 poll_interval: Duration::from_secs(1),
+                lease: None,
                 max_attempts: None,
                 dead_letter: None,
             }))
@@ -619,6 +646,8 @@ mod tests {
                 delay: Duration::from_secs(30),
                 destination: "emails.dead",
                 now: Now::default(),
+                lease: None,
+                held: None,
             };
             let mut arguments = PgArguments::default();
             let bound = <NamedRow as Events<Postgres>>::bind(param, &mut arguments, &values)?;

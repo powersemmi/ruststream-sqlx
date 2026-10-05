@@ -21,19 +21,28 @@ use super::database::QueueDatabase;
 use super::engine::{Events, IdAt, Prepared, Shape, Stmt, intern, intern_name};
 use super::error::SqlxBrokerError;
 use super::kinds::Kinds;
+use super::lease::LeaseBook;
 use super::publish::table_of;
-use super::subscriber::InboxSubscriber;
+use super::subscriber::{Holding, InboxSubscriber};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
+use super::time::LeaseRow;
 use super::{InboxRow, PayloadRow};
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
 /// With a `group` field the name selects the group; without one the table is a single queue and
-/// the name is its address. Rows are claimed with `FOR UPDATE SKIP LOCKED` in a transaction held
-/// for the whole handler: acknowledgement is the delete (or the `processed_at` mark) and the
-/// commit, a retry counts the attempt and commits, and after a crash the database rolls back and
-/// the row returns at once.
+/// the name is its address. By default rows are claimed with `FOR UPDATE SKIP LOCKED` in a
+/// transaction held for the whole handler: acknowledgement is the delete (or the `processed_at`
+/// mark) and the commit, a retry counts the attempt and commits, and after a crash the database
+/// rolls back and the row returns at once.
+///
+/// A table with a `#[field(locked_until)]` field is claimed by lease instead: the claim writes the
+/// lease's expiry into the row, counts the attempt and commits at once, so the handler runs
+/// outside any transaction. Each settlement is one statement that takes effect only while the
+/// row still holds that expiry, and after a crash the row returns once the lease runs out. The
+/// lease is the broker's ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the
+/// subscription sets its own ([`lease`](Self::lease)).
 ///
 /// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table: at the cap the
 /// row moves to the `dead_letter` group (with a `group` field) or into the `dead_letter` table
@@ -88,6 +97,7 @@ use super::{InboxRow, PayloadRow};
 pub struct InboxQueue<Row> {
     name: Cow<'static, str>,
     poll_interval: Option<Duration>,
+    lease: Option<Duration>,
     declaration: RetryDeclaration,
     _row: PhantomData<fn() -> Row>,
 }
@@ -117,6 +127,7 @@ impl<Row> InboxQueue<Row> {
         Self {
             name: name.into(),
             poll_interval: None,
+            lease: None,
             declaration: RetryDeclaration::new(),
             _row: PhantomData,
         }
@@ -146,6 +157,67 @@ impl<Row> InboxQueue<Row> {
         self.poll_interval = Some(interval);
         self
     }
+
+    /// How long a claim of this subscription leases each row; the broker's lease
+    /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless set.
+    ///
+    /// A lease is whole seconds, at least one: a shorter one is rounded up. A handler that runs
+    /// past its lease shares the row with the next claim, and its settlement then fails with
+    /// [`SqlxBrokerError::LeaseLost`]: the lease is sized for the longest handler. Only a table
+    /// with a `#[field(locked_until)]` field takes a lease; on any other the call does not compile.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use chrono::{DateTime, Utc};
+    /// use ruststream::prelude::*;
+    /// use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
+    ///
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "report_jobs")]
+    /// pub struct Report {
+    ///     #[field(id, generated)]
+    ///     id: i64,
+    ///     #[field(locked_until)]
+    ///     locked_until: Option<DateTime<Utc>>,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Request {
+    ///     month: u32,
+    /// }
+    ///
+    /// // A report takes minutes to render: its row stays with the handler for ten.
+    /// #[subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(600)))]
+    /// async fn render(request: &Request) -> HandlerOutcome {
+    ///     tracing::info!(month = request.month, "rendering");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+    ///         b.include(render);
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    #[must_use]
+    pub const fn lease(mut self, lease: Duration) -> Self
+    where
+        Row: LeaseRow,
+    {
+        self.lease = Some(lease);
+        self
+    }
 }
 
 impl<Row> Clone for InboxQueue<Row> {
@@ -153,6 +225,7 @@ impl<Row> Clone for InboxQueue<Row> {
         Self {
             name: self.name.clone(),
             poll_interval: self.poll_interval,
+            lease: self.lease,
             declaration: self.declaration.clone(),
             _row: PhantomData,
         }
@@ -165,6 +238,7 @@ impl<Row> fmt::Debug for InboxQueue<Row> {
             .field("row", &type_name::<Row>())
             .field("name", &self.name)
             .field("poll_interval", &self.poll_interval)
+            .field("lease", &self.lease)
             .field("declaration", &self.declaration)
             .finish()
     }
@@ -189,7 +263,10 @@ where
         open::<DB, Row>(
             &connected.shared,
             &self.name,
-            self.poll_interval,
+            Timing {
+                poll_interval: self.poll_interval,
+                lease: self.lease,
+            },
             &self.declaration,
             &Description::of::<DB, Row>(),
         )
@@ -236,6 +313,23 @@ struct TableBinding<'a> {
     table: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<&'a str>,
+}
+
+/// What a subscription names of its timing; the broker's where it names nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Timing {
+    /// How long the claim loop waits after a claim that found the queue short.
+    pub(crate) poll_interval: Option<Duration>,
+    /// How long a claim leases a row, in the lease form.
+    pub(crate) lease: Option<Duration>,
+}
+
+/// `lease` in whole seconds, rounded up, and at least one.
+fn whole_seconds(lease: Duration) -> Duration {
+    let seconds = lease
+        .as_secs()
+        .saturating_add(u64::from(lease.subsec_nanos() > 0));
+    Duration::from_secs(seconds.max(1))
 }
 
 /// What a subscription knows of its table when it opens: the description, the events the
@@ -290,6 +384,11 @@ impl Description {
     /// service implements the event.
     pub(crate) const fn native_retry_after(&self) -> bool {
         self.shape.custom_retry_after || self.spec.column(Role::RetryAfter).is_some()
+    }
+
+    /// Whether the table is claimed by lease: it has a `locked_until` column.
+    pub(crate) const fn leased(&self) -> bool {
+        self.spec.column(Role::LockedUntil).is_some()
     }
 
     /// Where the claim's select carries the id of a row read alone.
@@ -353,6 +452,8 @@ pub struct Queue {
     pub prepared: Prepared,
     /// How long the claim loop waits after a claim that found the queue short.
     pub poll_interval: Duration,
+    /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
+    pub lease: Option<Duration>,
     /// The declared cap on attempts.
     pub max_attempts: Option<NonZeroU32>,
     /// The declared dead-letter destination.
@@ -415,26 +516,43 @@ fn build(
         .then(|| dialect.discard(&spec))
         .transpose()
         .map_err(refused)?;
-    let dead_letter = match declaration.dead_letter() {
-        Some(_) if shape.custom_dead_letter => None,
-        Some(_) if spec.column(Role::Group).is_some() => {
-            Some(dialect.dead_letter_group(&spec).map_err(refused)?)
-        }
+    let (dead_letter, dead_letter_then) = match declaration.dead_letter() {
+        Some(_) if shape.custom_dead_letter => (None, None),
+        Some(_) if spec.column(Role::Group).is_some() => (
+            Some(dialect.dead_letter_group(&spec).map_err(refused)?),
+            None,
+        ),
         Some(target) => {
             let target = TableName::parse(target)
                 .map_err(|err| fail(format!("the dead-letter table {err}")))?;
-            let mut moves = dialect.dead_letter_table(&spec, target).map_err(refused)?;
-            if moves.len() != 1 {
-                return Err(fail(format!(
-                    "the {} dialect moves a dead letter in {} statements, and the inbox runs one",
-                    dialect.name(),
-                    moves.len()
-                )));
+            let moves = dialect.dead_letter_table(&spec, target).map_err(refused)?;
+            let count = moves.len();
+            let mut moves = moves.into_iter();
+            match (moves.next(), moves.next(), moves.next()) {
+                (Some(first), then, None) => (Some(first), then),
+                _ => {
+                    return Err(fail(format!(
+                        "the {} dialect moves a dead letter in {count} statements, and the inbox \
+                         runs one or two",
+                        dialect.name(),
+                    )));
+                }
             }
-            moves.pop()
         }
-        None => None,
+        None => (None, None),
     };
+    let leased = description.leased();
+    // A claim of the service's own, or one the dialect only selects with, leaves each row to a
+    // stamp of the crate's inside the claim's transaction.
+    let stamps = leased && (shape.custom_claim || !dialect.claim_writes_lease());
+    let extend = (leased && !shape.custom_extend)
+        .then(|| dialect.extend(&spec))
+        .transpose()
+        .map_err(refused)?;
+    let stamp = stamps
+        .then(|| dialect.stamp(&spec))
+        .transpose()
+        .map_err(refused)?;
     Ok(Prepared {
         claim: claim.as_ref().map(intern),
         fetch: fetch.as_ref().map(intern),
@@ -443,6 +561,10 @@ fn build(
         retry_after: retry_after.as_ref().map(intern),
         discard: discard.as_ref().map(intern),
         dead_letter: dead_letter.as_ref().map(intern),
+        dead_letter_then: dead_letter_then.as_ref().map(intern),
+        extend: extend.as_ref().map(intern),
+        stamp: stamp.as_ref().map(intern),
+        stamps,
     })
 }
 
@@ -451,7 +573,7 @@ fn build(
 pub(crate) async fn open<DB, Row>(
     shared: &Arc<Shared<DB>>,
     name: &str,
-    poll_interval: Option<Duration>,
+    timing: Timing,
     declaration: &RetryDeclaration,
     description: &Description,
 ) -> Result<InboxSubscriber<DB, Row>, SqlxBrokerError>
@@ -515,14 +637,24 @@ where
         native_retry_after: description.native_retry_after(),
         kinds: description.kinds,
         prepared,
-        poll_interval: poll_interval.unwrap_or(shared.poll_interval),
+        poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
+        lease: description
+            .leased()
+            .then(|| whole_seconds(timing.lease.unwrap_or(shared.lease))),
         max_attempts: declaration.max_attempts(),
         dead_letter: declaration.dead_letter().map(intern_name),
     }
     .intern();
+    // A book per subscription, not per queue: a queue's description is shared by every
+    // subscription that reads it alike, its deliveries are not.
+    let holding = match queue.lease {
+        Some(_) => Holding::Leases(LeaseBook::leak(shared.pool.clone())),
+        None => Holding::Locks,
+    };
     Ok(InboxSubscriber::new(
         Arc::clone(shared),
         queue,
+        holding,
         registration,
     ))
 }
@@ -630,56 +762,4 @@ impl<DB: Database> fmt::Debug for Registration<DB> {
 }
 
 #[cfg(test)]
-mod tests {
-    use ruststream_sqlx_dialect::{ClaimShape, Column, Form, TableSpec};
-
-    use super::Description;
-    use crate::inbox::engine::{IdAt, Shape};
-
-    const JOBS: TableSpec<'static> =
-        TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("body"));
-
-    fn described(spec: &TableSpec<'static>, shape: Shape, claim: ClaimShape) -> Description {
-        Description {
-            spec: *spec,
-            shape,
-            claim,
-            row: "Job",
-            kinds: None,
-        }
-    }
-
-    #[test]
-    fn a_delayed_retry_is_native_with_its_column_or_the_services_event() {
-        let bare = described(&JOBS, Shape::default(), ClaimShape::Rows);
-        assert!(!bare.native_retry_after());
-        let column = described(
-            &JOBS.retry_after(Column::new("retry_after")),
-            Shape::default(),
-            ClaimShape::Rows,
-        );
-        assert!(column.native_retry_after());
-        let custom = Shape {
-            custom_retry_after: true,
-            ..Shape::default()
-        };
-        assert!(described(&JOBS, custom, ClaimShape::Rows).native_retry_after());
-    }
-
-    #[test]
-    fn a_claim_by_role_carries_the_id_first_whatever_the_struct_flattens() {
-        let flat = JOBS.selecting_all();
-        assert_eq!(
-            described(&flat, Shape::default(), ClaimShape::Rows).id_at(),
-            IdAt::Named("job_id")
-        );
-        assert_eq!(
-            described(&flat, Shape::default(), ClaimShape::Roles).id_at(),
-            IdAt::First
-        );
-        assert_eq!(
-            described(&JOBS, Shape::default(), ClaimShape::Rows).id_at(),
-            IdAt::First
-        );
-    }
-}
+mod tests;

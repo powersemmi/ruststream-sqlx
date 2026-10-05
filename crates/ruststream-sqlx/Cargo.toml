@@ -25,6 +25,9 @@ inbox = [
     "dep:ruststream-sqlx-macros",
     "dep:ruststream",
     "dep:sqlx",
+    # The rows a statement changed, through `AnyQueryResult`, which every sqlx driver converts its
+    # result into.
+    "sqlx/any",
     "dep:futures",
     "dep:tokio",
     "dep:tokio-util",

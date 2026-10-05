@@ -23,6 +23,10 @@ use super::publish::Routes;
 /// another interval.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How long a claim leases a row of a table in the lease form, unless the subscription names
+/// another lease.
+const DEFAULT_LEASE: Duration = Duration::from_secs(30);
+
 /// The dialect a broker builds statements with: one built into the crate, or the service's own.
 pub(crate) enum DialectHandle {
     BuiltIn(&'static dyn Dialect),
@@ -42,10 +46,11 @@ impl DialectHandle {
 ///
 /// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
 /// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
-/// database. A message in work holds one of the pool's connections until it settles, and a
-/// publish takes another, so the pool is sized for both. Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors;
-/// publishing writes them through [`Repository`](crate::Repository) policies or through the
-/// routes this builder records.
+/// database. A message in work holds one of the pool's connections until it settles (in the lease
+/// form only while it settles), and a publish takes another, so the pool is sized for both.
+/// Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors; publishing
+/// writes them through [`Repository`](crate::Repository) policies or through the routes this
+/// builder records.
 ///
 /// # Examples
 ///
@@ -114,6 +119,7 @@ pub struct SqlxBroker<DB: Database> {
     dialect: DialectHandle,
     routes: Routes<DB>,
     poll_interval: Duration,
+    lease: Duration,
 }
 
 impl<DB: Database> fmt::Debug for SqlxBroker<DB> {
@@ -122,6 +128,7 @@ impl<DB: Database> fmt::Debug for SqlxBroker<DB> {
             .field("dialect", &self.dialect.get().name())
             .field("routes", &self.routes)
             .field("poll_interval", &self.poll_interval)
+            .field("lease", &self.lease)
             .finish_non_exhaustive()
     }
 }
@@ -186,6 +193,7 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
             dialect,
             routes: Routes::default(),
             poll_interval: DEFAULT_POLL_INTERVAL,
+            lease: DEFAULT_LEASE,
         }
     }
 
@@ -273,6 +281,37 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
         self.poll_interval = interval;
         self
     }
+
+    /// How long a claim leases a row of a table in the lease form (one with a
+    /// `#[field(locked_until)]` field); thirty seconds unless set. A subscription's own
+    /// [`lease`](crate::InboxQueue::lease) overrides it, and a table in another form ignores it.
+    ///
+    /// A lease is whole seconds, at least one: a shorter one is rounded up. A handler that runs
+    /// past its lease shares the row with the next claim, and its settlement then fails with
+    /// [`SqlxBrokerError::LeaseLost`]; the lease is sized for the longest handler.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn build() -> Result<(), sqlx::Error> {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_sqlx::SqlxBroker;
+    /// use sqlx::postgres::PgPoolOptions;
+    ///
+    /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
+    /// // Reports take minutes to render: their rows stay with a handler for five.
+    /// let broker = SqlxBroker::new(pool).lease(Duration::from_secs(300));
+    /// # let _ = broker;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn lease(mut self, lease: Duration) -> Self {
+        self.lease = lease;
+        self
+    }
 }
 
 impl<DB: QueueDatabase> Broker for SqlxBroker<DB> {
@@ -296,6 +335,8 @@ pub(crate) struct Shared<DB: Database> {
     pub(crate) dialect: DialectHandle,
     pub(crate) routes: Routes<DB>,
     pub(crate) poll_interval: Duration,
+    /// The lease a subscription in the lease form takes, unless it names its own.
+    pub(crate) lease: Duration,
     /// The `Closed` flag: set by `shutdown`, read with one atomic load per publish and per claim.
     closed: AtomicBool,
     /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag.
@@ -353,6 +394,7 @@ impl<DB: Database> From<SqlxBroker<DB>> for ConnectedSqlxBroker<DB> {
                 dialect: broker.dialect,
                 routes: broker.routes,
                 poll_interval: broker.poll_interval,
+                lease: broker.lease,
                 closed: AtomicBool::new(false),
                 stopping: CancellationToken::new(),
                 queues: Mutex::new(Vec::new()),
