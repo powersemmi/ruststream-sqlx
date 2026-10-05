@@ -16,7 +16,9 @@ use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use ruststream::prelude::*;
 use ruststream::testing::TestApp;
-use ruststream_sqlx::{Ack, Clock, DatabaseClock, Fetch, Inbox, InboxQueue, Publish, SqlxBroker};
+use ruststream_sqlx::{
+    Ack, Claim, Clock, DatabaseClock, Fetch, Inbox, InboxQueue, Publish, SqlxBroker,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Postgres};
 
@@ -27,15 +29,30 @@ struct Order {
     id: i64,
 }
 
-/// A job that carries no message of its own: the fetch reads the order's body; the
-/// acknowledgement marks the job done instead of deleting it.
+/// A job that carries no message of its own: the claim passes over done jobs, the fetch reads the
+/// order's body, and the acknowledgement marks the job done instead of deleting it.
 #[derive(Debug, Inbox, sqlx::FromRow)]
-#[inbox(table = "order_jobs", custom(fetch, ack))]
+#[inbox(table = "order_jobs", custom(claim, fetch, ack))]
 struct OrderJob {
     #[field(id)]
     id: i64,
     #[field(payload)]
     payload: Vec<u8>,
+}
+
+impl Claim<Postgres> for OrderJob {
+    async fn claim(
+        conn: &mut PgConnection,
+        _queue: &str,
+        limit: i64,
+    ) -> Result<Vec<i64>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT id FROM order_jobs WHERE NOT done ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(limit)
+        .fetch_all(conn)
+        .await
+    }
 }
 
 impl Fetch<Postgres> for OrderJob {
@@ -101,6 +118,10 @@ async fn a_custom_fetch_assembles_rows_and_a_custom_ack_marks_them() {
         .publish()
         .await
         .expect("the publish settles");
+    // A marked job leaves the queue: the claim passes over it from then on.
+    tb.advance(Duration::from_millis(300))
+        .await
+        .expect("nothing more to settle");
     tb.broker::<SqlxBroker<Postgres>>()
         .subscriber("orders")
         .assert_called_once()
