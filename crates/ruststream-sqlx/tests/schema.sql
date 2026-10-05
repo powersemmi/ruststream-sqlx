@@ -29,3 +29,24 @@ CREATE TABLE broken_jobs (
     id      BIGSERIAL PRIMARY KEY,
     payload BYTEA NOT NULL
 );
+
+-- Jobs that point at orders; a custom fetch assembles the message from both.
+CREATE TABLE orders (
+    id   BIGINT PRIMARY KEY,
+    body BYTEA NOT NULL
+);
+
+CREATE TABLE order_jobs (
+    id       BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL,
+    done     BOOLEAN NOT NULL DEFAULT false
+);
+
+-- A queue on the database's clock.
+CREATE TABLE clock_jobs (
+    id           BIGSERIAL PRIMARY KEY,
+    retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    processed_at TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
+);
