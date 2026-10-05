@@ -110,6 +110,49 @@ async fn a_name_without_a_route_is_an_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_routed_write_that_fails_names_the_routes_table() {
+    let Some(db) = database().await else { return };
+    let connected = SqlxBroker::new(db.pool.clone())
+        .route::<Plain>("plain")
+        .connect()
+        .await
+        .expect("the broker connects");
+    let routed = Routed
+        .pair(&connected)
+        .await
+        .expect("the route table pairs");
+    let message = || OutgoingMessage::new("plain", b"a".as_slice());
+
+    sqlx::raw_sql("ALTER TABLE plain_jobs RENAME TO plain_jobs_moved")
+        .execute(&db.pool)
+        .await
+        .expect("the table moves");
+    let refused = routed
+        .publish(message(), None)
+        .await
+        .expect_err("an insert into a table that moved fails");
+    assert!(
+        matches!(&refused, SqlxBrokerError::Publish { name, table, row, .. }
+            if name == "plain" && table == "plain_jobs" && row.ends_with("Plain")),
+        "{refused}"
+    );
+
+    // The pool is the service's: once the service closes it, the route has no connection to take.
+    db.pool.close().await;
+    let refused = routed
+        .publish(message(), None)
+        .await
+        .expect_err("a publish without a connection fails");
+    assert!(
+        matches!(&refused, SqlxBrokerError::Publish { table, source, .. }
+            if table == "plain_jobs" && matches!(**source, sqlx::Error::PoolClosed)),
+        "{refused}"
+    );
+    connected.shutdown().await.expect("the broker shuts down");
+    db.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_header_the_table_cannot_hold_refuses_the_publish() {
     let Some(db) = database().await else { return };
     let connected = SqlxBroker::new(db.pool.clone())

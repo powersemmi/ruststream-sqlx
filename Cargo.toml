@@ -39,6 +39,13 @@ chrono = { version = "0.4.39", default-features = false, features = ["clock", "s
 time = { version = "0.3.36", default-features = false, features = ["std"] }
 serde = { version = "1.0.217", default-features = false, features = ["std", "derive"] }
 serde_json = "1.0.135"
+# `Routed` publishes keep the route's future in place: a slot of fixed size, one function pointer
+# per poll, a box only for a future larger than the slot.
+stackfuture = "0.3.1"
+# The route table's hasher: already in the tree behind sqlx's hash maps.
+foldhash = { version = "0.2", default-features = false }
+# The allocation pin: counts every allocation of its test process.
+dhat = "0.3.3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

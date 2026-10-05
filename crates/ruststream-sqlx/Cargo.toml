@@ -31,6 +31,8 @@ inbox = [
     "dep:tracing",
     "dep:thiserror",
     "dep:sync_wrapper",
+    "dep:stackfuture",
+    "dep:foldhash",
 ]
 # The built-in Postgres dialect, the sqlx driver, and the derive's Postgres insert.
 postgres = [
@@ -63,6 +65,8 @@ sync_wrapper = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+stackfuture = { workspace = true, optional = true }
+foldhash = { workspace = true, optional = true }
 
 [dev-dependencies]
 ruststream = { workspace = true, features = ["macros", "json", "testing", "conformance"] }
@@ -73,3 +77,4 @@ futures = { workspace = true, features = ["executor"] }
 serde.workspace = true
 serde_json.workspace = true
 trybuild.workspace = true
+dhat.workspace = true

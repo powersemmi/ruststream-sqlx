@@ -121,11 +121,13 @@
 //!
 //! A [`Repository`] publishes into its struct's table, and a struct without [`Publish`] does not
 //! compile as one. A route leads a name to a table, and a publish to a name no route leads
-//! anywhere fails at publish time. `#[subscriber("emails")]` opens through the route too. A route
-//! whose struct leaves every event to the crate, with role columns of the types the crate reads
-//! itself, is read by those columns: no box and no dynamic call per message, as through an
-//! [`InboxQueue`]. A struct that overrides an event, or holds another column type, costs one
-//! boxed delivery and one boxed settlement future per message.
+//! anywhere fails at publish time. A publish through a route costs one hash lookup and one
+//! dynamic call. It allocates what a [`Repository`] publish does, unless the struct's `Publish`
+//! future is larger than 1024 bytes ([`Routed`]). `#[subscriber("emails")]` opens through the
+//! route too. A route whose struct leaves every event to the crate, with role columns of the types
+//! the crate reads itself, is read by those columns: no box and no dynamic call per message, as
+//! through an [`InboxQueue`]. A struct that overrides an event, or holds another column type,
+//! costs one boxed delivery and one boxed settlement future per message.
 //!
 //! # Testing a service on the inbox
 //!

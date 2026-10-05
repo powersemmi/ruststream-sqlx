@@ -24,6 +24,7 @@ use super::broker::{ConnectedSqlxBroker, Shared, SqlxBroker};
 use super::database::QueueDatabase;
 use super::engine::Now;
 use super::error::SqlxBrokerError;
+use super::publish::insert_routed;
 
 /// Where an in-process connection reads "now": the tokio clock, anchored to the wall clock when
 /// the broker connected, so a test that moves a paused clock moves the queue's time with it.
@@ -269,7 +270,7 @@ async fn inject<DB: QueueDatabase>(
 ) {
     let message = OutgoingMessage::new(name, payload).with_headers(headers);
     let written = match shared.routes.find(name) {
-        Some(route) => route.insert(shared, &message).await,
+        Some(route) => insert_routed(shared, route, &message).await,
         None => Err(SqlxBrokerError::NoRoute {
             name: name.to_owned(),
         }),

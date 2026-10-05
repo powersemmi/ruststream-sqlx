@@ -3,17 +3,21 @@
 
 use std::any::type_name;
 use std::borrow::Cow;
+use std::cmp::Reverse;
+use std::collections::HashMap;
 use std::fmt;
 use std::future::{Future, ready};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
+use foldhash::fast::RandomState;
 use futures::future::BoxFuture;
 use ruststream::{DefaultPublish, Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
 use ruststream_sqlx_dialect::TableSpec;
 use sqlx::Database;
 #[cfg(feature = "testing")]
 use sqlx::Pool;
+use stackfuture::StackFuture;
 
 use super::PayloadRow;
 use super::broker::{ConnectedSqlxBroker, Shared};
@@ -26,12 +30,50 @@ use super::queue::Description;
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
 
+/// The bytes a route keeps its write's future in. A row's `Publish` future that fits costs no
+/// allocation, and a larger one is boxed. 1024 is the smallest power of two that holds the largest
+/// route future of the test suites, the derive's insert (704 bytes).
+pub(crate) const ROUTE_SLOT: usize = 1024;
+
 /// The table `spec` describes, qualified with its schema, for messages.
 pub(crate) fn table_of(spec: &TableSpec<'_>) -> String {
     spec.schema().map_or_else(
         || spec.table().to_owned(),
         |schema| format!("{schema}.{}", spec.table()),
     )
+}
+
+/// The failure of a write of `message` into `table`.
+fn failed(
+    message: &OutgoingMessage<'_>,
+    table: &TableSpec<'_>,
+    row: &'static str,
+    source: sqlx::Error,
+) -> SqlxBrokerError {
+    SqlxBrokerError::Publish {
+        name: message.name().to_owned(),
+        table: table_of(table),
+        row,
+        source: Box::new(source),
+    }
+}
+
+/// Refuses `message` when `Row`'s table cannot hold one of its headers.
+fn fits<DB, Row>(message: &OutgoingMessage<'_>) -> Result<(), SqlxBrokerError>
+where
+    DB: QueueDatabase,
+    Row: Publish<DB> + Events<DB>,
+{
+    // Why a run-time check: headers are the message's, known only when it is published, and a
+    // header the row cannot hold would reach the table lost or changed.
+    Row::unfit_header(message.headers()).map_or(Ok(()), |header| {
+        Err(SqlxBrokerError::Header {
+            name: message.name().to_owned(),
+            table: table_of(&Row::SPEC),
+            row: type_name::<Row>(),
+            header: header.to_owned(),
+        })
+    })
 }
 
 /// Writes `message` into `Row`'s table on a connection of the pool, unless the broker is shut
@@ -44,27 +86,13 @@ where
     DB: QueueDatabase,
     Row: Publish<DB> + Events<DB>,
 {
-    let failed = |source| SqlxBrokerError::Publish {
-        name: message.name().to_owned(),
-        table: table_of(&Row::SPEC),
-        row: type_name::<Row>(),
-        source: Box::new(source),
-    };
+    let failed = |source| failed(message, &Row::SPEC, type_name::<Row>(), source);
     // Why a run-time check: the pool is the service's and outlives the broker, so only the
     // broker's own flag can refuse a publisher handed out before shutdown.
     if shared.is_closed() {
         return Err(SqlxBrokerError::Closed);
     }
-    // Why a run-time check: headers are the message's, known only when it is published, and a
-    // header the row cannot hold would reach the table lost or changed.
-    if let Some(header) = Row::unfit_header(message.headers()) {
-        return Err(SqlxBrokerError::Header {
-            name: message.name().to_owned(),
-            table: table_of(&Row::SPEC),
-            row: type_name::<Row>(),
-            header: header.to_owned(),
-        });
-    }
+    fits::<DB, Row>(message)?;
     #[cfg(feature = "testing")]
     if shared.harness.in_process() {
         return publish_off_clock::<DB, Row>(&shared.pool, message)
@@ -73,6 +101,45 @@ where
     }
     let mut conn = shared.pool.acquire().await.map_err(failed)?;
     Row::publish(&mut conn, message).await.map_err(failed)
+}
+
+/// Writes `message` into `Row`'s table on `conn`, unless the table cannot hold one of its
+/// headers: what a route runs behind its dynamic call.
+async fn publish_row<DB, Row>(
+    conn: &mut DB::Connection,
+    message: &OutgoingMessage<'_>,
+) -> Result<(), SqlxBrokerError>
+where
+    DB: QueueDatabase,
+    Row: Publish<DB> + Events<DB>,
+{
+    fits::<DB, Row>(message)?;
+    Row::publish(conn, message)
+        .await
+        .map_err(|source| failed(message, &Row::SPEC, type_name::<Row>(), source))
+}
+
+/// Writes `message` through `route` on a connection of the pool, unless the broker is shut down:
+/// the route table's write, for the broker's publishes and the harness's injections alike.
+pub(crate) async fn insert_routed<DB: QueueDatabase>(
+    shared: &Shared<DB>,
+    route: &dyn Route<DB>,
+    message: &OutgoingMessage<'_>,
+) -> Result<(), SqlxBrokerError> {
+    // Why a run-time check: the pool is the service's and outlives the broker, so only the
+    // broker's own flag can refuse a publisher handed out before shutdown.
+    if shared.is_closed() {
+        return Err(SqlxBrokerError::Closed);
+    }
+    #[cfg(feature = "testing")]
+    if shared.harness.in_process() {
+        return route.insert_in_process(shared, message).await;
+    }
+    let mut conn = shared.pool.acquire().await.map_err(|source| {
+        let description = route.description();
+        failed(message, &description.spec, description.row, source)
+    })?;
+    route.insert(&mut conn, message).await
 }
 
 /// The insert of an in-process connection, off a paused clock.
@@ -287,8 +354,17 @@ where
 
 /// A name's way into a table.
 pub(crate) trait Route<DB: Database>: Send + Sync {
-    /// Writes `message` into the route's table.
+    /// Writes `message` into the route's table on `conn`, unless the table cannot hold one of its
+    /// headers. The future stays in place unless it is larger than [`ROUTE_SLOT`].
     fn insert<'a>(
+        &'a self,
+        conn: &'a mut DB::Connection,
+        message: &'a OutgoingMessage<'a>,
+    ) -> StackFuture<'a, Result<(), SqlxBrokerError>, ROUTE_SLOT>;
+
+    /// Writes `message` into the route's table on an in-process connection, off a paused clock.
+    #[cfg(feature = "testing")]
+    fn insert_in_process<'a>(
         &'a self,
         shared: &'a Shared<DB>,
         message: &'a OutgoingMessage<'a>,
@@ -317,6 +393,15 @@ where
     Row: Publish<DB> + Events<DB> + PayloadRow,
 {
     fn insert<'a>(
+        &'a self,
+        conn: &'a mut DB::Connection,
+        message: &'a OutgoingMessage<'a>,
+    ) -> StackFuture<'a, Result<(), SqlxBrokerError>, ROUTE_SLOT> {
+        StackFuture::from_or_box(publish_row::<DB, Row>(conn, message))
+    }
+
+    #[cfg(feature = "testing")]
+    fn insert_in_process<'a>(
         &'a self,
         shared: &'a Shared<DB>,
         message: &'a OutgoingMessage<'a>,
@@ -353,36 +438,57 @@ impl<'a> RouteName<'a> {
         name.strip_suffix('*')
             .map_or(Self::Exact(name), Self::Prefix)
     }
+}
 
-    /// The position among `names` of the route `name` takes: the exact one, else the longest
-    /// prefix.
-    pub(crate) fn best(names: impl Iterator<Item = Self>, name: &str) -> Option<usize> {
-        let mut prefix: Option<(usize, usize)> = None;
-        for (position, route) in names.enumerate() {
-            match route {
-                Self::Exact(exact) if exact == name => return Some(position),
-                Self::Prefix(start)
-                    if name.starts_with(start)
-                        && prefix.is_none_or(|(_, longest)| start.len() > longest) =>
-                {
-                    prefix = Some((position, start.len()));
+/// Where each name's route sits among the routes: exact names by hash, prefixes longest first.
+#[derive(Debug, Default)]
+struct RouteIndex {
+    exact: HashMap<Box<str>, usize, RandomState>,
+    prefixes: Vec<(Box<str>, usize)>,
+}
+
+impl RouteIndex {
+    /// The index of `names`, each at its position.
+    fn new<'a>(names: impl Iterator<Item = RouteName<'a>>) -> Self {
+        let mut index = Self::default();
+        for (position, name) in names.enumerate() {
+            match name {
+                RouteName::Exact(exact) => {
+                    index.exact.insert(exact.into(), position);
                 }
-                _ => {}
+                RouteName::Prefix(prefix) => index.prefixes.push((prefix.into(), position)),
             }
         }
-        prefix.map(|(position, _)| position)
+        index
+            .prefixes
+            .sort_by_key(|(prefix, _)| Reverse(prefix.len()));
+        index
+    }
+
+    /// The position of the route `name` takes: the exact one, else the longest prefix.
+    fn find(&self, name: &str) -> Option<usize> {
+        self.exact.get(name).copied().or_else(|| {
+            self.prefixes
+                .iter()
+                .find(|(prefix, _)| name.starts_with(&**prefix))
+                .map(|&(_, position)| position)
+        })
     }
 }
 
-/// The routes a broker records, in registration order; a later route for a name replaces an
-/// earlier one.
+/// The routes a broker records, in registration order, and their index; a later route for a name
+/// replaces an earlier one.
 pub(crate) struct Routes<DB: Database> {
     routes: Vec<(Cow<'static, str>, Box<dyn Route<DB>>)>,
+    index: RouteIndex,
 }
 
 impl<DB: Database> Default for Routes<DB> {
     fn default() -> Self {
-        Self { routes: Vec::new() }
+        Self {
+            routes: Vec::new(),
+            index: RouteIndex::default(),
+        }
     }
 }
 
@@ -402,22 +508,29 @@ impl<DB: QueueDatabase> Routes<DB> {
         self.routes.retain(|(existing, _)| *existing != name);
         self.routes
             .push((name, Box::new(TypedRoute::<Row>(PhantomData))));
+        self.index = RouteIndex::new(self.routes.iter().map(|(name, _)| RouteName::parse(name)));
     }
 }
 
 impl<DB: Database> Routes<DB> {
-    /// The route `name` takes.
+    /// The route `name` takes: one hash lookup for an exact name, then the prefixes.
     pub(crate) fn find(&self, name: &str) -> Option<&dyn Route<DB>> {
-        let names = self.routes.iter().map(|(route, _)| RouteName::parse(route));
-        RouteName::best(names, name).map(|position| self.routes[position].1.as_ref())
+        self.index
+            .find(name)
+            .and_then(|position| self.routes.get(position))
+            .map(|(_, route)| route.as_ref())
     }
 }
 
 /// The broker's default publish policy: a publish goes where the route table leads its name.
 ///
-/// A name given per message costs one route lookup and one dynamic call; a name no route leads
-/// anywhere fails the publish with [`SqlxBrokerError::NoRoute`] and logs a warning naming it.
-/// Replies and `Out` slots without a policy of their own publish through it.
+/// A name given per message costs one hash lookup and one dynamic call into the row's
+/// [`Publish`]. Prefix routes are scanned only when no route names the message exactly. The
+/// call's future stays in place, in 1024 bytes, so a publish allocates what a [`Repository`]
+/// publish does. A row whose `Publish` future is larger is boxed: one allocation per publish on
+/// its route. A name no route leads anywhere fails the publish with [`SqlxBrokerError::NoRoute`]
+/// and logs a warning naming it. Replies and `Out` slots without a policy of their own publish
+/// through it.
 ///
 /// # Examples
 ///
@@ -552,7 +665,7 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
         };
         #[cfg(feature = "testing")]
         self.shared.harness.expect(msg.name());
-        let inserted = route.insert(&self.shared, &msg).await;
+        let inserted = insert_routed(&self.shared, route, &msg).await;
         #[cfg(feature = "testing")]
         match &inserted {
             Ok(()) => self.shared.harness.published(&msg),
@@ -564,7 +677,7 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
 
 #[cfg(test)]
 mod tests {
-    use super::RouteName;
+    use super::{RouteIndex, RouteName};
 
     #[test]
     fn an_exact_route_wins_over_a_prefix_and_the_longest_prefix_wins() {
@@ -574,13 +687,13 @@ mod tests {
             RouteName::parse("reports.daily.*"),
             RouteName::parse("*"),
         ];
-        let pick = |name: &str| RouteName::best(names.iter().copied(), name);
-        assert_eq!(pick("reports.daily"), Some(1));
-        assert_eq!(pick("reports.daily.eu"), Some(2));
-        assert_eq!(pick("reports.weekly"), Some(0));
-        assert_eq!(pick("orders"), Some(3));
+        let index = RouteIndex::new(names.into_iter());
+        assert_eq!(index.find("reports.daily"), Some(1));
+        assert_eq!(index.find("reports.daily.eu"), Some(2));
+        assert_eq!(index.find("reports.weekly"), Some(0));
+        assert_eq!(index.find("orders"), Some(3));
         assert_eq!(
-            RouteName::best([RouteName::parse("emails")].into_iter(), "orders"),
+            RouteIndex::new([RouteName::parse("emails")].into_iter()).find("orders"),
             None
         );
     }
