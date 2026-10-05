@@ -49,8 +49,8 @@ The workspace publishes three crates, released together under one version:
 ## Checking a change
 
 ```bash
-just check          # rustfmt, clippy, cargo check with all features and with none
-just test           # the test suite with all features
+just check          # rustfmt, clippy, cargo check with all features and with none, rustdoc
+just test           # the test suite with all features and with none
 just ci             # check and test, plus codespell, cargo deny and zizmor
 ```
 

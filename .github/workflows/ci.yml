@@ -200,6 +200,11 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-features --no-fail-fast
 
+      # The other feature edge: an all-features run hides a doc example that names a
+      # feature-gated item without gating itself.
+      - name: cargo test (no default features)
+        run: cargo test --workspace --no-default-features --no-fail-fast
+
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
         id: stable

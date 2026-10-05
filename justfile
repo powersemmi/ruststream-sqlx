@@ -10,9 +10,15 @@ check:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo check --workspace --all-targets --all-features
     cargo check --workspace --no-default-features
+    # Rustdoc sees what rustc cannot: broken intra-doc links and redundant targets. CI gates on
+    # it too.
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 
 test:
     cargo test --workspace --all-features
+    # Both feature edges: an all-features run hides a doc example that names a feature-gated
+    # item without gating itself.
+    cargo test --workspace --no-default-features
 
 fmt:
     cargo fmt --all
