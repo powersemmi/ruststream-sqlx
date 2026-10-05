@@ -87,3 +87,20 @@ async fn a_name_without_a_route_stops_the_service() {
     assert!(message.contains("no route leads `orders`"), "{message}");
     db.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_cap_on_a_name_stops_the_service() {
+    let Some(db) = database().await else { return };
+    // The cap and the destination belong to the table's descriptor, which a bare name lacks.
+    let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
+        b.include(send).max_attempts(nonzero!(3u32));
+    });
+    let refused = TestApp::start_live(app).await.map(|_| ());
+    let message = format!(
+        "{:?}",
+        refused.expect_err("a declared cap on a name is refused")
+    );
+    assert!(message.contains("RetryDeclareError"), "{message}");
+    assert!(message.contains("emails"), "{message}");
+    db.finish().await;
+}
