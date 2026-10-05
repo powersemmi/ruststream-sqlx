@@ -8,8 +8,12 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
+#[cfg(feature = "asyncapi")]
+use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
 use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, TableName};
+#[cfg(feature = "asyncapi")]
+use serde::Serialize;
 use sqlx::{Database, Pool};
 
 use super::PayloadRow;
@@ -195,6 +199,18 @@ where
         self
     }
 
+    #[cfg(feature = "asyncapi")]
+    fn channel_bindings(&self) -> Bindings {
+        let group = Row::SPEC.column(Role::Group).map(|_| self.name.as_ref());
+        let table = TableBinding {
+            table: table_of::<Row>(),
+            group,
+        };
+        // A binding that fails to build is a binding the document goes without.
+        Binding::extension("x-sqlx", &table)
+            .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
+    }
+
     fn declare_retry_on(
         &self,
         _connected: &ConnectedSqlxBroker<DB>,
@@ -207,6 +223,16 @@ where
             Err(DeclareRetryError::Broker(Box::new(error)))
         })
     }
+}
+
+/// What a subscription adds to the `AsyncAPI` document: the table it reads, and the group its name
+/// selects where the table has one.
+#[cfg(feature = "asyncapi")]
+#[derive(Serialize)]
+struct TableBinding<'a> {
+    table: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<&'a str>,
 }
 
 /// Why `declaration` cannot apply to `Row`'s table, if it cannot.

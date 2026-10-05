@@ -29,8 +29,8 @@ framework; this crate connects them to the database.
   the service owns, and the message carries the record's id. The subscription takes the task into
   work by that id and marks it processed on acknowledgement. Unprocessed records are published
   again at startup.
-- **Task queues in database tables:** Postgres, MySQL/MariaDB and SQLite, over the tables and
-  structs the service owns.
+- **Task queues in database tables:** `SqlxBroker` serves them from the tables and structs the
+  service owns, on Postgres.
 
 ## Crates
 
