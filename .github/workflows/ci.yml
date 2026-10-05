@@ -205,6 +205,10 @@ jobs:
       - name: cargo test (no default features)
         run: cargo test --workspace --no-default-features --no-fail-fast
 
+      # The inbox without the built-in dialect, as a service with a dialect of its own builds it.
+      - name: cargo test (inbox alone)
+        run: cargo test -p ruststream-sqlx --no-default-features --features inbox --no-fail-fast
+
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
         id: stable

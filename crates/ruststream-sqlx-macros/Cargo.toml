@@ -19,3 +19,10 @@ workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+
+[dependencies]
+ruststream-sqlx-dialect.workspace = true
+heck.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true

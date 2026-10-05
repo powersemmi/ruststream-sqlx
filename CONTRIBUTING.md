@@ -50,7 +50,7 @@ The workspace publishes three crates, released together under one version:
 
 ```bash
 just check          # rustfmt, clippy, cargo check with all features and with none, rustdoc
-just test           # the test suite with all features and with none
+just test           # the test suite with all features, with none, and with the inbox alone
 just ci             # check and test, plus codespell, cargo deny and zizmor
 ```
 

@@ -19,6 +19,8 @@ test:
     # Both feature edges: an all-features run hides a doc example that names a feature-gated
     # item without gating itself.
     cargo test --workspace --no-default-features
+    # The inbox without the built-in dialect, as a service with a dialect of its own builds it.
+    cargo test -p ruststream-sqlx --no-default-features --features inbox
 
 fmt:
     cargo fmt --all
