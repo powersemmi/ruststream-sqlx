@@ -25,8 +25,10 @@ framework; this crate connects them to the database.
 
 ## Components
 
-- **A transactional outbox over any RustStream broker:** the messages a handler publishes are
-  stored in the transaction that holds its own writes, and reach the broker once it commits.
+- **A transactional outbox over any RustStream broker:** a publish records the message in a table
+  the service owns, and the message carries the record's id. The subscription takes the task into
+  work by that id and marks it processed on acknowledgement. Unprocessed records are published
+  again at startup.
 - **Task queues in database tables:** Postgres, MySQL/MariaDB and SQLite, over the tables and
   structs the service owns.
 
