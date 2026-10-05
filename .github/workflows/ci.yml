@@ -197,7 +197,13 @@ jobs:
 
       # --no-fail-fast: a failing target must not hide failures in the targets behind it;
       # the log then lists every red test, not just the first binary's.
+      # The compile-fail snapshots record stable's wording, so this stable run opts into them,
+      # and REQUIRE_UI_TESTS makes a lost opt-in fail instead of skip. The beta and floor runs
+      # below skip them.
       - name: cargo test
+        env:
+          RUN_UI_TESTS: "1"
+          REQUIRE_UI_TESTS: "1"
         run: cargo test --workspace --all-features --no-fail-fast
 
       # The other feature edge: an all-features run hides a doc example that names a

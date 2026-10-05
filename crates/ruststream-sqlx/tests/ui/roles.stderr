@@ -1,0 +1,35 @@
+error: unknown `#[field(..)]` option: expected a role (`id`, `group`, `partition_key`, `priority`, `retry_after`, `attempt`, `locked_until`, `processed_at`, `headers`, `payload`), `generated` or `fifo`
+ --> tests/ui/roles.rs:6:13
+  |
+6 |     #[field(identity)]
+  |             ^^^^^^^^
+
+error: this field already plays `id`: a field plays one role
+  --> tests/ui/roles.rs:13:17
+   |
+13 |     #[field(id, group)]
+   |                 ^^^^^
+
+error: `#[field(..)]` names nothing: give it a role, `generated`, or both
+  --> tests/ui/roles.rs:22:5
+   |
+22 |     #[field()]
+   |     ^^^^^^^^^^
+
+error: `generated` is given twice
+  --> tests/ui/roles.rs:30:13
+   |
+30 |     #[field(generated)]
+   |             ^^^^^^^^^
+
+error: `fifo` belongs to the `group` role: `#[field(group, fifo = true)]`
+  --> tests/ui/roles.rs:39:23
+   |
+39 |     #[field(priority, fifo = true)]
+   |                       ^^^^
+
+error: `fifo` is given twice
+  --> tests/ui/roles.rs:48:33
+   |
+48 |     #[field(group, fifo = true, fifo = true)]
+   |                                 ^^^^^^^^^^^

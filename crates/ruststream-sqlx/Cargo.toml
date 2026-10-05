@@ -27,3 +27,6 @@ postgres = ["ruststream-sqlx-dialect/postgres"]
 [dependencies]
 ruststream-sqlx-dialect.workspace = true
 ruststream-sqlx-macros = { workspace = true, optional = true }
+
+[dev-dependencies]
+trybuild.workspace = true

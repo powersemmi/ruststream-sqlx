@@ -1,0 +1,23 @@
+error: #[derive(Inbox)] needs the table: add `#[inbox(table = "..")]`
+ --> tests/ui/table.rs:5:8
+  |
+5 | struct NoTable {
+  |        ^^^^^^^
+
+error: unknown `#[inbox(..)]` option: expected `table`, `schema` or `advisory_lock`
+  --> tests/ui/table.rs:11:25
+   |
+11 | #[inbox(table = "jobs", queue = "emails")]
+   |                         ^^^^^
+
+error: `table` is empty
+  --> tests/ui/table.rs:18:17
+   |
+18 | #[inbox(table = "")]
+   |                 ^^
+
+error: `table` is given twice
+  --> tests/ui/table.rs:26:9
+   |
+26 | #[inbox(table = "jobs_v2")]
+   |         ^^^^^^^^^^^^^^^^^

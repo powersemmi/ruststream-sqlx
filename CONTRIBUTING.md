@@ -49,9 +49,17 @@ The workspace publishes three crates, released together under one version:
 ## Checking a change
 
 ```bash
-just check          # rustfmt, clippy, cargo check with all features and with none, rustdoc
+just check          # rustfmt, clippy, cargo check with all features and with none, rustdoc,
+                    # and the compile-fail snapshots of the derives
 just test           # the test suite with all features, with none, and with the inbox alone
 just ci             # check and test, plus codespell, cargo deny and zizmor
+```
+
+The compile-fail snapshots record the stable toolchain's wording. After an intentional change to
+a message, refresh them and read every changed snapshot before committing it:
+
+```bash
+TRYBUILD=overwrite RUN_UI_TESTS=1 cargo test -p ruststream-sqlx --all-features --test ui
 ```
 
 ## Pull requests
