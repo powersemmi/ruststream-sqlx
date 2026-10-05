@@ -142,18 +142,6 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
 
 #[test]
 fn the_claim_refuses_what_the_row_lock_form_cannot_do() {
-    let lease = TableSpec::new(
-        "jobs",
-        Column::new("job_id"),
-        Form::Lease(Column::new("until")),
-    );
-    assert_eq!(
-        Postgres.claim(&lease, ClaimShape::Rows),
-        Err(StatementError::UnsupportedForm {
-            dialect: "postgres",
-            form: "lease",
-        })
-    );
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     assert_eq!(
         Postgres.claim(&advisory, ClaimShape::Rows),
@@ -280,28 +268,44 @@ fn a_dead_letter_table_without_a_schema_is_one_name() -> Result<(), Box<dyn Erro
 
 #[test]
 fn settlement_refuses_forms_this_dialect_does_not_build() -> Result<(), Box<dyn Error>> {
+    let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
+    let unsupported = StatementError::UnsupportedForm {
+        dialect: "postgres",
+        form: "advisory lock",
+    };
+    assert_eq!(Postgres.ack(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.retry(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.retry_after(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.discard(&advisory), Err(unsupported.clone()));
+    assert_eq!(
+        Postgres.dead_letter_group(&advisory),
+        Err(unsupported.clone())
+    );
+    assert_eq!(
+        Postgres.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
+        Err(unsupported.clone())
+    );
+    assert_eq!(Postgres.extend(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.stamp(&advisory), Err(unsupported));
+    assert!(
+        Postgres.fetch(&advisory).is_ok(),
+        "a fetch reads rows in every form"
+    );
+
+    // The lease form is built; `tests/postgres_lease.rs` pins its statements.
     let lease = TableSpec::new(
         "jobs",
         Column::new("job_id"),
         Form::Lease(Column::new("until")),
-    );
-    let unsupported = StatementError::UnsupportedForm {
-        dialect: "postgres",
-        form: "lease",
-    };
-    assert_eq!(Postgres.ack(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry_after(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.discard(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.dead_letter_group(&lease), Err(unsupported.clone()));
-    assert_eq!(
-        Postgres.dead_letter_table(&lease, TableName::parse("jobs_dead")?),
-        Err(unsupported)
-    );
-    assert!(
-        Postgres.fetch(&lease).is_ok(),
-        "a fetch reads rows in every form"
-    );
+    )
+    .group(Column::new("name"))
+    .retry_after(Column::new("retry_after"));
+    Postgres.ack(&lease)?;
+    Postgres.retry(&lease)?;
+    Postgres.retry_after(&lease)?;
+    Postgres.discard(&lease)?;
+    Postgres.dead_letter_group(&lease)?;
+    Postgres.dead_letter_table(&lease, TableName::parse("jobs_dead")?)?;
     Ok(())
 }
 

@@ -11,9 +11,10 @@ use crate::role::Role;
 /// ```
 /// use ruststream_sqlx_dialect::{Param, Statement};
 ///
+/// // A delayed retry in the lease form names the row and the lease its delivery holds.
 /// let retry = Statement::new(
-///     r#"UPDATE "jobs" SET "retry_after" = $1 WHERE "job_id" = $2"#,
-///     [Param::RetryAfter, Param::Id],
+///     r#"UPDATE "jobs" SET "retry_after" = $1, "locked_until" = NULL WHERE "job_id" = $2 AND "locked_until" = $3"#,
+///     [Param::RetryAfter, Param::Id, Param::Held],
 /// );
 ///
 /// // The engine binds one value per parameter, in order.
@@ -23,10 +24,11 @@ use crate::role::Role;
 ///     .map(|param| match param {
 ///         Param::RetryAfter => "now + 30s",
 ///         Param::Id => "42",
+///         Param::Held => "the expiry its claim wrote",
 ///         _ => "unused here",
 ///     })
 ///     .collect();
-/// assert_eq!(values, ["now + 30s", "42"]);
+/// assert_eq!(values, ["now + 30s", "42", "the expiry its claim wrote"]);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -48,6 +50,15 @@ pub enum Param {
     /// The delay of a retry in microseconds, for a statement that adds it to the database's own
     /// time.
     Delay,
+    /// The expiry a claim, a stamp or an extension writes into the lease column: the row stays
+    /// with its delivery until then.
+    Lease,
+    /// The current time, in the type of the lease column: a row whose lease ended by then is
+    /// claimable.
+    LeaseNow,
+    /// The expiry the delivery's claim or its last extension wrote: the ownership token that
+    /// settlement and extension match.
+    Held,
     /// The value of the column at this position of [`TableSpec::columns`](crate::TableSpec::columns),
     /// for an insert.
     Column(usize),
@@ -175,6 +186,9 @@ pub enum ClaimShape {
 
 /// Why a dialect cannot build a statement for a table.
 ///
+/// A broker builds a subscription's statements when the subscription starts, so a refusal stops
+/// it before it claims a row, and the message names the change to make.
+///
 /// # Examples
 ///
 /// ```
@@ -189,6 +203,26 @@ pub enum ClaimShape {
 ///     "the retry_after statement needs a column playing `retry_after`: add \
 ///      `#[field(retry_after)]` to the struct",
 /// );
+/// ```
+///
+/// A lease table cannot read the database's clock, and every statement of its form says so:
+///
+/// ```
+/// # #[cfg(feature = "postgres")] {
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Column, Dialect, Form, Postgres, StatementError, TableSpec,
+/// };
+///
+/// const JOBS: TableSpec<'static> =
+///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
+///         .database_clock();
+///
+/// let refused = Postgres.claim(&JOBS, ClaimShape::Rows);
+/// assert_eq!(
+///     refused,
+///     Err(StatementError::LeaseOnDatabaseClock { dialect: "postgres" })
+/// );
+/// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
@@ -241,6 +275,41 @@ pub enum StatementError {
         /// The statement being built.
         statement: &'static str,
     },
+    /// The server is older than the dialect's statements need, as
+    /// [`Dialect::check_server`](crate::Dialect::check_server) found when the subscription
+    /// started.
+    #[error(
+        "the {dialect} dialect needs {required} or later for this form; the server reports \
+         `{server}`"
+    )]
+    ServerTooOld {
+        /// The dialect's name.
+        dialect: &'static str,
+        /// The version the server reports.
+        server: String,
+        /// The oldest server the dialect's statements run on.
+        required: &'static str,
+    },
+    /// The dialect cannot read rows by a list of ids, so a claim of the service's own needs a
+    /// fetch of its own beside it.
+    #[error(
+        "the {dialect} dialect cannot read rows by a list of ids: list `fetch` in `custom(..)` \
+         beside `claim`"
+    )]
+    UnsupportedFetch {
+        /// The dialect's name.
+        dialect: &'static str,
+    },
+    /// The table declares a lease and reads the database's clock. Settlement matches the expiry
+    /// the claim wrote, so the claim computes it from the crate's clock.
+    #[error(
+        "the lease form computes its expiry from the crate's clock: a table on `DatabaseClock` \
+         cannot declare `locked_until`"
+    )]
+    LeaseOnDatabaseClock {
+        /// The dialect's name.
+        dialect: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -266,10 +335,10 @@ mod tests {
         assert_eq!(
             StatementError::UnsupportedForm {
                 dialect: "postgres",
-                form: "lease",
+                form: "advisory lock",
             }
             .to_string(),
-            "the postgres dialect has no statements for the lease form"
+            "the postgres dialect has no statements for the advisory lock form"
         );
         assert_eq!(
             StatementError::UnsupportedFifo {

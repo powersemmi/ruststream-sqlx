@@ -12,9 +12,16 @@
 //! described. A [`Dialect`] turns the description into the [`Statement`] each queue event runs; a
 //! statement carries the [`Param`]s its placeholders bind, in order.
 //!
+//! In the lease form a claim writes the lease's expiry ([`Param::Lease`]) into each row it takes
+//! and commits, and skips every row whose lease has not ended by [`Param::LeaseNow`]. The expiry
+//! it wrote is the delivery's ownership token ([`Param::Held`]): a settlement, or an extension
+//! that moves the expiry forward ([`Dialect::extend`]), passes only while the row still holds it.
+//! A dialect whose claim only selects the rows says so ([`Dialect::claim_writes_lease`]), and each
+//! claimed row is then stamped with its lease ([`Dialect::stamp`]).
+//!
 //! [`Postgres`] is built in, behind the `postgres` feature, and builds the statements of the row
-//! lock form. A database without a built-in dialect is served by a type of the service's own
-//! that implements [`Dialect`].
+//! lock and lease forms. A database without a built-in dialect is served by a type of the
+//! service's own that implements [`Dialect`].
 //!
 //! # Examples
 //!

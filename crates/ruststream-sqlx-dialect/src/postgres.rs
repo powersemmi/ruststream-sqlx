@@ -2,6 +2,7 @@
 
 use std::num::NonZeroUsize;
 
+use crate::column::Column;
 use crate::dialect::Dialect;
 use crate::form::Form;
 use crate::role::Role;
@@ -17,11 +18,26 @@ const NAME_LIMIT: usize = 63;
 /// after the claim began records its own moment.
 const DATABASE_NOW: &str = "statement_timestamp()";
 
+/// How a claim locks the rows it takes: until its transaction ends, skipping the rows another
+/// claim holds.
+const LOCK: &str = " FOR UPDATE SKIP LOCKED";
+
+/// A form this dialect builds statements for.
+#[derive(Debug, Clone, Copy)]
+enum Built<'a> {
+    /// The claim's transaction holds the row.
+    RowLock,
+    /// The expiry in this column holds the row.
+    Lease(Column<'a>),
+}
+
 /// Postgres: double-quoted names, `$1` placeholders, rows claimed with `FOR UPDATE SKIP LOCKED`.
 ///
-/// It builds the statements of the row lock form and the insert. Every name is quoted, so a name
-/// keeps its case and may hold any character; a name over 63 bytes, which Postgres would cut short
-/// without a word, is refused. A table on the database's clock reads `statement_timestamp()`.
+/// It builds the statements of the row lock and lease forms and the insert. A lease claim is one
+/// statement: it locks the claimable rows, writes their lease, and returns them as they were.
+/// Every name is quoted, so a name keeps its case and may hold any character; a name over 63
+/// bytes, which Postgres would cut short without a word, is refused. A table on the database's
+/// clock reads `statement_timestamp()`.
 ///
 /// # Examples
 ///
@@ -38,6 +54,24 @@ const DATABASE_NOW: &str = "statement_timestamp()";
 ///     claim.sql(),
 ///     r#"SELECT "job_id", "priority", "payload" FROM "app"."jobs" ORDER BY "priority", "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
 /// );
+/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// ```
+///
+/// In the lease form a settlement changes the row only while the row holds the delivery's lease:
+///
+/// ```
+/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+///
+/// const JOBS: TableSpec<'static> =
+///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
+///         .payload(Column::new("payload"));
+///
+/// let ack = Postgres.ack(&JOBS)?;
+/// assert_eq!(
+///     ack.sql(),
+///     r#"DELETE FROM "jobs" WHERE "job_id" = $1 AND "locked_until" = $2"#,
+/// );
+/// assert_eq!(ack.params(), [Param::Id, Param::Held]);
 /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -69,11 +103,20 @@ impl Postgres {
         )
     }
 
-    /// Refuses a form other than the row lock, the one this dialect builds.
-    fn row_lock(self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
+    /// The table's form, when this dialect builds it: the row lock, or a lease on the crate's
+    /// clock.
+    fn form<'a>(self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
         self.spec_fits(spec)?;
         match spec.form() {
-            Form::RowLock => Ok(()),
+            Form::RowLock => Ok(Built::RowLock),
+            // Settlement matches the expiry the claim wrote, and the claim knows it only when the
+            // crate's clock computes it.
+            Form::Lease(_) if spec.uses_database_clock() => {
+                Err(StatementError::LeaseOnDatabaseClock {
+                    dialect: self.name(),
+                })
+            }
+            Form::Lease(expiry) => Ok(Built::Lease(expiry)),
             other => Err(StatementError::UnsupportedForm {
                 dialect: self.name(),
                 form: other.name(),
@@ -81,9 +124,20 @@ impl Postgres {
         }
     }
 
+    /// The lease column of a lease table; every other form is refused.
+    fn lease<'a>(self, spec: &TableSpec<'a>) -> Result<Column<'a>, StatementError> {
+        match self.form(spec)? {
+            Built::Lease(expiry) => Ok(expiry),
+            Built::RowLock => Err(StatementError::UnsupportedForm {
+                dialect: self.name(),
+                form: spec.form().name(),
+            }),
+        }
+    }
+
     /// Acknowledgement and drop: the row is deleted, or marked finished.
     fn finish_row(self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.row_lock(spec)?;
+        self.form(spec)?;
         let id = spec.id().name();
         let mut sql = SqlWriter::new(&self);
         match spec.column(Role::ProcessedAt) {
@@ -93,10 +147,15 @@ impl Postgres {
                 .push(" SET ")
                 .ident(processed_at.name())
                 .push(" = ")
-                .now(spec, DATABASE_NOW),
+                .now(spec, DATABASE_NOW)
+                .release(spec),
             None => sql.push("DELETE FROM ").table(spec),
         };
-        sql.push(" WHERE ").ident(id).push(" = ").param(Param::Id);
+        sql.push(" WHERE ")
+            .ident(id)
+            .push(" = ")
+            .param(Param::Id)
+            .held(spec);
         Ok(sql.finish())
     }
 }
@@ -134,27 +193,17 @@ impl Dialect for Postgres {
     }
 
     fn claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> {
-        self.row_lock(spec)?;
+        let form = self.form(spec)?;
         if spec.is_fifo() {
             return Err(StatementError::UnsupportedFifo {
                 dialect: self.name(),
             });
         }
-        let id = spec.id().name();
         let mut sql = SqlWriter::new(self);
-        sql.push("SELECT ");
-        match shape {
-            ClaimShape::Rows => sql.columns(spec),
-            ClaimShape::Ids => sql.ident(id),
-            ClaimShape::Roles => sql.role_columns(spec),
+        match form {
+            Built::RowLock => sql.claim(spec, shape, DATABASE_NOW, LOCK),
+            Built::Lease(expiry) => sql.lease_claim(spec, shape, expiry.name(), DATABASE_NOW, LOCK),
         };
-        sql.push(" FROM ")
-            .table(spec)
-            .claimable(spec, DATABASE_NOW)
-            .claim_order(spec, id)
-            .push(" LIMIT ")
-            .param(Param::Limit)
-            .push(" FOR UPDATE SKIP LOCKED");
         Ok(sql.finish())
     }
 
@@ -179,25 +228,29 @@ impl Dialect for Postgres {
     }
 
     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
-        self.row_lock(spec)?;
+        let form = self.form(spec)?;
         let id = spec.id().name();
-        let Some(attempt) = spec.column(Role::Attempt) else {
-            return Ok(None);
-        };
         let mut sql = SqlWriter::new(self);
-        sql.push("UPDATE ")
-            .table(spec)
-            .push(" SET ")
-            .increment(attempt.name())
-            .push(" WHERE ")
+        sql.push("UPDATE ").table(spec).push(" SET ");
+        match form {
+            // The claim counted the attempt; the release only frees the row.
+            Built::Lease(expiry) => sql.ident(expiry.name()).push(" = NULL"),
+            Built::RowLock => match spec.column(Role::Attempt) {
+                Some(attempt) => sql.increment(attempt.name()),
+                // The rollback releases the row, and there is no attempt to count.
+                None => return Ok(None),
+            },
+        };
+        sql.push(" WHERE ")
             .ident(id)
             .push(" = ")
-            .param(Param::Id);
+            .param(Param::Id)
+            .held(spec);
         Ok(Some(sql.finish()))
     }
 
     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.row_lock(spec)?;
+        let form = self.form(spec)?;
         let id = spec.id().name();
         let retry_after = required(spec, Role::RetryAfter, "retry_after")?;
         let mut sql = SqlWriter::new(self);
@@ -207,10 +260,22 @@ impl Dialect for Postgres {
             .ident(retry_after)
             .push(" = ")
             .later(spec, DATABASE_NOW);
-        if let Some(attempt) = spec.column(Role::Attempt) {
-            sql.push(", ").increment(attempt.name());
+        match form {
+            Built::RowLock => {
+                if let Some(attempt) = spec.column(Role::Attempt) {
+                    sql.push(", ").increment(attempt.name());
+                }
+            }
+            // The claim counted the attempt.
+            Built::Lease(_) => {
+                sql.release(spec);
+            }
         }
-        sql.push(" WHERE ").ident(id).push(" = ").param(Param::Id);
+        sql.push(" WHERE ")
+            .ident(id)
+            .push(" = ")
+            .param(Param::Id)
+            .held(spec);
         Ok(sql.finish())
     }
 
@@ -219,7 +284,7 @@ impl Dialect for Postgres {
     }
 
     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.row_lock(spec)?;
+        self.form(spec)?;
         let id = spec.id().name();
         let group = required(spec, Role::Group, "dead_letter_group")?;
         let mut sql = SqlWriter::new(self);
@@ -229,10 +294,12 @@ impl Dialect for Postgres {
             .ident(group)
             .push(" = ")
             .param(Param::Destination)
+            .release(spec)
             .push(" WHERE ")
             .ident(id)
             .push(" = ")
-            .param(Param::Id);
+            .param(Param::Id)
+            .held(spec);
         Ok(sql.finish())
     }
 
@@ -241,7 +308,13 @@ impl Dialect for Postgres {
         spec: &TableSpec<'_>,
         target: TableName<'_>,
     ) -> Result<Vec<Statement>, StatementError> {
-        self.row_lock(spec)?;
+        if matches!(self.form(spec)?, Built::Lease(_)) && spec.selects_all() {
+            // The moved row arrives without a lease, and `*` cannot put `NULL` in the lease
+            // column's place.
+            return Err(StatementError::Flattened {
+                statement: "dead_letter_table",
+            });
+        }
         self.names_fit(target.schema().into_iter().chain([target.table()]))?;
         let id = spec.id().name();
         let mut sql = SqlWriter::new(self);
@@ -251,6 +324,7 @@ impl Dialect for Postgres {
             .ident(id)
             .push(" = ")
             .param(Param::Id)
+            .held(spec)
             .push(" RETURNING ")
             .columns(spec)
             .push(") INSERT INTO ")
@@ -258,8 +332,48 @@ impl Dialect for Postgres {
         if !spec.selects_all() {
             sql.push(" (").columns(spec).push(")");
         }
-        sql.push(" SELECT ").columns(spec).push(" FROM moved");
+        sql.push(" SELECT ").moved_columns(spec).push(" FROM moved");
         Ok(vec![sql.finish()])
+    }
+
+    fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let expiry = self.lease(spec)?;
+        let id = spec.id().name();
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(expiry.name())
+            .push(" = ")
+            .param(Param::Lease)
+            .push(" WHERE ")
+            .ident(id)
+            .push(" = ")
+            .param(Param::Id)
+            .held(spec);
+        Ok(sql.finish())
+    }
+
+    fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let expiry = self.lease(spec)?;
+        let id = spec.id().name();
+        let mut sql = SqlWriter::new(self);
+        sql.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(expiry.name())
+            .push(" = ")
+            .param(Param::Lease);
+        if let Some(attempt) = spec.column(Role::Attempt) {
+            sql.push(", ").increment(attempt.name());
+        }
+        sql.push(" WHERE ")
+            .ident(id)
+            .push(" = ")
+            .param(Param::Id)
+            .push(" AND ")
+            .lease_free(expiry.name());
+        Ok(sql.finish())
     }
 
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
