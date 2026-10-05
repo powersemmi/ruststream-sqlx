@@ -96,7 +96,7 @@ pub(crate) fn events(
             predicates.push(parse_quote!(#column: #r::HeaderColumn));
             let ident = field.ident;
             (
-                quote!(#r::HeaderColumn::to_headers(&self.#ident)),
+                quote!(#r::HeaderColumn::take_headers(&mut self.#ident)),
                 quote!(<#column as #r::HeaderColumn>::unfit(headers)),
             )
         },
@@ -282,7 +282,7 @@ pub(crate) fn events(
                 &self.#id_ident
             }
 
-            fn headers(&self) -> #p::HeaderMap {
+            fn take_headers(&mut self) -> #p::HeaderMap {
                 #headers
             }
 

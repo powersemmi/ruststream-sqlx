@@ -67,7 +67,7 @@ fn the_derive_hands_every_event_to_the_crate_by_default() {
 
 #[test]
 fn a_row_lends_its_parts_to_the_delivery() {
-    let row = email();
+    let mut row = email();
     assert_eq!(row.payload(), b"{\"to\":\"a@b\"}");
     assert_eq!(<SendEmail as Events<Postgres>>::id(&row), &7);
     assert_eq!(
@@ -75,8 +75,10 @@ fn a_row_lends_its_parts_to_the_delivery() {
         Some(b"acme".as_slice())
     );
     assert_eq!(<SendEmail as Events<Postgres>>::attempt(&row), Some(2));
-    let headers = <SendEmail as Events<Postgres>>::headers(&row);
+    let headers = <SendEmail as Events<Postgres>>::take_headers(&mut row);
     assert_eq!(headers.get_str("x-tenant"), Some("acme"));
+    // The delivery takes the headers once: they move out of the row rather than being copied.
+    assert!(<SendEmail as Events<Postgres>>::take_headers(&mut row).is_empty());
     let _ = (&row.name, row.retry_after, row.processed_at, row.job_id);
 }
 
@@ -171,9 +173,10 @@ fn listed_events_are_the_services_own() {
 fn a_header_column_reads_and_writes_a_header_map() {
     let mut headers = ruststream::HeaderMap::new();
     headers.insert("content-type", "application/json");
-    let column = Json::<BTreeMap<String, String>>::from_headers(&headers);
-    assert_eq!(column.to_headers(), headers);
-    let none: Option<Json<BTreeMap<String, String>>> = None;
-    assert!(none.to_headers().is_empty());
+    let mut column = Json::<BTreeMap<String, String>>::from_headers(&headers);
+    assert_eq!(column.take_headers(), headers);
+    assert!(column.0.is_empty(), "the values moved out of the column");
+    let mut none: Option<Json<BTreeMap<String, String>>> = None;
+    assert!(none.take_headers().is_empty());
     let _ = SystemTime::now();
 }

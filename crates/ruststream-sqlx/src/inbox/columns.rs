@@ -2,6 +2,8 @@
 
 #[cfg(feature = "json")]
 use std::collections::BTreeMap;
+#[cfg(feature = "json")]
+use std::mem;
 
 use ruststream::HeaderMap;
 #[cfg(feature = "json")]
@@ -24,12 +26,15 @@ use sqlx::types::Json;
 /// struct Lines(String);
 ///
 /// impl HeaderColumn for Lines {
-///     fn to_headers(&self) -> HeaderMap {
-///         self.0
+///     fn take_headers(&mut self) -> HeaderMap {
+///         let headers = self
+///             .0
 ///             .lines()
 ///             .filter_map(|line| line.split_once(": "))
 ///             .map(|(name, value)| (name.to_owned(), value.to_owned()))
-///             .collect()
+///             .collect();
+///         self.0.clear();
+///         headers
 ///     }
 ///
 ///     fn from_headers(headers: &HeaderMap) -> Self {
@@ -50,11 +55,14 @@ use sqlx::types::Json;
 ///     }
 /// }
 ///
-/// let column = Lines("x-tenant: acme".to_owned());
-/// assert_eq!(column.to_headers().get_str("x-tenant"), Some("acme"));
+/// let mut column = Lines("x-tenant: acme".to_owned());
+/// assert_eq!(column.take_headers().get_str("x-tenant"), Some("acme"));
 /// ```
 pub trait HeaderColumn {
-    /// The headers the column holds.
+    /// Moves the headers the column holds into a header map, leaving the column empty.
+    ///
+    /// A delivery takes them once, when its row is claimed, so a column that owns its strings
+    /// hands them over without a copy.
     ///
     /// # Examples
     ///
@@ -65,11 +73,11 @@ pub trait HeaderColumn {
     /// use ruststream_sqlx::HeaderColumn;
     /// use sqlx::types::Json;
     ///
-    /// let column = Json(BTreeMap::from([("x-tenant".to_owned(), "acme".to_owned())]));
-    /// assert_eq!(column.to_headers().get_str("x-tenant"), Some("acme"));
+    /// let mut column = Json(BTreeMap::from([("x-tenant".to_owned(), "acme".to_owned())]));
+    /// assert_eq!(column.take_headers().get_str("x-tenant"), Some("acme"));
     /// # }
     /// ```
-    fn to_headers(&self) -> HeaderMap;
+    fn take_headers(&mut self) -> HeaderMap;
 
     /// The column value that holds `headers`, for a service's `Publish`.
     ///
@@ -117,9 +125,9 @@ pub trait HeaderColumn {
 }
 
 impl<T: HeaderColumn> HeaderColumn for Option<T> {
-    fn to_headers(&self) -> HeaderMap {
-        self.as_ref()
-            .map_or_else(HeaderMap::new, HeaderColumn::to_headers)
+    fn take_headers(&mut self) -> HeaderMap {
+        self.as_mut()
+            .map_or_else(HeaderMap::new, HeaderColumn::take_headers)
     }
 
     fn from_headers(headers: &HeaderMap) -> Self {
@@ -135,11 +143,8 @@ impl<T: HeaderColumn> HeaderColumn for Option<T> {
 /// that carries one, so the replacement `from_headers` would write never reaches the table.
 #[cfg(feature = "json")]
 impl HeaderColumn for Json<BTreeMap<String, String>> {
-    fn to_headers(&self) -> HeaderMap {
-        self.0
-            .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect()
+    fn take_headers(&mut self) -> HeaderMap {
+        mem::take(&mut self.0).into_iter().collect()
     }
 
     fn from_headers(headers: &HeaderMap) -> Self {

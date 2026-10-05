@@ -28,8 +28,8 @@ pub trait Events<DB: QueueDatabase>: InboxRow + for<'r> FromRow<'r, DB::Row> + U
     /// The row's id.
     fn id(&self) -> &Self::Id;
 
-    /// The delivery's headers: the `headers` field's, or none.
-    fn headers(&self) -> HeaderMap;
+    /// The delivery's headers, moved out of the `headers` field; none without one.
+    fn take_headers(&mut self) -> HeaderMap;
 
     /// The first of `headers` the row cannot hold byte for byte: any of them where it has no
     /// `headers` field.

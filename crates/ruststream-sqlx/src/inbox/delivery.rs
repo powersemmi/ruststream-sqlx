@@ -236,9 +236,9 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
         Self::held(claimed, Hold::Batch(batch), queue)
     }
 
-    fn held(claimed: Claimed<Row>, hold: Hold<DB>, queue: &'static Queue) -> Self {
-        let headers = match &claimed {
-            Claimed::Row(row) => Row::headers(row),
+    fn held(mut claimed: Claimed<Row>, hold: Hold<DB>, queue: &'static Queue) -> Self {
+        let headers = match &mut claimed {
+            Claimed::Row(row) => Row::take_headers(row),
             Claimed::Missing(id) => {
                 tracing::warn!(
                     target: "ruststream_sqlx",
