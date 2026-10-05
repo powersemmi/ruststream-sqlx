@@ -8,7 +8,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::{Broker, ConnectedBroker};
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+use ruststream::{DescribeServer, ServerSpec};
 use ruststream_sqlx_dialect::Dialect;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+use sqlx::ConnectOptions;
+#[cfg(feature = "mysql")]
+use sqlx::MySql;
+#[cfg(feature = "postgres")]
+use sqlx::Postgres;
 use sqlx::{Database, Pool};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
@@ -454,16 +462,21 @@ pub struct ClosedSqlxBroker {
     _private: (),
 }
 
+// Each description comes from `from_url`, which keeps the host and port and drops the user and
+// the password: the document is published and shared.
 #[cfg(feature = "postgres")]
-impl ruststream::DescribeServer for SqlxBroker<sqlx::Postgres> {
-    fn describe_server(&self) -> ruststream::ServerSpec {
-        use sqlx::ConnectOptions;
-
-        // `from_url` keeps the host and port and drops the user and the password: the document
-        // is published and shared.
-        ruststream::ServerSpec::from_url(
+impl DescribeServer for SqlxBroker<Postgres> {
+    fn describe_server(&self) -> ServerSpec {
+        ServerSpec::from_url(
             self.pool.connect_options().to_url_lossy().as_str(),
             "postgres",
         )
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl DescribeServer for SqlxBroker<MySql> {
+    fn describe_server(&self) -> ServerSpec {
+        ServerSpec::from_url(self.pool.connect_options().to_url_lossy().as_str(), "mysql")
     }
 }

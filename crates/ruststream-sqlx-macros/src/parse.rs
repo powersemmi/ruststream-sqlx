@@ -103,13 +103,6 @@ pub(crate) struct ColumnField {
     /// Where `fifo = true` is written, on the field that plays `group`.
     pub(crate) fifo: Option<Span>,
     /// `#[sqlx(json)]`: sqlx reads and writes the column through `Json`.
-    #[cfg_attr(
-        not(feature = "postgres"),
-        allow(
-            dead_code,
-            reason = "only the Postgres insert binds a column through `Json`"
-        )
-    )]
     pub(crate) json: bool,
 }
 

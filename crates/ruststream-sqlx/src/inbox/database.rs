@@ -3,6 +3,8 @@
 use std::future::Future;
 
 use futures::TryStreamExt;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+use ruststream_sqlx_dialect as dialect;
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::Row as _;
 use sqlx::any::AnyQueryResult;
@@ -10,6 +12,10 @@ use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, FromRow, IntoArguments,
     SqlStr, Type,
 };
+#[cfg(feature = "mysql")]
+use sqlx::{MySql, MySqlConnection};
+#[cfg(feature = "postgres")]
+use sqlx::{PgConnection, Postgres};
 
 use super::QueueRow;
 use super::engine::{Claimed, IdAt};
@@ -17,9 +23,9 @@ use super::engine::{Claimed, IdAt};
 /// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
 /// statements bind, runs statements on a connection, and reports the rows a statement changed.
 ///
-/// Every database whose sqlx driver does so implements it; Postgres does. The rows a statement
-/// changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx converts its result
-/// into; a driver outside sqlx provides that conversion for its own result type.
+/// Every database whose sqlx driver does so implements it; Postgres and MySQL do. The rows a
+/// statement changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx converts
+/// its result into; a driver outside sqlx provides that conversion for its own result type.
 ///
 /// # Examples
 ///
@@ -80,6 +86,14 @@ pub trait QueueDatabase: Database {
         conn: &'c mut Self::Connection,
         sql: &'static str,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
+
+    /// Runs a query of one text value, such as the server's version, and returns the value.
+    /// Machinery.
+    #[doc(hidden)]
+    fn fetch_text<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+    ) -> impl Future<Output = Result<String, Error>> + Send + 'c;
 }
 
 impl<DB> QueueDatabase for DB
@@ -89,6 +103,7 @@ where
     DB::Arguments: IntoArguments<DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
     for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'r> String: Decode<'r, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
     for<'a> &'a str: ColumnIndex<DB::Row>,
     DB::QueryResult: Into<AnyQueryResult>,
@@ -161,10 +176,17 @@ where
         conn.prepare(SqlStr::from_static(sql)).await?;
         Ok(())
     }
+
+    fn fetch_text<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+    ) -> impl Future<Output = Result<String, Error>> + Send + 'c {
+        sqlx::query_scalar::<Self, String>(sql).fetch_one(conn)
+    }
 }
 
 /// A database whose dialect is built into this crate, so `SqlxBroker::new` needs no dialect of
-/// the service's own. Postgres has one (feature `postgres`).
+/// the service's own: Postgres (feature `postgres`) and MySQL with MariaDB (feature `mysql`).
 ///
 /// # Examples
 ///
@@ -195,24 +217,77 @@ pub trait BuiltInDialect: QueueDatabase {
 }
 
 #[cfg(feature = "postgres")]
-impl BuiltInDialect for sqlx::Postgres {
+impl BuiltInDialect for Postgres {
     fn dialect() -> &'static dyn Dialect {
-        &ruststream_sqlx_dialect::Postgres
+        &dialect::Postgres
     }
 }
 
-/// A Postgres connection, for the inserts the derive builds at compile time. Machinery; never
-/// named directly.
-#[cfg(feature = "postgres")]
+#[cfg(feature = "mysql")]
+impl BuiltInDialect for MySql {
+    fn dialect() -> &'static dyn Dialect {
+        &dialect::MySql
+    }
+}
+
+/// The inserts the derive builds at compile time, one per built-in dialect it was built with.
+/// Machinery; the derive writes it, never a service.
 #[doc(hidden)]
-pub trait OnPostgres: Send {
+#[derive(Debug, Clone, Copy)]
+pub struct InsertSql<'s> {
+    /// The Postgres insert.
+    pub postgres: Option<&'s str>,
+    /// The MySQL and MariaDB insert.
+    pub mysql: Option<&'s str>,
+}
+
+/// A connection the inserts the derive builds at compile time run on: its database, and which
+/// of the derive's statements it runs. Machinery; never named directly.
+#[doc(hidden)]
+pub trait OnConnection: Send {
+    /// The database the connection reaches.
+    type Database: QueueDatabase;
+
     /// The connection itself.
-    fn connection(&mut self) -> &mut sqlx::PgConnection;
+    fn connection(&mut self) -> &mut <Self::Database as Database>::Connection;
+
+    /// The insert of this connection's database among `sql`, or `None` when the derive built none
+    /// for it.
+    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str>;
 }
 
 #[cfg(feature = "postgres")]
-impl OnPostgres for sqlx::PgConnection {
-    fn connection(&mut self) -> &mut sqlx::PgConnection {
+impl OnConnection for PgConnection {
+    type Database = Postgres;
+
+    fn connection(&mut self) -> &mut Self {
         self
     }
+
+    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
+        sql.postgres
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl OnConnection for MySqlConnection {
+    type Database = MySql;
+
+    fn connection(&mut self) -> &mut Self {
+        self
+    }
+
+    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
+        sql.mysql
+    }
+}
+
+/// The error of a generated insert on a connection whose database the derive built no statement
+/// for. Machinery; the derive calls it.
+#[doc(hidden)]
+#[must_use]
+pub fn no_insert(row: &'static str) -> Error {
+    Error::Configuration(
+        format!("`{row}` has no generated insert for this connection's database").into(),
+    )
 }

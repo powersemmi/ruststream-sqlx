@@ -27,9 +27,12 @@ syn = "3"
 thiserror = "2"
 trybuild = "1.0.121"
 ruststream = { version = "0.7", default-features = false }
-# The driver comes from the `postgres` feature; TLS and the compile-time macros come from the
-# service's own sqlx dependency, which cargo unifies with this one.
+# The drivers come from the `postgres` and `mysql` features; TLS and the compile-time macros come
+# from the service's own sqlx dependency, which cargo unifies with this one.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
+# The transaction manager the crate's own transactions call: sqlx re-exports its `Transaction`,
+# not the trait behind it. The version sqlx itself pins.
+sqlx-core = { version = "0.9", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1.44", default-features = false }
 tokio-util = { version = "0.7.10", default-features = false }

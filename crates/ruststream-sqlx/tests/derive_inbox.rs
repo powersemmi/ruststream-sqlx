@@ -13,7 +13,7 @@ use ruststream_sqlx::{Inbox, InboxRow};
 #[derive(Inbox)]
 #[inbox(table = "email_jobs", schema = "app")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -129,7 +129,7 @@ fn the_partition_key_and_the_headers_reach_their_slots() {
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -154,7 +154,7 @@ fn a_locked_until_field_selects_the_lease_form() {
 #[derive(Inbox)]
 #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}-{type}")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -182,7 +182,7 @@ fn an_advisory_key_reads_the_columns_of_the_named_fields() {
 #[derive(Inbox)]
 #[inbox(table = "ledger")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -243,7 +243,7 @@ fn a_flattened_field_makes_statements_select_everything() {
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"

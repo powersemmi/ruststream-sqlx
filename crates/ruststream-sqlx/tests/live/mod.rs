@@ -14,11 +14,31 @@
 // what one of them leaves alone, a macro included, is not dead code.
 #![allow(dead_code, unused_macros)]
 
+use std::future::Future;
+
 use sqlx::{Database as Backend, Pool};
 
+#[cfg(feature = "mysql")]
+pub(crate) mod mysql;
 #[cfg(feature = "postgres")]
 pub(crate) mod postgres;
 pub(crate) mod rows;
+
+/// The MariaDB stand: a server of its own, which the MySQL stand's SQL reads and writes.
+#[cfg(feature = "mysql")]
+pub(crate) mod mariadb {
+    pub(crate) use super::mysql::Db;
+
+    use super::Database;
+
+    /// The variable that names the stand: a MariaDB URL whose user may create databases.
+    pub(crate) const URL: &str = "MARIADB_TEST_URL";
+
+    /// A fresh database on the stand, or `None` to skip the test.
+    pub(crate) async fn database() -> Option<Database<Db>> {
+        super::mysql::database_on(URL).await
+    }
+}
 
 /// The variable a job sets to say it stood its databases up, so skipping past one is a defect.
 pub(crate) const REQUIRE_LIVE: &str = "RUSTSTREAM_REQUIRE_LIVE";
@@ -45,6 +65,19 @@ pub(crate) fn url(variable: &str) -> Option<String> {
             None
         }
     }
+}
+
+/// Awaits `read` on a running tokio clock, then pauses the clock again.
+///
+/// A paused clock jumps to its next timer whenever the runtime waits, and a reply on its way from
+/// the database is such a wait, so the pool's acquire timeout can fire under a read. The broker's
+/// in-process connection keeps its own calls off a paused clock; a test reads its tables through
+/// here.
+pub(crate) async fn unpaused<T>(read: impl Future<Output = T>) -> T {
+    tokio::time::resume();
+    let value = read.await;
+    tokio::time::pause();
+    value
 }
 
 /// A database of the test's own on a stand, with the stand's schema applied.
@@ -87,6 +120,50 @@ macro_rules! matrix {
             use crate::live::rows::lease::*;
             $($items)*
         }
+
+        #[cfg(feature = "mysql")]
+        mod mysql_row_lock {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mysql::{Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::row_lock::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mysql_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mysql::{Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mariadb_row_lock {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mariadb::{Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::row_lock::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mariadb_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mariadb::{Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
     };
 }
 
@@ -104,8 +181,37 @@ macro_rules! stands {
             use crate::live::postgres::{Db, database};
             $($items)*
         }
+
+        $crate::live::mysql_stands! { $($items)* }
+    };
+}
+
+/// One module per stand that speaks MySQL, each holding `$items`: for a test of what MySQL and
+/// MariaDB do alike.
+///
+/// The stands appear with the `mysql` feature. Each module sees the suite's own items and the
+/// stand's `Db` and `database`.
+macro_rules! mysql_stands {
+    ($($items:item)*) => {
+        #[cfg(feature = "mysql")]
+        mod mysql {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mysql::{Db, database};
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mariadb {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mariadb::{Db, database};
+            $($items)*
+        }
     };
 }
 
 #[allow(unused_imports)]
-pub(crate) use {matrix, stands};
+pub(crate) use {matrix, mysql_stands, stands};

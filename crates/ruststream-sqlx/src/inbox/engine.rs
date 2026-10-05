@@ -762,6 +762,10 @@ pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
 /// The default dead-letter move: one statement, or two where the dialect splits the move, the
 /// second run only once the first moved the row.
 ///
+/// In the lease form every statement of the move must change the row: one that changes nothing
+/// found the row under another lease, and the move is [`Settled::Lost`], which rolls back the
+/// transaction both statements run in.
+///
 /// # Errors
 ///
 /// The database's error.
@@ -778,14 +782,18 @@ pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
     };
     let changed = run::<DB, Row>(conn, cx.queue.prepared.dead_letter, values).await?;
     let moved = settled(cx.queue, changed);
-    if let (Settled::Written, Some(then)) = (moved, cx.queue.prepared.dead_letter_then) {
-        let values = Values {
-            destination,
-            ..Values::settling(*cx, Event::DeadLetter, id, held.copied())
-        };
-        run::<DB, Row>(conn, Some(then), values).await?;
-    }
-    Ok(moved)
+    let (Settled::Written, Some(then)) = (moved, cx.queue.prepared.dead_letter_then) else {
+        return Ok(moved);
+    };
+    // Why the second count matters: the copy may read the row without locking it (it does at READ
+    // COMMITTED), so another claim may take the row before the delete runs, and committing then
+    // would leave the row in the queue and in the destination at once.
+    let values = Values {
+        destination,
+        ..Values::settling(*cx, Event::DeadLetter, id, held.copied())
+    };
+    let changed = run::<DB, Row>(conn, Some(then), values).await?;
+    Ok(settled(cx.queue, changed))
 }
 
 /// The default extension: writes `until` into the lease while the row holds `held`.

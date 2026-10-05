@@ -8,7 +8,7 @@
 //! table from `#[inbox(..)]`, the column names from sqlx's attributes and the role of each
 //! column that runs the queue from `#[field(..)]`, and implements [`InboxRow`] (feature
 //! `inbox`). The [`dialect`] module turns the description into SQL; its Postgres dialect sits
-//! behind the `postgres` feature.
+//! behind the `postgres` feature, and its MySQL and MariaDB dialect behind `mysql`.
 //!
 //! # The inbox broker
 //!
@@ -85,10 +85,11 @@
 //!
 //! [`SqlxBroker`] serves the queues in the tables of the service's sqlx pool, and the pool stays
 //! the service's. An [`InboxQueue`] subscription claims rows with `FOR UPDATE SKIP LOCKED`, one
-//! transaction per message or per batch, and polls when the queue runs dry. A batch's
-//! settlements take effect together, when its last delivery settles. A batch that holds a row
-//! whose statement always fails rolls back on every attempt and returns all of its rows, until
-//! the service's SQL or schema is fixed.
+//! transaction per message or per batch, and polls when the queue runs dry. On MySQL and MariaDB
+//! that transaction runs at READ COMMITTED, so a claim locks no gaps between rows and holds back
+//! no insert into its table. A batch's settlements take effect together, when its last delivery
+//! settles. A batch that holds a row whose statement always fails rolls back on every attempt and
+//! returns all of its rows, until the service's SQL or schema is fixed.
 //!
 //! A table with a `#[field(locked_until)]` field is claimed by lease instead ([`LeaseRow`]): the
 //! claim writes the lease's expiry, counts the attempt and commits at once, so the handler runs
@@ -121,13 +122,15 @@
 //!
 //! A mistake stops the service as early as it can be seen. A subscription prepares its statements
 //! at startup, and a column the table lacks stops it with the table and the statement named.
-//! Preparing checks the names of the table and its columns, not the column types: the types are
-//! the service's to get right. A claimed row whose columns do not decode into the struct reaches
-//! the subscription's `on_failure(decode = ..)` policy, which settles it (a drop by default), and
-//! the subscription goes on with the next row; a batch keeps its other rows. A handler that takes
-//! the bytes themselves, through a `Deserialized` type, receives an empty payload for such a row.
-//! A row whose id does not decode fails the claim, and the error names the subscription and the
-//! table.
+//! Preparing checks the names of the table and its columns, not the column types: the types are the
+//! service's to get right. On MySQL and MariaDB a subscription also reads the server's version when
+//! it opens: claims skip locked rows, which MySQL 8.0.1 and MariaDB 10.6 added, and an older server
+//! stops it with [`SqlxBrokerError::ServerTooOld`]. A claimed row whose columns do not decode into
+//! the struct reaches the subscription's `on_failure(decode = ..)` policy, which settles it (a drop
+//! by default), and the subscription goes on with the next row; a batch keeps its other rows. A
+//! handler that takes the bytes themselves, through a `Deserialized` type, receives an empty
+//! payload for such a row. A row whose id does not decode fails the claim, and the error names the
+//! subscription and the table.
 //!
 //! A [`Repository`] publishes into its struct's table, and a struct without [`Publish`] does not
 //! compile as one. A route leads a name to a table, and a publish to a name no route leads
@@ -220,11 +223,7 @@ pub mod __private {
     pub use ruststream::HeaderMap;
     pub use ruststream_sqlx_dialect::Param;
     pub use sqlx;
-    #[cfg(feature = "postgres")]
-    pub use sqlx::Postgres;
 
-    #[cfg(feature = "postgres")]
-    pub use crate::inbox::OnPostgres;
     pub use crate::inbox::engine::{
         Claimed, Claiming, Event, Events, IdAt, Now, Prepared, Settled, Settling, Shape, Stmt,
         TimeFor, Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, expiry, extend,
@@ -236,7 +235,7 @@ pub mod __private {
         NamedBytes, NamedDatabase, NamedId, NamedRow, NamedTime, RoleColumns,
     };
     pub use crate::inbox::queue::Queue;
-    pub use crate::inbox::{QueueDatabase, QueueRow};
+    pub use crate::inbox::{InsertSql, OnConnection, QueueDatabase, QueueRow, no_insert};
 }
 
 /// Describes a queue table with a struct and implements [`InboxRow`] for it.

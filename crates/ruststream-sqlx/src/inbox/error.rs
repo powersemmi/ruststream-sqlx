@@ -80,6 +80,27 @@ pub enum SqlxBrokerError {
         #[source]
         source: StatementError,
     },
+    /// The server is older than the statements of the subscription's form need.
+    ///
+    /// A subscription reads the server's version when it opens, where its dialect asks for it:
+    /// MySQL claims rows with `SKIP LOCKED` in both forms, which MySQL 8.0.1 and MariaDB 10.6
+    /// added.
+    #[error(
+        "subscription `{subscription}` on table `{table}` ({row}): the server reports \
+         `{server}`, and this form needs {required} or later"
+    )]
+    ServerTooOld {
+        /// The subscription.
+        subscription: String,
+        /// The table, qualified with its schema.
+        table: String,
+        /// The row type.
+        row: &'static str,
+        /// The version the server reports.
+        server: String,
+        /// The oldest server the subscription's statements run on.
+        required: &'static str,
+    },
     /// The registration declared a retry the table cannot carry.
     #[error("subscription `{subscription}` on table `{table}` ({row}): {reason}")]
     Declaration {
@@ -214,6 +235,18 @@ mod tests {
             lost.to_string(),
             "subscription `emails` on table `email_jobs` (SendEmail): the lease on row 7 ran out \
              and another claim took it; this settlement did not take effect"
+        );
+        let old = SqlxBrokerError::ServerTooOld {
+            subscription: "emails".to_owned(),
+            table: "email_jobs".to_owned(),
+            row: "SendEmail",
+            server: "10.5.23-MariaDB".to_owned(),
+            required: "MariaDB 10.6",
+        };
+        assert_eq!(
+            old.to_string(),
+            "subscription `emails` on table `email_jobs` (SendEmail): the server reports \
+             `10.5.23-MariaDB`, and this form needs MariaDB 10.6 or later"
         );
     }
 }

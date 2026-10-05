@@ -17,7 +17,9 @@ use std::time::Duration;
 use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, TestApp};
-use ruststream::{AckError, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{
+    AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+};
 use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
 
@@ -91,16 +93,50 @@ live::stands! {
             .expect_err("the late holder's lease is gone");
         assert!(lost(&refused), "{refused:?}");
         assert_eq!(
-            db.count("plain_jobs").await,
+            live::unpaused(db.count("plain_jobs")).await,
             1,
             "the late acknowledgement deleted nothing"
         );
         taken.ack().await.expect("the current holder settles");
-        assert_eq!(db.count("plain_jobs").await, 0);
+        assert_eq!(live::unpaused(db.count("plain_jobs")).await, 0);
         tokio::time::resume();
         drop(current);
         first.shutdown().await.expect("the broker stops");
         second.shutdown().await.expect("the broker stops");
+        db.finish().await;
+    }
+
+    // A lease ends on a whole second, which every temporal column holds exactly: on the MySQL
+    // stands `locked_until` is a `DATETIME` without fractions, which would round a token with
+    // fractions, and the settlement by token would then find no row.
+    #[tokio::test]
+    async fn a_lease_token_survives_a_column_without_fractions() {
+        let Some(db) = database().await else { return };
+        db.plain(&[b"x".as_slice()]).await;
+        let connected = SqlxBroker::new(db.pool.clone())
+            .lease(LEASE)
+            .connect()
+            .await
+            .expect("connects");
+        let mut subscriber = InboxQueue::<Plain>::new("plain")
+            .subscribe(&connected)
+            .await
+            .expect("opens");
+        let delivery = {
+            let mut deliveries = pin!(subscriber.stream());
+            deliveries.next().await.expect("goes on").expect("claims")
+        };
+        delivery
+            .ack()
+            .await
+            .expect("the token the claim wrote is the one the column holds");
+        assert_eq!(
+            db.count("plain_jobs").await,
+            0,
+            "the acknowledgement deleted the row"
+        );
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker stops");
         db.finish().await;
     }
 
@@ -169,12 +205,18 @@ live::stands! {
             .publish()
             .await
             .expect("the publish settles");
-        tb.advance(Duration::from_secs(3)).await.expect("the handler finishes");
+        tb.advance(Duration::from_secs(3))
+            .await
+            .expect("the handler finishes");
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("plain")
             .assert_called_once()
             .settled(HandlerOutcome::ack());
-        assert_eq!(db.count("plain_jobs").await, 0, "the long handler's acknowledgement took effect");
+        assert_eq!(
+            db.count("plain_jobs").await,
+            0,
+            "the long handler's acknowledgement took effect"
+        );
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }
@@ -190,7 +232,10 @@ live::stands! {
             .await
             .expect("connects");
         tokio::time::pause();
-        let mut subscriber = InboxQueue::<Plain>::new("plain").subscribe(&connected).await.expect("opens");
+        let mut subscriber = InboxQueue::<Plain>::new("plain")
+            .subscribe(&connected)
+            .await
+            .expect("opens");
         {
             let mut deliveries = pin!(subscriber.stream());
             let first = deliveries.next().await.expect("goes on").expect("claims");
@@ -345,12 +390,12 @@ mod on_postgres {
             .ack()
             .await
             .expect_err("the late holder's lease is gone");
-        let after_late = acked(&db.pool).await;
+        let after_late = live::unpaused(acked(&db.pool)).await;
         taken
             .ack()
             .await
             .expect("the current holder's acknowledgement runs");
-        let after_current = acked(&db.pool).await;
+        let after_current = live::unpaused(acked(&db.pool)).await;
         tokio::time::resume();
         drop(current);
         first.shutdown().await.expect("the broker stops");

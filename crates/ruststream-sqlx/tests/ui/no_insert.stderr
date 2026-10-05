@@ -11,7 +11,7 @@ help: the trait `Insert<_>` is not implemented for `Flattening`
    |
 11 | struct Flattening {
    | ^^^^^^^^^^^^^^^^^
-   = note: the derive generates it for Postgres connections (feature `postgres`), unless a `#[sqlx(flatten)]` field hides columns from it: write that insert in the service
+   = note: the derive generates it for the connections of the built-in dialects (features `postgres` and `mysql`), unless a `#[sqlx(flatten)]` field hides columns from it: write that insert in the service
 
 error[E0277]: `Flattening` has no generated insert for `PgConnection`
   --> tests/ui/no_insert.rs:19:5
@@ -24,4 +24,4 @@ help: the trait `Insert<PgConnection>` is not implemented for `Flattening`
    |
 11 | struct Flattening {
    | ^^^^^^^^^^^^^^^^^
-   = note: the derive generates it for Postgres connections (feature `postgres`), unless a `#[sqlx(flatten)]` field hides columns from it: write that insert in the service
+   = note: the derive generates it for the connections of the built-in dialects (features `postgres` and `mysql`), unless a `#[sqlx(flatten)]` field hides columns from it: write that insert in the service

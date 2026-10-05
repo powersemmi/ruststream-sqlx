@@ -17,6 +17,7 @@ mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
 mod time;
+mod tx;
 
 use std::fmt::Debug;
 
@@ -24,9 +25,7 @@ use ruststream_sqlx_dialect::TableSpec;
 
 pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
-#[cfg(feature = "postgres")]
-pub use database::OnPostgres;
-pub use database::{BuiltInDialect, QueueDatabase};
+pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_insert};
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{

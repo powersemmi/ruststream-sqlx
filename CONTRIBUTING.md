@@ -56,14 +56,23 @@ just test           # the test suite with all features, with none, and with the 
 just ci             # check and test, plus codespell, cargo deny and zizmor
 ```
 
-The inbox's live tests run against Postgres from `docker-compose.test.yml`:
+The inbox's live tests run against the three servers of `docker-compose.test.yml`: Postgres 17,
+MySQL 8.0 and MariaDB 10.6.
 
 ```bash
 just test-brokers   # starts the stand, runs the crate's suite against it, stops the stand
 ```
 
-A live test reads the stand's address from `POSTGRES_TEST_URL` and creates a database of its own
-there. Without the variable it skips, so `just test` passes on a machine with no Docker.
+A live test reads each server's address from its variable and creates a database of its own
+there:
+
+| Server | Variable | Address |
+| --- | --- | --- |
+| Postgres | `POSTGRES_TEST_URL` | `postgres://ruststream:ruststream@127.0.0.1:55432/ruststream` |
+| MySQL | `MYSQL_TEST_URL` | `mysql://root:ruststream@127.0.0.1:53306` |
+| MariaDB | `MARIADB_TEST_URL` | `mysql://root:ruststream@127.0.0.1:53307` |
+
+Without its variable a test skips, so `just test` passes on a machine with no Docker.
 `RUSTSTREAM_REQUIRE_LIVE` turns that skip into a failure; `just test-brokers` and CI set it, so a
 suite that never reached the stand cannot pass. `just brokers-up` and `just brokers-down` start
 and stop the stand alone, for running one live test by hand:
@@ -71,6 +80,8 @@ and stop the stand alone, for running one live test by hand:
 ```bash
 just brokers-up
 POSTGRES_TEST_URL=postgres://ruststream:ruststream@127.0.0.1:55432/ruststream \
+MYSQL_TEST_URL=mysql://root:ruststream@127.0.0.1:53306 \
+MARIADB_TEST_URL=mysql://root:ruststream@127.0.0.1:53307 \
     cargo test -p ruststream-sqlx --all-features --test conformance
 just brokers-down
 ```

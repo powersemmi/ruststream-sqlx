@@ -718,6 +718,7 @@ mod tests {
                 native_retry_after: true,
                 kinds,
                 prepared: Prepared::default(),
+                begin_claim: None,
                 poll_interval: Duration::from_secs(1),
                 lease: None,
                 max_attempts: None,

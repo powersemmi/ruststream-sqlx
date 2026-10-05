@@ -1075,6 +1075,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "sqlx-core",
  "stackfuture",
  "sync_wrapper",
  "thiserror",

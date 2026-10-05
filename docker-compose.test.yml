@@ -2,15 +2,18 @@
 # and a shared name would make `docker compose down` reap their containers too.
 name: ruststream-sqlx-tests
 
-# The database the live suites run against:
+# The databases the live suites run against:
 #
 #   * postgres - postgres://ruststream:ruststream@127.0.0.1:55432/ruststream   (POSTGRES_TEST_URL)
+#   * mysql    - mysql://root:ruststream@127.0.0.1:53306                        (MYSQL_TEST_URL)
+#   * mariadb  - mysql://root:ruststream@127.0.0.1:53307                        (MARIADB_TEST_URL)
 #
-# Each live test creates a database of its own on this server and drops it when it finishes, so
-# the user is a superuser. The server runs on the host network and without durability: a published
+# Each live test creates a database of its own on a server and drops it when it finishes, so the
+# user is a superuser. The servers run on the host network and without durability: a published
 # port goes through docker's userland proxy, which copies every packet of every round trip, and
-# `fsync` puts a disk flush under every commit. Neither is what the tests measure. Port 55432 keeps
-# clear of a Postgres the machine may already run on 5432.
+# `fsync` puts a disk flush under every commit. Neither is what the tests measure. Ports 55432,
+# 53306 and 53307 keep clear of a Postgres or a MySQL the machine may already run on 5432 or 3306.
+# MySQL runs its 8.0 line, and MariaDB runs 10.6, the oldest release the crate supports.
 
 services:
   postgres:
@@ -41,3 +44,45 @@ services:
       timeout: 2s
       retries: 20
       start_period: 1s
+
+  mysql:
+    image: mysql:8.0
+    container_name: ruststream-sqlx-mysql
+    network_mode: host
+    environment:
+      MYSQL_ROOT_PASSWORD: ruststream
+    command:
+      - --port=53306
+      - --bind-address=127.0.0.1
+      - --mysqlx=OFF
+      # sqlx carries no TLS here, and caching_sha2_password needs TLS or RSA for a full login.
+      - --default-authentication-plugin=mysql_native_password
+      - --innodb-flush-log-at-trx-commit=0
+      - --sync-binlog=0
+      - --skip-log-bin
+      - --max-connections=300
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-P", "53306", "-uroot", "-pruststream"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+  mariadb:
+    image: mariadb:10.6
+    container_name: ruststream-sqlx-mariadb
+    network_mode: host
+    environment:
+      MARIADB_ROOT_PASSWORD: ruststream
+    command:
+      - --port=53307
+      - --bind-address=127.0.0.1
+      - --innodb-flush-log-at-trx-commit=0
+      - --skip-log-bin
+      - --max-connections=300
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+      start_period: 5s

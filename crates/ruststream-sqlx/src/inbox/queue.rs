@@ -11,7 +11,7 @@ use std::time::Duration;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
-use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, TableName, TableSpec};
+use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, StatementError, TableName, TableSpec};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 use sqlx::{Database, Pool};
@@ -456,6 +456,9 @@ pub struct Queue {
     pub kinds: Option<Kinds>,
     /// The subscription's statements.
     pub prepared: Prepared,
+    /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
+    /// names one.
+    pub begin_claim: Option<&'static str>,
     /// How long the claim loop waits after a claim that found the queue short.
     pub poll_interval: Duration,
     /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
@@ -616,24 +619,9 @@ where
     // A table without groups is one queue, whatever name the subscription gives it.
     let group = description.spec.column(Role::Group).map(|_| name);
     let registration = Registration::take(shared, table_name, group, name, row)?;
-    check(shared, &prepared)
+    check(shared, &description.spec, &prepared)
         .await
-        .map_err(|unchecked| match unchecked {
-            Unchecked::Acquire(source) => SqlxBrokerError::Sqlx {
-                subscription: name.to_owned(),
-                table: table.clone(),
-                row,
-                statement: "acquire",
-                source: Box::new(source),
-            },
-            Unchecked::Statement(statement, source) => SqlxBrokerError::Schema {
-                subscription: name.to_owned(),
-                table: table.clone(),
-                row,
-                statement,
-                source: Box::new(source),
-            },
-        })?;
+        .map_err(|unchecked| unchecked.named(name, &table, row))?;
     let queue = Queue {
         name: intern_name(name),
         table: table_name,
@@ -643,6 +631,7 @@ where
         native_retry_after: description.native_retry_after(),
         kinds: description.kinds,
         prepared,
+        begin_claim: shared.dialect.get().begin_claim(),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
             .leased()
@@ -673,35 +662,111 @@ where
     ))
 }
 
-/// Why the startup check failed: no connection, or a statement the server refused.
+/// Why the startup check failed: no connection, a version the server did not report, a server
+/// the dialect refuses, or a statement the server refused.
 enum Unchecked {
     Acquire(sqlx::Error),
+    Version(&'static str, sqlx::Error),
+    Server(StatementError),
     Statement(&'static str, sqlx::Error),
 }
 
-/// The startup check: prepares each of `prepared`'s statements on a connection of the pool, off a
-/// paused clock where the connection runs in process.
+impl Unchecked {
+    /// The error of the subscription `name` to `table`, read as `row`.
+    fn named(self, name: &str, table: &str, row: &'static str) -> SqlxBrokerError {
+        let (subscription, table) = (name.to_owned(), table.to_owned());
+        match self {
+            Self::Acquire(source) => SqlxBrokerError::Sqlx {
+                subscription,
+                table,
+                row,
+                statement: "acquire",
+                source: Box::new(source),
+            },
+            Self::Version(statement, source) => SqlxBrokerError::Sqlx {
+                subscription,
+                table,
+                row,
+                statement,
+                source: Box::new(source),
+            },
+            Self::Server(StatementError::ServerTooOld {
+                server, required, ..
+            }) => SqlxBrokerError::ServerTooOld {
+                subscription,
+                table,
+                row,
+                server,
+                required,
+            },
+            Self::Server(source) => SqlxBrokerError::Dialect {
+                subscription,
+                table,
+                row,
+                source,
+            },
+            Self::Statement(statement, source) => SqlxBrokerError::Schema {
+                subscription,
+                table,
+                row,
+                statement,
+                source: Box::new(source),
+            },
+        }
+    }
+}
+
+/// The startup check: on one connection of the pool, the server's version where the dialect asks
+/// for it, then each of `prepared`'s statements prepared, off a paused clock where the connection
+/// runs in process.
 async fn check<DB: QueueDatabase>(
-    shared: &Shared<DB>,
+    shared: &Arc<Shared<DB>>,
+    spec: &TableSpec<'static>,
     prepared: &Prepared,
 ) -> Result<(), Unchecked> {
     #[cfg(feature = "testing")]
     if shared.harness.in_process() {
-        let pool = shared.pool.clone();
+        let shared = Arc::clone(shared);
+        let spec = *spec;
         let statements: Vec<Stmt> = prepared.statements().collect();
-        return off_clock(async move { prepare(&pool, statements.into_iter()).await })
+        return off_clock(async move {
+            verify(
+                &shared.pool,
+                shared.dialect.get(),
+                &spec,
+                statements.into_iter(),
+            )
             .await
-            .unwrap_or_else(|| Err(Unchecked::Acquire(cancelled())));
+        })
+        .await
+        .unwrap_or_else(|| Err(Unchecked::Acquire(cancelled())));
     }
-    prepare(&shared.pool, prepared.statements()).await
+    verify(
+        &shared.pool,
+        shared.dialect.get(),
+        spec,
+        prepared.statements(),
+    )
+    .await
 }
 
-/// Prepares each of `statements` on a connection of `pool`.
-async fn prepare<DB: QueueDatabase>(
+/// Checks the server's version against `dialect`'s floor for `spec`, where the dialect has one,
+/// then prepares each of `statements`, on one connection of `pool`.
+async fn verify<DB: QueueDatabase>(
     pool: &Pool<DB>,
+    dialect: &dyn Dialect,
+    spec: &TableSpec<'_>,
     statements: impl Iterator<Item = Stmt>,
 ) -> Result<(), Unchecked> {
     let mut conn = pool.acquire().await.map_err(Unchecked::Acquire)?;
+    if let Some(query) = dialect.server_version() {
+        let version = DB::fetch_text(&mut conn, query)
+            .await
+            .map_err(|source| Unchecked::Version(query, source))?;
+        dialect
+            .check_server(spec, &version)
+            .map_err(Unchecked::Server)?;
+    }
     for statement in statements {
         DB::prepare(&mut conn, statement.sql)
             .await

@@ -283,3 +283,5 @@ async fn inject<DB: QueueDatabase>(
 
 #[cfg(feature = "postgres")]
 ruststream::register_testable_broker!(SqlxBroker<sqlx::Postgres>);
+#[cfg(feature = "mysql")]
+ruststream::register_testable_broker!(SqlxBroker<sqlx::MySql>);

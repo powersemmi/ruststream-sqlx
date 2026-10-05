@@ -39,7 +39,9 @@ live::matrix! {
     async fn a_typed_descriptor_and_repository_climb_the_lifecycle() {
         let Some(db) = database().await else { return };
         let pool = db.pool.clone();
-        harness::lifecycle(
+        // The ladder holds a stream, a delivery and its settlement at once, past the 16 KiB a
+        // future may take on the stack.
+        Box::pin(harness::lifecycle(
             move || SqlxBroker::new(pool.clone()).poll_interval(Duration::from_millis(50)),
             |name| InboxQueue::<LifecycleRow>::new(name.to_owned()),
             // Pairing a repository does no I/O, so its future is ready at once.
@@ -47,7 +49,7 @@ live::matrix! {
                 block_on(Repository::<LifecycleRow>::default().pair(connected))
                     .expect("a repository pairs with the connected broker")
             },
-        )
+        ))
         .await;
         db.finish().await;
     }

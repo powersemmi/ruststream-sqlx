@@ -30,7 +30,7 @@ framework; this crate connects them to the database.
   work by that id and marks it processed on acknowledgement. Unprocessed records are published
   again at startup.
 - **Task queues in database tables:** `SqlxBroker` serves them from the tables and structs the
-  service owns, on Postgres.
+  service owns, on Postgres, on MySQL 8.0.1 and later, and on MariaDB 10.6 and later.
 
 ## Crates
 

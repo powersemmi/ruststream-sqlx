@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ruststream::{AckError, HeaderMap, IncomingMessage};
-use sqlx::Transaction;
 use sync_wrapper::SyncWrapper;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
@@ -21,6 +20,7 @@ use super::lease::{LeaseBook, Slot};
 use super::queue::Queue;
 #[cfg(feature = "testing")]
 use super::testing::{off_clock, returns_after};
+use super::tx::Tx;
 
 /// What a handler's outcome asks of the row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,7 @@ impl Step {
 /// What holds a delivery's row until it settles.
 enum Hold<DB: QueueDatabase, Row: Events<DB>> {
     /// The delivery's own transaction: one claim, one row.
-    Own(SyncWrapper<Transaction<'static, DB>>),
+    Own(SyncWrapper<Tx<DB>>),
     /// A batch's transaction: one claim, its rows sharing the transaction.
     Batch(Arc<BatchTx<DB>>),
     /// The lease the claim wrote, in the subscription's book.
@@ -81,7 +81,7 @@ enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// finish ends it. The settlements become durable together: a statement that fails rolls the
 /// whole batch back.
 pub(crate) struct BatchTx<DB: QueueDatabase> {
-    tx: Mutex<Option<Transaction<'static, DB>>>,
+    tx: Mutex<Option<Tx<DB>>>,
     open: AtomicUsize,
     /// The settlements that wrote something for the commit to keep.
     written: AtomicUsize,
@@ -90,7 +90,7 @@ pub(crate) struct BatchTx<DB: QueueDatabase> {
 }
 
 impl<DB: QueueDatabase> BatchTx<DB> {
-    pub(crate) fn new(tx: Transaction<'static, DB>, deliveries: usize) -> Arc<Self> {
+    pub(crate) fn new(tx: Tx<DB>, deliveries: usize) -> Arc<Self> {
         Arc::new(Self {
             tx: Mutex::new(Some(tx)),
             open: AtomicUsize::new(deliveries),
@@ -136,24 +136,30 @@ impl<DB: QueueDatabase> BatchTx<DB> {
             return;
         };
         drop(held);
-        if self.failed.load(Ordering::Acquire) {
-            // Dropping the transaction rolls it back.
+        let failed = self.failed.load(Ordering::Acquire);
+        if failed {
             self.undone(queue);
-            return;
         }
-        if self.written.load(Ordering::Acquire) == 0 {
-            return;
-        }
+        let commit = !failed && self.written.load(Ordering::Acquire) > 0;
+        // Without a runtime the transaction drops here: its connection closes, and the server rolls
+        // it back.
         if let Ok(runtime) = Handle::try_current() {
             runtime.spawn(async move {
-                if let Err(error) = tx.commit().await {
+                let ended = if commit {
+                    tx.commit().await
+                } else {
+                    tx.rollback().await
+                };
+                if let Err(error) = ended {
                     tracing::warn!(
                         target: "ruststream_sqlx",
                         subscription = queue.name,
                         table = queue.table,
                         row = queue.row,
+                        commit,
                         %error,
-                        "a batch's commit failed after a delivery was dropped unsettled",
+                        "a batch's transaction failed to end after a delivery was dropped \
+                         unsettled; its connection closes",
                     );
                 }
             });
@@ -241,11 +247,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Debug for InboxDelivery<DB, Row> {
 
 impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
     /// A delivery that owns its claim's transaction.
-    pub(crate) fn own(
-        claimed: Claimed<Row>,
-        tx: Transaction<'static, DB>,
-        queue: &'static Queue,
-    ) -> Self {
+    pub(crate) fn own(claimed: Claimed<Row>, tx: Tx<DB>, queue: &'static Queue) -> Self {
         Self::held(claimed, Hold::Own(SyncWrapper::new(tx)), queue)
     }
 
@@ -421,9 +423,15 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
         match hold {
             Hold::Own(tx) => {
                 let mut tx = tx.into_inner();
-                let settled = run_step::<DB, Row>(&mut tx, &cx, id, None, step)
-                    .await
-                    .map_err(failed)?;
+                let settled = match run_step::<DB, Row>(&mut tx, &cx, id, None, step).await {
+                    Ok(settled) => settled,
+                    Err(source) => {
+                        // A rollback that fails leaves the transaction to its drop, which closes
+                        // the connection.
+                        let _ = tx.rollback().await;
+                        return Err(failed(source));
+                    }
+                };
                 match settled {
                     Settled::Written => tx.commit().await.map_err(failed),
                     Settled::Untouched => tx.rollback().await.map_err(failed),
@@ -524,17 +532,25 @@ where
     // The service's own SQL names no lease, so its transaction first confirms the delivery still
     // holds one: the lease written over itself. A move the dialect splits in two runs in one
     // transaction too, so a half-moved row never shows.
-    let mut tx = book.pool().begin().await?;
-    if overridden && Row::extend(&mut tx, cx, id, held, held).await? == Settled::Lost {
-        tx.rollback().await?;
-        return Ok(Settled::Lost);
+    let mut tx = Tx::begin(book.pool(), None).await?;
+    let settled = async {
+        if overridden && Row::extend(&mut tx, cx, id, held, held).await? == Settled::Lost {
+            return Ok(Settled::Lost);
+        }
+        run_step::<DB, Row>(&mut tx, cx, id, Some(held), step).await
     }
-    let settled = run_step::<DB, Row>(&mut tx, cx, id, Some(held), step).await?;
+    .await;
     match settled {
-        Settled::Written | Settled::Untouched => tx.commit().await?,
-        Settled::Lost => tx.rollback().await?,
+        Ok(Settled::Written | Settled::Untouched) => tx.commit().await?,
+        Ok(Settled::Lost) => tx.rollback().await?,
+        Err(error) => {
+            // A rollback that fails leaves the transaction to its drop, which closes the
+            // connection.
+            let _ = tx.rollback().await;
+            return Err(error);
+        }
     }
-    Ok(settled)
+    settled
 }
 
 /// Runs the statement of `step` for the row `id` on `conn`; `held` is the delivery's lease in the
@@ -689,9 +705,14 @@ impl<DB: QueueDatabase, Row: Events<DB>> Drop for InboxDelivery<DB, Row> {
                     drop(runtime.spawn(off_clock(tx.into_inner().rollback())));
                 }
             }
-            // An unsettled delivery's transaction rolls back as it drops, which returns the row
-            // to the queue at once.
-            Hold::Own(_) => {}
+            // An unsettled delivery's transaction rolls back on the runtime, which returns the
+            // row to the queue at once. Without a runtime the transaction drops here: its
+            // connection closes, and the server rolls it back.
+            Hold::Own(tx) => {
+                if let Ok(runtime) = Handle::try_current() {
+                    drop(runtime.spawn(tx.into_inner().rollback()));
+                }
+            }
             Hold::Batch(batch) => batch.release(self.queue),
             Hold::Lease { book, slot } => {
                 let id = self.claimed.id::<DB>().clone();
@@ -710,7 +731,6 @@ impl<DB: QueueDatabase, Row: Events<DB>> Drop for InboxDelivery<DB, Row> {
                     id,
                     Now::default(),
                 )));
-                return;
             }
         }
         #[cfg(feature = "testing")]

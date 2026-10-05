@@ -311,7 +311,8 @@ impl Clock for SystemClock {
 }
 
 /// The database's own clock: `#[inbox(clock = DatabaseClock)]` makes the statements read it
-/// (`statement_timestamp()` on Postgres) instead of binding the host's time.
+/// (`statement_timestamp()` on Postgres, `UTC_TIMESTAMP(6)` on MySQL) instead of binding the
+/// host's time.
 ///
 /// # Examples
 ///

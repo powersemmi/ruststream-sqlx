@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
-use sqlx::{Pool, Transaction};
+use sqlx::Pool;
 use tokio_util::sync::DropGuard;
 
 use super::PayloadRow;
@@ -20,6 +20,7 @@ use super::lease::LeaseBook;
 use super::queue::{Queue, Registration};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
+use super::tx::Tx;
 
 /// How long a subscription waits after a claim failed, so a persistent failure cannot spin the
 /// loop.
@@ -103,7 +104,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Copy for Holding<DB, Row> {}
 /// What a claim leaves the deliveries of its rows.
 pub(crate) enum Taken<DB: QueueDatabase, Row: Events<DB>> {
     /// The claim's transaction, which holds the rows until they settle.
-    Locked(Transaction<'static, DB>),
+    Locked(Tx<DB>),
     /// The lease the claim wrote and committed, and the book its deliveries enter.
     Leased(&'static LeaseBook<DB, Row>, Row::Token),
 }
@@ -166,8 +167,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
             let claimed = self.claim_once(limit).await;
             match claimed {
                 Ok((taken, 0)) => {
-                    // Dropping an empty claim's transaction queues its rollback.
-                    drop(taken);
+                    self.end_empty(taken).await;
                     self.wait = Some(self.queue.poll_interval);
                 }
                 Ok((taken, count)) => {
@@ -201,6 +201,20 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         .await
         .map_err(|(statement, source)| self.failed(statement, source))?;
         Ok((taken, self.rows.len()))
+    }
+
+    /// Ends the transaction of a claim that took no row; a claim by lease committed already.
+    async fn end_empty(&self, taken: Taken<DB, Row>) {
+        let Taken::Locked(tx) = taken else {
+            return;
+        };
+        // A rollback that fails leaves the transaction to its drop, which closes the connection.
+        #[cfg(feature = "testing")]
+        if self.shared.harness.in_process() {
+            let _ = off_clock(tx.rollback()).await;
+            return;
+        }
+        let _ = tx.rollback().await;
     }
 
     /// The claim of an in-process connection: on the test's clock, off a paused one, and in the
@@ -292,11 +306,16 @@ where
     rows.clear();
     let book = match holding {
         Holding::Locks => {
-            let mut tx = pool.begin().await.map_err(|source| ("BEGIN", source))?;
-            Row::claim(&mut tx, &cx, None, rows)
-                .await
-                .map_err(claim_failed)?;
-            return Ok(Taken::Locked(tx));
+            let mut tx = begin(pool, queue).await?;
+            return match Row::claim(&mut tx, &cx, None, rows).await {
+                Ok(()) => Ok(Taken::Locked(tx)),
+                Err(source) => {
+                    // A rollback that fails leaves the transaction to its drop, which closes the
+                    // connection.
+                    let _ = tx.rollback().await;
+                    Err(claim_failed(source))
+                }
+            };
         }
         Holding::Leases(book) => book,
     };
@@ -305,12 +324,23 @@ where
     if queue.prepared.stamps {
         // The claim only selects: its transaction stamps each row it took and commits, so the
         // rows hold their leases, not the transaction.
-        let mut tx = pool.begin().await.map_err(|source| ("BEGIN", source))?;
-        let lease = Row::expiry(queue, now).map_err(claim_failed)?;
-        Row::claim(&mut tx, &cx, Some(&lease), rows)
-            .await
-            .map_err(claim_failed)?;
-        stamp_rows::<DB, Row>(&mut tx, &cx, &lease, rows).await?;
+        let mut tx = begin(pool, queue).await?;
+        let claimed = async {
+            let lease = Row::expiry(queue, now).map_err(claim_failed)?;
+            Row::claim(&mut tx, &cx, Some(&lease), rows)
+                .await
+                .map_err(claim_failed)?;
+            stamp_rows::<DB, Row>(&mut tx, &cx, &lease, rows).await?;
+            Ok::<_, Failed>(lease)
+        }
+        .await;
+        let lease = match claimed {
+            Ok(lease) => lease,
+            Err(failed) => {
+                let _ = tx.rollback().await;
+                return Err(failed);
+            }
+        };
         tx.commit().await.map_err(|source| ("COMMIT", source))?;
         return Ok(Taken::Leased(book, lease));
     }
@@ -321,6 +351,14 @@ where
         .await
         .map_err(claim_failed)?;
     Ok(Taken::Leased(book, lease))
+}
+
+/// Opens a claim's transaction on a connection of `pool`, with the statement `queue`'s dialect
+/// opens it with, or `BEGIN`.
+async fn begin<DB: QueueDatabase>(pool: &Pool<DB>, queue: &Queue) -> Result<Tx<DB>, Failed> {
+    Tx::begin(pool, queue.begin_claim)
+        .await
+        .map_err(|source| (queue.begin_claim.unwrap_or("BEGIN"), source))
 }
 
 /// Leases each of `rows` with `lease` inside the claim's transaction, and drops from the claim
