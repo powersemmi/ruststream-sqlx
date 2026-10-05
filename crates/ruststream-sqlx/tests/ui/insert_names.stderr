@@ -1,0 +1,5 @@
+error: `a_column_name_that_runs_past_the_sixty_three_bytes_postgres_keeps` is longer than the 63 bytes the postgres dialect allows in a name
+ --> tests/ui/insert_names.rs:5:17
+  |
+5 | #[inbox(table = "jobs")]
+  |                 ^^^^^^

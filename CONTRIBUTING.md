@@ -42,6 +42,7 @@ The workspace publishes three crates, released together under one version:
 
 | Task | Tool | Install |
 | --- | --- | --- |
+| `just test-brokers` | Docker with the compose plugin | the Docker documentation |
 | `just deny` | cargo-deny | `cargo install cargo-deny --locked` |
 | `just typo`, `just zizmor` | uv | the uv documentation |
 | the documentation site | Python 3.12 | `pip install -r docs/requirements.txt`, then `properdocs serve` |
@@ -53,6 +54,25 @@ just check          # rustfmt, clippy, cargo check with all features and with no
                     # and the compile-fail snapshots of the derives
 just test           # the test suite with all features, with none, and with the inbox alone
 just ci             # check and test, plus codespell, cargo deny and zizmor
+```
+
+The inbox's live tests run against Postgres from `docker-compose.test.yml`:
+
+```bash
+just test-brokers   # starts the stand, runs the crate's suite against it, stops the stand
+```
+
+A live test reads the stand's address from `POSTGRES_TEST_URL` and creates a database of its own
+there. Without the variable it skips, so `just test` passes on a machine with no Docker.
+`RUSTSTREAM_REQUIRE_LIVE` turns that skip into a failure; `just test-brokers` and CI set it, so a
+suite that never reached the stand cannot pass. `just brokers-up` and `just brokers-down` start
+and stop the stand alone, for running one live test by hand:
+
+```bash
+just brokers-up
+POSTGRES_TEST_URL=postgres://ruststream:ruststream@127.0.0.1:55432/ruststream \
+    cargo test -p ruststream-sqlx --all-features --test conformance
+just brokers-down
 ```
 
 The compile-fail snapshots record the stable toolchain's wording. After an intentional change to

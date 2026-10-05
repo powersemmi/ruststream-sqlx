@@ -10,9 +10,12 @@ use ruststream_sqlx::{Inbox, InboxRow};
 /// The table of the derive's own documentation: every role the row lock form reads.
 #[derive(Inbox)]
 #[inbox(table = "email_jobs", schema = "app")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
+#[cfg_attr(
+    not(feature = "postgres"),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
 )]
 struct SendEmail {
     #[field(id, generated)]
@@ -100,10 +103,6 @@ fn column_names_follow_sqlx() {
 /// The roles the other structs leave out: the partition key and the headers.
 #[derive(Inbox)]
 #[inbox(table = "orders")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
-)]
 struct Keyed {
     #[field(id)]
     id: i64,
@@ -125,9 +124,12 @@ fn the_partition_key_and_the_headers_reach_their_slots() {
 
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
+#[cfg_attr(
+    not(feature = "postgres"),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
 )]
 struct Leased {
     #[field(id)]
@@ -146,9 +148,12 @@ fn a_locked_until_field_selects_the_lease_form() {
 
 #[derive(Inbox)]
 #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}-{type}")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
+#[cfg_attr(
+    not(feature = "postgres"),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
 )]
 struct Advisory {
     #[field(id)]
@@ -171,9 +176,12 @@ fn an_advisory_key_reads_the_columns_of_the_named_fields() {
 
 #[derive(Inbox)]
 #[inbox(table = "ledger")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
+#[cfg_attr(
+    not(feature = "postgres"),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
 )]
 struct Ledger {
     #[field(id)]
@@ -229,9 +237,12 @@ fn a_flattened_field_makes_statements_select_everything() {
 /// A generic struct: the parameters reach the impl, the id type among them.
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
+#[cfg_attr(
+    not(feature = "postgres"),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
 )]
 struct Generic<Key, Body> {
     #[field(id)]

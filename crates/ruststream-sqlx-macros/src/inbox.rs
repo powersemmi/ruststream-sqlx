@@ -4,10 +4,11 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use ruststream_sqlx_dialect::Role;
 use syn::ext::IdentExt;
-use syn::{DeriveInput, parse_quote};
+use syn::{DeriveInput, Generics, parse_quote};
 
 use crate::parse::{self, ColumnField, Field, Inbox};
 use crate::template::{self, Piece};
+use crate::{events, insert};
 
 /// One part of the advisory lock key, with every field already turned into its column.
 enum KeyItem {
@@ -36,7 +37,12 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let inbox = parse::inbox(input)?;
     let id = check(input, &inbox)?;
     let key = advisory_key(&inbox)?;
-    Ok(generate(input, &inbox, id, key.as_deref()))
+    let generics = bounded_generics(input, id.0.ty);
+    let row = generate(input, &generics, &inbox, id, key.as_deref());
+    let payload = events::payload_row(input, &generics, &inbox);
+    let contract = events::events(input, &generics, &inbox, id.0);
+    let insert = insert::insert(input, &generics, &inbox)?;
+    Ok(quote!(#row #payload #contract #insert))
 }
 
 /// The rules `TableSpec`'s types leave to the struct: one id, one field per role, one field per
@@ -144,6 +150,7 @@ fn advisory_key(inbox: &Inbox<'_>) -> syn::Result<Option<Vec<KeyItem>>> {
 
 fn generate(
     input: &DeriveInput,
+    generics: &Generics,
     inbox: &Inbox<'_>,
     (id_field, id_column): (&Field<'_>, &ColumnField),
     key: Option<&[KeyItem]>,
@@ -202,6 +209,32 @@ fn generate(
 
     let name = &input.ident;
     let id_type = id_field.ty;
+    let spec = quote!(#dialect::TableSpec::new(#table, #id, #form) #within #(#slots)* #data #selecting_all);
+    let spec = match &inbox.table.clock {
+        Some(clock) => quote!({
+            let spec = #spec;
+            if <#clock as ::ruststream_sqlx::TimeSource>::DATABASE {
+                spec.database_clock()
+            } else {
+                spec
+            }
+        }),
+        None => spec,
+    };
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    quote! {
+        #[automatically_derived]
+        impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
+            const SPEC: #dialect::TableSpec<'static> = #spec;
+            type Id = #id_type;
+        }
+    }
+}
+
+/// The struct's generics with what every impl of the row needs of them: `Send + Sync + 'static`
+/// of the struct, and of the id type, which logs also print.
+fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Generics {
+    let name = &input.ident;
     let mut generics = input.generics.clone();
     if !generics.params.is_empty() {
         let (_, ty_generics, _) = input.generics.split_for_impl();
@@ -210,19 +243,10 @@ fn generate(
             #name #ty_generics: ::core::marker::Send + ::core::marker::Sync + 'static
         ));
         predicates.push(parse_quote!(
-            #id_type: ::core::marker::Send + ::core::marker::Sync + 'static
+            #id_type: ::core::fmt::Debug + ::core::marker::Send + ::core::marker::Sync + 'static
         ));
     }
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    quote! {
-        #[automatically_derived]
-        impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
-            const SPEC: #dialect::TableSpec<'static> =
-                #dialect::TableSpec::new(#table, #id, #form)
-                    #within #(#slots)* #data #selecting_all;
-            type Id = #id_type;
-        }
-    }
+    generics
 }
 
 #[cfg(test)]

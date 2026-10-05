@@ -8,6 +8,11 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 
 - [Home](https://powersemmi.github.io/ruststream-sqlx/latest/): the two components and where the rest of the documentation is
 
+## Guides
+
+- [The inbox broker](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-inbox-broker): task queues in the service's Postgres tables, what each handler outcome does to a row, where "now" comes from, and what stops a service at startup
+- [Testing a service on the inbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#testing-a-service-on-the-inbox): `TestApp::start_live` against a real database and the real clock
+
 ## Optional
 
 - [API reference](https://docs.rs/ruststream-sqlx): the full rustdoc of the crate

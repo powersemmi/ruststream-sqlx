@@ -10,10 +10,6 @@ use ruststream_sqlx::dialect::{ClaimShape, Dialect, Postgres, StatementError};
 
 #[derive(Inbox)]
 #[inbox(table = "email_jobs", schema = "app")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
-)]
 struct SendEmail {
     #[field(id)]
     job_id: i64,
@@ -45,10 +41,6 @@ fn the_derived_table_claims_in_role_order() -> Result<(), StatementError> {
 #[derive(Inbox)]
 #[inbox(table = "Email \"Jobs\"", schema = "Mail Box")]
 #[sqlx(rename_all = "PascalCase")]
-#[expect(
-    dead_code,
-    reason = "a queue row is read by the broker, never by this test"
-)]
 struct Quoted {
     #[field(id)]
     job_id: i64,

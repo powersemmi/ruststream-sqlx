@@ -62,6 +62,29 @@ where
         self
     }
 
+    /// The current time: a bound [`Param::Now`], or the database's own clock when the table reads
+    /// it.
+    pub(crate) fn now(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
+        if spec.uses_database_clock() {
+            self.push(database_now)
+        } else {
+            self.param(Param::Now)
+        }
+    }
+
+    /// The time a delayed retry comes back: a bound [`Param::RetryAfter`], or the database's
+    /// clock plus [`Param::Delay`] microseconds.
+    pub(crate) fn later(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
+        if spec.uses_database_clock() {
+            self.push(database_now)
+                .push(" + ")
+                .param(Param::Delay)
+                .push(" * interval '1 microsecond'")
+        } else {
+            self.param(Param::RetryAfter)
+        }
+    }
+
     /// Every column, or `*` when the struct flattens another.
     pub(crate) fn columns(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         if spec.selects_all() {
@@ -78,7 +101,7 @@ where
 
     /// The conditions a row meets to be claimed, each present only with its column: the
     /// subscription's group, a time that has come, no finish mark.
-    pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+    pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
         let mut keyword = " WHERE ";
         if let Some(group) = spec.column(Role::Group) {
             self.push(keyword)
@@ -91,7 +114,7 @@ where
             self.push(keyword)
                 .ident(retry_after.name())
                 .push(" <= ")
-                .param(Param::Now);
+                .now(spec, database_now);
             keyword = " AND ";
         }
         if let Some(processed_at) = spec.column(Role::ProcessedAt) {

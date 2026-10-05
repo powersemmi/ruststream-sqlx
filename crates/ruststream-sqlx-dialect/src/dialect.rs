@@ -312,4 +312,31 @@ pub trait Dialect: Debug + Send + Sync {
         spec: &TableSpec<'_>,
         target: TableName<'_>,
     ) -> Result<Vec<Statement>, StatementError>;
+
+    /// The statement that inserts a row: every column the database does not fill, in the order of
+    /// [`TableSpec::columns`], each bound as [`Param::Column`](crate::Param::Column).
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::Flattened`] when the table is read with `*`
+    /// ([`TableSpec::selects_all`]), whose columns the description cannot see.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id").generated(), Form::RowLock)
+    ///         .payload(Column::new("payload"));
+    ///
+    /// // The database fills the id; the service writes the payload.
+    /// let insert = Postgres.insert(&JOBS)?;
+    /// assert_eq!(insert.sql(), r#"INSERT INTO "jobs" ("payload") VALUES ($1)"#);
+    /// assert_eq!(insert.params(), [Param::Column(1)]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 }

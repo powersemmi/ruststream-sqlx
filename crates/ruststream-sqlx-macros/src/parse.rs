@@ -16,6 +16,38 @@ pub(crate) struct Table {
     pub(crate) name: LitStr,
     pub(crate) schema: Option<LitStr>,
     pub(crate) advisory_lock: Option<LitStr>,
+    pub(crate) custom: Custom,
+    pub(crate) clock: Option<syn::Path>,
+}
+
+/// The events a service implements itself: `#[inbox(custom(..))]`.
+// One switch per event the crate can hand over.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct Custom {
+    pub(crate) claim: bool,
+    pub(crate) fetch: bool,
+    pub(crate) ack: bool,
+    pub(crate) retry: bool,
+    pub(crate) retry_after: bool,
+    pub(crate) discard: bool,
+    pub(crate) dead_letter: bool,
+}
+
+impl Custom {
+    /// The switch of the event `word` names.
+    fn slot(&mut self, word: &str) -> Option<&mut bool> {
+        Some(match word {
+            "claim" => &mut self.claim,
+            "fetch" => &mut self.fetch,
+            "ack" => &mut self.ack,
+            "retry" => &mut self.retry,
+            "retry_after" => &mut self.retry_after,
+            "discard" => &mut self.discard,
+            "dead_letter" => &mut self.dead_letter,
+            _ => return None,
+        })
+    }
 }
 
 /// Where a field's value comes from.
@@ -35,6 +67,15 @@ pub(crate) struct ColumnField {
     pub(crate) generated: bool,
     /// Where `fifo = true` is written, on the field that plays `group`.
     pub(crate) fifo: Option<Span>,
+    /// `#[sqlx(json)]`: sqlx reads and writes the column through `Json`.
+    #[cfg_attr(
+        not(feature = "postgres"),
+        allow(
+            dead_code,
+            reason = "only the Postgres insert binds a column through `Json`"
+        )
+    )]
+    pub(crate) json: bool,
 }
 
 /// One field and where its value comes from.
@@ -125,6 +166,9 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
     let mut name = None;
     let mut schema = None;
     let mut advisory_lock = None;
+    let mut custom = Custom::default();
+    let mut custom_seen = false;
+    let mut clock = None;
     for attr in input
         .attrs
         .iter()
@@ -136,14 +180,50 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
                 .get_ident()
                 .map(ToString::to_string)
                 .unwrap_or_default();
+            if key == "custom" {
+                if custom_seen {
+                    return Err(meta.error("`custom` is given twice"));
+                }
+                custom_seen = true;
+                return meta.parse_nested_meta(|event| {
+                    let word = event
+                        .path
+                        .get_ident()
+                        .map(ToString::to_string)
+                        .unwrap_or_default();
+                    if word == "publish" {
+                        return Err(event.error(
+                            "`publish` has no default to hand over: implement `Publish` for the \
+                             struct without listing it",
+                        ));
+                    }
+                    let Some(slot) = custom.slot(&word) else {
+                        return Err(event.error(
+                            "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, \
+                             `retry`, `retry_after`, `discard` or `dead_letter`",
+                        ));
+                    };
+                    if std::mem::replace(slot, true) {
+                        return Err(event.error(format!("`{word}` is listed twice")));
+                    }
+                    Ok(())
+                });
+            }
+            if key == "clock" {
+                let path: syn::Path = meta.value()?.parse()?;
+                if clock.replace(path).is_some() {
+                    return Err(meta.error("`clock` is given twice"));
+                }
+                return Ok(());
+            }
             let (slot, dotted) = match key.as_str() {
                 "table" => (&mut name, Some(DOTTED_TABLE)),
                 "schema" => (&mut schema, Some(DOTTED_SCHEMA)),
                 "advisory_lock" => (&mut advisory_lock, None),
                 _ => {
                     return Err(meta.error(
-                        "unknown `#[inbox(..)]` option: expected `table`, `schema` or \
-                         `advisory_lock`",
+                        "unknown `#[inbox(..)]` option: expected `table`, `schema`, \
+                         `advisory_lock`, `custom` or `clock`",
                     ));
                 }
             };
@@ -172,6 +252,8 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
         name,
         schema,
         advisory_lock,
+        custom,
+        clock,
     })
 }
 
@@ -196,6 +278,7 @@ struct SqlxField {
     rename: Option<LitStr>,
     skip: bool,
     flatten: bool,
+    json: bool,
 }
 
 /// What `#[field(..)]` says about one field, with the span of each word for errors.
@@ -251,6 +334,7 @@ fn field(field: &syn::Field, rename_all: Option<RenameAll>) -> syn::Result<Field
             role,
             generated: marks.generated.is_some(),
             fifo: marks.fifo.and_then(|(fifo, span)| fifo.then_some(span)),
+            json: sqlx.json,
         }),
     };
     Ok(Field {
@@ -291,6 +375,9 @@ fn sqlx_field(attrs: &[Attribute]) -> syn::Result<SqlxField> {
                 sqlx.skip = true;
             } else if meta.path.is_ident("flatten") {
                 sqlx.flatten = true;
+            } else if meta.path.is_ident("json") {
+                sqlx.json = true;
+                skip_value(meta.input)?;
             } else {
                 skip_value(meta.input)?;
             }
@@ -502,14 +589,15 @@ mod tests {
 
     #[test]
     fn misuse_of_the_attributes_is_reported() {
-        let cases: [(DeriveInput, &str); 17] = [
+        let cases: [(DeriveInput, &str); 22] = [
             (
                 parse_quote! { struct Job { #[field(id)] id: i64 } },
                 "#[derive(Inbox)] needs the table: add `#[inbox(table = \"..\")]`",
             ),
             (
                 parse_quote! { #[inbox(table = "jobs", queue = "emails")] struct Job { #[field(id)] id: i64 } },
-                "unknown `#[inbox(..)]` option: expected `table`, `schema` or `advisory_lock`",
+                "unknown `#[inbox(..)]` option: expected `table`, `schema`, `advisory_lock`, \
+                 `custom` or `clock`",
             ),
             (
                 parse_quote! { #[inbox(table = "")] struct Job { #[field(id)] id: i64 } },
@@ -573,6 +661,28 @@ mod tests {
                 parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field()] payload: Vec<u8> } },
                 "`#[field(..)]` names nothing: give it a role, `generated`, or both",
             ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(lock))] struct Job { #[field(id)] id: i64 } },
+                "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
+                 `retry_after`, `discard` or `dead_letter`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(publish))] struct Job { #[field(id)] id: i64 } },
+                "`publish` has no default to hand over: implement `Publish` for the struct \
+                 without listing it",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(ack, ack))] struct Job { #[field(id)] id: i64 } },
+                "`ack` is listed twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(ack), custom(fetch))] struct Job { #[field(id)] id: i64 } },
+                "`custom` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", clock = A, clock = B)] struct Job { #[field(id)] id: i64 } },
+                "`clock` is given twice",
+            ),
         ];
         for (input, expected) in cases {
             assert_eq!(error(&input), expected);
@@ -599,5 +709,38 @@ mod tests {
                 "`fifo` belongs to the `group` role: `#[field(group, fifo = true)]`",
             ]
         );
+    }
+
+    #[test]
+    fn custom_events_and_the_clock_are_read() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(fetch, dead_letter), clock = crate::Offset)]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let inbox = inbox(&input)?;
+        let custom = inbox.table.custom;
+        assert!(custom.fetch && custom.dead_letter);
+        assert!(!custom.claim && !custom.ack && !custom.retry);
+        assert!(!custom.retry_after && !custom.discard);
+        let clock = inbox
+            .table
+            .clock
+            .map(|path| quote::quote!(#path).to_string());
+        assert_eq!(clock.as_deref(), Some("crate :: Offset"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_json_field_is_marked_for_the_insert() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64, #[sqlx(json(nullable))] body: Option<Body>, other: String }
+        };
+        let json: Vec<_> = inbox(&input)?
+            .columns()
+            .map(|(_, column)| column.json)
+            .collect();
+        assert_eq!(json, [false, true, false]);
+        Ok(())
     }
 }
