@@ -1,17 +1,18 @@
 //! `InboxSubscriber`: the claim loop a subscription's stream runs.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::Stream;
-use ruststream::Subscriber;
+use ruststream::{BatchSubscriber, Subscriber};
 use sqlx::Transaction;
 
 use super::PayloadRow;
 use super::broker::Shared;
 use super::database::QueueDatabase;
-use super::delivery::InboxDelivery;
+use super::delivery::{BatchTx, InboxDelivery};
 use super::engine::{Claimed, Claiming, Events, Now};
 use super::error::SqlxBrokerError;
 use super::queue::{Queue, Registration};
@@ -158,6 +159,15 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         Ok((tx, self.rows.len()))
     }
 
+    /// The deliveries of the last claim, oldest first.
+    pub(crate) fn take_rows(&mut self) -> impl Iterator<Item = Claimed<Row>> + '_ {
+        self.rows.drain(..)
+    }
+
+    pub(crate) const fn queue(&self) -> &'static Queue {
+        self.queue
+    }
+
     async fn next_one(&mut self) -> Option<Result<InboxDelivery<DB, Row>, SqlxBrokerError>> {
         let (tx, _) = match self.claim(1).await? {
             Ok(claimed) => claimed,
@@ -181,6 +191,33 @@ where
         futures::stream::unfold(self, |subscriber| async move {
             let next = subscriber.next_one().await?;
             Some((next, subscriber))
+        })
+    }
+}
+
+impl<DB, Row> BatchSubscriber for InboxSubscriber<DB, Row>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + PayloadRow,
+{
+    type Batch = Vec<InboxDelivery<DB, Row>>;
+
+    fn batches(
+        &mut self,
+        size: NonZeroUsize,
+    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
+        futures::stream::unfold(self, move |subscriber| async move {
+            let (tx, count) = match subscriber.claim(size.get()).await? {
+                Ok(claimed) => claimed,
+                Err(error) => return Some((Err(error), subscriber)),
+            };
+            let queue = subscriber.queue();
+            let batch = BatchTx::new(tx, count);
+            let deliveries = subscriber
+                .take_rows()
+                .map(|claimed| InboxDelivery::batched(claimed, Arc::clone(&batch), queue))
+                .collect();
+            Some((Ok(deliveries), subscriber))
         })
     }
 }

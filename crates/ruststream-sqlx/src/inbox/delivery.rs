@@ -1,12 +1,14 @@
 //! `InboxDelivery`: one claimed row in a handler's hands, and how it settles.
 
-use std::any::type_name;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ruststream::{AckError, HeaderMap, IncomingMessage};
 use sqlx::Transaction;
 use sync_wrapper::SyncWrapper;
+use tokio::sync::Mutex;
 
 use super::PayloadRow;
 use super::database::QueueDatabase;
@@ -49,6 +51,72 @@ impl Step {
 enum Hold<DB: QueueDatabase> {
     /// The delivery's own: one claim, one row.
     Own(SyncWrapper<Transaction<'static, DB>>),
+    /// A batch's: one claim, its rows sharing the transaction.
+    Batch(Arc<BatchTx<DB>>),
+}
+
+/// The transaction a batch's deliveries share: each settles its own row on it, and the last one to
+/// finish ends it.
+pub(crate) struct BatchTx<DB: QueueDatabase> {
+    tx: Mutex<Option<Transaction<'static, DB>>>,
+    open: AtomicUsize,
+    wrote: AtomicBool,
+}
+
+impl<DB: QueueDatabase> BatchTx<DB> {
+    pub(crate) fn new(tx: Transaction<'static, DB>, deliveries: usize) -> Arc<Self> {
+        Arc::new(Self {
+            tx: Mutex::new(Some(tx)),
+            open: AtomicUsize::new(deliveries),
+            wrote: AtomicBool::new(false),
+        })
+    }
+
+    /// Marks one delivery finished; the last one commits what the batch wrote, or rolls back a
+    /// batch that wrote nothing.
+    async fn finish(&self, wrote: bool) -> Result<(), sqlx::Error> {
+        if wrote {
+            self.wrote.store(true, Ordering::Release);
+        }
+        if self.open.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return Ok(());
+        }
+        let Some(tx) = self.tx.lock().await.take() else {
+            return Ok(());
+        };
+        if self.wrote.load(Ordering::Acquire) {
+            tx.commit().await
+        } else {
+            tx.rollback().await
+        }
+    }
+
+    /// Marks one delivery dropped unsettled: its row stays in the table, and the last delivery
+    /// to finish still commits what the others wrote.
+    fn release(self: Arc<Self>) {
+        if self.open.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+        // Every other delivery has finished, so nothing else holds the lock.
+        let Ok(mut held) = self.tx.try_lock() else {
+            return;
+        };
+        let Some(tx) = held.take() else {
+            return;
+        };
+        drop(held);
+        if !self.wrote.load(Ordering::Acquire) {
+            // Dropping the transaction rolls it back.
+            return;
+        }
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                if let Err(error) = tx.commit().await {
+                    tracing::warn!(target: "ruststream_sqlx", %error, "a batch's commit failed after a delivery was dropped unsettled");
+                }
+            });
+        }
+    }
 }
 
 /// One claimed row in a handler's hands.
@@ -104,6 +172,15 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
         queue: &'static Queue,
     ) -> Self {
         Self::held(claimed, Hold::Own(SyncWrapper::new(tx)), queue)
+    }
+
+    /// A delivery of a batch, sharing its claim's transaction.
+    pub(crate) fn batched(
+        claimed: Claimed<Row>,
+        batch: Arc<BatchTx<DB>>,
+        queue: &'static Queue,
+    ) -> Self {
+        Self::held(claimed, Hold::Batch(batch), queue)
     }
 
     fn held(claimed: Claimed<Row>, hold: Hold<DB>, queue: &'static Queue) -> Self {
@@ -175,10 +252,10 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
     async fn settle(mut self, outcome: Outcome) -> Result<(), AckError> {
         let step = self.step(outcome);
         // A delivery holds its transaction until it settles, and settling consumes it.
-        let Some(Hold::Own(tx)) = self.hold.take() else {
+        // A delivery holds its transaction until it settles, and settling consumes it.
+        let Some(hold) = self.hold.take() else {
             return Ok(());
         };
-        let mut tx = tx.into_inner();
         let queue = self.queue;
         let failed = |source: sqlx::Error| {
             AckError::Broker(Box::new(SqlxBrokerError::Sqlx {
@@ -195,24 +272,59 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
             now: Now::default(),
         };
         let id = self.claimed.id::<DB>();
-        let released = match step {
-            Step::Ack => Row::ack(&mut tx, &cx, id).await.map(|()| Released::Written),
-            Step::Discard => Row::discard(&mut tx, &cx, id)
-                .await
-                .map(|()| Released::Written),
-            Step::Retry => Row::retry(&mut tx, &cx, id).await,
-            Step::RetryAfter(delay) => Row::retry_after(&mut tx, &cx, id, delay)
-                .await
-                .map(|()| Released::Written),
-            Step::DeadLetter(destination) => Row::dead_letter(&mut tx, &cx, id, destination)
-                .await
-                .map(|()| Released::Written),
+        match hold {
+            Hold::Own(tx) => {
+                let mut tx = tx.into_inner();
+                let released = run_step::<DB, Row>(&mut tx, &cx, id, step)
+                    .await
+                    .map_err(failed)?;
+                match released {
+                    Released::Written => tx.commit().await.map_err(failed),
+                    Released::Untouched => tx.rollback().await.map_err(failed),
+                }
+            }
+            Hold::Batch(batch) => {
+                let outcome = {
+                    let mut guard = batch.tx.lock().await;
+                    match guard.as_mut() {
+                        Some(tx) => run_step::<DB, Row>(tx, &cx, id, step).await,
+                        None => Err(sqlx::Error::Protocol(
+                            "the batch's transaction ended before this delivery settled".to_owned(),
+                        )),
+                    }
+                };
+                // The batch counts this delivery finished whatever its statement did, so the last
+                // one still ends the transaction.
+                let wrote = matches!(outcome, Ok(Released::Written));
+                let finished = batch.finish(wrote).await;
+                outcome.map_err(failed)?;
+                finished.map_err(failed)
+            }
         }
-        .map_err(failed)?;
-        match released {
-            Released::Written => tx.commit().await.map_err(failed),
-            Released::Untouched => tx.rollback().await.map_err(failed),
-        }
+    }
+}
+
+/// Runs the statement of `step` for the row `id` on `conn`.
+async fn run_step<DB, Row>(
+    conn: &mut DB::Connection,
+    cx: &Settling<'_>,
+    id: &Row::Id,
+    step: Step,
+) -> Result<Released, sqlx::Error>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    match step {
+        Step::Ack => Row::ack(conn, cx, id).await.map(|()| Released::Written),
+        Step::Discard => Row::discard(conn, cx, id).await.map(|()| Released::Written),
+        Step::Retry => Row::retry(conn, cx, id).await,
+        Step::RetryAfter(delay) => Row::retry_after(conn, cx, id, delay)
+            .await
+            .map(|()| Released::Written),
+        Step::DeadLetter(destination) => Row::dead_letter(conn, cx, id, destination)
+            .await
+            .map(|()| Released::Written),
     }
 }
 
@@ -277,7 +389,8 @@ impl<DB: QueueDatabase, Row: Events<DB>> Drop for InboxDelivery<DB, Row> {
     fn drop(&mut self) {
         // An unsettled delivery's transaction rolls back as it drops, which returns the row to
         // the queue at once.
-        let _ = self.hold.take();
-        let _ = type_name::<Row>();
+        if let Some(Hold::Batch(batch)) = self.hold.take() {
+            batch.release();
+        }
     }
 }
