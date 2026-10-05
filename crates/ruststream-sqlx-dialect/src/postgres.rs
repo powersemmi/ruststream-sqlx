@@ -10,10 +10,18 @@ use crate::statement::{ClaimShape, Param, Statement, StatementError};
 use crate::table_name::TableName;
 use crate::writer::SqlWriter;
 
+/// The longest name Postgres keeps whole, in bytes: `NAMEDATALEN` less its terminator.
+const NAME_LIMIT: usize = 63;
+
+/// How Postgres reads the current time: the start of the statement, so a settlement made long
+/// after the claim began records its own moment.
+const DATABASE_NOW: &str = "statement_timestamp()";
+
 /// Postgres: double-quoted names, `$1` placeholders, rows claimed with `FOR UPDATE SKIP LOCKED`.
 ///
-/// It builds the statements of the row lock form. Every name is quoted, so a name keeps its case
-/// and may hold any character.
+/// It builds the statements of the row lock form and the insert. Every name is quoted, so a name
+/// keeps its case and may hold any character; a name over 63 bytes, which Postgres would cut short
+/// without a word, is refused. A table on the database's clock reads `statement_timestamp()`.
 ///
 /// # Examples
 ///
@@ -36,8 +44,34 @@ use crate::writer::SqlWriter;
 pub struct Postgres;
 
 impl Postgres {
+    /// Refuses a name Postgres would cut short: it truncates an identifier over 63 bytes without
+    /// an error, so the statement would address another object.
+    fn names_fit<'a>(self, names: impl IntoIterator<Item = &'a str>) -> Result<(), StatementError> {
+        names
+            .into_iter()
+            .find(|name| name.len() > NAME_LIMIT)
+            .map_or(Ok(()), |name| {
+                Err(StatementError::IdentifierTooLong {
+                    dialect: self.name(),
+                    identifier: name.to_owned(),
+                    limit: NAME_LIMIT,
+                })
+            })
+    }
+
+    /// Every name a statement of `spec` writes.
+    fn spec_fits(self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
+        self.names_fit(
+            spec.schema()
+                .into_iter()
+                .chain([spec.table()])
+                .chain(spec.columns().map(|column| column.name())),
+        )
+    }
+
     /// Refuses a form other than the row lock, the one this dialect builds.
     fn row_lock(self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
+        self.spec_fits(spec)?;
         match spec.form() {
             Form::RowLock => Ok(()),
             other => Err(StatementError::UnsupportedForm {
@@ -59,7 +93,7 @@ impl Postgres {
                 .push(" SET ")
                 .ident(processed_at.name())
                 .push(" = ")
-                .param(Param::Now),
+                .now(spec, DATABASE_NOW),
             None => sql.push("DELETE FROM ").table(spec),
         };
         sql.push(" WHERE ").ident(id).push(" = ").param(Param::Id);
@@ -115,7 +149,7 @@ impl Dialect for Postgres {
         };
         sql.push(" FROM ")
             .table(spec)
-            .claimable(spec)
+            .claimable(spec, DATABASE_NOW)
             .claim_order(spec, id)
             .push(" LIMIT ")
             .param(Param::Limit)
@@ -124,6 +158,7 @@ impl Dialect for Postgres {
     }
 
     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.spec_fits(spec)?;
         let id = spec.id().name();
         let mut sql = SqlWriter::new(self);
         sql.push("SELECT ")
@@ -170,7 +205,7 @@ impl Dialect for Postgres {
             .push(" SET ")
             .ident(retry_after)
             .push(" = ")
-            .param(Param::RetryAfter);
+            .later(spec, DATABASE_NOW);
         if let Some(attempt) = spec.column(Role::Attempt) {
             sql.push(", ").increment(attempt.name());
         }
@@ -206,6 +241,7 @@ impl Dialect for Postgres {
         target: TableName<'_>,
     ) -> Result<Vec<Statement>, StatementError> {
         self.row_lock(spec)?;
+        self.names_fit(target.schema().into_iter().chain([target.table()]))?;
         let id = spec.id().name();
         let mut sql = SqlWriter::new(self);
         sql.push("WITH moved AS (DELETE FROM ")
@@ -223,5 +259,42 @@ impl Dialect for Postgres {
         }
         sql.push(" SELECT ").columns(spec).push(" FROM moved");
         Ok(vec![sql.finish()])
+    }
+
+    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.spec_fits(spec)?;
+        if spec.selects_all() {
+            return Err(StatementError::Flattened {
+                statement: "insert",
+            });
+        }
+        let mut sql = SqlWriter::new(self);
+        sql.push("INSERT INTO ").table(spec);
+        let written: Vec<(usize, &str)> = spec
+            .columns()
+            .enumerate()
+            .filter(|(_, column)| !column.is_generated())
+            .map(|(position, column)| (position, column.name()))
+            .collect();
+        if written.is_empty() {
+            sql.push(" DEFAULT VALUES");
+            return Ok(sql.finish());
+        }
+        sql.push(" (");
+        for (index, (_, name)) in written.iter().enumerate() {
+            if index > 0 {
+                sql.push(", ");
+            }
+            sql.ident(name);
+        }
+        sql.push(") VALUES (");
+        for (index, (position, _)) in written.iter().enumerate() {
+            if index > 0 {
+                sql.push(", ");
+            }
+            sql.param(Param::Column(*position));
+        }
+        sql.push(")");
+        Ok(sql.finish())
     }
 }

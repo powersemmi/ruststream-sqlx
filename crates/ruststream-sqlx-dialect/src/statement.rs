@@ -45,6 +45,12 @@ pub enum Param {
     RetryAfter,
     /// Where a dead-lettered row goes: the name of its new group.
     Destination,
+    /// The delay of a retry in microseconds, for a statement that adds it to the database's own
+    /// time.
+    Delay,
+    /// The value of the column at this position of [`TableSpec::columns`](crate::TableSpec::columns),
+    /// for an insert.
+    Column(usize),
 }
 
 /// One SQL statement: its text and the parameters its placeholders bind, in placeholder order.
@@ -192,6 +198,29 @@ pub enum StatementError {
         /// The dialect's name.
         dialect: &'static str,
     },
+    /// A table, schema or column name is longer than the database allows. Postgres would cut it
+    /// short without a word and address another object.
+    #[error(
+        "`{identifier}` is longer than the {limit} bytes the {dialect} dialect allows in a name"
+    )]
+    IdentifierTooLong {
+        /// The dialect's name.
+        dialect: &'static str,
+        /// The name that is too long.
+        identifier: String,
+        /// The longest name the database keeps whole, in bytes.
+        limit: usize,
+    },
+    /// The statement needs every column, and the struct flattens another whose columns the
+    /// description cannot see.
+    #[error(
+        "the {statement} statement needs every column, and a `#[sqlx(flatten)]` field hides some: \
+         write it in the service"
+    )]
+    Flattened {
+        /// The statement being built.
+        statement: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -237,6 +266,27 @@ mod tests {
             .to_string(),
             "the dead_letter_group statement needs a column playing `group`: add `#[field(group)]` \
              to the struct"
+        );
+    }
+
+    #[test]
+    fn the_new_errors_name_what_to_fix() {
+        assert_eq!(
+            StatementError::IdentifierTooLong {
+                dialect: "postgres",
+                identifier: "jobs".to_owned(),
+                limit: 63,
+            }
+            .to_string(),
+            "`jobs` is longer than the 63 bytes the postgres dialect allows in a name"
+        );
+        assert_eq!(
+            StatementError::Flattened {
+                statement: "insert"
+            }
+            .to_string(),
+            "the insert statement needs every column, and a `#[sqlx(flatten)]` field hides some: \
+             write it in the service"
         );
     }
 }

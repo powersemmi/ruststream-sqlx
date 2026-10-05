@@ -54,6 +54,7 @@ pub struct TableSpec<'a> {
     data: &'a [Column<'a>],
     form: Form<'a>,
     select_all: bool,
+    database_clock: bool,
 }
 
 impl<'a> TableSpec<'a> {
@@ -91,6 +92,7 @@ impl<'a> TableSpec<'a> {
             data: &[],
             form,
             select_all: false,
+            database_clock: false,
         }
     }
 
@@ -372,6 +374,27 @@ impl<'a> TableSpec<'a> {
         }
     }
 
+    /// Makes the statements read the database's own clock instead of a time the service binds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// // `#[inbox(clock = DatabaseClock)]` sets it: hosts whose clocks drift read one clock.
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+    ///     .retry_after(Column::new("retry_after"))
+    ///     .database_clock();
+    /// assert!(JOBS.uses_database_clock());
+    /// ```
+    #[must_use]
+    pub const fn database_clock(self) -> Self {
+        Self {
+            database_clock: true,
+            ..self
+        }
+    }
+
     /// The table's name, without its schema.
     ///
     /// # Examples
@@ -495,6 +518,24 @@ impl<'a> TableSpec<'a> {
     #[must_use]
     pub const fn selects_all(&self) -> bool {
         self.select_all
+    }
+
+    /// Whether the statements read the database's own clock.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
+    ///
+    /// // A service binds "now" itself unless the table reads the database's clock.
+    /// let binds_now = !JOBS.uses_database_clock();
+    /// assert!(binds_now);
+    /// ```
+    #[must_use]
+    pub const fn uses_database_clock(&self) -> bool {
+        self.database_clock
     }
 
     /// The column that plays `role`, or `None` when the table has none.
@@ -681,5 +722,13 @@ mod tests {
         assert_eq!(names(&leased), ["id", "locked_until"]);
         let advisory = TableSpec::new("jobs", Column::new("id"), Form::Advisory(ID_KEY));
         assert_eq!(advisory.column(Role::LockedUntil), None);
+    }
+
+    #[test]
+    fn the_database_clock_is_a_switch_of_the_description() {
+        assert!(!EMAILS.uses_database_clock());
+        let on_database_time = EMAILS.database_clock();
+        assert!(on_database_time.uses_database_clock());
+        assert_eq!(names(&on_database_time), names(&EMAILS));
     }
 }

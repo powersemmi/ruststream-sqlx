@@ -277,3 +277,130 @@ fn settlement_refuses_forms_this_dialect_does_not_build() -> Result<(), Box<dyn 
     );
     Ok(())
 }
+
+/// A name of `len` bytes.
+fn name_of(len: usize) -> String {
+    "n".repeat(len)
+}
+
+#[test]
+fn a_name_longer_than_63_bytes_is_refused() {
+    let long = name_of(64);
+    let fits = name_of(63);
+    let refused = |identifier: &str| StatementError::IdentifierTooLong {
+        dialect: "postgres",
+        identifier: identifier.to_owned(),
+        limit: 63,
+    };
+
+    let table = TableSpec::new(&long, Column::new("job_id"), Form::RowLock);
+    assert_eq!(
+        Postgres.claim(&table, ClaimShape::Rows),
+        Err(refused(&long))
+    );
+    assert_eq!(Postgres.ack(&table), Err(refused(&long)));
+    assert_eq!(Postgres.insert(&table), Err(refused(&long)));
+
+    let schema = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).within(&long);
+    assert_eq!(Postgres.fetch(&schema), Err(refused(&long)));
+
+    let column =
+        TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new(&long));
+    assert_eq!(Postgres.discard(&column), Err(refused(&long)));
+    assert_eq!(Postgres.retry(&column), Err(refused(&long)));
+
+    let target = format!("archive.{long}");
+    let target = TableName::parse(&target).map_err(|err| err.to_string());
+    assert_eq!(
+        target.map(|target| Postgres.dead_letter_table(&BARE, target)),
+        Ok(Err(refused(&long)))
+    );
+
+    // A multi-byte name is measured in bytes, as Postgres measures it: 32 two-byte letters.
+    let wide = "\u{e9}".repeat(32);
+    let accented = TableSpec::new(&wide, Column::new("job_id"), Form::RowLock);
+    assert_eq!(Postgres.ack(&accented), Err(refused(&wide)));
+
+    let edge = TableSpec::new(&fits, Column::new(&fits), Form::RowLock).within(&fits);
+    assert!(Postgres.claim(&edge, ClaimShape::Rows).is_ok());
+}
+
+#[test]
+fn the_insert_writes_every_column_the_database_does_not_fill() -> Result<(), StatementError> {
+    let data = [
+        Column::new("subject"),
+        Column::new("created_at").generated(),
+    ];
+    let spec = TableSpec::new(
+        "email_jobs",
+        Column::new("job_id").generated(),
+        Form::RowLock,
+    )
+    .within("app")
+    .group(Column::new("name"))
+    .retry_after(Column::new("retry_after"))
+    .attempt(Column::new("attempt").generated())
+    .payload(Column::new("payload"))
+    .data(&data);
+    let insert = Postgres.insert(&spec)?;
+    assert_eq!(
+        insert.sql(),
+        r#"INSERT INTO "app"."email_jobs" ("name", "retry_after", "payload", "subject") VALUES ($1, $2, $3, $4)"#
+    );
+    // The positions count every column, the generated ones included.
+    assert_eq!(
+        insert.params(),
+        [
+            Param::Column(1),
+            Param::Column(2),
+            Param::Column(4),
+            Param::Column(5)
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_insert_of_only_generated_columns_writes_default_values() -> Result<(), StatementError> {
+    let spec = TableSpec::new("ticks", Column::new("id").generated(), Form::RowLock);
+    let insert = Postgres.insert(&spec)?;
+    assert_eq!(insert.sql(), r#"INSERT INTO "ticks" DEFAULT VALUES"#);
+    assert_eq!(insert.params(), []);
+    Ok(())
+}
+
+#[test]
+fn a_flattening_struct_has_no_insert() {
+    assert_eq!(
+        Postgres.insert(&BARE.selecting_all()),
+        Err(StatementError::Flattened {
+            statement: "insert"
+        })
+    );
+}
+
+#[test]
+fn the_database_clock_reads_the_statement_timestamp() -> Result<(), StatementError> {
+    let spec = EMAILS.database_clock();
+    let claim = Postgres.claim(&spec, ClaimShape::Ids)?;
+    assert_eq!(
+        claim.sql(),
+        r#"SELECT "job_id" FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= statement_timestamp() AND "processed_at" IS NULL ORDER BY "priority", "retry_after", "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED"#
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Limit]);
+
+    let ack = Postgres.ack(&spec)?;
+    assert_eq!(
+        ack.sql(),
+        r#"UPDATE "app"."email_jobs" SET "processed_at" = statement_timestamp() WHERE "job_id" = $1"#
+    );
+    assert_eq!(ack.params(), [Param::Id]);
+
+    let retry_after = Postgres.retry_after(&spec)?;
+    assert_eq!(
+        retry_after.sql(),
+        r#"UPDATE "app"."email_jobs" SET "retry_after" = statement_timestamp() + $1 * interval '1 microsecond', "attempt" = "attempt" + 1 WHERE "job_id" = $2"#
+    );
+    assert_eq!(retry_after.params(), [Param::Delay, Param::Id]);
+    Ok(())
+}
