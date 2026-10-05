@@ -36,18 +36,24 @@
 
 #![forbid(unsafe_code)]
 
+mod column;
 mod dialect;
+mod form;
 #[cfg(feature = "postgres")]
 mod postgres;
+mod role;
 mod spec;
 mod statement;
 mod table_name;
 #[cfg(feature = "postgres")]
 mod writer;
 
+pub use column::Column;
 pub use dialect::Dialect;
+pub use form::{Form, KeyPart};
 #[cfg(feature = "postgres")]
 pub use postgres::Postgres;
-pub use spec::{Column, Form, KeyPart, Role, TableSpec};
+pub use role::Role;
+pub use spec::TableSpec;
 pub use statement::{ClaimShape, Param, Statement, StatementError};
 pub use table_name::{ParseTableNameError, TableName};

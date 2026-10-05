@@ -3,7 +3,9 @@
 use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
-use crate::spec::{Form, Role, TableSpec};
+use crate::form::Form;
+use crate::role::Role;
+use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, Param, Statement, StatementError};
 use crate::table_name::TableName;
 use crate::writer::SqlWriter;

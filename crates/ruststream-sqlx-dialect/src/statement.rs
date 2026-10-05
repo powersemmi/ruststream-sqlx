@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::spec::Role;
+use crate::role::Role;
 
 /// A value a statement binds, named by its meaning; the broker supplies it when the statement runs.
 ///
@@ -197,7 +197,7 @@ pub enum StatementError {
 #[cfg(test)]
 mod tests {
     use super::{Param, Statement, StatementError};
-    use crate::spec::Role;
+    use crate::role::Role;
 
     #[test]
     fn a_statement_keeps_its_text_and_parameters_in_order() {

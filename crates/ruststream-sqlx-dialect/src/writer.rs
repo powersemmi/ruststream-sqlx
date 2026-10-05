@@ -3,7 +3,8 @@
 use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
-use crate::spec::{Role, TableSpec};
+use crate::role::Role;
+use crate::spec::TableSpec;
 use crate::statement::{Param, Statement};
 use crate::table_name::TableName;
 
