@@ -305,7 +305,9 @@ settle_event!(
 ///
 /// It has no default. With it, the struct's [`Repository`](crate::Repository) is a publisher and
 /// a route can lead names to it; without it, a mount that needs one does not compile, rather than
-/// publish into nothing.
+/// publish into nothing. A message carrying a header the struct cannot hold byte for byte (any
+/// header, without a `#[field(headers)]` field; see [`HeaderColumn`](crate::HeaderColumn)) is
+/// refused before this runs.
 ///
 /// # Examples
 ///

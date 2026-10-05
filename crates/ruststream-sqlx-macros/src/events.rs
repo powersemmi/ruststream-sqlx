@@ -84,13 +84,21 @@ pub(crate) fn events(
 
     let via = |ty: &Type| quote!(<#ty as #p::Via<__DB>>::Is);
 
-    let headers = playing(inbox, Role::Headers).map_or_else(
-        || quote!(#p::HeaderMap::new()),
+    let (headers, unfit_header) = playing(inbox, Role::Headers).map_or_else(
+        || {
+            (
+                quote!(#p::HeaderMap::new()),
+                quote!(#p::first_header(headers)),
+            )
+        },
         |field| {
             let column = via(field.ty);
             predicates.push(parse_quote!(#column: #r::HeaderColumn));
             let ident = field.ident;
-            quote!(#r::HeaderColumn::to_headers(&self.#ident))
+            (
+                quote!(#r::HeaderColumn::to_headers(&self.#ident)),
+                quote!(<#column as #r::HeaderColumn>::unfit(headers)),
+            )
         },
     );
     let key = playing(inbox, Role::PartitionKey).map_or_else(
@@ -276,6 +284,10 @@ pub(crate) fn events(
 
             fn headers(&self) -> #p::HeaderMap {
                 #headers
+            }
+
+            fn unfit_header(headers: &#p::HeaderMap) -> ::core::option::Option<&str> {
+                #unfit_header
             }
 
             fn partition_key(&self) -> ::core::option::Option<&[u8]> {

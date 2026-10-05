@@ -50,3 +50,21 @@ CREATE TABLE clock_jobs (
     processed_at TIMESTAMPTZ,
     payload      BYTEA NOT NULL
 );
+
+-- The conformance suites' tables: by-name subscriptions read the first, the lifecycle the second.
+CREATE TABLE conformance_jobs (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt     SMALLINT NOT NULL DEFAULT 1,
+    meta        JSONB,
+    payload     BYTEA NOT NULL
+);
+
+CREATE TABLE lifecycle_jobs (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL,
+    retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt     SMALLINT NOT NULL DEFAULT 1,
+    payload     BYTEA NOT NULL
+);

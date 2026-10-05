@@ -15,6 +15,8 @@ use sqlx::{Arguments, Database, Decode, Encode, Error, FromRow, Type};
 
 use super::InboxRow;
 use super::database::QueueDatabase;
+#[cfg(feature = "testing")]
+use super::testing::TestClock;
 use super::time::{QueueTime, TimeSource};
 
 /// A row's whole contract with the broker. Machinery; the derive implements it, a service never
@@ -28,6 +30,10 @@ pub trait Events<DB: QueueDatabase>: InboxRow + for<'r> FromRow<'r, DB::Row> + U
 
     /// The delivery's headers: the `headers` field's, or none.
     fn headers(&self) -> HeaderMap;
+
+    /// The first of `headers` the row cannot hold byte for byte: any of them where it has no
+    /// `headers` field.
+    fn unfit_header(headers: &HeaderMap) -> Option<&str>;
 
     /// The delivery's key: the `partition_key` field's bytes.
     fn partition_key(&self) -> Option<&[u8]>;
@@ -281,6 +287,9 @@ pub struct Settling<'a> {
 /// Where "now" comes from for one statement: the row's [`TimeSource`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Now {
+    /// The clock of an in-process connection, which stands in for a host clock.
+    #[cfg(feature = "testing")]
+    test: Option<TestClock>,
     _private: (),
 }
 
@@ -288,7 +297,22 @@ impl Now {
     /// Now in `T`, from `Source`; `None` where the database reads its own clock.
     #[must_use]
     pub fn read<Source: TimeSource, T: QueueTime>(self) -> Option<T> {
+        #[cfg(feature = "testing")]
+        if let Some(clock) = self.test
+            && !Source::DATABASE
+        {
+            return Some(T::from_system(clock.now()));
+        }
         Source::now::<T>()
+    }
+
+    /// "Now" of an in-process connection: `clock` instead of a host clock, where it is set.
+    #[cfg(feature = "testing")]
+    pub(crate) const fn test(clock: Option<TestClock>) -> Self {
+        Self {
+            test: clock,
+            _private: (),
+        }
     }
 }
 
@@ -321,6 +345,12 @@ where
     C::Time: for<'q> Encode<'q, DB> + Type<DB>,
 {
     type Time = C::Time;
+}
+
+/// The first of `headers`: what a row without a `headers` field cannot hold.
+#[must_use]
+pub fn first_header(headers: &HeaderMap) -> Option<&str> {
+    headers.iter().next().map(|(name, _)| name)
 }
 
 /// Binds `value`.

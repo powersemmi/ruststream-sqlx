@@ -8,13 +8,18 @@ use std::time::Duration;
 use ruststream::{AckError, HeaderMap, IncomingMessage};
 use sqlx::Transaction;
 use sync_wrapper::SyncWrapper;
+use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 use super::PayloadRow;
+#[cfg(feature = "testing")]
+use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::engine::{Claimed, Events, Now, Released, Settling};
 use super::error::SqlxBrokerError;
 use super::queue::Queue;
+#[cfg(feature = "testing")]
+use super::testing::{off_clock, returns_after};
 
 /// What a handler's outcome asks of the row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,7 +114,7 @@ impl<DB: QueueDatabase> BatchTx<DB> {
             // Dropping the transaction rolls it back.
             return;
         }
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        if let Ok(runtime) = Handle::try_current() {
             runtime.spawn(async move {
                 if let Err(error) = tx.commit().await {
                     tracing::warn!(target: "ruststream_sqlx", %error, "a batch's commit failed after a delivery was dropped unsettled");
@@ -153,6 +158,9 @@ pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>> {
     headers: HeaderMap,
     hold: Option<Hold<DB>>,
     queue: &'static Queue,
+    /// The connection of a delivery claimed in process: its settlement keeps the harness's books.
+    #[cfg(feature = "testing")]
+    in_process: Option<Arc<Shared<DB>>>,
 }
 
 impl<DB: QueueDatabase, Row: Events<DB>> fmt::Debug for InboxDelivery<DB, Row> {
@@ -204,7 +212,19 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
             headers,
             hold: Some(hold),
             queue,
+            #[cfg(feature = "testing")]
+            in_process: None,
         }
+    }
+
+    /// The delivery of `connection`, which keeps it when the connection runs in process.
+    #[cfg(feature = "testing")]
+    pub(crate) fn on(mut self, connection: &Arc<Shared<DB>>) -> Self {
+        self.in_process = connection
+            .harness
+            .in_process()
+            .then(|| Arc::clone(connection));
+        self
     }
 
     /// Whether the row's attempts are spent: its `attempt` has reached the declared cap.
@@ -249,9 +269,41 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
         self.redirected().unwrap_or(asked)
     }
 
-    async fn settle(mut self, outcome: Outcome) -> Result<(), AckError> {
+    async fn settle(self, outcome: Outcome) -> Result<(), AckError> {
         let step = self.step(outcome);
-        // A delivery holds its transaction until it settles, and settling consumes it.
+        #[cfg(feature = "testing")]
+        if let Some(connection) = self.in_process.clone() {
+            return self.settle_in_process(connection, step).await;
+        }
+        self.run(step, Now::default()).await
+    }
+
+    /// The settlement of an in-process delivery: on the test's clock, off a paused one, and in
+    /// the harness's books.
+    #[cfg(feature = "testing")]
+    async fn settle_in_process(
+        self,
+        connection: Arc<Shared<DB>>,
+        step: Step,
+    ) -> Result<(), AckError> {
+        let harness = &connection.harness;
+        let name = self.queue.name;
+        let settled = off_clock(self.run(step, harness.now()))
+            .await
+            .unwrap_or_else(|| Err(AckError::Broker(Box::new(SqlxBrokerError::Closed))));
+        match step {
+            // The row is back in the table: counted again before this delivery leaves the books.
+            Step::Retry => harness.expect(name),
+            // The row comes back once its delay runs out, which `TestApp::advance` fires.
+            Step::RetryAfter(delay) if settled.is_ok() => returns_after(&connection, name, delay),
+            _ => {}
+        }
+        harness.released();
+        settled
+    }
+
+    /// Runs the statement of `step` and ends the transaction it ran on.
+    async fn run(mut self, step: Step, now: Now) -> Result<(), AckError> {
         // A delivery holds its transaction until it settles, and settling consumes it.
         let Some(hold) = self.hold.take() else {
             return Ok(());
@@ -269,7 +321,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
         let cx = Settling {
             queue: queue.name,
             prepared: &queue.prepared,
-            now: Now::default(),
+            now,
         };
         let id = self.claimed.id::<DB>();
         match hold {
@@ -387,10 +439,27 @@ where
 
 impl<DB: QueueDatabase, Row: Events<DB>> Drop for InboxDelivery<DB, Row> {
     fn drop(&mut self) {
-        // An unsettled delivery's transaction rolls back as it drops, which returns the row to
-        // the queue at once.
-        if let Some(Hold::Batch(batch)) = self.hold.take() {
-            batch.release();
+        let Some(hold) = self.hold.take() else {
+            return;
+        };
+        #[cfg(feature = "testing")]
+        let in_process = self.in_process.take();
+        match hold {
+            // In process the rollback runs off a paused clock too.
+            #[cfg(feature = "testing")]
+            Hold::Own(tx) if in_process.is_some() => {
+                if let Ok(runtime) = Handle::try_current() {
+                    drop(runtime.spawn(off_clock(tx.into_inner().rollback())));
+                }
+            }
+            // An unsettled delivery's transaction rolls back as it drops, which returns the row
+            // to the queue at once.
+            Hold::Own(_) => {}
+            Hold::Batch(batch) => batch.release(),
+        }
+        #[cfg(feature = "testing")]
+        if let Some(connection) = in_process {
+            connection.harness.returned(self.queue.name);
         }
     }
 }

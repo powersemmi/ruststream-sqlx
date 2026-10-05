@@ -11,12 +11,18 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use ruststream::{DefaultPublish, Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
 use sqlx::Database;
+#[cfg(feature = "testing")]
+use sqlx::Pool;
 
-use super::InboxRow;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
+use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
+use super::named::{self, NamedSubscriber};
+#[cfg(feature = "testing")]
+use super::testing::{cancelled, off_clock};
+use super::{InboxRow, PayloadRow};
 
 /// The table of `Row`, qualified with its schema, for messages.
 pub(crate) fn table_of<Row: InboxRow>() -> String {
@@ -29,13 +35,13 @@ pub(crate) fn table_of<Row: InboxRow>() -> String {
 
 /// Writes `message` into `Row`'s table on a connection of the pool, unless the broker is shut
 /// down.
-async fn write<DB, Row>(
+async fn insert<DB, Row>(
     shared: &Shared<DB>,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), SqlxBrokerError>
 where
     DB: QueueDatabase,
-    Row: Publish<DB>,
+    Row: Publish<DB> + Events<DB>,
 {
     let failed = |source| SqlxBrokerError::Publish {
         name: message.name().to_owned(),
@@ -48,10 +54,61 @@ where
     if shared.closed.is_cancelled() {
         return Err(SqlxBrokerError::Closed);
     }
-    let mut conn = shared.pool.acquire().await.map_err(failed)?;
-    Row::publish(&mut conn, message).await.map_err(failed)?;
+    // Why a run-time check: headers are the message's, known only when it is published, and a
+    // header the row cannot hold would reach the table lost or changed.
+    if let Some(header) = Row::unfit_header(message.headers()) {
+        return Err(SqlxBrokerError::Header {
+            name: message.name().to_owned(),
+            table: table_of::<Row>(),
+            row: type_name::<Row>(),
+            header: header.to_owned(),
+        });
+    }
     #[cfg(feature = "testing")]
-    shared.harness.record(message);
+    if shared.harness.in_process() {
+        return publish_off_clock::<DB, Row>(&shared.pool, message)
+            .await
+            .map_err(failed);
+    }
+    let mut conn = shared.pool.acquire().await.map_err(failed)?;
+    Row::publish(&mut conn, message).await.map_err(failed)
+}
+
+/// The insert of an in-process connection, off a paused clock.
+#[cfg(feature = "testing")]
+async fn publish_off_clock<DB, Row>(
+    pool: &Pool<DB>,
+    message: &OutgoingMessage<'_>,
+) -> Result<(), sqlx::Error>
+where
+    DB: QueueDatabase,
+    Row: Publish<DB>,
+{
+    let pool = pool.clone();
+    let name = message.name().to_owned();
+    let payload = message.payload().to_vec();
+    let headers = message.headers().clone();
+    off_clock(async move {
+        let mut conn = pool.acquire().await?;
+        let message = OutgoingMessage::new(&name, &payload).with_headers(headers);
+        Row::publish(&mut conn, &message).await
+    })
+    .await
+    .unwrap_or_else(|| Err(cancelled()))
+}
+
+/// A publisher's write: the insert, then the harness's books of what the broker published.
+async fn write<DB, Row>(
+    shared: &Shared<DB>,
+    message: &OutgoingMessage<'_>,
+) -> Result<(), SqlxBrokerError>
+where
+    DB: QueueDatabase,
+    Row: Publish<DB> + Events<DB>,
+{
+    insert::<DB, Row>(shared, message).await?;
+    #[cfg(feature = "testing")]
+    shared.harness.published(message);
     Ok(())
 }
 
@@ -147,7 +204,7 @@ impl<Row> fmt::Debug for Repository<Row> {
 impl<DB, Row> PublishPolicy<ConnectedSqlxBroker<DB>> for Repository<Row>
 where
     DB: QueueDatabase,
-    Row: Publish<DB>,
+    Row: Publish<DB> + Events<DB>,
 {
     type Live = RepositoryPublisher<DB, Row>;
 
@@ -207,7 +264,7 @@ impl<DB: Database, Row> fmt::Debug for RepositoryPublisher<DB, Row> {
 impl<DB, Row> Publisher for RepositoryPublisher<DB, Row>
 where
     DB: QueueDatabase,
-    Row: Publish<DB>,
+    Row: Publish<DB> + Events<DB>,
 {
     type Payload = Lend;
     type Error = SqlxBrokerError;
@@ -225,11 +282,18 @@ where
 /// A name's way into a table.
 pub(crate) trait Route<DB: Database>: Send + Sync {
     /// Writes `message` into the route's table.
-    fn publish<'a>(
+    fn insert<'a>(
         &'a self,
         shared: &'a Shared<DB>,
         message: &'a OutgoingMessage<'a>,
     ) -> BoxFuture<'a, Result<(), SqlxBrokerError>>;
+
+    /// Opens a by-name subscription to `name` of the route's table.
+    fn subscribe<'a>(
+        &'a self,
+        shared: &'a Arc<Shared<DB>>,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<NamedSubscriber<DB>, SqlxBrokerError>>;
 
     /// The row type, for messages.
     fn row(&self) -> &'static str;
@@ -240,14 +304,22 @@ struct TypedRoute<Row>(PhantomData<fn() -> Row>);
 impl<DB, Row> Route<DB> for TypedRoute<Row>
 where
     DB: QueueDatabase,
-    Row: Publish<DB>,
+    Row: Publish<DB> + Events<DB> + PayloadRow,
 {
-    fn publish<'a>(
+    fn insert<'a>(
         &'a self,
         shared: &'a Shared<DB>,
         message: &'a OutgoingMessage<'a>,
     ) -> BoxFuture<'a, Result<(), SqlxBrokerError>> {
-        Box::pin(write::<DB, Row>(shared, message))
+        Box::pin(insert::<DB, Row>(shared, message))
+    }
+
+    fn subscribe<'a>(
+        &'a self,
+        shared: &'a Arc<Shared<DB>>,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<NamedSubscriber<DB>, SqlxBrokerError>> {
+        named::subscribe::<DB, Row>(shared, name)
     }
 
     fn row(&self) -> &'static str {
@@ -309,7 +381,10 @@ impl<DB: Database> fmt::Debug for Routes<DB> {
 }
 
 impl<DB: QueueDatabase> Routes<DB> {
-    pub(crate) fn add<Row: Publish<DB>>(&mut self, name: Cow<'static, str>) {
+    pub(crate) fn add<Row>(&mut self, name: Cow<'static, str>)
+    where
+        Row: Publish<DB> + Events<DB> + PayloadRow,
+    {
         self.routes.retain(|(existing, _)| *existing != name);
         self.routes
             .push((name, Box::new(TypedRoute::<Row>(PhantomData))));
@@ -464,7 +539,10 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
                 name: msg.name().to_owned(),
             });
         };
-        route.publish(&self.shared, &msg).await
+        route.insert(&self.shared, &msg).await?;
+        #[cfg(feature = "testing")]
+        self.shared.harness.published(&msg);
+        Ok(())
     }
 }
 

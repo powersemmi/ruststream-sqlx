@@ -11,6 +11,8 @@ use sqlx::types::Json;
 ///
 /// `sqlx::types::Json<BTreeMap<String, String>>` implements it under the `json` feature (a
 /// `jsonb` or `json` column of string values), and so does an `Option` of any implementation.
+/// A publish carrying a header the column cannot hold byte for byte is refused before the
+/// service's [`Publish`](crate::Publish) runs: a header never reaches the table changed.
 ///
 /// # Examples
 ///
@@ -36,6 +38,15 @@ use sqlx::types::Json;
 ///             .map(|(name, value)| format!("{name}: {}", String::from_utf8_lossy(value)))
 ///             .collect();
 ///         Self(lines.join("\n"))
+///     }
+///
+///     fn unfit(headers: &HeaderMap) -> Option<&str> {
+///         // A value comes back as it went in when it is text on one line.
+///         let fits = |value: &[u8]| str::from_utf8(value).is_ok_and(|text| !text.contains('\n'));
+///         headers
+///             .iter()
+///             .find(|(_, value)| !fits(value))
+///             .map(|(name, _)| name)
 ///     }
 /// }
 ///
@@ -81,6 +92,28 @@ pub trait HeaderColumn {
     /// ```
     #[must_use]
     fn from_headers(headers: &HeaderMap) -> Self;
+
+    /// The first of `headers` the column cannot hold byte for byte, if any: the broker refuses a
+    /// publish that carries it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "json")] {
+    /// use std::collections::BTreeMap;
+    ///
+    /// use ruststream::HeaderMap;
+    /// use ruststream_sqlx::HeaderColumn;
+    /// use sqlx::types::Json;
+    ///
+    /// let mut headers = HeaderMap::new();
+    /// headers.insert("x-tenant", "acme");
+    /// headers.insert("x-signature", b"\xff\x00".as_slice());
+    /// // A JSON string holds text: the signature would come back changed.
+    /// assert_eq!(Json::<BTreeMap<String, String>>::unfit(&headers), Some("x-signature"));
+    /// # }
+    /// ```
+    fn unfit(headers: &HeaderMap) -> Option<&str>;
 }
 
 impl<T: HeaderColumn> HeaderColumn for Option<T> {
@@ -92,10 +125,14 @@ impl<T: HeaderColumn> HeaderColumn for Option<T> {
     fn from_headers(headers: &HeaderMap) -> Self {
         (!headers.is_empty()).then(|| T::from_headers(headers))
     }
+
+    fn unfit(headers: &HeaderMap) -> Option<&str> {
+        T::unfit(headers)
+    }
 }
 
-/// A JSON object of strings. A value that is not UTF-8 is written with its invalid bytes
-/// replaced, as `String::from_utf8_lossy` does.
+/// A JSON object of strings. A value that is not UTF-8 does not fit: the broker refuses a publish
+/// that carries one, so the replacement `from_headers` would write never reaches the table.
 #[cfg(feature = "json")]
 impl HeaderColumn for Json<BTreeMap<String, String>> {
     fn to_headers(&self) -> HeaderMap {
@@ -112,6 +149,13 @@ impl HeaderColumn for Json<BTreeMap<String, String>> {
                 .map(|(name, value)| (name.to_owned(), String::from_utf8_lossy(value).into_owned()))
                 .collect(),
         )
+    }
+
+    fn unfit(headers: &HeaderMap) -> Option<&str> {
+        headers
+            .iter()
+            .find(|(_, value)| str::from_utf8(value).is_err())
+            .map(|(name, _)| name)
     }
 }
 

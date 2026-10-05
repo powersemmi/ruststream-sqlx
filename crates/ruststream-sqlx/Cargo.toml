@@ -69,7 +69,7 @@ ruststream = { workspace = true, features = ["macros", "json", "testing", "confo
 sqlx = { workspace = true, features = ["postgres", "chrono", "json", "derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 chrono.workspace = true
-futures.workspace = true
+futures = { workspace = true, features = ["executor"] }
 serde.workspace = true
 serde_json.workspace = true
 trybuild.workspace = true

@@ -21,9 +21,9 @@ mod inbox;
 pub use inbox::{
     Ack, AttemptColumn, BuiltInDialect, Claim, Clock, ClosedSqlxBroker, ConnectedSqlxBroker,
     DatabaseClock, DeadLetter, Discard, Fetch, HeaderColumn, InboxDelivery, InboxQueue, InboxRow,
-    InboxSubscriber, Insert, KeyColumn, PayloadRow, Publish, QueueDatabase, QueueTime, Repository,
-    RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker, SqlxBrokerError,
-    SystemClock, TimeColumn, TimeSource,
+    InboxSubscriber, Insert, KeyColumn, NamedDelivery, NamedSubscriber, PayloadRow, Publish,
+    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
+    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
 };
 
 /// What `#[derive(Inbox)]` generates against. Machinery; never named by a service.
@@ -44,8 +44,8 @@ pub mod __private {
     pub use crate::inbox::QueueDatabase;
     pub use crate::inbox::engine::{
         Claimed, Claiming, Event, Events, Now, Prepared, Released, Settling, Shape, Stmt, TimeFor,
-        Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids, later,
-        match_claimed, micros, now, put, retry, retry_after,
+        Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids, first_header,
+        later, match_claimed, micros, now, put, retry, retry_after,
     };
 }
 

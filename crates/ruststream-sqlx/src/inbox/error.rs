@@ -115,6 +115,21 @@ pub enum SqlxBrokerError {
         #[source]
         source: Box<sqlx::Error>,
     },
+    /// The publish carries a header the table cannot hold byte for byte, so it was refused.
+    #[error(
+        "publishing to `{name}` into table `{table}` ({row}) was refused: the table cannot hold \
+         header `{header}` byte for byte"
+    )]
+    Header {
+        /// The name published to.
+        name: String,
+        /// The table, qualified with its schema.
+        table: String,
+        /// The row type.
+        row: &'static str,
+        /// The header.
+        header: String,
+    },
     /// No route leads the name to a table.
     #[error("no route leads `{name}` to a table: add `.route::<Row>(\"{name}\")` to the broker")]
     NoRoute {

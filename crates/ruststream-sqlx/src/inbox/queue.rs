@@ -10,15 +10,17 @@ use std::time::Duration;
 
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
 use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, TableName};
-use sqlx::Database;
+use sqlx::{Database, Pool};
 
 use super::PayloadRow;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
-use super::engine::{Events, Prepared, intern, intern_name};
+use super::engine::{Events, Prepared, Stmt, intern, intern_name};
 use super::error::SqlxBrokerError;
 use super::publish::table_of;
 use super::subscriber::InboxSubscriber;
+#[cfg(feature = "testing")]
+use super::testing::{cancelled, off_clock};
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
@@ -381,29 +383,24 @@ where
     )?;
     let table_name = intern_name(&table);
     let registration = Registration::take(shared, table_name, name, row)?;
-    let mut conn = shared
-        .pool
-        .acquire()
+    check(shared, &prepared)
         .await
-        .map_err(|source| SqlxBrokerError::Sqlx {
-            subscription: name.to_owned(),
-            table: table.clone(),
-            row,
-            statement: "acquire",
-            source: Box::new(source),
-        })?;
-    for statement in prepared.statements() {
-        DB::prepare(&mut conn, statement.sql)
-            .await
-            .map_err(|source| SqlxBrokerError::Schema {
+        .map_err(|unchecked| match unchecked {
+            Unchecked::Acquire(source) => SqlxBrokerError::Sqlx {
                 subscription: name.to_owned(),
                 table: table.clone(),
                 row,
-                statement: statement.sql,
+                statement: "acquire",
                 source: Box::new(source),
-            })?;
-    }
-    drop(conn);
+            },
+            Unchecked::Statement(statement, source) => SqlxBrokerError::Schema {
+                subscription: name.to_owned(),
+                table: table.clone(),
+                row,
+                statement,
+                source: Box::new(source),
+            },
+        })?;
     let queue = Queue {
         name: intern_name(name),
         table: table_name,
@@ -419,6 +416,43 @@ where
         queue,
         registration,
     ))
+}
+
+/// Why the startup check failed: no connection, or a statement the server refused.
+enum Unchecked {
+    Acquire(sqlx::Error),
+    Statement(&'static str, sqlx::Error),
+}
+
+/// The startup check: prepares each of `prepared`'s statements on a connection of the pool, off a
+/// paused clock where the connection runs in process.
+async fn check<DB: QueueDatabase>(
+    shared: &Shared<DB>,
+    prepared: &Prepared,
+) -> Result<(), Unchecked> {
+    #[cfg(feature = "testing")]
+    if shared.harness.in_process() {
+        let pool = shared.pool.clone();
+        let statements: Vec<Stmt> = prepared.statements().collect();
+        return off_clock(async move { prepare(&pool, statements.into_iter()).await })
+            .await
+            .unwrap_or_else(|| Err(Unchecked::Acquire(cancelled())));
+    }
+    prepare(&shared.pool, prepared.statements()).await
+}
+
+/// Prepares each of `statements` on a connection of `pool`.
+async fn prepare<DB: QueueDatabase>(
+    pool: &Pool<DB>,
+    statements: impl Iterator<Item = Stmt>,
+) -> Result<(), Unchecked> {
+    let mut conn = pool.acquire().await.map_err(Unchecked::Acquire)?;
+    for statement in statements {
+        DB::prepare(&mut conn, statement.sql)
+            .await
+            .map_err(|source| Unchecked::Statement(statement.sql, source))?;
+    }
+    Ok(())
 }
 
 /// A queue's place in its connection's register of open subscriptions; dropping it frees the
@@ -449,6 +483,8 @@ impl<DB: Database> Registration<DB> {
         }
         queues.push((table, name.to_owned()));
         drop(queues);
+        #[cfg(feature = "testing")]
+        shared.harness.opened(name);
         Ok(Self {
             shared: Arc::clone(shared),
             table,
@@ -465,6 +501,9 @@ impl<DB: Database> Drop for Registration<DB> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         queues.retain(|(table, name)| !(*table == self.table && *name == self.name));
+        drop(queues);
+        #[cfg(feature = "testing")]
+        self.shared.harness.closed(&self.name);
     }
 }
 

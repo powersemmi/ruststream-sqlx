@@ -110,6 +110,62 @@ async fn a_name_without_a_route_is_an_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_header_the_table_cannot_hold_refuses_the_publish() {
+    let Some(db) = database().await else { return };
+    let connected = SqlxBroker::new(db.pool.clone())
+        .route::<Plain>("plain")
+        .connect()
+        .await
+        .expect("the broker connects");
+    let routed = Routed
+        .pair(&connected)
+        .await
+        .expect("the route table pairs");
+    let typed = Repository::<SendEmail>::default()
+        .pair(&connected)
+        .await
+        .expect("the repository pairs");
+
+    // `plain_jobs` keeps no headers at all.
+    let mut tenant = HeaderMap::new();
+    tenant.insert("x-tenant", "acme");
+    let refused = routed
+        .publish(
+            OutgoingMessage::new("plain", b"a".as_slice()).with_headers(tenant),
+            None,
+        )
+        .await
+        .expect_err("a header the table has no column for refuses the publish");
+    assert!(
+        matches!(&refused, SqlxBrokerError::Header { header, .. } if header == "x-tenant"),
+        "{refused}"
+    );
+
+    // `email_jobs` keeps headers as JSON strings, which hold no bytes that are not UTF-8.
+    let mut binary = HeaderMap::new();
+    binary.insert("x-blob", b"\xff\xfe".as_slice());
+    let refused = typed
+        .publish(
+            OutgoingMessage::new("emails", b"b".as_slice()).with_headers(binary),
+            None,
+        )
+        .await
+        .expect_err("a header value the column would rewrite refuses the publish");
+    assert!(
+        matches!(&refused, SqlxBrokerError::Header { header, .. } if header == "x-blob"),
+        "{refused}"
+    );
+
+    assert_eq!(
+        plain_rows(&db.pool, "plain_jobs").await,
+        Vec::<Vec<u8>>::new()
+    );
+    assert_eq!(email_rows(&db.pool, "email_jobs").await, []);
+    connected.shutdown().await.expect("the broker shuts down");
+    db.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_repository_publish_after_shutdown_is_refused() {
     let Some(db) = database().await else { return };
     let connected = SqlxBroker::new(db.pool.clone())

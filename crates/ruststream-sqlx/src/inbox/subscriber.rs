@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
-use sqlx::Transaction;
+use sqlx::{Pool, Transaction};
 
 use super::PayloadRow;
 use super::broker::Shared;
@@ -16,6 +16,8 @@ use super::delivery::{BatchTx, InboxDelivery};
 use super::engine::{Claimed, Claiming, Events, Now};
 use super::error::SqlxBrokerError;
 use super::queue::{Queue, Registration};
+#[cfg(feature = "testing")]
+use super::testing::{cancelled, off_clock};
 
 /// How long a subscription waits after a claim failed, so a persistent failure cannot spin the
 /// loop.
@@ -140,22 +142,42 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         &mut self,
         limit: usize,
     ) -> Result<(Transaction<'static, DB>, usize), SqlxBrokerError> {
-        let mut tx = self
-            .shared
-            .pool
-            .begin()
-            .await
-            .map_err(|source| self.failed("BEGIN", source))?;
-        let statement = self.queue.prepared.claim.map_or("claim", |claim| claim.sql);
-        let cx = Claiming {
-            queue: self.queue.name,
-            limit: i64::try_from(limit).unwrap_or(i64::MAX),
-            prepared: &self.queue.prepared,
-            now: Now::default(),
-        };
-        self.rows.clear();
-        let claimed = Row::claim(&mut tx, &cx, &mut self.rows).await;
-        claimed.map_err(|source| self.failed(statement, source))?;
+        #[cfg(feature = "testing")]
+        if self.shared.harness.in_process() {
+            return self.claim_in_process(limit).await;
+        }
+        let tx = claim_rows(
+            &self.shared.pool,
+            self.queue,
+            limit,
+            Now::default(),
+            &mut self.rows,
+        )
+        .await
+        .map_err(|(statement, source)| self.failed(statement, source))?;
+        Ok((tx, self.rows.len()))
+    }
+
+    /// The claim of an in-process connection: on the test's clock, off a paused one, and in the
+    /// harness's books.
+    #[cfg(feature = "testing")]
+    async fn claim_in_process(
+        &mut self,
+        limit: usize,
+    ) -> Result<(Transaction<'static, DB>, usize), SqlxBrokerError> {
+        let pool = self.shared.pool.clone();
+        let queue = self.queue;
+        let now = self.shared.harness.now();
+        let mut rows = std::mem::take(&mut self.rows);
+        let (claimed, rows) = off_clock(async move {
+            let claimed = claim_rows(&pool, queue, limit, now, &mut rows).await;
+            (claimed, rows)
+        })
+        .await
+        .unwrap_or_else(|| (Err(("BEGIN", cancelled())), Vec::new()));
+        self.rows = rows;
+        let tx = claimed.map_err(|(statement, source)| self.failed(statement, source))?;
+        self.shared.harness.claimed(queue.name, self.rows.len());
         Ok((tx, self.rows.len()))
     }
 
@@ -175,8 +197,51 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         };
         let queue = self.queue;
         let claimed = self.rows.pop()?;
-        Some(Ok(InboxDelivery::own(claimed, tx, queue)))
+        let delivery = InboxDelivery::own(claimed, tx, queue);
+        #[cfg(feature = "testing")]
+        let delivery = delivery.on(&self.shared);
+        Some(Ok(delivery))
     }
+
+    /// The subscription's deliveries, as a stream that owns it.
+    pub(crate) fn into_stream(
+        self,
+    ) -> impl Stream<Item = Result<InboxDelivery<DB, Row>, SqlxBrokerError>> + Send + 'static {
+        futures::stream::unfold(self, |mut subscriber| async move {
+            let next = subscriber.next_one().await?;
+            Some((next, subscriber))
+        })
+    }
+}
+
+/// A statement that failed, and why.
+type Failed = (&'static str, sqlx::Error);
+
+/// Claims up to `limit` rows of `queue` into `rows`, in a transaction of `pool` it returns open.
+async fn claim_rows<DB, Row>(
+    pool: &Pool<DB>,
+    queue: &'static Queue,
+    limit: usize,
+    now: Now,
+    rows: &mut Vec<Claimed<Row>>,
+) -> Result<Transaction<'static, DB>, Failed>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let mut tx = pool.begin().await.map_err(|source| ("BEGIN", source))?;
+    let cx = Claiming {
+        queue: queue.name,
+        limit: i64::try_from(limit).unwrap_or(i64::MAX),
+        prepared: &queue.prepared,
+        now,
+    };
+    rows.clear();
+    Row::claim(&mut tx, &cx, rows).await.map_err(|source| {
+        let statement = queue.prepared.claim.map_or("claim", |claim| claim.sql);
+        (statement, source)
+    })?;
+    Ok(tx)
 }
 
 impl<DB, Row> Subscriber for InboxSubscriber<DB, Row>
@@ -213,9 +278,16 @@ where
             };
             let queue = subscriber.queue();
             let batch = BatchTx::new(tx, count);
+            #[cfg(feature = "testing")]
+            let shared = Arc::clone(&subscriber.shared);
             let deliveries = subscriber
                 .take_rows()
-                .map(|claimed| InboxDelivery::batched(claimed, Arc::clone(&batch), queue))
+                .map(|claimed| {
+                    let delivery = InboxDelivery::batched(claimed, Arc::clone(&batch), queue);
+                    #[cfg(feature = "testing")]
+                    let delivery = delivery.on(&shared);
+                    delivery
+                })
                 .collect();
             Some((Ok(deliveries), subscriber))
         })

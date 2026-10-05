@@ -11,7 +11,9 @@ use ruststream_sqlx_dialect::Dialect;
 use sqlx::{Database, Pool};
 use tokio_util::sync::CancellationToken;
 
+use super::PayloadRow;
 use super::database::{BuiltInDialect, QueueDatabase};
+use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
 use super::publish::Routes;
@@ -106,7 +108,7 @@ impl DialectHandle {
 /// # fn main() {}
 /// ```
 pub struct SqlxBroker<DB: Database> {
-    pool: Pool<DB>,
+    pub(crate) pool: Pool<DB>,
     dialect: DialectHandle,
     routes: Routes<DB>,
     poll_interval: Duration,
@@ -185,7 +187,8 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
         }
     }
 
-    /// Leads publishes to `name` into the table of `Row`, through its [`Publish`].
+    /// Leads publishes to `name` into the table of `Row`, through its [`Publish`], and opens a
+    /// subscription by that name (`#[subscriber("name")]`) on the same table.
     ///
     /// A name ending in `*` leads every name that starts with what precedes it; an exact name
     /// wins over a prefix, and a longer prefix over a shorter one. Routing a name twice leads it
@@ -234,7 +237,10 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     /// # fn main() {}
     /// ```
     #[must_use]
-    pub fn route<Row: Publish<DB>>(mut self, name: impl Into<Cow<'static, str>>) -> Self {
+    pub fn route<Row>(mut self, name: impl Into<Cow<'static, str>>) -> Self
+    where
+        Row: Publish<DB> + Events<DB> + PayloadRow,
+    {
         self.routes.add::<Row>(name.into());
         self
     }
