@@ -16,3 +16,11 @@ workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+
+[features]
+default = []
+# The built-in Postgres dialect.
+postgres = []
+
+[dependencies]
+thiserror.workspace = true
