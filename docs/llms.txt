@@ -1,0 +1,15 @@
+# ruststream-sqlx
+
+> `ruststream-sqlx` brings SQL databases into RustStream, a Rust framework for services that subscribe to message brokers and publish to them, through `sqlx`: a transactional outbox over any RustStream broker, and task queues in Postgres, MySQL/MariaDB and SQLite tables.
+
+This site holds the entry pages. The crate is documented item by item on docs.rs, and the framework itself on the RustStream site.
+
+## Site
+
+- [Home](https://powersemmi.github.io/ruststream-sqlx/latest/): the two components and where the rest of the documentation is
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-sqlx): the full rustdoc of the crate
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-sqlx): the crate's repository

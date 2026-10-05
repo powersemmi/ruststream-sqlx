@@ -1,0 +1,54 @@
+name: Docs
+
+on:
+  # The site itself builds in the CI workflow, after its lint job; this one keeps the
+  # translation-parity check, which has to re-run on a label and would drag the whole CI along
+  # with it there. No base filter: a pull request stacked on another one has a branch for its
+  # base, and a filter naming `main` leaves it with no checks at all.
+  pull_request:
+    # `ready_for_review` is here because a draft runs nothing, as in the CI workflow.
+    # `labeled` / `unlabeled` are here because applying the escape-hatch label has to re-run the
+    # check, or the label leaves a stale red run blocking the merge.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    paths:
+      - docs/**
+      - properdocs.yml
+      - overrides/**
+      - crates/ruststream-sqlx/examples/**
+      - scripts/lint_doc_fences.py
+      - scripts/check_doc_i18n.py
+      - scripts/check_doc_parity.py
+      - scripts/doc_glossary.toml
+      - .github/workflows/docs.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  translation-parity:
+    name: Translation parity
+    # The label is for an edit confined to one language: spelling, grammar, or a word choice
+    # that was already right elsewhere. It suppresses this job only.
+    if: >-
+      github.event_name == 'pull_request'
+      && !github.event.pull_request.draft
+      && !contains(github.event.pull_request.labels.*.name, 'docs-single-language')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # The rule is a diff rule, so the merge base with the target branch has to be
+          # reachable.
+          fetch-depth: 0
+
+      - name: Check that an edit reached every language
+        # The base branch arrives as an environment variable: a branch name expanded straight
+        # into the command line is an injection point, and this repository's zizmor gate says so.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python3 scripts/check_doc_parity.py --base "origin/$BASE_REF"

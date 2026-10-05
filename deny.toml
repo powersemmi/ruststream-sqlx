@@ -1,0 +1,28 @@
+# cargo-deny configuration: the dependency-graph half of the security gate.
+# Checks RustSec advisories, license compatibility, duplicate versions, and
+# registry sources. Run locally with `just deny`.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+
+ignore = []
+
+[licenses]
+# Apache-2.0/MIT-compatible permissive licenses only.
+allow = [
+    "Apache-2.0",
+]
+
+[bans]
+# clippy::cargo's multiple_crate_versions is allowed in the workspace lints, so
+# a duplicate in a transitive dependency's tree warns here instead of failing:
+# the report stays visible without blocking on another crate's dependency
+# choices.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

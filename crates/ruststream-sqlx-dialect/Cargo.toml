@@ -1,0 +1,18 @@
+[package]
+name = "ruststream-sqlx-dialect"
+description = "SQL text generation for ruststream-sqlx: the statements its procedural macros and its runtime build for each database."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+keywords = ["sql", "dialect", "postgres", "mysql", "sqlite"]
+categories = ["database"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

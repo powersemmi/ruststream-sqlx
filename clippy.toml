@@ -1,0 +1,3 @@
+# Proper nouns that should not require backticks in doc comments. The trailing ".." keeps clippy's
+# built-in defaults.
+doc-valid-idents = ["RustStream", "MySQL", "MariaDB", "SQLite", "PostgreSQL", ".."]

@@ -1,0 +1,18 @@
+[package]
+name = "ruststream-sqlx"
+description = "SQL databases for the RustStream messaging framework through sqlx: a transactional outbox over any RustStream broker and task queues in Postgres, MySQL/MariaDB and SQLite tables."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "../../README.md"
+keywords = ["sqlx", "outbox", "queue", "messaging", "ruststream"]
+categories = ["asynchronous", "database"]
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
