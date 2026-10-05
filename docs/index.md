@@ -9,6 +9,10 @@ service through [`sqlx`](https://docs.rs/sqlx). It has two components:
   again at startup.
 - Task queues in Postgres, MySQL/MariaDB and SQLite tables that the service owns.
 
+The service owns its queue tables. At startup a subscription checks that its table has the
+columns its struct names. The column types are the service's to get right, and a row that does
+not decode is settled by the subscription's decode-failure policy.
+
 ## Where the rest is
 
 The crate's reference is on docs.rs: [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx).

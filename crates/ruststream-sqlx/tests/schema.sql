@@ -78,3 +78,30 @@ CREATE TABLE fragile_jobs (
 CREATE TABLE fragile_refs (
     job_id BIGINT NOT NULL REFERENCES fragile_jobs (id)
 );
+
+-- A payload column of the wrong type: the struct reads bytes, the table holds text.
+CREATE TABLE mistyped_jobs (
+    id      BIGSERIAL PRIMARY KEY,
+    payload TEXT NOT NULL
+);
+
+-- Rows that decode or not by their own values: a struct field that takes no NULL.
+CREATE TABLE partial_jobs (
+    id      BIGSERIAL PRIMARY KEY,
+    note    TEXT,
+    payload BYTEA NOT NULL
+);
+
+-- An id column of the wrong type: nothing can settle such a row.
+CREATE TABLE text_key_jobs (
+    id      TEXT PRIMARY KEY,
+    payload BYTEA NOT NULL
+);
+
+-- The id comes last, and the struct flattens another so its statements select `*`: the claim
+-- finds the id of a row that does not decode by the column's name.
+CREATE TABLE flat_jobs (
+    note    TEXT,
+    payload BYTEA NOT NULL,
+    id      BIGSERIAL PRIMARY KEY
+);

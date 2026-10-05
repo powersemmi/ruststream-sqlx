@@ -9,6 +9,9 @@
   服务启动时，会重新发布所有尚未处理的记录。
 - 任务队列，存放在服务自己的 Postgres、MySQL/MariaDB 和 SQLite 表中。
 
+队列表归服务所有。启动时，订阅会检查它的表中有没有结构体列出的各列。
+列的类型由服务自己负责。某一行无法解码为结构体时，订阅按自己的解码失败策略处置这一行。
+
 ## 其余内容在哪里 { #where-the-rest-is }
 
 这个 crate 的参考文档在 docs.rs 上：[`ruststream-sqlx`](https://docs.rs/ruststream-sqlx)。

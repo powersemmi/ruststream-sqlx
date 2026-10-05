@@ -86,7 +86,9 @@
 //! [`SqlxBroker`] serves the queues in the tables of the service's sqlx pool, and the pool stays
 //! the service's. An [`InboxQueue`] subscription claims rows with `FOR UPDATE SKIP LOCKED`, one
 //! transaction per message or per batch, and polls when the queue runs dry. A batch's
-//! settlements take effect together, when its last delivery settles.
+//! settlements take effect together, when its last delivery settles. A batch that holds a row
+//! whose statement always fails rolls back on every attempt and returns all of its rows, until
+//! the service's SQL or schema is fixed.
 //!
 //! A message in work holds a connection of the pool until it settles, a batch holds one for all
 //! its messages, and a publish takes one more for its insert. A subscription with `workers(n)`
@@ -108,8 +110,16 @@
 //! fits there too. Hosts that bind "now" must keep their clocks in step.
 //!
 //! A mistake stops the service as early as it can be seen. A subscription prepares its statements
-//! at startup, and a column the table lacks stops it with the table and the statement named. A
-//! [`Repository`] publishes into its struct's table, and a struct without [`Publish`] does not
+//! at startup, and a column the table lacks stops it with the table and the statement named.
+//! Preparing checks the names of the table and its columns, not the column types: the types are
+//! the service's to get right. A claimed row whose columns do not decode into the struct reaches
+//! the subscription's `on_failure(decode = ..)` policy, which settles it (a drop by default), and
+//! the subscription goes on with the next row; a batch keeps its other rows. A handler that takes
+//! the bytes themselves, through a `Deserialized` type, receives an empty payload for such a row.
+//! A row whose id does not decode fails the claim, and the error names the subscription and the
+//! table.
+//!
+//! A [`Repository`] publishes into its struct's table, and a struct without [`Publish`] does not
 //! compile as one. A route leads a name to a table, and a publish to a name no route leads
 //! anywhere fails at publish time. `#[subscriber("emails")]` opens through the route too; such a
 //! subscription boxes each delivery and settles through a dynamic call, which an [`InboxQueue`]
@@ -202,9 +212,9 @@ pub mod __private {
     pub use crate::inbox::OnPostgres;
     pub use crate::inbox::QueueDatabase;
     pub use crate::inbox::engine::{
-        Claimed, Claiming, Event, Events, Now, Prepared, Released, Settling, Shape, Stmt, TimeFor,
-        Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids, first_header,
-        later, match_claimed, micros, now, put, retry, retry_after,
+        Claimed, Claiming, Event, Events, IdAt, Now, Prepared, Released, Settling, Shape, Stmt,
+        TimeFor, Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids,
+        first_header, later, match_claimed, match_rows, micros, now, put, retry, retry_after,
     };
 }
 

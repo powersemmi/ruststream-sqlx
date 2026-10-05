@@ -79,7 +79,13 @@ pub(crate) fn events(
             Self: for<'__r> #p::sqlx::FromRow<'__r, <__DB as #p::sqlx::Database>::Row>
                 + ::core::marker::Unpin
         ),
-        parse_quote!(#id_ty: for<'__q> #p::sqlx::Encode<'__q, __DB> + #p::sqlx::Type<__DB>),
+        // The id binds into every settlement, and the claim reads it alone from a row whose
+        // other columns do not decode.
+        parse_quote!(
+            #id_ty: for<'__q> #p::sqlx::Encode<'__q, __DB>
+                + for<'__r> #p::sqlx::Decode<'__r, __DB>
+                + #p::sqlx::Type<__DB>
+        ),
     ];
 
     let via = |ty: &Type| quote!(<#ty as #p::Via<__DB>>::Is);
@@ -155,10 +161,9 @@ pub(crate) fn events(
         let column = via(id_ty);
         predicates.push(parse_quote!(#column: ::core::cmp::PartialEq));
     }
-    // The crate's claim of ids decodes them.
+    // The crate's claim of ids collects them through sqlx, which needs them `Unpin`.
     if custom.fetch && !custom.claim {
         let column = via(id_ty);
-        predicates.push(parse_quote!(#id_ty: for<'__r> #p::sqlx::Decode<'__r, __DB>));
         predicates.push(parse_quote!(#column: ::core::marker::Unpin));
     }
     // The crate's fetch binds the ids a claim of the service's own returned.
@@ -195,15 +200,23 @@ pub(crate) fn events(
             } else {
                 quote!(#p::claim_ids::<__DB, Self>(&mut *conn, cx).await?)
             };
-            let rows = if fetch {
-                quote!(<Self as #r::Fetch<__DB>>::fetch(&mut *conn, &ids).await?)
+            // The service's fetch decodes its own rows; the crate's hands over those it could
+            // not decode too.
+            let (rows, matched) = if fetch {
+                (
+                    quote!(<Self as #r::Fetch<__DB>>::fetch(&mut *conn, &ids).await?),
+                    quote!(match_rows),
+                )
             } else {
-                quote!(#p::fetch_by_ids::<__DB, Self>(&mut *conn, cx, &ids).await?)
+                (
+                    quote!(#p::fetch_by_ids::<__DB, Self>(&mut *conn, cx, &ids).await?),
+                    quote!(match_claimed),
+                )
             };
             quote!(async move {
                 let ids = #ids;
-                let rows = #rows;
-                #p::match_claimed::<__DB, Self>(ids, rows, out);
+                let fetched = #rows;
+                #p::#matched::<__DB, Self>(ids, fetched, out);
                 ::core::result::Result::Ok(())
             })
         }

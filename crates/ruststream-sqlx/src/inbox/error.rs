@@ -47,6 +47,9 @@ pub enum SqlxBrokerError {
         source: Box<sqlx::Error>,
     },
     /// A statement failed to prepare at startup: the table does not match the struct.
+    ///
+    /// Preparing checks the names of the table and its columns, not the column types; a claimed
+    /// row whose columns do not decode goes to the subscription's decode-failure policy instead.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}): the database refused \
          `{statement}`: {source}"
@@ -103,6 +106,9 @@ pub enum SqlxBrokerError {
         row: &'static str,
     },
     /// A settlement of a batch whose transaction an earlier settlement's failure rolls back.
+    ///
+    /// A batch that holds a row whose statement always fails rolls back and returns all of its
+    /// rows on every attempt, until the service's SQL or schema is fixed.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}): an earlier settlement of this \
          batch failed, so the batch rolls back and its rows return to the queue"

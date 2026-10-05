@@ -4,13 +4,14 @@
 //! Nothing here is named by a service; the derive and the broker are its only callers.
 
 use std::collections::{HashMap, HashSet};
+use std::convert::identity;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::HeaderMap;
-use ruststream_sqlx_dialect::{Param, Statement};
+use ruststream_sqlx_dialect::{Param, Statement, TableSpec};
 use sqlx::{Arguments, Database, Decode, Encode, Error, FromRow, Type};
 
 use super::InboxRow;
@@ -213,13 +214,45 @@ impl<'a, Row: InboxRow> Values<'a, Row> {
     }
 }
 
-/// One claimed row, or a claimed id the fetch found no row for.
+/// One claimed row, a claimed id the fetch found no row for, or a row whose columns do not decode
+/// into its struct.
 #[derive(Debug)]
 pub enum Claimed<Row: InboxRow> {
     /// The row.
     Row(Row),
     /// The id; its delivery carries no payload and fails to decode.
     Missing(Row::Id),
+    /// The id of a row the struct could not decode, and why; its delivery carries no payload and
+    /// fails to decode.
+    Undecodable {
+        /// The row's id, read alone.
+        id: Row::Id,
+        /// The error of decoding the whole row.
+        // Boxed: every delivery holds its `Claimed` inline, so the error would otherwise widen
+        // the deliveries of rows that decode.
+        error: Box<Error>,
+    },
+}
+
+/// Where a claim's select carries the id, read alone from a row the struct could not decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IdAt {
+    /// The first column: the generated select lists the id first.
+    First,
+    /// The column of this name: the select reads `*` where the struct flattens another.
+    Named(&'static str),
+}
+
+impl IdAt {
+    /// Where the statements built from `spec` carry the id.
+    #[must_use]
+    pub const fn of(spec: &TableSpec<'static>) -> Self {
+        if spec.selects_all() {
+            Self::Named(spec.id().name())
+        } else {
+            Self::First
+        }
+    }
 }
 
 /// What a settlement wrote, which decides between the commit and the rollback.
@@ -439,10 +472,11 @@ pub async fn claim_rows<DB, Row>(
 where
     DB: QueueDatabase,
     Row: Events<DB>,
+    Row::Id: for<'r> Decode<'r, DB> + Type<DB>,
 {
     let statement = cx.prepared.claim.ok_or_else(|| unprepared(Event::Claim))?;
     let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim))?;
-    DB::fetch_rows(conn, statement.sql, arguments, out).await
+    DB::fetch_rows(conn, statement.sql, arguments, IdAt::of(&Row::SPEC), out).await
 }
 
 /// The default claim of ids, for a fetch of the service's own.
@@ -466,17 +500,20 @@ where
 
 /// The default fetch of the rows of `ids`, after a claim of the service's own.
 ///
+/// Each row comes as the claim reads it: whole, or [`Claimed::Undecodable`].
+///
 /// # Errors
 ///
-/// The database's error.
+/// The database's error, or the decode error of a row whose id does not decode either.
 pub async fn fetch_by_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming<'_>,
     ids: &[Row::Id],
-) -> Result<Vec<Row>, Error>
+) -> Result<Vec<Claimed<Row>>, Error>
 where
     DB: QueueDatabase,
     Row: Events<DB>,
+    Row::Id: for<'r> Decode<'r, DB> + Type<DB>,
 {
     let statement = cx.prepared.fetch.ok_or_else(|| unprepared(Event::Fetch))?;
     let values = Values {
@@ -484,20 +521,59 @@ where
         ..Values::claiming(*cx, Event::Fetch)
     };
     let arguments = arguments::<DB, Row>(statement, &values)?;
-    DB::fetch_all(conn, statement.sql, arguments).await
+    let mut fetched = Vec::with_capacity(ids.len());
+    DB::fetch_rows(
+        conn,
+        statement.sql,
+        arguments,
+        IdAt::of(&Row::SPEC),
+        &mut fetched,
+    )
+    .await?;
+    Ok(fetched)
 }
 
-/// Pairs claimed ids with the rows a fetch returned, in claim order; an id with no row is
-/// [`Claimed::Missing`], a row no id claimed is left alone.
-pub fn match_claimed<DB, Row>(ids: Vec<Row::Id>, mut rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
+/// Pairs claimed ids with what the crate's fetch returned, in claim order.
+///
+/// A row or an [`Claimed::Undecodable`] entry goes with its id, an id with neither is
+/// [`Claimed::Missing`], and an entry no id claimed is left alone.
+pub fn match_claimed<DB, Row>(
+    ids: Vec<Row::Id>,
+    fetched: Vec<Claimed<Row>>,
+    out: &mut Vec<Claimed<Row>>,
+) where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+    Row::Id: PartialEq,
+{
+    pair(ids, fetched, Claimed::id::<DB>, identity, out);
+}
+
+/// Pairs claimed ids with the rows a fetch of the service's own returned, as [`match_claimed`]
+/// does.
+pub fn match_rows<DB, Row>(ids: Vec<Row::Id>, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
 where
     DB: QueueDatabase,
     Row: Events<DB>,
     Row::Id: PartialEq,
 {
+    pair(ids, rows, Row::id, Claimed::Row, out);
+}
+
+/// Pairs each of `ids` with the entry `id_of` names it in, turned into its row by `claimed`.
+fn pair<Row, Entry>(
+    ids: Vec<Row::Id>,
+    mut fetched: Vec<Entry>,
+    id_of: impl Fn(&Entry) -> &Row::Id,
+    claimed: impl Fn(Entry) -> Claimed<Row>,
+    out: &mut Vec<Claimed<Row>>,
+) where
+    Row: InboxRow,
+    Row::Id: PartialEq,
+{
     for id in ids {
-        match rows.iter().position(|row| Row::id(row) == &id) {
-            Some(position) => out.push(Claimed::Row(rows.swap_remove(position))),
+        match fetched.iter().position(|entry| id_of(entry) == &id) {
+            Some(position) => out.push(claimed(fetched.swap_remove(position))),
             None => out.push(Claimed::Missing(id)),
         }
     }
@@ -614,7 +690,7 @@ impl<Row: InboxRow> Claimed<Row> {
     {
         match self {
             Self::Row(row) => Row::id(row),
-            Self::Missing(id) => id,
+            Self::Missing(id) | Self::Undecodable { id, .. } => id,
         }
     }
 }

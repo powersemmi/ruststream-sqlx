@@ -4,13 +4,14 @@ use std::future::Future;
 
 use futures::TryStreamExt;
 use ruststream_sqlx_dialect::Dialect;
+use sqlx::Row as _;
 use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, FromRow, IntoArguments,
     SqlStr, Type,
 };
 
 use super::InboxRow;
-use super::engine::Claimed;
+use super::engine::{Claimed, IdAt};
 
 /// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
 /// statements bind, and runs statements on a connection.
@@ -46,26 +47,19 @@ pub trait QueueDatabase: Database {
         arguments: Self::Arguments,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
 
-    /// Runs a claim of whole rows into `out`. Machinery.
+    /// Runs a claim or a fetch of whole rows into `out`: a row its struct does not decode is
+    /// [`Claimed::Undecodable`], its id read alone at `id_at`. Machinery.
     #[doc(hidden)]
     fn fetch_rows<'c, Row>(
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
+        id_at: IdAt,
         out: &'c mut Vec<Claimed<Row>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'c
     where
-        Row: InboxRow + for<'r> FromRow<'r, Self::Row> + Unpin;
-
-    /// Runs a fetch of whole rows. Machinery.
-    #[doc(hidden)]
-    fn fetch_all<'c, Row>(
-        conn: &'c mut Self::Connection,
-        sql: &'static str,
-        arguments: Self::Arguments,
-    ) -> impl Future<Output = Result<Vec<Row>, Error>> + Send + 'c
-    where
-        Row: for<'r> FromRow<'r, Self::Row> + Send + Unpin + 'c;
+        Row: InboxRow + for<'r> FromRow<'r, Self::Row> + Unpin,
+        Row::Id: for<'r> Decode<'r, Self> + Type<Self>;
 
     /// Runs a claim of ids. Machinery.
     #[doc(hidden)]
@@ -93,6 +87,7 @@ where
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
     for<'q> i64: Encode<'q, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
+    for<'a> &'a str: ColumnIndex<DB::Row>,
 {
     fn bind_str(arguments: &mut Self::Arguments, value: &str) -> Result<(), Error> {
         arguments.add(value).map_err(Error::Encode)
@@ -115,27 +110,36 @@ where
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
+        id_at: IdAt,
         out: &'c mut Vec<Claimed<Row>>,
     ) -> Result<(), Error>
     where
         Row: InboxRow + for<'r> FromRow<'r, Self::Row> + Unpin,
+        Row::Id: for<'r> Decode<'r, Self> + Type<Self>,
     {
-        let mut rows = sqlx::query_as_with::<Self, Row, _>(sql, arguments).fetch(conn);
-        while let Some(row) = rows.try_next().await? {
-            out.push(Claimed::Row(row));
+        // The decode `query_as` runs, one row at a time, so a row that fails it fails alone.
+        let mut rows = sqlx::query_with::<Self, _>(sql, arguments).fetch(conn);
+        while let Some(raw) = rows.try_next().await? {
+            match Row::from_row(&raw) {
+                Ok(row) => out.push(Claimed::Row(row)),
+                Err(error) => {
+                    // Why the id alone: a row only its id can name is still a row the policy
+                    // settles, and nothing settles a row whose id does not decode either.
+                    let id = match id_at {
+                        IdAt::First => raw.try_get::<Row::Id, _>(0_usize),
+                        IdAt::Named(name) => raw.try_get::<Row::Id, _>(name),
+                    };
+                    match id {
+                        Ok(id) => out.push(Claimed::Undecodable {
+                            id,
+                            error: Box::new(error),
+                        }),
+                        Err(_) => return Err(error),
+                    }
+                }
+            }
         }
         Ok(())
-    }
-
-    fn fetch_all<'c, Row>(
-        conn: &'c mut Self::Connection,
-        sql: &'static str,
-        arguments: Self::Arguments,
-    ) -> impl Future<Output = Result<Vec<Row>, Error>> + Send + 'c
-    where
-        Row: for<'r> FromRow<'r, Self::Row> + Send + Unpin + 'c,
-    {
-        sqlx::query_as_with::<Self, Row, _>(sql, arguments).fetch_all(conn)
     }
 
     fn fetch_ids<'c, Id>(

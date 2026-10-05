@@ -251,6 +251,19 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
                 );
                 HeaderMap::new()
             }
+            Claimed::Undecodable { id, error } => {
+                tracing::warn!(
+                    target: "ruststream_sqlx",
+                    subscription = queue.name,
+                    table = queue.table,
+                    row = queue.row,
+                    ?id,
+                    %error,
+                    "the row does not decode into its struct; its delivery carries no payload and \
+                     the decode-failure policy settles it",
+                );
+                HeaderMap::new()
+            }
         };
         Self {
             claimed,
@@ -448,7 +461,7 @@ where
     fn payload(&self) -> &[u8] {
         match &self.claimed {
             Claimed::Row(row) => row.payload(),
-            Claimed::Missing(_) => &[],
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => &[],
         }
     }
 
@@ -459,14 +472,14 @@ where
     fn partition_key(&self) -> Option<&[u8]> {
         match &self.claimed {
             Claimed::Row(row) => Row::partition_key(row),
-            Claimed::Missing(_) => None,
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
         }
     }
 
     fn redelivery_count(&self) -> Option<u64> {
         match &self.claimed {
             Claimed::Row(row) => Row::attempt(row),
-            Claimed::Missing(_) => None,
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
         }
     }
 

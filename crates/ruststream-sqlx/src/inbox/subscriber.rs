@@ -33,7 +33,9 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// second. After `shutdown` the stream ends.
 ///
 /// A batch's settlements take effect together, when the last of its deliveries finishes: a
-/// settlement whose statement fails rolls the whole batch back, and its rows return.
+/// settlement whose statement fails rolls the whole batch back, and its rows return. A batch that
+/// holds a row whose statement always fails therefore rolls back and returns all of its rows on
+/// every attempt, until the service's SQL or schema is fixed.
 ///
 /// # Examples
 ///
