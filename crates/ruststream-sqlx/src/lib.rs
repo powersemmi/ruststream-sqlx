@@ -90,7 +90,9 @@ pub use inbox::InboxRow;
 /// A column is named in one place, sqlx's attributes. `#[sqlx(rename = "..")]` names a field's
 /// column as written, `#[sqlx(rename_all = "..")]` recases every other field's name, a raw
 /// identifier loses its `r#`, and a `#[sqlx(skip)]` field reads no column. A
-/// `#[sqlx(flatten)]` field reads columns the derive cannot see, so the statements select `*`.
+/// `#[sqlx(flatten)]` field reads columns the derive cannot see, so the statements select `*`,
+/// and a dead-letter move copies the row by position: the dead-letter table has the same columns
+/// in the same order.
 /// The other options of `#[sqlx(..)]`, such as `json`, `try_from` and `default`, belong to sqlx's
 /// own derive and pass through untouched.
 ///

@@ -668,6 +668,9 @@ impl<'a> TableSpec<'a> {
     /// The same table, read with `*`: the struct flattens another, so the columns are not all
     /// known.
     ///
+    /// A dead-letter move to another table then copies the row by position, so that table has the
+    /// same columns in the same order.
+    ///
     /// # Examples
     ///
     /// ```

@@ -280,6 +280,9 @@ pub trait Dialect: Debug + Send + Sync {
     /// The statements that move a row whose attempts are spent to `target`, a table with the same
     /// columns; they run in one transaction.
     ///
+    /// A table read with `*` ([`TableSpec::selects_all`]) has columns the description does not
+    /// name, so its row moves by position: `target` has the same columns in the same order.
+    ///
     /// # Errors
     ///
     /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
