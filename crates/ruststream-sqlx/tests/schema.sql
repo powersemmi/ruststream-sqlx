@@ -68,3 +68,13 @@ CREATE TABLE lifecycle_jobs (
     attempt     SMALLINT NOT NULL DEFAULT 1,
     payload     BYTEA NOT NULL
 );
+
+-- Jobs another table may still point at: acknowledging a referenced job fails its statement.
+CREATE TABLE fragile_jobs (
+    id      BIGSERIAL PRIMARY KEY,
+    payload BYTEA NOT NULL
+);
+
+CREATE TABLE fragile_refs (
+    job_id BIGINT NOT NULL REFERENCES fragile_jobs (id)
+);

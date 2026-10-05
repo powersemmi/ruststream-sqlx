@@ -32,6 +32,9 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// interval. A failed claim reaches the stream as an error item and the next claim waits one
 /// second. After `shutdown` the stream ends.
 ///
+/// A batch's settlements take effect together, when the last of its deliveries finishes: a
+/// settlement whose statement fails rolls the whole batch back, and its rows return.
+///
 /// # Examples
 ///
 /// ```no_run

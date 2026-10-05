@@ -61,11 +61,15 @@ enum Hold<DB: QueueDatabase> {
 }
 
 /// The transaction a batch's deliveries share: each settles its own row on it, and the last one to
-/// finish ends it.
+/// finish ends it. The settlements become durable together: a statement that fails rolls the
+/// whole batch back.
 pub(crate) struct BatchTx<DB: QueueDatabase> {
     tx: Mutex<Option<Transaction<'static, DB>>>,
     open: AtomicUsize,
-    wrote: AtomicBool,
+    /// The settlements that wrote something for the commit to keep.
+    written: AtomicUsize,
+    /// Set by the first statement that fails: the transaction can only roll back from then on.
+    failed: AtomicBool,
 }
 
 impl<DB: QueueDatabase> BatchTx<DB> {
@@ -73,15 +77,16 @@ impl<DB: QueueDatabase> BatchTx<DB> {
         Arc::new(Self {
             tx: Mutex::new(Some(tx)),
             open: AtomicUsize::new(deliveries),
-            wrote: AtomicBool::new(false),
+            written: AtomicUsize::new(0),
+            failed: AtomicBool::new(false),
         })
     }
 
     /// Marks one delivery finished; the last one commits what the batch wrote, or rolls back a
-    /// batch that wrote nothing.
-    async fn finish(&self, wrote: bool) -> Result<(), sqlx::Error> {
+    /// batch that wrote nothing or failed.
+    async fn finish(&self, wrote: bool, queue: &'static Queue) -> Result<(), sqlx::Error> {
         if wrote {
-            self.wrote.store(true, Ordering::Release);
+            self.written.fetch_add(1, Ordering::AcqRel);
         }
         if self.open.fetch_sub(1, Ordering::AcqRel) != 1 {
             return Ok(());
@@ -89,7 +94,11 @@ impl<DB: QueueDatabase> BatchTx<DB> {
         let Some(tx) = self.tx.lock().await.take() else {
             return Ok(());
         };
-        if self.wrote.load(Ordering::Acquire) {
+        if self.failed.load(Ordering::Acquire) {
+            self.undone(queue);
+            return tx.rollback().await;
+        }
+        if self.written.load(Ordering::Acquire) > 0 {
             tx.commit().await
         } else {
             tx.rollback().await
@@ -98,7 +107,7 @@ impl<DB: QueueDatabase> BatchTx<DB> {
 
     /// Marks one delivery dropped unsettled: its row stays in the table, and the last delivery
     /// to finish still commits what the others wrote.
-    fn release(self: Arc<Self>) {
+    fn release(self: Arc<Self>, queue: &'static Queue) {
         if self.open.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
         }
@@ -110,17 +119,53 @@ impl<DB: QueueDatabase> BatchTx<DB> {
             return;
         };
         drop(held);
-        if !self.wrote.load(Ordering::Acquire) {
+        if self.failed.load(Ordering::Acquire) {
             // Dropping the transaction rolls it back.
+            self.undone(queue);
+            return;
+        }
+        if self.written.load(Ordering::Acquire) == 0 {
             return;
         }
         if let Ok(runtime) = Handle::try_current() {
             runtime.spawn(async move {
                 if let Err(error) = tx.commit().await {
-                    tracing::warn!(target: "ruststream_sqlx", %error, "a batch's commit failed after a delivery was dropped unsettled");
+                    tracing::warn!(
+                        target: "ruststream_sqlx",
+                        subscription = queue.name,
+                        table = queue.table,
+                        row = queue.row,
+                        %error,
+                        "a batch's commit failed after a delivery was dropped unsettled",
+                    );
                 }
             });
         }
+    }
+
+    /// Says how many settlements of a failed batch its rollback undoes.
+    fn undone(&self, queue: &'static Queue) {
+        let undone = self.written.load(Ordering::Acquire);
+        if undone > 0 {
+            tracing::warn!(
+                target: "ruststream_sqlx",
+                subscription = queue.name,
+                table = queue.table,
+                row = queue.row,
+                undone,
+                "a settlement of the batch failed, so the batch rolls back: settlements that \
+                 succeeded are undone and their rows return",
+            );
+        }
+    }
+
+    /// Records that a statement failed; the transaction can only roll back now.
+    fn fail(&self) {
+        self.failed.store(true, Ordering::Release);
+    }
+
+    fn has_failed(&self) -> bool {
+        self.failed.load(Ordering::Acquire)
     }
 }
 
@@ -336,19 +381,34 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
                 }
             }
             Hold::Batch(batch) => {
-                let outcome = {
+                let outcome = if batch.has_failed() {
+                    // The transaction is aborted: a statement now would only fail too.
+                    None
+                } else {
                     let mut guard = batch.tx.lock().await;
-                    match guard.as_mut() {
+                    Some(match guard.as_mut() {
                         Some(tx) => run_step::<DB, Row>(tx, &cx, id, step).await,
                         None => Err(sqlx::Error::Protocol(
                             "the batch's transaction ended before this delivery settled".to_owned(),
                         )),
-                    }
+                    })
                 };
+                if matches!(outcome, Some(Err(_))) {
+                    batch.fail();
+                }
                 // The batch counts this delivery finished whatever its statement did, so the last
                 // one still ends the transaction.
-                let wrote = matches!(outcome, Ok(Released::Written));
-                let finished = batch.finish(wrote).await;
+                let wrote = matches!(outcome, Some(Ok(Released::Written)));
+                let finished = batch.finish(wrote, queue).await;
+                let Some(outcome) = outcome else {
+                    return Err(AckError::Broker(Box::new(
+                        SqlxBrokerError::BatchRolledBack {
+                            subscription: queue.name.to_owned(),
+                            table: queue.table.to_owned(),
+                            row: queue.row,
+                        },
+                    )));
+                };
                 outcome.map_err(failed)?;
                 finished.map_err(failed)
             }
@@ -455,7 +515,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Drop for InboxDelivery<DB, Row> {
             // An unsettled delivery's transaction rolls back as it drops, which returns the row
             // to the queue at once.
             Hold::Own(_) => {}
-            Hold::Batch(batch) => batch.release(),
+            Hold::Batch(batch) => batch.release(self.queue),
         }
         #[cfg(feature = "testing")]
         if let Some(connection) = in_process {

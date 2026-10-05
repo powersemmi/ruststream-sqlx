@@ -85,7 +85,8 @@
 //!
 //! [`SqlxBroker`] serves the queues in the tables of the service's sqlx pool, and the pool stays
 //! the service's. An [`InboxQueue`] subscription claims rows with `FOR UPDATE SKIP LOCKED`, one
-//! transaction per message or per batch, and polls when the queue runs dry. The name selects a
+//! transaction per message or per batch, and polls when the queue runs dry. A batch's
+//! settlements take effect together, when its last delivery settles. The name selects a
 //! group where the table has one; without a group the table is one queue. The bytes reach the
 //! codec lent from the row. What a handler answers decides the row's fate:
 //!

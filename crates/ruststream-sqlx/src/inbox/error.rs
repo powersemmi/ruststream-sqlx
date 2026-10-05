@@ -102,6 +102,19 @@ pub enum SqlxBrokerError {
         /// The row type.
         row: &'static str,
     },
+    /// A settlement of a batch whose transaction an earlier settlement's failure rolls back.
+    #[error(
+        "subscription `{subscription}` on table `{table}` ({row}): an earlier settlement of this \
+         batch failed, so the batch rolls back and its rows return to the queue"
+    )]
+    BatchRolledBack {
+        /// The subscription.
+        subscription: String,
+        /// The table, qualified with its schema.
+        table: String,
+        /// The row type.
+        row: &'static str,
+    },
     /// The service's `Publish` failed.
     #[error("publishing to `{name}` into table `{table}` ({row}) failed: {source}")]
     Publish {
