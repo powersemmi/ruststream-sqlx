@@ -51,7 +51,7 @@ where
     };
     // Why a run-time check: the pool is the service's and outlives the broker, so only the
     // broker's own flag can refuse a publisher handed out before shutdown.
-    if shared.closed.is_cancelled() {
+    if shared.is_closed() {
         return Err(SqlxBrokerError::Closed);
     }
     // Why a run-time check: headers are the message's, known only when it is published, and a
@@ -526,9 +526,6 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
         msg: OutgoingMessage<'_>,
         _options: Option<&()>,
     ) -> Result<(), SqlxBrokerError> {
-        if self.shared.closed.is_cancelled() {
-            return Err(SqlxBrokerError::Closed);
-        }
         let Some(route) = self.shared.routes.find(msg.name()) else {
             tracing::warn!(
                 target: "ruststream_sqlx",

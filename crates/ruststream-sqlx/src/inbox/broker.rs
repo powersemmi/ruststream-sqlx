@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::future::{Future, ready};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -294,13 +295,22 @@ pub(crate) struct Shared<DB: Database> {
     pub(crate) dialect: DialectHandle,
     pub(crate) routes: Routes<DB>,
     pub(crate) poll_interval: Duration,
-    /// The `Closed` flag: cancelled by `shutdown`, read with one atomic load per publish.
-    pub(crate) closed: CancellationToken,
+    /// The `Closed` flag: set by `shutdown`, read with one atomic load per publish and per claim.
+    closed: AtomicBool,
+    /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag.
+    pub(crate) stopping: CancellationToken,
     /// The queues this connection reads, by table and name.
     pub(crate) queues: Mutex<Vec<(&'static str, String)>>,
     /// The test harness's books of this connection.
     #[cfg(feature = "testing")]
     pub(crate) harness: super::testing::Harness,
+}
+
+impl<DB: Database> Shared<DB> {
+    /// Whether `shutdown` ran: the flag every handle of the connection reads before it works.
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
 }
 
 /// The connected inbox broker: the typed witness that the database answered.
@@ -329,7 +339,7 @@ impl<DB: Database> fmt::Debug for ConnectedSqlxBroker<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConnectedSqlxBroker")
             .field("dialect", &self.shared.dialect.get().name())
-            .field("closed", &self.shared.closed.is_cancelled())
+            .field("closed", &self.shared.is_closed())
             .finish_non_exhaustive()
     }
 }
@@ -342,7 +352,8 @@ impl<DB: Database> From<SqlxBroker<DB>> for ConnectedSqlxBroker<DB> {
                 dialect: broker.dialect,
                 routes: broker.routes,
                 poll_interval: broker.poll_interval,
-                closed: CancellationToken::new(),
+                closed: AtomicBool::new(false),
+                stopping: CancellationToken::new(),
                 queues: Mutex::new(Vec::new()),
                 #[cfg(feature = "testing")]
                 harness: super::testing::Harness::default(),
@@ -358,7 +369,8 @@ impl<DB: QueueDatabase> ConnectedBroker for ConnectedSqlxBroker<DB> {
     fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
         // Why a flag rather than a type: the pool is the service's and stays open, so a
         // publisher handed out before shutdown would otherwise keep writing.
-        self.shared.closed.cancel();
+        self.shared.closed.store(true, Ordering::Release);
+        self.shared.stopping.cancel();
         ready(Ok(ClosedSqlxBroker { _private: () }))
     }
 }

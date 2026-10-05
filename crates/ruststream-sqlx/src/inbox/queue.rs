@@ -384,7 +384,7 @@ where
 {
     let table = table_of::<Row>();
     let row = type_name::<Row>();
-    if shared.closed.is_cancelled() {
+    if shared.is_closed() {
         return Err(SqlxBrokerError::Closed);
     }
     let declared = |reason: String| SqlxBrokerError::Declaration {

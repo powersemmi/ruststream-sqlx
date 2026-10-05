@@ -113,10 +113,10 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
             if let Some(wait) = self.wait.take() {
                 tokio::select! {
                     () = tokio::time::sleep(wait) => {}
-                    () = self.shared.closed.cancelled() => return None,
+                    () = self.shared.stopping.cancelled() => return None,
                 }
             }
-            if self.shared.closed.is_cancelled() {
+            if self.shared.is_closed() {
                 return None;
             }
             let claimed = self.claim_once(limit).await;
