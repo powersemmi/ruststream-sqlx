@@ -173,7 +173,8 @@ pub trait Fetch<DB: Database>: InboxRow {
 macro_rules! settle_event {
     (
         $(#[$doc:meta])*
-        $trait:ident, $method:ident, $event:literal, $example:literal,
+        $trait:ident, $method:ident, $event:literal,
+        gate = $gate:literal, $(uses = $uses:literal,)? $(fields = $fields:literal,)? body = $body:literal,
         message = $message:literal, note = $note:literal
         $(, $extra:ident: $extra_ty:ty = $extra_value:literal)?
     ) => {
@@ -182,18 +183,20 @@ macro_rules! settle_event {
         #[doc = "# Examples"]
         #[doc = ""]
         #[doc = "```"]
-        #[doc = "# #[cfg(feature = \"postgres\")]"]
+        #[doc = concat!("# #[cfg(", $gate, ")]")]
         #[doc = "# mod demo {"]
         #[doc = "use std::time::Duration;"]
         #[doc = ""]
         #[doc = concat!("use ruststream_sqlx::{", stringify!($trait), ", Inbox};")]
         #[doc = "use sqlx::{PgConnection, Postgres};"]
+        $(#[doc = $uses])?
         #[doc = ""]
         #[doc = "#[derive(Inbox, sqlx::FromRow)]"]
         #[doc = concat!("#[inbox(table = \"jobs\", custom(", $event, "))]")]
         #[doc = "pub struct Job {"]
         #[doc = "    #[field(id)]"]
         #[doc = "    id: i64,"]
+        $(#[doc = $fields])?
         #[doc = "    #[field(payload)]"]
         #[doc = "    payload: Vec<u8>,"]
         #[doc = "}"]
@@ -204,11 +207,7 @@ macro_rules! settle_event {
         #[doc = "        id: &i64,"]
         $(#[doc = concat!("        ", stringify!($extra), ": ", stringify!($extra_ty), ",")])?
         #[doc = "    ) -> Result<(), sqlx::Error> {"]
-        #[doc = concat!("        sqlx::query(\"", $example, "\")")]
-        #[doc = "            .bind(id)"]
-        #[doc = "            .execute(conn)"]
-        #[doc = "            .await?;"]
-        $(#[doc = concat!("        let _ = ", stringify!($extra), ";")])?
+        #[doc = $body]
         #[doc = "        Ok(())"]
         #[doc = "    }"]
         #[doc = "}"]
@@ -262,7 +261,20 @@ macro_rules! settle_event {
 
 settle_event!(
     /// Acknowledges a row: the derive deletes it, or sets `processed_at`.
-    Ack, ack, "ack", "UPDATE jobs SET status = 'done' WHERE id = $1",
+    ///
+    /// The service's own acknowledgement takes the row out of what the claim selects: it deletes
+    /// the row, moves it, or marks it in a column the claim passes over. A row left claimable is
+    /// delivered again.
+    Ack, ack, "ack",
+    gate = "feature = \"postgres\"",
+    body = "        // The finished job moves to an archive in one statement.
+        sqlx::query(
+            \"WITH done AS (DELETE FROM jobs WHERE id = $1 RETURNING *) \\
+             INSERT INTO jobs_done SELECT * FROM done\",
+        )
+        .bind(id)
+        .execute(conn)
+        .await?;",
     message = "`{Self}` lists `ack` in `#[inbox(custom(..))]` and does not implement `Ack<{DB}>`",
     note = "implement `Ack<{DB}>` for `{Self}`, or drop `ack` from `custom(..)`"
 );
@@ -270,15 +282,35 @@ settle_event!(
 settle_event!(
     /// Releases a row for another attempt at once: the derive counts the attempt, or leaves the
     /// row for the rollback to release.
-    Retry, retry, "retry", "UPDATE jobs SET tries = tries + 1 WHERE id = $1",
+    Retry, retry, "retry",
+    gate = "feature = \"postgres\"",
+    body = "        sqlx::query(\"UPDATE jobs SET tries = tries + 1 WHERE id = $1\")
+            .bind(id)
+            .execute(conn)
+            .await?;",
     message = "`{Self}` lists `retry` in `#[inbox(custom(..))]` and does not implement `Retry<{DB}>`",
     note = "implement `Retry<{DB}>` for `{Self}`, or drop `retry` from `custom(..)`"
 );
 
 settle_event!(
-    /// Releases a row for another attempt after `delay`: the derive sets `retry_after`. A row
-    /// with this event, or a `retry_after` field, is redelivered by the database's own clock.
-    RetryAfter, retry_after, "retry_after", "UPDATE jobs SET due = now() + interval '1 minute' WHERE id = $1",
+    /// Releases a row for another attempt after `delay`: the derive sets `retry_after`.
+    ///
+    /// A row with this event, or a `retry_after` field, is redelivered by the database's own
+    /// clock. The service's own event delays a row only where the claim passes over it until
+    /// then: the default claim reads the `retry_after` field.
+    RetryAfter, retry_after, "retry_after",
+    gate = "all(feature = \"postgres\", feature = \"chrono\")",
+    uses = "use chrono::{DateTime, Utc};",
+    fields = "    #[field(retry_after)]
+    retry_after: DateTime<Utc>,",
+    body = "        // The delay counts from the database's clock, whatever the host's says.
+        sqlx::query(
+            \"UPDATE jobs SET retry_after = now() + make_interval(secs => $2) WHERE id = $1\",
+        )
+        .bind(id)
+        .bind(delay.as_secs_f64())
+        .execute(conn)
+        .await?;",
     message = "`{Self}` lists `retry_after` in `#[inbox(custom(..))]` and does not implement `RetryAfter<{DB}>`",
     note = "implement `RetryAfter<{DB}>` for `{Self}`, or drop `retry_after` from `custom(..)`",
     delay: Duration = "Duration::from_secs(30)"
@@ -286,7 +318,15 @@ settle_event!(
 
 settle_event!(
     /// Drops a row: the derive deletes it, or sets `processed_at`.
-    Discard, discard, "discard", "DELETE FROM jobs WHERE id = $1",
+    ///
+    /// The service's own drop takes the row out of what the claim selects, as an acknowledgement
+    /// does.
+    Discard, discard, "discard",
+    gate = "feature = \"postgres\"",
+    body = "        sqlx::query(\"DELETE FROM jobs WHERE id = $1\")
+            .bind(id)
+            .execute(conn)
+            .await?;",
     message = "`{Self}` lists `discard` in `#[inbox(custom(..))]` and does not implement `Discard<{DB}>`",
     note = "implement `Discard<{DB}>` for `{Self}`, or drop `discard` from `custom(..)`"
 );
@@ -294,7 +334,20 @@ settle_event!(
 settle_event!(
     /// Moves a row whose attempts are spent to `destination`: the derive moves it to that group
     /// (with a `group` field) or into that table.
-    DeadLetter, dead_letter, "dead_letter", "INSERT INTO dead_jobs SELECT * FROM jobs WHERE id = $1",
+    ///
+    /// The service's own move takes the row out of what the claim selects; a row copied and left
+    /// behind is moved again at every delivery.
+    DeadLetter, dead_letter, "dead_letter",
+    gate = "feature = \"postgres\"",
+    body = "        // One dead-letter table serves the whole service, whatever the destination names.
+        sqlx::query(
+            \"WITH dead AS (DELETE FROM jobs WHERE id = $1 RETURNING *) \\
+             INSERT INTO dead_jobs SELECT * FROM dead\",
+        )
+        .bind(id)
+        .execute(conn)
+        .await?;
+        tracing::warn!(id, destination, \"a job's attempts are spent\");",
     message = "`{Self}` lists `dead_letter` in `#[inbox(custom(..))]` and does not implement `DeadLetter<{DB}>`",
     note = "implement `DeadLetter<{DB}>` for `{Self}`, or drop `dead_letter` from `custom(..)`",
     destination: &str = "\"jobs.dead\""
