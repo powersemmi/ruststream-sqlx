@@ -1,5 +1,6 @@
 //! The lease form against the stands: a lease that runs out passes the row on, and its late holder
-//! cannot settle; the service's own events run only while the lease holds.
+//! cannot settle; a lease in work is extended while its handler runs, and a delivery dropped
+//! unsettled releases its row at once; the service's own events run only while the lease holds.
 
 #![cfg(all(
     feature = "inbox",
@@ -14,11 +15,18 @@ use std::pin::pin;
 use std::time::Duration;
 
 use futures::StreamExt;
-use ruststream::testing::InProcess;
+use ruststream::prelude::*;
+use ruststream::testing::{InProcess, TestApp};
 use ruststream::{AckError, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
 use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
+use serde::{Deserialize, Serialize};
 
 const LEASE: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+struct Task {
+    n: u32,
+}
 
 fn lost(error: &AckError) -> bool {
     let AckError::Broker(source) = error else {
@@ -133,6 +141,71 @@ live::stands! {
         );
         drop(subscriber);
         connected.shutdown().await.expect("the broker stops");
+        db.finish().await;
+    }
+
+    #[subscriber(InboxQueue::<Plain>::new("plain").lease(Duration::from_secs(1)))]
+    async fn longer_than_the_lease(_task: &Task) -> HandlerOutcome {
+        // The handler's own work outlasts two leases; the keeper extends the row meanwhile.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        HandlerOutcome::ack()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_lease_extension_keeps_a_long_handlers_row() {
+        let Some(db) = database().await else { return };
+        let broker = SqlxBroker::new(db.pool.clone())
+            .poll_interval(Duration::from_millis(50))
+            .route::<Plain>("plain");
+        let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
+            // A second worker claims whatever is claimable: it would take the row if the lease
+            // lapsed.
+            b.include(longer_than_the_lease.workers(nonzero!(2)));
+        });
+        let tb = TestApp::start_live(app).await.expect("the app starts");
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&Task { n: 1 })
+            .to("plain")
+            .publish()
+            .await
+            .expect("the publish settles");
+        tb.advance(Duration::from_secs(3)).await.expect("the handler finishes");
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("plain")
+            .assert_called_once()
+            .settled(HandlerOutcome::ack());
+        assert_eq!(db.count("plain_jobs").await, 0, "the long handler's acknowledgement took effect");
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    #[tokio::test]
+    async fn a_lease_delivery_dropped_unsettled_returns_its_row_at_once() {
+        let Some(db) = database().await else { return };
+        db.plain(&[b"x".as_slice()]).await;
+        let connected = SqlxBroker::new(db.pool.clone())
+            .lease(Duration::from_secs(600))
+            .poll_interval(Duration::from_millis(20))
+            .connect_in_process()
+            .await
+            .expect("connects");
+        tokio::time::pause();
+        let mut subscriber = InboxQueue::<Plain>::new("plain").subscribe(&connected).await.expect("opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let first = deliveries.next().await.expect("goes on").expect("claims");
+            drop(first);
+            // The release runs at once; a ten-minute lease would otherwise hold the row.
+            let again = tokio::time::timeout(Duration::from_secs(5), deliveries.next())
+                .await
+                .expect("the row is back before its lease ends")
+                .expect("goes on")
+                .expect("claims");
+            again.ack().await.expect("settles");
+        }
+        tokio::time::resume();
+        drop(subscriber);
+        connected.shutdown().await.expect("stops");
         db.finish().await;
     }
 }

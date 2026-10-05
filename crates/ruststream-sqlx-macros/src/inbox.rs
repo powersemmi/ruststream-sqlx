@@ -320,7 +320,7 @@ fn lease_parts(
 }
 
 /// The struct's generics with what every impl of the row needs of them: `Send + Sync + 'static`
-/// of the struct, and of the id type, which logs also print.
+/// of the struct, and of the id type, which logs also print and a lease subscription copies.
 fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Generics {
     let name = &input.ident;
     let mut generics = input.generics.clone();
@@ -331,7 +331,11 @@ fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Generics {
             #name #ty_generics: ::core::marker::Send + ::core::marker::Sync + 'static
         ));
         predicates.push(parse_quote!(
-            #id_type: ::core::fmt::Debug + ::core::marker::Send + ::core::marker::Sync + 'static
+            #id_type: ::core::clone::Clone
+                + ::core::fmt::Debug
+                + ::core::marker::Send
+                + ::core::marker::Sync
+                + 'static
         ));
     }
     generics

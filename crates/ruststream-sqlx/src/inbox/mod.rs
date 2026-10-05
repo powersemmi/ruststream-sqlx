@@ -82,8 +82,9 @@ pub trait InboxRow: QueueRow {
 /// a table description of its own.
 #[doc(hidden)]
 pub trait QueueRow: Sized + Send + Sync + 'static {
-    /// The type of the field that plays `id`; logs name a row by it.
-    type Id: Debug + Send + Sync + 'static;
+    /// The type of the field that plays `id`; logs name a row by it, and a lease subscription
+    /// keeps a copy of each id in work to extend its lease.
+    type Id: Clone + Debug + Send + Sync + 'static;
 }
 
 /// A queue row that carries its message as bytes: payload mode.

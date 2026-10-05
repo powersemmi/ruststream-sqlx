@@ -208,7 +208,7 @@ impl<DB: QueueDatabase> InProcess for SqlxBroker<DB> {
             .await
             .unwrap_or_else(|| Err(cancelled()))
             .map_err(|source| SqlxBrokerError::Connect { source })?;
-        let connected = ConnectedSqlxBroker::from(self);
+        let connected = ConnectedSqlxBroker::new(self, Handle::current());
         let _ = connected.shared.harness.clock.set(TestClock::start());
         Ok(connected)
     }

@@ -54,14 +54,14 @@ impl TimeRole {
 
 /// The answer to "can a by-name subscription read and bind this row from its description alone":
 /// the kinds of its columns, or `None` when an event is the service's own, for the described path
-/// runs the crate's defaults only, or when the row holds a lease, which the role columns do not
-/// bind.
+/// runs the crate's defaults only. `lease` is the time a lease is written in, in the lease form.
 fn kinds(
     inbox: &Inbox<'_>,
     clock: &Path,
     id_ty: &Type,
     own_code: bool,
     [retry_after, processed_at]: [Option<&TimeRole>; 2],
+    lease: Option<&TokenStream2>,
 ) -> TokenStream2 {
     if own_code {
         return quote!(::core::option::Option::None);
@@ -86,9 +86,10 @@ fn kinds(
         let time = &role.time;
         quote!(.processed_at::<#time>())
     });
+    let locked_until = lease.map(|lease| quote!(.locked_until::<#lease>()));
     quote! {
         #p::KindsOf::new::<#id_ty, #clock>()
-            #payload #headers #key #attempt #retry_after #processed_at
+            #payload #headers #key #attempt #retry_after #processed_at #locked_until
             .finish()
     }
 }
@@ -372,8 +373,9 @@ pub(crate) fn events(
         inbox,
         &clock,
         id_ty,
-        flags.contains(&true) || leased,
+        flags.contains(&true),
         [retry_after.as_ref(), processed_at.as_ref()],
+        leased.then_some(&lease),
     );
     let [
         c_claim,

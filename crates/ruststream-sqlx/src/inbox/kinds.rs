@@ -32,6 +32,8 @@ pub struct Kinds {
     pub(crate) retry_after: Option<TimeKind>,
     /// The type of the `processed_at` column, where the table has one.
     pub(crate) processed_at: Option<TimeKind>,
+    /// The type a lease is written in, in the lease form.
+    pub(crate) locked_until: Option<TimeKind>,
 }
 
 /// Where a described row's "now" comes from.
@@ -142,6 +144,7 @@ struct Partial {
     attempt: Option<IntKind>,
     retry_after: Option<TimeKind>,
     processed_at: Option<TimeKind>,
+    locked_until: Option<TimeKind>,
 }
 
 impl KindsOf {
@@ -170,6 +173,7 @@ impl KindsOf {
             attempt: None,
             retry_after: None,
             processed_at: None,
+            locked_until: None,
         }))
     }
 
@@ -244,6 +248,14 @@ impl KindsOf {
         })
     }
 
+    /// The time a lease is written in, in the `locked_until` column.
+    pub fn locked_until<T: 'static>(self) -> Self {
+        self.with(time::<T>(), |partial, kind| Partial {
+            locked_until: Some(kind),
+            ..partial
+        })
+    }
+
     /// The kinds, or `None` when a type was refused or the row has no payload.
     #[must_use]
     pub fn finish(self) -> Option<Kinds> {
@@ -256,6 +268,7 @@ impl KindsOf {
             attempt: partial.attempt,
             retry_after: partial.retry_after,
             processed_at: partial.processed_at,
+            locked_until: partial.locked_until,
         })
     }
 
@@ -317,6 +330,7 @@ mod tests {
         attempt: None,
         retry_after: None,
         processed_at: None,
+        locked_until: None,
     };
 
     fn plain() -> KindsOf {
@@ -335,6 +349,14 @@ mod tests {
             kinds,
             Some(Kinds {
                 retry_after: Some(TimeKind::Chrono),
+                ..PLAIN
+            })
+        );
+        let leased = plain().locked_until::<DateTime<Utc>>().finish();
+        assert_eq!(
+            leased,
+            Some(Kinds {
+                locked_until: Some(TimeKind::Chrono),
                 ..PLAIN
             })
         );
@@ -368,6 +390,7 @@ mod tests {
         );
         assert_eq!(plain().retry_after::<SystemTime>().finish(), None);
         assert_eq!(plain().processed_at::<SystemTime>().finish(), None);
+        assert_eq!(plain().locked_until::<SystemTime>().finish(), None);
         assert_eq!(
             KindsOf::new::<i64, SystemClock>()
                 .payload::<Box<[u8]>>()
@@ -499,12 +522,14 @@ mod tests {
         let kinds = plain()
             .retry_after::<OffsetDateTime>()
             .processed_at::<OffsetDateTime>()
+            .locked_until::<OffsetDateTime>()
             .finish();
         assert_eq!(
             kinds,
             Some(Kinds {
                 retry_after: Some(TimeKind::Time),
                 processed_at: Some(TimeKind::Time),
+                locked_until: Some(TimeKind::Time),
                 ..PLAIN
             })
         );

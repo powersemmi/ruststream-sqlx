@@ -13,9 +13,12 @@ use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, TimeDelta, Utc};
-use ruststream_sqlx::__private::{Event, Events, IdAt, Now, Param, Prepared, Queue, Shape, Values};
+use ruststream_sqlx::__private::{
+    Event, Events, IdAt, KindsOf, Now, Param, Prepared, Queue, Shape, Values,
+};
 use ruststream_sqlx::{
     Ack, Clock, DatabaseClock, Extend, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow,
+    SystemClock,
 };
 use sqlx::postgres::PgArguments;
 use sqlx::types::Json;
@@ -315,8 +318,17 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
         &mut extend,
         &values(Event::Ack, &id)
     )?);
-    // By name, a lease row reads through its own code.
-    assert_eq!(<Leased as Events<Postgres>>::kinds(), None);
+    // By name, a lease row is read by its role columns, its lease in the `locked_until` type.
+    let kinds = <Leased as Events<Postgres>>::kinds();
+    assert!(kinds.is_some());
+    assert_eq!(
+        kinds,
+        KindsOf::new::<i64, SystemClock>()
+            .attempt::<i16>()
+            .locked_until::<DateTime<Utc>>()
+            .payload::<Vec<u8>>()
+            .finish()
+    );
     let _ = |row: Leased| (row.id, row.attempt, row.locked_until, row.payload);
     Ok(())
 }
@@ -355,6 +367,8 @@ impl Extend<Postgres> for Extended {
 fn an_extension_listed_in_custom_is_the_services_own() {
     let shape = <Extended as Events<Postgres>>::SHAPE;
     assert!(shape.custom_extend);
+    // By name, a lease row with an extension of its own runs its own code.
+    assert_eq!(<Extended as Events<Postgres>>::kinds(), None);
     assert!(!shape.custom_ack && !<Leased as Events<Postgres>>::SHAPE.custom_extend);
     let _ = |row: Extended| (row.id, row.locked_until, row.payload);
 }

@@ -92,15 +92,18 @@
 //!
 //! A table with a `#[field(locked_until)]` field is claimed by lease instead ([`LeaseRow`]): the
 //! claim writes the lease's expiry, counts the attempt and commits at once, so the handler runs
-//! outside any transaction. A settlement takes effect only while the row still holds that expiry,
-//! and one that finds the row under another lease fails with [`SqlxBrokerError::LeaseLost`]. Each
-//! delivery of a batch settles on its own.
+//! outside any transaction. The subscription extends the lease of every delivery in work each half
+//! lease, so a handler may outlast its lease; after a crash the row returns once the lease runs
+//! out. A settlement takes effect only while the row still holds the lease, and one that finds the
+//! row under another lease fails with [`SqlxBrokerError::LeaseLost`]. A delivery dropped unsettled
+//! releases its row at once. Each delivery of a batch settles on its own.
 //!
 //! In the row lock form a message in work holds a connection of the pool until it settles, a
 //! batch holds one for all its messages, and a publish takes one more for its insert. A
 //! subscription with `workers(n)` holds up to n + 1 connections, and handlers that publish need
 //! room for their inserts on top: a pool without that room makes them wait for its
-//! `acquire_timeout`. In the lease form a message takes a connection only to settle. The name
+//! `acquire_timeout`. In the lease form a message takes a connection only to settle, and each
+//! subscription takes one each half lease to extend the leases in work. The name
 //! selects a group where the table has one; without a group the table is one queue. The bytes
 //! reach the codec lent from the row. What a handler answers decides the row's fate:
 //!
@@ -285,7 +288,8 @@ pub mod __private {
 ///
 /// `#[field(..)]` gives a field one role:
 ///
-/// - `id`, required: the row's identity.
+/// - `id`, required: the row's identity. Its type is `Clone`: a lease subscription keeps a copy
+///   of each id in work to extend its lease.
 /// - `group`: the group a subscription reads; `#[field(group, fifo = true)]` keeps each group in
 ///   order.
 /// - `partition_key`: the delivery's partition key.
@@ -299,7 +303,7 @@ pub mod __private {
 /// `generated`, alone or beside a role, marks a column the database fills in.
 ///
 /// A generic struct keeps its parameters: the impl requires `Send + Sync + 'static` of the struct
-/// and of the `id` field's type.
+/// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type.
 ///
 /// # Column names
 ///

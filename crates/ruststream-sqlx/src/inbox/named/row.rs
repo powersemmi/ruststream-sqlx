@@ -105,7 +105,7 @@ fn hold_to(kinds: Kinds, claimed: &mut Claimed<NamedRow>) -> Result<(), Error> {
 
 /// The id of a [`NamedRow`], in the type its column holds. Machinery.
 #[doc(hidden)]
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash)]
 pub enum NamedId {
     /// A `SMALLINT` id.
     I16(i16),
@@ -117,6 +117,28 @@ pub enum NamedId {
     Text(String),
     /// A byte id.
     Bytes(Vec<u8>),
+}
+
+// Written out rather than derived: `clone_from` copies a text or byte id into the storage the id
+// it replaces held, which a lease book does for every delivery it enters.
+impl Clone for NamedId {
+    fn clone(&self) -> Self {
+        match self {
+            Self::I16(id) => Self::I16(*id),
+            Self::I32(id) => Self::I32(*id),
+            Self::I64(id) => Self::I64(*id),
+            Self::Text(id) => Self::Text(id.clone()),
+            Self::Bytes(id) => Self::Bytes(id.clone()),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        match (self, source) {
+            (Self::Text(kept), Self::Text(id)) => kept.clone_from(id),
+            (Self::Bytes(kept), Self::Bytes(id)) => kept.clone_from(id),
+            (kept, id) => *kept = id.clone(),
+        }
+    }
 }
 
 // Written out rather than derived: logs name a row by its id as the table holds it, the way they
@@ -152,7 +174,8 @@ impl NamedBytes {
     }
 }
 
-/// A time a by-name subscription binds, in the type its column holds. Machinery.
+/// A time a by-name subscription binds, in the type its column holds; in the lease form, the
+/// lease a delivery holds. Machinery.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedTime {
@@ -271,6 +294,19 @@ fn bind_now<DB: NamedDatabase>(
     }
 }
 
+/// Binds `lease`; `false` where the statement has no lease to bind.
+#[cfg(any(feature = "chrono", feature = "time"))]
+fn bind_lease<DB: NamedDatabase>(
+    arguments: &mut DB::Arguments,
+    lease: Option<NamedTime>,
+) -> Result<bool, Error> {
+    let Some(lease) = lease else {
+        return Ok(false);
+    };
+    DB::bind_time(arguments, lease)?;
+    Ok(true)
+}
+
 /// Binds now, or `delay` later, as a `Time`.
 #[cfg(any(feature = "chrono", feature = "time"))]
 fn bind_at<DB: NamedDatabase, Time: QueueTime>(
@@ -299,9 +335,8 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         custom_extend: false,
     };
 
-    // A by-name subscription reads a lease table through the route's own row, which holds the
-    // lease's type: the role columns hold no lease.
-    type Token = ();
+    // The lease in the type of the route's `locked_until` column, which the queue's kinds name.
+    type Token = NamedTime;
 
     fn kinds() -> Option<Kinds> {
         // The route's own row answers when the subscription opens.
@@ -375,18 +410,46 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
                 |kinds| kinds.retry_after,
                 Some(values.delay),
             )?,
+            #[cfg(any(feature = "chrono", feature = "time"))]
+            (Param::LeaseNow, _) => {
+                bind_now::<DB>(arguments, values, |kinds| kinds.locked_until, None)?
+            }
+            #[cfg(any(feature = "chrono", feature = "time"))]
+            (Param::Lease, _) => bind_lease::<DB>(arguments, values.lease)?,
+            #[cfg(any(feature = "chrono", feature = "time"))]
+            (Param::Held, _) => bind_lease::<DB>(arguments, values.held)?,
             _ => false,
         })
     }
 
-    fn expiry(_queue: &'static Queue, _now: Now) -> Result<(), Error> {
-        Ok(())
+    fn expiry(queue: &'static Queue, now: Now) -> Result<NamedTime, Error> {
+        #[cfg(any(feature = "chrono", feature = "time"))]
+        if let Some(Kinds {
+            locked_until: Some(kind),
+            clock: ClockKind::System,
+            ..
+        }) = queue.kinds
+        {
+            return Ok(match kind {
+                #[cfg(feature = "chrono")]
+                TimeKind::Chrono => {
+                    NamedTime::Chrono(engine::expiry::<SystemClock, DateTime<Utc>>(queue, now)?)
+                }
+                #[cfg(feature = "time")]
+                TimeKind::Time => {
+                    NamedTime::Time(engine::expiry::<SystemClock, OffsetDateTime>(queue, now)?)
+                }
+            });
+        }
+        let _ = (queue, now);
+        // A table whose kinds name no lease has none for the role columns to bind.
+        Err(engine::unbound(Param::Lease, Event::Claim))
     }
 
     async fn claim<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
-        lease: Option<&'a ()>,
+        lease: Option<&'a NamedTime>,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> Result<(), Error> {
         let claimed = out.len();
@@ -403,7 +466,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-        held: Option<&'a ()>,
+        held: Option<&'a NamedTime>,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
         engine::ack::<DB, Self>(conn, cx, id, held)
     }
@@ -412,7 +475,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-        held: Option<&'a ()>,
+        held: Option<&'a NamedTime>,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
         engine::retry::<DB, Self>(conn, cx, id, held)
     }
@@ -421,7 +484,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-        held: Option<&'a ()>,
+        held: Option<&'a NamedTime>,
         delay: Duration,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
         engine::retry_after::<DB, Self>(conn, cx, id, held, delay)
@@ -431,7 +494,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-        held: Option<&'a ()>,
+        held: Option<&'a NamedTime>,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
         engine::discard::<DB, Self>(conn, cx, id, held)
     }
@@ -440,7 +503,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-        held: Option<&'a ()>,
+        held: Option<&'a NamedTime>,
         destination: &'a str,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
         engine::dead_letter::<DB, Self>(conn, cx, id, held, destination)
@@ -450,8 +513,8 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         conn: &'a mut DB::Connection,
         cx: &'a Settling,
         id: &'a NamedId,
-        held: &'a (),
-        until: &'a (),
+        held: &'a NamedTime,
+        until: &'a NamedTime,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
         engine::extend::<DB, Self>(conn, cx, id, held, until)
     }
@@ -475,6 +538,7 @@ mod tests {
         attempt: Some(IntKind::I16),
         retry_after: None,
         processed_at: None,
+        locked_until: None,
     };
 
     /// A row whose columns hold the types `KINDS` reads, and only those.
@@ -521,6 +585,36 @@ mod tests {
         ];
         let logged: Vec<String> = ids.iter().map(|id| format!("{id:?}")).collect();
         assert_eq!(logged, ["1", "2", "3", "\"job-4\"", "[5]"]);
+    }
+
+    #[test]
+    fn an_id_is_copied_into_the_storage_of_the_one_it_replaces() {
+        let mut kept = NamedId::Text("job-0001".to_owned());
+        let storage = match &kept {
+            NamedId::Text(text) => text.as_ptr(),
+            other => panic!("not a text id: {other:?}"),
+        };
+        kept.clone_from(&NamedId::Text("job-0002".to_owned()));
+        assert!(
+            matches!(&kept, NamedId::Text(text) if text == "job-0002" && text.as_ptr() == storage),
+            "{kept:?}"
+        );
+        let mut bytes = NamedId::Bytes(vec![1, 2]);
+        bytes.clone_from(&NamedId::Bytes(vec![3, 4]));
+        assert_eq!(bytes, NamedId::Bytes(vec![3, 4]));
+        // An id of another type takes the new one's type.
+        kept.clone_from(&NamedId::I64(7));
+        assert_eq!(kept, NamedId::I64(7));
+        assert_eq!(kept.clone(), NamedId::I64(7));
+        let ids = [
+            NamedId::I16(1),
+            NamedId::I32(2),
+            NamedId::Text("job-3".to_owned()),
+            NamedId::Bytes(vec![4]),
+        ];
+        for id in ids {
+            assert_eq!(id.clone(), id);
+        }
     }
 
     #[test]
@@ -596,12 +690,13 @@ mod tests {
     mod on_postgres {
         use std::time::Duration;
 
+        use chrono::{TimeDelta, Utc};
         use ruststream::HeaderMap;
         use ruststream_sqlx_dialect::{Column, Form, Param, TableSpec};
         use sqlx::postgres::PgArguments;
         use sqlx::{Arguments, Postgres};
 
-        use super::super::{NamedId, NamedRow};
+        use super::super::{NamedId, NamedRow, NamedTime};
         use super::{FITTING, KINDS, row};
         use crate::inbox::PayloadRow;
         use crate::inbox::engine::{Event, Events, IdAt, Now, Prepared, Shape, Values};
@@ -630,12 +725,38 @@ mod tests {
             }))
         }
 
+        /// The subscription `emails` of a lease table read with `kinds`, with a lease of thirty
+        /// seconds.
+        fn leased(kinds: Option<Kinds>) -> &'static Queue {
+            Box::leak(Box::new(Queue {
+                spec: TableSpec::new(
+                    "email_jobs",
+                    Column::new("job_id"),
+                    Form::Lease(Column::new("locked_until")),
+                )
+                .payload(Column::new("payload")),
+                lease: Some(Duration::from_secs(30)),
+                ..*queue(kinds)
+            }))
+        }
+
         /// Binds `param` for `event`, and says whether it bound and how many values are bound.
         fn bind(
             param: Param,
             event: Event,
             queue: &'static Queue,
             id: Option<&NamedId>,
+        ) -> Result<(bool, usize), sqlx::Error> {
+            bind_leased(param, event, queue, id, None)
+        }
+
+        /// Binds `param` for `event` where the statement writes and matches `lease`.
+        fn bind_leased(
+            param: Param,
+            event: Event,
+            queue: &'static Queue,
+            id: Option<&NamedId>,
+            lease: Option<NamedTime>,
         ) -> Result<(bool, usize), sqlx::Error> {
             let values = Values {
                 event,
@@ -646,12 +767,51 @@ mod tests {
                 delay: Duration::from_secs(30),
                 destination: "emails.dead",
                 now: Now::default(),
-                lease: None,
-                held: None,
+                lease,
+                held: lease,
             };
             let mut arguments = PgArguments::default();
             let bound = <NamedRow as Events<Postgres>>::bind(param, &mut arguments, &values)?;
             Ok((bound, arguments.len()))
+        }
+
+        #[test]
+        fn a_lease_is_taken_and_bound_in_the_type_of_its_column() -> Result<(), sqlx::Error> {
+            let queue = leased(Some(Kinds {
+                locked_until: Some(TimeKind::Chrono),
+                ..KINDS
+            }));
+            let before = Utc::now();
+            let expiry = <NamedRow as Events<Postgres>>::expiry(queue, Now::default())?;
+            assert!(
+                matches!(expiry, NamedTime::Chrono(at)
+                    if at.timestamp_subsec_nanos() == 0 && at >= before + TimeDelta::seconds(30)),
+                "a whole second, a lease from now: {expiry:?}"
+            );
+            for param in [Param::Lease, Param::Held, Param::LeaseNow] {
+                assert_eq!(
+                    bind_leased(param, Event::Extend, queue, None, Some(expiry))?,
+                    (true, 1),
+                    "{param:?}"
+                );
+            }
+            // A claim holds no lease yet, and a statement outside the lease form writes none.
+            assert_eq!(
+                bind_leased(Param::Held, Event::Claim, queue, None, None)?,
+                (false, 0)
+            );
+            // A queue whose kinds name no lease cannot tell one.
+            let refused =
+                <NamedRow as Events<Postgres>>::expiry(leased(Some(KINDS)), Now::default());
+            assert!(
+                matches!(refused, Err(sqlx::Error::Configuration(_))),
+                "{refused:?}"
+            );
+            assert_eq!(
+                bind(Param::LeaseNow, Event::Claim, leased(Some(KINDS)), None)?,
+                (false, 0)
+            );
+            Ok(())
         }
 
         fn timed(clock: ClockKind) -> Kinds {

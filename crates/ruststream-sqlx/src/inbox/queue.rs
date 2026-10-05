@@ -21,7 +21,7 @@ use super::database::QueueDatabase;
 use super::engine::{Events, IdAt, Prepared, Shape, Stmt, intern, intern_name};
 use super::error::SqlxBrokerError;
 use super::kinds::Kinds;
-use super::lease::LeaseBook;
+use super::lease::{self, LeaseBook};
 use super::publish::table_of;
 use super::subscriber::{Holding, InboxSubscriber};
 #[cfg(feature = "testing")]
@@ -39,10 +39,12 @@ use super::{InboxRow, PayloadRow};
 ///
 /// A table with a `#[field(locked_until)]` field is claimed by lease instead: the claim writes the
 /// lease's expiry into the row, counts the attempt and commits at once, so the handler runs
-/// outside any transaction. Each settlement is one statement that takes effect only while the
-/// row still holds that expiry, and after a crash the row returns once the lease runs out. The
-/// lease is the broker's ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the
-/// subscription sets its own ([`lease`](Self::lease)).
+/// outside any transaction. While the handler runs, the subscription extends the lease each half
+/// lease. Each settlement is one statement that takes effect only while the row still holds the
+/// lease, a delivery dropped unsettled releases its row at once, and after a crash the row
+/// returns once the lease runs out. The lease is the broker's
+/// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the subscription sets its own
+/// ([`lease`](Self::lease)).
 ///
 /// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table: at the cap the
 /// row moves to the `dead_letter` group (with a `group` field) or into the `dead_letter` table
@@ -161,10 +163,13 @@ impl<Row> InboxQueue<Row> {
     /// How long a claim of this subscription leases each row; the broker's lease
     /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless set.
     ///
-    /// A lease is whole seconds, at least one: a shorter one is rounded up. A handler that runs
-    /// past its lease shares the row with the next claim, and its settlement then fails with
-    /// [`SqlxBrokerError::LeaseLost`]: the lease is sized for the longest handler. Only a table
-    /// with a `#[field(locked_until)]` field takes a lease; on any other the call does not compile.
+    /// A lease is whole seconds, at least one: a shorter one is rounded up. The subscription
+    /// extends the lease of every delivery in work each half lease, so a handler may outlast it;
+    /// the lease is how long a row stays out of the queue after its process crashed. A lease runs
+    /// out under a running handler only when its extensions fail or stop (the database out of
+    /// reach, the subscription closed, the broker shut down), and the late settlement then fails
+    /// with [`SqlxBrokerError::LeaseLost`]. Only a table with a `#[field(locked_until)]` field
+    /// takes a lease; on any other the call does not compile.
     ///
     /// # Examples
     ///
@@ -195,8 +200,9 @@ impl<Row> InboxQueue<Row> {
     ///     month: u32,
     /// }
     ///
-    /// // A report takes minutes to render: its row stays with the handler for ten.
-    /// #[subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(600)))]
+    /// // The report of a renderer that crashed waits out a two-minute lease before another
+    /// // process takes it.
+    /// #[subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(120)))]
     /// async fn render(request: &Request) -> HandlerOutcome {
     ///     tracing::info!(month = request.month, "rendering");
     ///     HandlerOutcome::ack()
@@ -647,15 +653,23 @@ where
     .intern();
     // A book per subscription, not per queue: a queue's description is shared by every
     // subscription that reads it alike, its deliveries are not.
-    let holding = match queue.lease {
-        Some(_) => Holding::Leases(LeaseBook::leak(shared.pool.clone())),
-        None => Holding::Locks,
+    let (holding, keeper) = match queue.lease {
+        Some(_) => {
+            let book = LeaseBook::leak(shared, queue);
+            // A child of the connection's token: `shutdown` stops every keeper, and the
+            // subscriber stops its own when it drops.
+            let stop = shared.stopping.child_token();
+            drop(shared.runtime.spawn(lease::keep(book, stop.clone())));
+            (Holding::Leases(book), Some(stop.drop_guard()))
+        }
+        None => (Holding::Locks, None),
     };
     Ok(InboxSubscriber::new(
         Arc::clone(shared),
         queue,
         holding,
         registration,
+        keeper,
     ))
 }
 

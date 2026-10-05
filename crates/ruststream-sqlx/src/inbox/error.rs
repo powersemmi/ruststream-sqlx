@@ -123,9 +123,14 @@ pub enum SqlxBrokerError {
     },
     /// A settlement in the lease form found its row under another lease, so it took no effect.
     ///
-    /// Ownership of a leased row ends with its lease, not with its holder: a handler still
-    /// running when its lease runs out shares the row with the next claim, and the lease its
-    /// claim wrote, the ownership token, only stops the late holder from settling.
+    /// Ownership of a leased row ends with its lease, not with its holder. The subscription
+    /// extends the lease of every delivery in work each half lease, so a lease runs out under a
+    /// running handler only when its extensions fail or stop (the database out of reach, the
+    /// subscription closed or the broker shut down). The handler then shares the row with the
+    /// next claim, and the lease, the ownership token, only stops the late holder from settling.
+    ///
+    /// A settlement whose statement fails keeps the row under its lease until the lease runs
+    /// out, as a crash does; a delivery dropped unsettled releases its row at once.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}): the lease on row {id} ran out \
          and another claim took it; this settlement did not take effect"

@@ -79,10 +79,8 @@ live::matrix! {
     async fn a_batch_whose_last_delivery_drops_unsettled_keeps_the_others_settlements() {
         let Some(db) = database().await else { return };
         db.fragile(&["a", "b"]).await;
-        // A lease of a second: a leased row a dropped delivery held returns within the test.
         let connected = SqlxBroker::new(db.pool.clone())
             .poll_interval(Duration::from_millis(20))
-            .lease(Duration::from_secs(1))
             .connect()
             .await
             .expect("the broker connects");
@@ -98,7 +96,8 @@ live::matrix! {
             drop(b);
 
             // The next claim passes over the batch's rows until the batch lets go of them (its
-            // transaction ends, or the dropped delivery's lease runs out), then finds `b` alone.
+            // transaction ends, or the dropped delivery's release clears its lease), then finds
+            // `b` alone.
             let again = batches.next().await.expect("a batch").expect("the claim");
             let payloads: Vec<&[u8]> = again.iter().map(IncomingMessage::payload).collect();
             assert_eq!(payloads, [b"b".as_slice()]);

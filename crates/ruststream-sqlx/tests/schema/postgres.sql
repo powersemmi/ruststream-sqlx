@@ -131,3 +131,11 @@ CREATE TABLE text_jobs (
     attempt INTEGER NOT NULL DEFAULT 1,
     payload TEXT NOT NULL
 );
+
+-- `plain_jobs` with ids of text: each delivery's id has storage of its own.
+CREATE TABLE keyed_jobs (
+    id           TEXT PRIMARY KEY,
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
+);

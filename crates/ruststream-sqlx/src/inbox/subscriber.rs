@@ -8,6 +8,7 @@ use std::time::Duration;
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
 use sqlx::{Pool, Transaction};
+use tokio_util::sync::DropGuard;
 
 use super::PayloadRow;
 use super::broker::Shared;
@@ -40,6 +41,8 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///
 /// In the lease form the claim commits at once and holds no connection: each delivery, in a batch
 /// or alone, takes a connection only while it settles, and its settlement takes effect on its own.
+/// A task on the runtime the broker connected on extends the lease of every delivery in work each
+/// half lease, on one connection, until the subscriber drops or the broker shuts down.
 ///
 /// # Examples
 ///
@@ -76,6 +79,8 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>> {
     /// What the next claim waits for first.
     wait: Option<Duration>,
     _registration: Registration<DB>,
+    /// Stops the lease keeper when the subscriber drops; `None` outside the lease form.
+    _keeper: Option<DropGuard>,
 }
 
 /// How a subscription holds the rows it claimed until they settle.
@@ -119,6 +124,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         queue: &'static Queue,
         holding: Holding<DB, Row>,
         registration: Registration<DB>,
+        keeper: Option<DropGuard>,
     ) -> Self {
         Self {
             shared,
@@ -127,6 +133,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
             rows: Vec::new(),
             wait: None,
             _registration: registration,
+            _keeper: keeper,
         }
     }
 

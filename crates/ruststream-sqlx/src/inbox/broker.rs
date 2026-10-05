@@ -10,6 +10,7 @@ use std::time::Duration;
 use ruststream::{Broker, ConnectedBroker};
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::{Database, Pool};
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 use super::PayloadRow;
@@ -286,9 +287,13 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     /// `#[field(locked_until)]` field); thirty seconds unless set. A subscription's own
     /// [`lease`](crate::InboxQueue::lease) overrides it, and a table in another form ignores it.
     ///
-    /// A lease is whole seconds, at least one: a shorter one is rounded up. A handler that runs
-    /// past its lease shares the row with the next claim, and its settlement then fails with
-    /// [`SqlxBrokerError::LeaseLost`]; the lease is sized for the longest handler.
+    /// A lease is whole seconds, at least one: a shorter one is rounded up. The subscription
+    /// extends the lease of every delivery in work each half lease, so a handler may run longer
+    /// than its lease; the lease is how long a row stays out of the queue after its process
+    /// crashed. A delivery dropped unsettled releases its row at once. A lease runs out under a
+    /// running handler only when its extensions fail or stop (the database out of reach, the
+    /// subscription closed, the broker [shut down](ConnectedBroker::shutdown)): the row then goes
+    /// to the next claim, and the late settlement fails with [`SqlxBrokerError::LeaseLost`].
     ///
     /// # Examples
     ///
@@ -301,8 +306,8 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     /// use sqlx::postgres::PgPoolOptions;
     ///
     /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
-    /// // Reports take minutes to render: their rows stay with a handler for five.
-    /// let broker = SqlxBroker::new(pool).lease(Duration::from_secs(300));
+    /// // A row whose process crashed goes back to the queue once its ten-second lease runs out.
+    /// let broker = SqlxBroker::new(pool).lease(Duration::from_secs(10));
     /// # let _ = broker;
     /// # Ok(())
     /// # }
@@ -325,7 +330,7 @@ impl<DB: QueueDatabase> Broker for SqlxBroker<DB> {
                 .await
                 .map_err(|source| SqlxBrokerError::Connect { source })?,
         );
-        Ok(ConnectedSqlxBroker::from(self))
+        Ok(ConnectedSqlxBroker::new(self, Handle::current()))
     }
 }
 
@@ -337,9 +342,13 @@ pub(crate) struct Shared<DB: Database> {
     pub(crate) poll_interval: Duration,
     /// The lease a subscription in the lease form takes, unless it names its own.
     pub(crate) lease: Duration,
+    /// The runtime `connect` ran on: the lease keepers run there, and so do the releases of lease
+    /// deliveries dropped unsettled.
+    pub(crate) runtime: Handle,
     /// The `Closed` flag: set by `shutdown`, read with one atomic load per publish and per claim.
     closed: AtomicBool,
-    /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag.
+    /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag, and stops
+    /// the lease keepers, whose tokens are its children.
     pub(crate) stopping: CancellationToken,
     /// The queues this connection reads, by table and group; a table without groups is one queue.
     pub(crate) queues: Mutex<Vec<(&'static str, Option<String>)>>,
@@ -358,7 +367,9 @@ impl<DB: Database> Shared<DB> {
 /// The connected inbox broker: the typed witness that the database answered.
 ///
 /// It hands out publishers and opens subscriptions; [`shutdown`](ConnectedBroker::shutdown) stops
-/// its claim loops and refuses every handle it handed out.
+/// its claim loops and the extension of its leases, and refuses every handle it handed out. A
+/// delivery in work keeps its lease after `shutdown` and settles as before; its lease is no
+/// longer extended.
 ///
 /// # Examples
 ///
@@ -386,8 +397,9 @@ impl<DB: Database> fmt::Debug for ConnectedSqlxBroker<DB> {
     }
 }
 
-impl<DB: Database> From<SqlxBroker<DB>> for ConnectedSqlxBroker<DB> {
-    fn from(broker: SqlxBroker<DB>) -> Self {
+impl<DB: Database> ConnectedSqlxBroker<DB> {
+    /// The connected form of `broker`, whose internal tasks run on `runtime`.
+    pub(crate) fn new(broker: SqlxBroker<DB>, runtime: Handle) -> Self {
         Self {
             shared: Arc::new(Shared {
                 pool: broker.pool,
@@ -395,6 +407,7 @@ impl<DB: Database> From<SqlxBroker<DB>> for ConnectedSqlxBroker<DB> {
                 routes: broker.routes,
                 poll_interval: broker.poll_interval,
                 lease: broker.lease,
+                runtime,
                 closed: AtomicBool::new(false),
                 stopping: CancellationToken::new(),
                 queues: Mutex::new(Vec::new()),
@@ -409,6 +422,9 @@ impl<DB: QueueDatabase> ConnectedBroker for ConnectedSqlxBroker<DB> {
     type Error = SqlxBrokerError;
     type Closed = ClosedSqlxBroker;
 
+    /// Stops the claim loops and the extension of every lease, and refuses every handle handed
+    /// out before. A delivery in work settles as before; its lease runs out unless it settles
+    /// first.
     fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
         // Why a flag rather than a type: the pool is the service's and stays open, so a
         // publisher handed out before shutdown would otherwise keep writing.

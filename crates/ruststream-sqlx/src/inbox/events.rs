@@ -363,7 +363,8 @@ settle_event!(
 /// `held`, and says whether it did.
 ///
 /// The derive builds it for every table with a `#[field(locked_until)]` field; a service lists
-/// `extend` in `custom(..)` to take it over, for a database without a built-in dialect. The crate
+/// `extend` in `custom(..)` to take it over, for a database without a built-in dialect. A
+/// subscription runs it each half lease for every delivery in work, on one connection. The crate
 /// also runs it with `until` equal to `held` to confirm a delivery's lease, inside the transaction
 /// where an event of the service's own then runs.
 ///
