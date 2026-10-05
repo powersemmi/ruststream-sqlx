@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, Statement, StatementError};
+use crate::table_name::TableName;
 
 /// A database's SQL: how it quotes names and numbers placeholders, and the statement each queue
 /// event runs.
@@ -28,14 +29,11 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 ///
 /// // What a subscription prepares when it starts, whatever the database.
 /// fn prepare(dialect: &dyn Dialect, spec: &TableSpec<'_>) -> Result<Vec<Statement>, StatementError> {
-///     Ok(vec![dialect.claim(spec, ClaimShape::Rows)?])
+///     Ok(vec![dialect.claim(spec, ClaimShape::Rows)?, dialect.ack(spec)?])
 /// }
 ///
 /// let statements = prepare(&Postgres, &JOBS)?;
-/// assert_eq!(
-///     statements[0].sql(),
-///     r#"SELECT "job_id", "payload" FROM "jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
-/// );
+/// assert_eq!(statements[1].sql(), r#"DELETE FROM "jobs" WHERE "job_id" = $1"#);
 /// # }
 /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
 /// ```
@@ -118,4 +116,197 @@ pub trait Dialect: Debug + Send + Sync {
     /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
     /// ```
     fn claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError>;
+
+    /// The statement that reads the rows of claimed ids, bound as one list.
+    ///
+    /// # Errors
+    ///
+    /// A [`StatementError`] when the dialect cannot read rows by a list of ids; the built-in
+    /// dialects build it for every table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("payload"));
+    ///
+    /// let fetch = Postgres.fetch(&JOBS)?;
+    /// assert_eq!(
+    ///     fetch.sql(),
+    ///     r#"SELECT "job_id", "payload" FROM "jobs" WHERE "job_id" = ANY($1)"#,
+    /// );
+    /// assert_eq!(fetch.params(), [Param::Ids]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
+
+    /// The statement that acknowledges a row: it deletes the row, or sets `processed_at` when the
+    /// table has that column.
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
+    /// form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+    ///     .processed_at(Column::new("processed_at"));
+    ///
+    /// let ack = Postgres.ack(&JOBS)?;
+    /// assert_eq!(ack.sql(), r#"UPDATE "jobs" SET "processed_at" = $1 WHERE "job_id" = $2"#);
+    /// assert_eq!(ack.params(), [Param::Now, Param::Id]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
+
+    /// The statement that releases a row for another attempt at once, or `None` when releasing
+    /// the row needs no statement.
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
+    /// form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).attempt(Column::new("attempt"));
+    ///
+    /// // In the row lock form a retry counts the attempt; the rollback releases the row.
+    /// let retry = Postgres.retry(&JOBS)?.map(|statement| statement.sql().to_owned());
+    /// assert_eq!(
+    ///     retry.as_deref(),
+    ///     Some(r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1"#),
+    /// );
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError>;
+
+    /// The statement that releases a row for another attempt after a delay, bound as
+    /// [`Param::RetryAfter`](crate::Param::RetryAfter).
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::MissingRole`] when the table has no `retry_after` column;
+    /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
+    /// form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+    ///     .retry_after(Column::new("retry_after"));
+    ///
+    /// let retry_after = Postgres.retry_after(&JOBS)?;
+    /// assert_eq!(
+    ///     retry_after.sql(),
+    ///     r#"UPDATE "jobs" SET "retry_after" = $1 WHERE "job_id" = $2"#,
+    /// );
+    /// assert_eq!(retry_after.params(), [Param::RetryAfter, Param::Id]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
+
+    /// The statement that drops a row: it deletes the row, or sets `processed_at` when the table
+    /// has that column.
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
+    /// form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("payload"));
+    ///
+    /// let discard = Postgres.discard(&JOBS)?;
+    /// assert_eq!(discard.sql(), r#"DELETE FROM "jobs" WHERE "job_id" = $1"#);
+    /// assert_eq!(discard.params(), [Param::Id]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
+
+    /// The statement that moves a row whose attempts are spent to another group, bound as
+    /// [`Param::Destination`](crate::Param::Destination).
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::MissingRole`] when the table has no `group` column;
+    /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
+    /// form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).group(Column::new("name"));
+    ///
+    /// let dead_letter = Postgres.dead_letter_group(&JOBS)?;
+    /// assert_eq!(dead_letter.sql(), r#"UPDATE "jobs" SET "name" = $1 WHERE "job_id" = $2"#);
+    /// assert_eq!(dead_letter.params(), [Param::Destination, Param::Id]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
+
+    /// The statements that move a row whose attempts are spent to `target`, a table with the same
+    /// columns; they run in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::UnsupportedForm`] when the dialect has no statements for the table's
+    /// form.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::error::Error;
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableName, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("payload"));
+    ///
+    /// let target = TableName::parse("archive.jobs_dead")?;
+    /// let moves = Postgres.dead_letter_table(&JOBS, target)?;
+    /// assert_eq!(
+    ///     moves[0].sql(),
+    ///     r#"WITH moved AS (DELETE FROM "jobs" WHERE "job_id" = $1 RETURNING "job_id", "payload") INSERT INTO "archive"."jobs_dead" ("job_id", "payload") SELECT "job_id", "payload" FROM moved"#,
+    /// );
+    /// # }
+    /// # Ok::<(), Box<dyn Error>>(())
+    /// ```
+    fn dead_letter_table(
+        &self,
+        spec: &TableSpec<'_>,
+        target: TableName<'_>,
+    ) -> Result<Vec<Statement>, StatementError>;
 }

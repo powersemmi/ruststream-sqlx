@@ -41,6 +41,7 @@ mod dialect;
 mod postgres;
 mod spec;
 mod statement;
+mod table_name;
 #[cfg(feature = "postgres")]
 mod writer;
 
@@ -49,3 +50,4 @@ pub use dialect::Dialect;
 pub use postgres::Postgres;
 pub use spec::{Column, Form, KeyPart, Role, TableSpec};
 pub use statement::{ClaimShape, Param, Statement, StatementError};
+pub use table_name::{ParseTableNameError, TableName};

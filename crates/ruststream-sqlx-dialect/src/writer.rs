@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use crate::dialect::Dialect;
 use crate::spec::{Role, TableSpec};
 use crate::statement::{Param, Statement};
+use crate::table_name::TableName;
 
 /// One statement being written: the SQL text, and the parameters its placeholders bind so far.
 pub(crate) struct SqlWriter<'d, D: ?Sized> {
@@ -38,6 +39,11 @@ where
     /// The queue's table, qualified with its schema when it has one.
     pub(crate) fn table(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         self.qualified(spec.schema(), spec.table())
+    }
+
+    /// Another table, qualified with its schema when it has one.
+    pub(crate) fn table_name(&mut self, name: TableName<'_>) -> &mut Self {
+        self.qualified(name.schema(), name.table())
     }
 
     fn qualified(&mut self, schema: Option<&str>, table: &str) -> &mut Self {
@@ -105,6 +111,11 @@ where
             }
         }
         self.ident(id)
+    }
+
+    /// `"column" = "column" + 1`.
+    pub(crate) fn increment(&mut self, column: &str) -> &mut Self {
+        self.ident(column).push(" = ").ident(column).push(" + 1")
     }
 
     pub(crate) fn finish(self) -> Statement {
