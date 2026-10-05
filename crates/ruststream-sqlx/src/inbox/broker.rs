@@ -299,8 +299,8 @@ pub(crate) struct Shared<DB: Database> {
     closed: AtomicBool,
     /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag.
     pub(crate) stopping: CancellationToken,
-    /// The queues this connection reads, by table and name.
-    pub(crate) queues: Mutex<Vec<(&'static str, String)>>,
+    /// The queues this connection reads, by table and group; a table without groups is one queue.
+    pub(crate) queues: Mutex<Vec<(&'static str, Option<String>)>>,
     /// The test harness's books of this connection.
     #[cfg(feature = "testing")]
     pub(crate) harness: super::testing::Harness,

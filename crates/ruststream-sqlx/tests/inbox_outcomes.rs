@@ -395,3 +395,26 @@ async fn a_second_subscription_to_one_queue_stops_the_service() {
     };
     db.finish().await;
 }
+
+#[subscriber(InboxQueue::<Plain>::new("plain.other"))]
+async fn plain_twin(_email: &Email) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_subscription_to_a_table_without_groups_stops_the_service() {
+    let Some(db) = database().await else { return };
+    // A table without groups is one queue, whatever name a subscription gives it.
+    let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
+        b.include(plain_acked);
+        b.include(plain_twin);
+    });
+    let refused = TestApp::start_live(app).await.map(|_| ());
+    let message = format!(
+        "{:?}",
+        refused.expect_err("a second subscription to the table is refused")
+    );
+    assert!(message.contains("AlreadySubscribed"), "{message}");
+    assert!(message.contains("plain_jobs"), "{message}");
+    db.finish().await;
+}

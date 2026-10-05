@@ -408,7 +408,9 @@ where
         },
     )?;
     let table_name = intern_name(&table);
-    let registration = Registration::take(shared, table_name, name, row)?;
+    // A table without groups is one queue, whatever name the subscription gives it.
+    let group = Row::SPEC.column(Role::Group).map(|_| name);
+    let registration = Registration::take(shared, table_name, group, name, row)?;
     check(shared, &prepared)
         .await
         .map_err(|unchecked| match unchecked {
@@ -486,6 +488,8 @@ async fn prepare<DB: QueueDatabase>(
 pub(crate) struct Registration<DB: Database> {
     shared: Arc<Shared<DB>>,
     table: &'static str,
+    /// The group the subscription reads; `None` for a table without groups.
+    group: Option<String>,
     name: String,
 }
 
@@ -493,13 +497,14 @@ impl<DB: Database> Registration<DB> {
     fn take(
         shared: &Arc<Shared<DB>>,
         table: &'static str,
+        group: Option<&str>,
         name: &str,
         row: &'static str,
     ) -> Result<Self, SqlxBrokerError> {
         let mut queues = shared.queues.lock().unwrap_or_else(PoisonError::into_inner);
         if queues
             .iter()
-            .any(|(open, open_name)| *open == table && open_name == name)
+            .any(|(open, open_group)| *open == table && open_group.as_deref() == group)
         {
             return Err(SqlxBrokerError::AlreadySubscribed {
                 subscription: name.to_owned(),
@@ -507,13 +512,14 @@ impl<DB: Database> Registration<DB> {
                 row,
             });
         }
-        queues.push((table, name.to_owned()));
+        queues.push((table, group.map(str::to_owned)));
         drop(queues);
         #[cfg(feature = "testing")]
         shared.harness.opened(name);
         Ok(Self {
             shared: Arc::clone(shared),
             table,
+            group: group.map(str::to_owned),
             name: name.to_owned(),
         })
     }
@@ -526,7 +532,7 @@ impl<DB: Database> Drop for Registration<DB> {
             .queues
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        queues.retain(|(table, name)| !(*table == self.table && *name == self.name));
+        queues.retain(|(table, group)| !(*table == self.table && *group == self.group));
         drop(queues);
         #[cfg(feature = "testing")]
         self.shared.harness.closed(&self.name);
