@@ -719,6 +719,7 @@ mod tests {
                 kinds,
                 prepared: Prepared::default(),
                 begin_claim: None,
+                counted_attempt: false,
                 poll_interval: Duration::from_secs(1),
                 lease: None,
                 max_attempts: None,

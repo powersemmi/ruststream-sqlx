@@ -65,7 +65,9 @@ pub struct Postgres;
 impl BuiltIn for Postgres {
     /// `NAMEDATALEN` less its terminator. Postgres truncates a longer identifier without an
     /// error, so the statement would address another object.
-    const NAME_LIMIT: NameLimit = NameLimit::Bytes(63);
+    const NAME_LIMIT: Option<NameLimit> = Some(NameLimit::Bytes(63));
+
+    const ROW_LOCKS: bool = true;
 
     const DEFAULT_ROW: &'static str = " DEFAULT VALUES";
 

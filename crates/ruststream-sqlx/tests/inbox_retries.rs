@@ -12,6 +12,7 @@ mod live;
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use ruststream::prelude::*;
 use ruststream::testing::TestApp;
 use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
@@ -153,11 +154,14 @@ live::matrix! {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_cap_needs_an_attempt_column_and_a_destination_a_table_name() {
+        // A lease, which every stand serves: the cap is refused whatever the form.
         #[derive(Debug, Inbox, FromRow)]
         #[inbox(table = "plain_jobs")]
         struct Uncounted {
             #[field(id)]
             id: i64,
+            #[field(locked_until)]
+            locked_until: Option<DateTime<Utc>>,
             #[field(payload)]
             payload: Vec<u8>,
         }
@@ -195,7 +199,7 @@ live::matrix! {
                 .expect_err("no such table name")
         );
         assert!(message.contains("a.b.c"), "{message}");
-        let _ = |row: Uncounted| (row.id, row.payload);
+        let _ = |row: Uncounted| (row.id, row.locked_until, row.payload);
         db.finish().await;
     }
 }

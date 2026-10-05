@@ -11,6 +11,12 @@ use super::InboxRow;
 /// exactly as the service writes times itself. `chrono::DateTime<Utc>` implements it under the
 /// `chrono` feature and `time::OffsetDateTime` under `time`.
 ///
+/// SQLite keeps times as text, and the claim compares them as text. The text sqlx writes for a
+/// `chrono` time (RFC 3339 with `+00:00`) sorts as the times themselves. The text it writes for a
+/// `time` value ends in `Z` and drops the fraction's trailing zeros, so it sorts two times right
+/// only when they fall in different seconds: on SQLite a lease of such a table may end up to a
+/// second late, and a delayed retry may come back up to a second early or late.
+///
 /// # Examples
 ///
 /// ```

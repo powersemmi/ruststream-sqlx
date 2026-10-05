@@ -50,6 +50,12 @@ mysql = [
     "ruststream-sqlx-macros?/mysql",
     "sqlx?/mysql",
 ]
+# The built-in SQLite dialect, the sqlx driver, and the derive's SQLite insert.
+sqlite = [
+    "ruststream-sqlx-dialect/sqlite",
+    "ruststream-sqlx-macros?/sqlite",
+    "sqlx?/sqlite",
+]
 # `chrono::DateTime<Utc>` as a time column.
 chrono = ["inbox", "dep:chrono", "sqlx/chrono"]
 # `time::OffsetDateTime` as a time column.
@@ -81,7 +87,7 @@ foldhash = { workspace = true, optional = true }
 
 [dev-dependencies]
 ruststream = { workspace = true, features = ["macros", "json", "testing", "conformance"] }
-sqlx = { workspace = true, features = ["postgres", "mysql", "chrono", "json", "derive"] }
+sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "json", "derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 chrono.workspace = true
 futures = { workspace = true, features = ["executor"] }

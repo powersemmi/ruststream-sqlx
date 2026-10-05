@@ -657,9 +657,15 @@ where
     }
 
     fn redelivery_count(&self) -> Option<u64> {
-        match &self.claimed {
+        let carried = match &self.claimed {
             Claimed::Row(row) => Row::attempt(row),
             Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
+        };
+        // A claim that returns its rows after counting reports the attempt before its count.
+        if self.queue.counted_attempt {
+            carried.map(|attempt| attempt.saturating_sub(1))
+        } else {
+            carried
         }
     }
 

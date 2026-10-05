@@ -1,60 +1,49 @@
-//! The MySQL stand: a database of the test's own with `schema/mysql.sql` applied, and the SQL the
-//! suites read and write its tables with. The MariaDB stand reads and writes its tables with the
-//! same SQL.
+//! The SQLite stand: an in-memory database of the test's own with `schema/sqlite.sql` applied, and
+//! the SQL the suites read and write its tables with. It needs no server, so it never skips.
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
-use sqlx::{AssertSqlSafe, Connection, MySql, MySqlConnection};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::{AssertSqlSafe, Connection, Sqlite, SqliteConnection};
 
-use super::{Database, url};
+use super::Database;
 
 /// The database the stand serves.
-pub(crate) type Db = MySql;
+pub(crate) type Db = Sqlite;
 
-/// The variable that names the stand: a MySQL URL whose user may create databases.
-pub(crate) const URL: &str = "MYSQL_TEST_URL";
-
-/// A fresh database on the stand, or `None` to skip the test.
+/// A fresh database in memory, shared by every connection that names it.
+///
+/// An in-memory database ends with its last connection, so the stand holds one open beside the
+/// pool until `finish`, and the pool keeps one of its own: a connection the broker closes (a
+/// transaction dropped open) never takes the database with it.
 ///
 /// # Panics
 ///
-/// Panics when the stand refuses to create or serve the database.
+/// Panics when SQLite refuses to open the database or to apply the schema.
 pub(crate) async fn database() -> Option<Database<Db>> {
-    database_on(URL).await
-}
-
-/// A fresh database on the server `variable` names, or `None` to skip the test.
-///
-/// # Panics
-///
-/// Panics when the server refuses to create or serve the database.
-pub(crate) async fn database_on(variable: &str) -> Option<Database<Db>> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let url = url(variable)?;
     let name = format!(
         "rs_sqlx_{}_{}",
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
-    let mut admin = MySqlConnection::connect(&url)
+    let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+    let options: SqliteConnectOptions = url.parse().expect("the stand's URL parses");
+    let keeper = SqliteConnection::connect_with(&options)
         .await
-        .expect("the stand accepts a connection");
-    sqlx::raw_sql(AssertSqlSafe(format!("CREATE DATABASE `{name}`")))
-        .execute(&mut admin)
-        .await
-        .expect("the stand creates a test database");
-    admin.close().await.ok();
-    let options: MySqlConnectOptions = url.parse().expect("the stand's URL parses");
-    let pool = MySqlPoolOptions::new()
+        .expect("the database opens");
+    let pool = SqlitePoolOptions::new()
         .max_connections(8)
+        .min_connections(1)
+        .idle_timeout(None)
+        .max_lifetime(None)
         .acquire_timeout(Duration::from_secs(5))
-        .connect_with(options.database(&name))
+        .connect_with(options)
         .await
         .expect("the test database accepts connections");
-    sqlx::raw_sql(include_str!("../schema/mysql.sql"))
+    sqlx::raw_sql(include_str!("../schema/sqlite.sql"))
         .execute(&pool)
         .await
         .expect("the test schema applies");
@@ -62,18 +51,16 @@ pub(crate) async fn database_on(variable: &str) -> Option<Database<Db>> {
         pool,
         name,
         url,
-        keeper: None,
+        keeper: Some(keeper),
     })
 }
 
 impl Database<Db> {
-    /// Closes the pool and drops the database.
+    /// Closes the pool, then the stand's own connection, and the database with it.
     pub(crate) async fn finish(self) {
         self.pool.close().await;
-        if let Ok(mut admin) = MySqlConnection::connect(&self.url).await {
-            let drop = format!("DROP DATABASE `{}`", self.name);
-            let _ = sqlx::raw_sql(AssertSqlSafe(drop)).execute(&mut admin).await;
-            let _ = admin.close().await;
+        if let Some(keeper) = self.keeper {
+            let _ = keeper.close().await;
         }
     }
 
@@ -82,7 +69,6 @@ impl Database<Db> {
         &self,
         table: &'static str,
     ) -> Vec<(String, Vec<u8>, i16, bool)> {
-        // MySQL has no booleans: `IS NOT NULL` answers an integer, which sqlx reads as a `bool`.
         sqlx::query_as(AssertSqlSafe(format!(
             "SELECT name, payload, attempt, processed_at IS NOT NULL FROM {table} ORDER BY job_id"
         )))
@@ -92,10 +78,11 @@ impl Database<Db> {
     }
 
     /// Whether the first email in id order waits: its `retry_after` lies ahead of the database's
-    /// clock.
+    /// clock, read in the layout the column holds.
     pub(crate) async fn email_waits(&self) -> bool {
         sqlx::query_scalar(
-            "SELECT retry_after > UTC_TIMESTAMP(6) FROM email_jobs ORDER BY job_id LIMIT 1",
+            "SELECT retry_after > strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now') FROM email_jobs \
+             ORDER BY job_id LIMIT 1",
         )
         .fetch_one(&self.pool)
         .await
@@ -104,13 +91,11 @@ impl Database<Db> {
 
     /// What the first email in id order keeps for `header`.
     pub(crate) async fn email_header(&self, header: &str) -> Option<String> {
-        sqlx::query_scalar(
-            "SELECT JSON_UNQUOTE(JSON_EXTRACT(meta, ?)) FROM email_jobs ORDER BY job_id LIMIT 1",
-        )
-        .bind(format!("$.\"{header}\""))
-        .fetch_one(&self.pool)
-        .await
-        .expect("the headers read")
+        sqlx::query_scalar("SELECT json_extract(meta, ?) FROM email_jobs ORDER BY job_id LIMIT 1")
+            .bind(format!("$.\"{header}\""))
+            .fetch_one(&self.pool)
+            .await
+            .expect("the headers read")
     }
 
     /// Writes one plain job per payload.
@@ -126,14 +111,16 @@ impl Database<Db> {
 
     /// Writes `count` plain jobs whose payload is their own id as text, and returns the ids.
     pub(crate) async fn plain_ids(&self, count: usize) -> BTreeSet<i64> {
-        let rows = vec!["('')"; count].join(", ");
-        sqlx::raw_sql(AssertSqlSafe(format!(
-            "INSERT INTO plain_jobs (payload) VALUES {rows}"
-        )))
+        let count = i64::try_from(count).expect("a count of rows");
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?) \
+             INSERT INTO plain_jobs (payload) SELECT x'' FROM n",
+        )
+        .bind(count)
         .execute(&self.pool)
         .await
         .expect("the rows write");
-        sqlx::query("UPDATE plain_jobs SET payload = CAST(id AS CHAR)")
+        sqlx::query("UPDATE plain_jobs SET payload = CAST(CAST(id AS TEXT) AS BLOB)")
             .execute(&self.pool)
             .await
             .expect("the rows name themselves");
@@ -166,22 +153,23 @@ impl Database<Db> {
 
     /// Drops `plain_jobs` and its dead-letter table.
     pub(crate) async fn drop_plain(&self) {
-        sqlx::query("DROP TABLE plain_jobs_dead, plain_jobs")
+        sqlx::raw_sql("DROP TABLE plain_jobs_dead; DROP TABLE plain_jobs")
             .execute(&self.pool)
             .await
-            .expect("the table drops");
+            .expect("the tables drop");
     }
 
     /// Writes one fragile job per payload and returns their ids.
     pub(crate) async fn fragile(&self, payloads: &[&str]) -> Vec<i64> {
         let mut ids = Vec::new();
         for payload in payloads {
-            let written = sqlx::query("INSERT INTO fragile_jobs (payload) VALUES (?)")
-                .bind(payload.as_bytes())
-                .execute(&self.pool)
-                .await
-                .expect("the job writes");
-            ids.push(i64::try_from(written.last_insert_id()).expect("an id of the table"));
+            let id: i64 =
+                sqlx::query_scalar("INSERT INTO fragile_jobs (payload) VALUES (?) RETURNING id")
+                    .bind(payload.as_bytes())
+                    .fetch_one(&self.pool)
+                    .await
+                    .expect("the job writes");
+            ids.push(id);
         }
         ids
     }

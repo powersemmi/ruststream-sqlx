@@ -20,8 +20,10 @@ use crate::table_name::TableName;
 /// wrote is the delivery's ownership token ([`Param::Held`](crate::Param::Held)): every settlement
 /// and the extension name the row and that token, so a delivery whose lease ran out, and whose
 /// row another claim took, changes nothing. Beside its statements a dialect tells whether its
-/// claim writes the lease ([`claim_writes_lease`](Self::claim_writes_lease)), which servers its
-/// statements run on ([`check_server`](Self::check_server)), and how a claim's transaction opens
+/// claim writes the lease ([`claim_writes_lease`](Self::claim_writes_lease)), whether the rows it
+/// returns carry the claim's count of the attempt
+/// ([`claim_counts_attempt`](Self::claim_counts_attempt)), which servers its statements run on
+/// ([`check_server`](Self::check_server)), and how a claim's transaction opens
 /// ([`begin_claim`](Self::begin_claim)).
 ///
 /// # Examples
@@ -138,7 +140,7 @@ pub trait Dialect: Debug + Send + Sync {
     ///
     /// [`StatementError::UnsupportedFetch`] when the dialect cannot read rows by a list of ids, so
     /// a claim of the service's own needs a fetch of its own too. Postgres builds it for every
-    /// table; MySQL refuses it.
+    /// table; MySQL and SQLite refuse it.
     ///
     /// # Examples
     ///
@@ -476,6 +478,38 @@ pub trait Dialect: Debug + Send + Sync {
         true
     }
 
+    /// Whether the rows the lease claim of `spec` returns carry the attempt the claim counted. A
+    /// dialect whose claim returns the rows as they were before answers `false`; where it answers
+    /// `true`, a delivery reports one less than its row carries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
+    ///         .attempt(Column::new("attempt"));
+    ///
+    /// // The attempt a delivery reports, from the one its claimed row carries.
+    /// fn reported(dialect: &dyn Dialect, spec: &TableSpec<'_>, carried: u64) -> u64 {
+    ///     if dialect.claim_counts_attempt(spec) {
+    ///         carried.saturating_sub(1)
+    ///     } else {
+    ///         carried
+    ///     }
+    /// }
+    ///
+    /// // Postgres returns each row as it was before the claim counted the attempt.
+    /// assert_eq!(reported(&Postgres, &JOBS, 1), 1);
+    /// # }
+    /// ```
+    fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
+        let _ = spec;
+        false
+    }
+
     /// The query that reads the server's version as one text column, or `None` when the
     /// dialect's statements run on every version of its server.
     ///
@@ -548,7 +582,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// A claim that runs in a transaction (the row lock form, and a lease claim that only selects
     /// its rows) opens it with this statement, which leaves the connection inside a transaction
     /// as `BEGIN` does. MySQL opens it at READ COMMITTED, so a claim locks no gaps between rows
-    /// and holds back no insert into the table.
+    /// and holds back no insert into the table; SQLite opens it with the write lock taken.
     ///
     /// # Examples
     ///

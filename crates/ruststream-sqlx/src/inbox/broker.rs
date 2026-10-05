@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::{Broker, ConnectedBroker};
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ruststream::{DescribeServer, ServerSpec};
 use ruststream_sqlx_dialect::Dialect;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -17,16 +17,18 @@ use sqlx::ConnectOptions;
 use sqlx::MySql;
 #[cfg(feature = "postgres")]
 use sqlx::Postgres;
+#[cfg(feature = "sqlite")]
+use sqlx::Sqlite;
 use sqlx::{Database, Pool};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
-use super::PayloadRow;
 use super::database::{BuiltInDialect, QueueDatabase};
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
 use super::publish::Routes;
+use super::{FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
 /// another interval.
@@ -259,6 +261,7 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     pub fn route<Row>(mut self, name: impl Into<Cow<'static, str>>) -> Self
     where
         Row: Publish<DB> + Events<DB> + PayloadRow,
+        Row::Form: FormOn<DB>,
     {
         self.routes.add::<Row>(name.into());
         self
@@ -478,5 +481,17 @@ impl DescribeServer for SqlxBroker<Postgres> {
 impl DescribeServer for SqlxBroker<MySql> {
     fn describe_server(&self) -> ServerSpec {
         ServerSpec::from_url(self.pool.connect_options().to_url_lossy().as_str(), "mysql")
+    }
+}
+
+/// SQLite runs inside the service, on a file or in memory: the description names the protocol and
+/// no host, so it holds neither the database's path nor any other part of its URL, and SQLite takes
+/// no credentials.
+#[cfg(feature = "sqlite")]
+impl DescribeServer for SqlxBroker<Sqlite> {
+    fn describe_server(&self) -> ServerSpec {
+        // Why not `from_url`: SQLite's URL holds a path, not a host, and sqlx's `to_url_lossy`
+        // panics on a database named `file:..`, the name `sqlite::memory:` takes.
+        ServerSpec::in_process("sqlite")
     }
 }

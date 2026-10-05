@@ -19,10 +19,10 @@
 //! A dialect whose claim only selects the rows says so ([`Dialect::claim_writes_lease`]), and each
 //! claimed row is then stamped with its lease ([`Dialect::stamp`]).
 //!
-//! [`Postgres`] and [`MySql`] are built in, behind the `postgres` and `mysql` features, and build
-//! the statements of the row lock and lease forms; [`MySql`] serves MariaDB too. A database
-//! without a built-in dialect is served by a type of the service's own that implements
-//! [`Dialect`].
+//! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
+//! `sqlite` features. [`Postgres`] and [`MySql`] build the statements of the row lock and lease
+//! forms, and [`MySql`] serves MariaDB too; [`Sqlite`] builds the lease form. A database without a
+//! built-in dialect is served by a type of the service's own that implements [`Dialect`].
 //!
 //! # Examples
 //!
@@ -53,9 +53,11 @@ mod mysql;
 mod postgres;
 mod role;
 mod spec;
+#[cfg(feature = "sqlite")]
+mod sqlite;
 mod statement;
 mod table_name;
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 mod writer;
 
 pub use column::Column;
@@ -67,5 +69,7 @@ pub use mysql::MySql;
 pub use postgres::Postgres;
 pub use role::Role;
 pub use spec::TableSpec;
+#[cfg(feature = "sqlite")]
+pub use sqlite::Sqlite;
 pub use statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 pub use table_name::{ParseTableNameError, TableName};

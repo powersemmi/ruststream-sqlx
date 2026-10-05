@@ -46,9 +46,9 @@ help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB>>` is conditionally i
    | | where
    | |     DB: QueueDatabase,
    | |     Row: InboxRow + Events<DB> + PayloadRow,
-   | |_____________________----------_____________^
-   |                       |
-   |                       unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   | |                     ---------- unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   | |     Row::Form: FormOn<DB>,
+   | |__________________________^
 note: required for `Unacked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
   --> tests/ui/mount.rs:21:8
    |

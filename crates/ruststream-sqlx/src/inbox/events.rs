@@ -542,7 +542,8 @@ pub trait Publish<DB: Database>: InboxRow {
 /// a delayed task is a row whose `retry_after` lies ahead.
 ///
 /// The derive implements it for the connection of each built-in dialect, `PgConnection` (feature
-/// `postgres`) and `MySqlConnection` (feature `mysql`), with the statements built at compile time.
+/// `postgres`), `MySqlConnection` (feature `mysql`) and `SqliteConnection` (feature `sqlite`), with
+/// the statements built at compile time.
 /// A struct with a `#[sqlx(flatten)]` field gets none: the derive cannot see the nested struct's
 /// columns, so the service writes that insert itself.
 ///
@@ -587,8 +588,8 @@ pub trait Publish<DB: Database>: InboxRow {
     message = "`{Self}` has no generated insert for `{Connection}`",
     label = "no `Insert` for this connection",
     note = "the derive generates it for the connections of the built-in dialects (features \
-            `postgres` and `mysql`), unless a `#[sqlx(flatten)]` field hides columns from it: \
-            write that insert in the service"
+            `postgres`, `mysql` and `sqlite`), unless a `#[sqlx(flatten)]` field hides columns \
+            from it: write that insert in the service"
 )]
 pub trait Insert<Connection>: InboxRow {
     /// Inserts the row on `conn`.

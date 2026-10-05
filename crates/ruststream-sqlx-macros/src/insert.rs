@@ -7,6 +7,8 @@ use quote::{format_ident, quote};
 use ruststream_sqlx_dialect::MySql;
 #[cfg(feature = "postgres")]
 use ruststream_sqlx_dialect::Postgres;
+#[cfg(feature = "sqlite")]
+use ruststream_sqlx_dialect::Sqlite;
 use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Role, Statement, TableSpec};
 use syn::{DeriveInput, Generics, LitStr, WherePredicate, parse_quote};
 
@@ -14,7 +16,7 @@ use crate::parse::{ColumnField, Field, Inbox};
 
 /// The built-in dialects, each under the name of its field in the crate's `InsertSql`: every one
 /// of them, so the generated value names each field.
-const FIELDS: [&str; 2] = ["postgres", "mysql"];
+const FIELDS: [&str; 3] = ["postgres", "mysql", "sqlite"];
 
 /// The dialects the macros are built with, each under the name of its field in `InsertSql`.
 const DIALECTS: &[(&str, &dyn Dialect)] = &[
@@ -22,6 +24,8 @@ const DIALECTS: &[(&str, &dyn Dialect)] = &[
     ("postgres", &Postgres),
     #[cfg(feature = "mysql")]
     ("mysql", &MySql),
+    #[cfg(feature = "sqlite")]
+    ("sqlite", &Sqlite),
 ];
 
 /// A column of the description the dialect reads.

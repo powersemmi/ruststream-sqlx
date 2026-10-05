@@ -90,7 +90,9 @@ live::matrix! {
             .expect("the subscription opens");
         {
             let mut batches = pin!(subscriber.batches(nonzero!(2_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let mut batch = batches.next().await.expect("a batch").expect("the claim");
+            // SQLite returns a batch's rows in no particular order: the payload names each one.
+            batch.sort_by(|left, right| left.payload().cmp(right.payload()));
             let [a, b]: [_; 2] = batch.try_into().expect("two deliveries");
             a.ack().await.expect("the first acknowledges");
             drop(b);
@@ -110,52 +112,63 @@ live::matrix! {
 
 // The form decides what a failed settlement does to the rest of its batch, so each form states it
 // with rows of its own.
-live::stands! {
-    use crate::live::rows::{lease, row_lock};
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_failed_settlement_rolls_its_whole_batch_back() {
-        let Some(db) = database().await else { return };
-        let ids = db.fragile(&["a", "b", "c"]).await;
-        // `b` is still referenced, so its acknowledgement fails.
-        db.reference(ids[1]).await;
-        let connected = SqlxBroker::new(db.pool.clone())
-            .connect()
-            .await
-            .expect("the broker connects");
-        let mut subscriber = InboxQueue::<row_lock::Fragile>::new("fragile")
-            .subscribe(&connected)
-            .await
-            .expect("the subscription opens");
-        let batch = pin!(subscriber.batches(nonzero!(3_usize)))
-            .next()
-            .await
-            .expect("a batch")
-            .expect("the claim");
-        let [a, b, c]: [_; 3] = batch.try_into().expect("three deliveries");
+/// The row lock form: a batch is one transaction, on the stands whose databases lock rows.
+mod in_one_transaction {
+    #[allow(unused_imports)]
+    use super::*;
 
-        a.ack().await.expect("the first statement runs");
-        b.ack()
-            .await
-            .expect_err("a referenced job cannot be deleted");
-        let refused = c
-            .ack()
-            .await
-            .expect_err("the batch's transaction failed already");
-        let source = match &refused {
-            AckError::Broker(source) => source.downcast_ref::<SqlxBrokerError>(),
-            _ => None,
-        };
-        assert!(
-            matches!(source, Some(SqlxBrokerError::BatchRolledBack { .. })),
-            "{refused:?}"
-        );
-        // The batch's settlements become durable together, so `a` comes back with the others.
-        assert_eq!(db.fragile_rows().await, ["a", "b", "c"]);
-        drop(subscriber);
-        connected.shutdown().await.expect("the broker shuts down");
-        db.finish().await;
+    crate::live::row_lock_stands! {
+        use crate::live::rows::row_lock;
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_failed_settlement_rolls_its_whole_batch_back() {
+            let Some(db) = database().await else { return };
+            let ids = db.fragile(&["a", "b", "c"]).await;
+            // `b` is still referenced, so its acknowledgement fails.
+            db.reference(ids[1]).await;
+            let connected = SqlxBroker::new(db.pool.clone())
+                .connect()
+                .await
+                .expect("the broker connects");
+            let mut subscriber = InboxQueue::<row_lock::Fragile>::new("fragile")
+                .subscribe(&connected)
+                .await
+                .expect("the subscription opens");
+            let batch = pin!(subscriber.batches(nonzero!(3_usize)))
+                .next()
+                .await
+                .expect("a batch")
+                .expect("the claim");
+            let [a, b, c]: [_; 3] = batch.try_into().expect("three deliveries");
+
+            a.ack().await.expect("the first statement runs");
+            b.ack()
+                .await
+                .expect_err("a referenced job cannot be deleted");
+            let refused = c
+                .ack()
+                .await
+                .expect_err("the batch's transaction failed already");
+            let source = match &refused {
+                AckError::Broker(source) => source.downcast_ref::<SqlxBrokerError>(),
+                _ => None,
+            };
+            assert!(
+                matches!(source, Some(SqlxBrokerError::BatchRolledBack { .. })),
+                "{refused:?}"
+            );
+            // The batch's settlements become durable together, so `a` comes back with the others.
+            assert_eq!(db.fragile_rows().await, ["a", "b", "c"]);
+            drop(subscriber);
+            connected.shutdown().await.expect("the broker shuts down");
+            db.finish().await;
+        }
     }
+}
+
+live::stands! {
+    use crate::live::rows::lease;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_failed_settlement_leaves_the_other_settlements_of_a_leased_batch_in_place() {
@@ -171,11 +184,13 @@ live::stands! {
             .subscribe(&connected)
             .await
             .expect("the subscription opens");
-        let batch = pin!(subscriber.batches(nonzero!(3_usize)))
+        let mut batch = pin!(subscriber.batches(nonzero!(3_usize)))
             .next()
             .await
             .expect("a batch")
             .expect("the claim");
+        // SQLite returns a batch's rows in no particular order: the payload names each one.
+        batch.sort_by(|left, right| left.payload().cmp(right.payload()));
         let [a, b, c]: [_; 3] = batch.try_into().expect("three deliveries");
 
         a.ack().await.expect("the first acknowledgement commits");

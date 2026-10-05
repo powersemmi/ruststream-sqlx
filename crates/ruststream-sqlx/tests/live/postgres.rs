@@ -48,7 +48,12 @@ pub(crate) async fn database() -> Option<Database<Db>> {
         .execute(&pool)
         .await
         .expect("the test schema applies");
-    Some(Database { pool, name, url })
+    Some(Database {
+        pool,
+        name,
+        url,
+        keeper: None,
+    })
 }
 
 impl Database<Db> {

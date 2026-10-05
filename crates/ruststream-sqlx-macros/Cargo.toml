@@ -26,6 +26,8 @@ default = []
 postgres = ["ruststream-sqlx-dialect/postgres"]
 # The MySQL and MariaDB insert the derive builds at compile time.
 mysql = ["ruststream-sqlx-dialect/mysql"]
+# The SQLite insert the derive builds at compile time.
+sqlite = ["ruststream-sqlx-dialect/sqlite"]
 
 [dependencies]
 ruststream-sqlx-dialect.workspace = true

@@ -8,7 +8,8 @@
 //! table from `#[inbox(..)]`, the column names from sqlx's attributes and the role of each
 //! column that runs the queue from `#[field(..)]`, and implements [`InboxRow`] (feature
 //! `inbox`). The [`dialect`] module turns the description into SQL; its Postgres dialect sits
-//! behind the `postgres` feature, and its MySQL and MariaDB dialect behind `mysql`.
+//! behind the `postgres` feature, its MySQL and MariaDB dialect behind `mysql`, and its SQLite
+//! dialect behind `sqlite`.
 //!
 //! # The inbox broker
 //!
@@ -97,7 +98,10 @@
 //! lease, so a handler may outlast its lease; after a crash the row returns once the lease runs
 //! out. A settlement takes effect only while the row still holds the lease, and one that finds the
 //! row under another lease fails with [`SqlxBrokerError::LeaseLost`]. A delivery dropped unsettled
-//! releases its row at once. Each delivery of a batch settles on its own.
+//! releases its row at once. Each delivery of a batch settles on its own. SQLite has no row locks
+//! ([`RowLocks`]), so its tables take the lease form: a subscription there to a table without
+//! `locked_until` does not compile. Its claim is one update that returns the rows it took, in no
+//! particular order within a batch.
 //!
 //! In the row lock form a message in work holds a connection of the pool until it settles, a
 //! batch holds one for all its messages, and a publish takes one more for its insert. A
@@ -118,7 +122,9 @@
 //!
 //! "Now" comes from [`SystemClock`] unless the struct names another source:
 //! `#[inbox(clock = DatabaseClock)]` reads the database's `now()`, and a service's own [`Clock`]
-//! fits there too. Hosts that bind "now" must keep their clocks in step.
+//! fits there too. Hosts that bind "now" must keep their clocks in step. SQLite keeps times as
+//! text and compares them as text, which orders `chrono` times exactly and `time` values to the
+//! second ([`QueueTime`]).
 //!
 //! A mistake stops the service as early as it can be seen. A subscription prepares its statements
 //! at startup, and a column the table lacks stops it with the table and the statement named.
@@ -209,8 +215,8 @@ pub use inbox::{
     DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn, InboxDelivery, InboxQueue,
     InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow, NamedDelivery, NamedSubscriber,
     PayloadRow, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
-    RetryAfter, Routed, RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
-    TimeSource,
+    RetryAfter, Routed, RoutedPublisher, RowLocks, SqlxBroker, SqlxBrokerError, SystemClock,
+    TimeColumn, TimeSource,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -235,7 +241,10 @@ pub mod __private {
         NamedBytes, NamedDatabase, NamedId, NamedRow, NamedTime, RoleColumns,
     };
     pub use crate::inbox::queue::Queue;
-    pub use crate::inbox::{InsertSql, OnConnection, QueueDatabase, QueueRow, no_insert};
+    pub use crate::inbox::{
+        AdvisoryForm, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase, QueueRow,
+        RowLockForm, no_insert,
+    };
 }
 
 /// Describes a queue table with a struct and implements [`InboxRow`] for it.

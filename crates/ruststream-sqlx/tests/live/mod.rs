@@ -3,12 +3,13 @@
 //! A live test skips when its stand's URL is unset, which keeps `cargo test` usable on a laptop
 //! with no stand. The same skip in a job that started the stand would be a lie, so
 //! `just test-brokers` and CI set `RUSTSTREAM_REQUIRE_LIVE`, and under it a skip fails, naming
-//! what it wanted.
+//! what it wanted. The SQLite stand runs in memory and needs no URL, so it never skips.
 //!
 //! A suite writes each test once. [`matrix!`] runs it on every stand a feature turns on, once per
-//! form of the queue rows; [`stands!`] runs it once per stand, for a test whose rows name their own
-//! form. A stand module gives each test a database of its own and reads the tables in its own SQL;
-//! a row module holds the queue rows of one form under the names every form shares.
+//! form of the queue rows that stand serves; [`stands!`] runs it once per stand, for a test whose
+//! rows name their own form, and [`row_lock_stands!`] once per stand that serves the row lock form.
+//! A stand module gives each test a database of its own and reads the tables in its own SQL; a row
+//! module holds the queue rows of one form under the names every form shares.
 
 // Each live suite is its own test binary and uses the part of this module its topic needs, so
 // what one of them leaves alone, a macro included, is not dead code.
@@ -23,6 +24,8 @@ pub(crate) mod mysql;
 #[cfg(feature = "postgres")]
 pub(crate) mod postgres;
 pub(crate) mod rows;
+#[cfg(feature = "sqlite")]
+pub(crate) mod sqlite;
 
 /// The MariaDB stand: a server of its own, which the MySQL stand's SQL reads and writes.
 #[cfg(feature = "mysql")]
@@ -90,6 +93,9 @@ pub(crate) struct Database<DB: Backend> {
     name: String,
     /// The stand's URL, which `finish` connects to again to drop the database.
     url: String,
+    /// A connection the stand holds open beside the pool, where the database lives only while one
+    /// is open.
+    keeper: Option<DB::Connection>,
 }
 
 /// One module per stand and per form of the queue rows, each holding `$items`.
@@ -164,14 +170,47 @@ macro_rules! matrix {
             use crate::live::rows::lease::*;
             $($items)*
         }
+
+        // SQLite has no row locks, so it runs the lease form alone.
+        #[cfg(feature = "sqlite")]
+        mod sqlite_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::sqlite::{Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
     };
 }
 
-/// One module per stand, each holding `$items`: for a test whose rows name their own form.
+/// One module per stand, each holding `$items`: for a test whose rows name their own form, one
+/// every stand serves.
 ///
 /// A stand appears when its feature is on. Each module sees the suite's own items and the stand's
 /// `Db` and `database`.
 macro_rules! stands {
+    ($($items:item)*) => {
+        $crate::live::row_lock_stands! { $($items)* }
+
+        #[cfg(feature = "sqlite")]
+        mod sqlite {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::sqlite::{Db, database};
+            $($items)*
+        }
+    };
+}
+
+/// One module per stand whose database locks rows, each holding `$items`: for a test whose rows
+/// take the row lock form, which SQLite does not serve.
+///
+/// A stand appears when its feature is on. Each module sees the suite's own items and the stand's
+/// `Db` and `database`.
+macro_rules! row_lock_stands {
     ($($items:item)*) => {
         #[cfg(feature = "postgres")]
         mod postgres {
@@ -214,4 +253,4 @@ macro_rules! mysql_stands {
 }
 
 #[allow(unused_imports)]
-pub(crate) use {matrix, mysql_stands, stands};
+pub(crate) use {matrix, mysql_stands, row_lock_stands, stands};

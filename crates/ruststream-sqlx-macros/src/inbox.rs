@@ -177,19 +177,31 @@ fn generate(
     let lease = inbox
         .columns()
         .find(|(_, column)| column.role == Some(Role::LockedUntil));
-    let form = match (key, lease) {
+    let private = quote!(::ruststream_sqlx::__private);
+    // The form twice: as the description's value, and as the type a subscription checks against
+    // its database.
+    let (form, form_type) = match (key, lease) {
         (Some(key), _) => {
             let parts = key.iter().map(|item| match item {
                 KeyItem::Literal(text) => quote!(#dialect::KeyPart::Literal(#text)),
                 KeyItem::Column(column) => quote!(#dialect::KeyPart::Column(#column)),
             });
-            quote!(#dialect::Form::Advisory(&[#(#parts),*]))
+            (
+                quote!(#dialect::Form::Advisory(&[#(#parts),*])),
+                quote!(#private::AdvisoryForm),
+            )
         }
         (None, Some((_, expiry))) => {
             let expiry = column(expiry);
-            quote!(#dialect::Form::Lease(#expiry))
+            (
+                quote!(#dialect::Form::Lease(#expiry)),
+                quote!(#private::LeaseForm),
+            )
         }
-        (None, None) => quote!(#dialect::Form::RowLock),
+        (None, None) => (
+            quote!(#dialect::Form::RowLock),
+            quote!(#private::RowLockForm),
+        ),
     };
     let slots = inbox.columns().filter_map(|(_, slot)| {
         let role = slot.role?;
@@ -249,6 +261,7 @@ fn generate(
         #[automatically_derived]
         impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
             const SPEC: #dialect::TableSpec<'static> = #spec;
+            type Form = #form_type;
         }
 
         #lease_row

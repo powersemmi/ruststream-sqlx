@@ -433,3 +433,167 @@ mod on_postgres {
         db.finish().await;
     }
 }
+
+/// What only SQLite runs: its claim returns the rows it updated, and it keeps times as text.
+#[cfg(feature = "sqlite")]
+mod on_sqlite {
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use ruststream_sqlx::Inbox;
+    use sqlx::{Encode, FromRow, Pool, Sqlite, Type};
+
+    use super::*;
+    use crate::live::sqlite::database;
+
+    /// What a struct reads beside its roles, in a struct of its own.
+    #[derive(Debug, FromRow)]
+    struct Recipient {
+        customer: Option<String>,
+    }
+
+    /// An email that flattens its recipient, so its claim returns `*`, the attempt as counted.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "email_jobs")]
+    struct FlatEmail {
+        #[field(id, generated)]
+        job_id: i64,
+        #[field(group)]
+        name: String,
+        #[field(attempt, generated)]
+        attempt: i16,
+        #[field(locked_until)]
+        locked_until: Option<DateTime<Utc>>,
+        #[field(payload)]
+        payload: Vec<u8>,
+        #[sqlx(flatten)]
+        recipient: Recipient,
+    }
+
+    #[tokio::test]
+    async fn a_struct_that_flattens_reports_the_attempt_before_the_claim() {
+        let Some(db) = database().await else { return };
+        sqlx::query(
+            "INSERT INTO email_jobs (name, customer, payload) VALUES ('emails', 'acme', x'00')",
+        )
+        .execute(&db.pool)
+        .await
+        .expect("the row writes");
+        let connected = SqlxBroker::new(db.pool.clone())
+            .lease(LEASE)
+            .connect()
+            .await
+            .expect("connects");
+        let mut subscriber = InboxQueue::<FlatEmail>::new("emails")
+            .subscribe(&connected)
+            .await
+            .expect("opens");
+        let delivery = {
+            let mut deliveries = pin!(subscriber.stream());
+            deliveries.next().await.expect("goes on").expect("claims")
+        };
+        let counted: i16 = sqlx::query_scalar("SELECT attempt FROM email_jobs")
+            .fetch_one(&db.pool)
+            .await
+            .expect("the row reads");
+        assert_eq!(counted, 2, "the claim counted the attempt and committed");
+        assert_eq!(
+            delivery.redelivery_count(),
+            Some(1),
+            "the delivery reads the attempt before the claim's count"
+        );
+        delivery.ack().await.expect("settles");
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker stops");
+        let _ = |row: FlatEmail| {
+            (
+                row.job_id,
+                row.name,
+                row.attempt,
+                row.locked_until,
+                row.payload,
+                row.recipient.customer,
+            )
+        };
+        db.finish().await;
+    }
+
+    /// Whether SQLite finds `left <= right` for two times bound as the crate binds them.
+    async fn sorted<Time>(pool: &Pool<Sqlite>, left: Time, right: Time) -> bool
+    where
+        Time: for<'q> Encode<'q, Sqlite> + Type<Sqlite> + Send,
+    {
+        sqlx::query_scalar("SELECT ? <= ?")
+            .bind(left)
+            .bind(right)
+            .fetch_one(pool)
+            .await
+            .expect("SQLite compares the two")
+    }
+
+    // A lease ends on a whole second, and "now" and a delayed retry carry fractions of any length:
+    // the text sqlx writes for `chrono` times sorts as the times themselves.
+    #[tokio::test]
+    async fn chrono_times_compare_as_the_times_they_hold() {
+        let Some(db) = database().await else { return };
+        let noon: DateTime<Utc> = Utc
+            .with_ymd_and_hms(2026, 10, 5, 12, 0, 0)
+            .single()
+            .expect("a valid time");
+        let times = [
+            noon - TimeDelta::nanoseconds(1),
+            noon - TimeDelta::milliseconds(1),
+            noon,
+            noon + TimeDelta::nanoseconds(1),
+            noon + TimeDelta::microseconds(1),
+            noon + TimeDelta::milliseconds(1),
+            noon + TimeDelta::milliseconds(500),
+            noon + TimeDelta::microseconds(500_001),
+            noon + TimeDelta::seconds(1),
+        ];
+        for left in times {
+            for right in times {
+                assert_eq!(
+                    sorted(&db.pool, left, right).await,
+                    left <= right,
+                    "{left} <= {right}"
+                );
+            }
+        }
+        db.finish().await;
+    }
+
+    // `time` writes UTC as `Z` and trims the fraction: its text sorts two times right when they
+    // fall in different seconds, and within one second it sorts the whole second last.
+    #[cfg(feature = "time")]
+    #[tokio::test]
+    async fn time_values_compare_to_the_second() {
+        use time::{Duration, OffsetDateTime};
+
+        let Some(db) = database().await else { return };
+        // 2026-10-05 12:00:00 UTC.
+        let noon = OffsetDateTime::from_unix_timestamp(1_791_201_600).expect("a valid time");
+        let times = [
+            noon - Duration::nanoseconds(1),
+            noon,
+            noon + Duration::microseconds(1),
+            noon + Duration::seconds(1),
+            noon + Duration::milliseconds(1500),
+            noon + Duration::seconds(2),
+        ];
+        for left in times {
+            for right in times {
+                if left.unix_timestamp() != right.unix_timestamp() {
+                    assert_eq!(
+                        sorted(&db.pool, left, right).await,
+                        left <= right,
+                        "{left} <= {right}"
+                    );
+                }
+            }
+        }
+        assert!(
+            !sorted(&db.pool, noon, noon + Duration::milliseconds(500)).await,
+            "`12:00:00Z` sorts after `12:00:00.5Z`"
+        );
+        db.finish().await;
+    }
+}

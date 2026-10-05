@@ -121,7 +121,9 @@ pub struct MySql;
 
 impl BuiltIn for MySql {
     /// MySQL and MariaDB count a name's characters, and refuse a longer one.
-    const NAME_LIMIT: NameLimit = NameLimit::Characters(64);
+    const NAME_LIMIT: Option<NameLimit> = Some(NameLimit::Characters(64));
+
+    const ROW_LOCKS: bool = true;
 
     const DEFAULT_ROW: &'static str = " () VALUES ()";
 
@@ -198,22 +200,8 @@ impl Dialect for MySql {
         spec: &TableSpec<'_>,
         target: TableName<'_>,
     ) -> Result<Vec<Statement>, StatementError> {
-        self.movable(spec, target)?;
-        // Neither server feeds a delete's rows into an insert, so the row is copied while the
-        // delivery holds it, then deleted.
-        let mut copy = SqlWriter::new(self);
-        copy.push("INSERT INTO ").table_name(target);
-        if !spec.selects_all() {
-            copy.push(" (").columns(spec).push(")");
-        }
-        copy.push(" SELECT ")
-            .moved_columns(spec)
-            .push(" FROM ")
-            .table(spec)
-            .settled_row(spec);
-        let mut delete = SqlWriter::new(self);
-        delete.push("DELETE FROM ").table(spec).settled_row(spec);
-        Ok(vec![copy.finish(), delete.finish()])
+        // Neither server feeds a delete's rows into an insert.
+        self.copy_then_delete(spec, target)
     }
 
     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {

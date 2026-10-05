@@ -57,14 +57,17 @@ pub(crate) enum Built<'a> {
     Lease(Column<'a>),
 }
 
-/// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, how an
-/// insert of no column reads, and the database's own clock.
+/// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, whether it
+/// locks rows, how an insert of no column reads, and the database's own clock.
 ///
 /// The provided methods check a table against the dialect and build the statements every
 /// built-in dialect writes the same way, through its quoting, placeholders and clock.
 pub(crate) trait BuiltIn: Dialect {
-    /// The longest name the database keeps.
-    const NAME_LIMIT: NameLimit;
+    /// The longest name the database keeps; `None` where it keeps a name of any length.
+    const NAME_LIMIT: Option<NameLimit>;
+
+    /// Whether the database locks rows for a transaction, so the row lock form runs on it.
+    const ROW_LOCKS: bool;
 
     /// What follows the table in an insert that writes no column, so every column takes its
     /// default.
@@ -81,14 +84,17 @@ pub(crate) trait BuiltIn: Dialect {
         &self,
         names: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), StatementError> {
+        let Some(limit) = Self::NAME_LIMIT else {
+            return Ok(());
+        };
         names
             .into_iter()
-            .find(|name| !fits(name, Self::NAME_LIMIT))
+            .find(|name| !fits(name, limit))
             .map_or(Ok(()), |name| {
                 Err(StatementError::IdentifierTooLong {
                     dialect: self.name(),
                     identifier: name.to_owned(),
-                    limit: Self::NAME_LIMIT,
+                    limit,
                 })
             })
     }
@@ -103,12 +109,12 @@ pub(crate) trait BuiltIn: Dialect {
         )
     }
 
-    /// The table's form, when the built-in dialects build it: the row lock, or a lease on the
-    /// crate's clock.
+    /// The table's form, when the dialect builds it: the row lock where the database locks rows,
+    /// or a lease on the crate's clock.
     fn form<'a>(&self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
         self.spec_fits(spec)?;
         match spec.form() {
-            Form::RowLock => Ok(Built::RowLock),
+            Form::RowLock if Self::ROW_LOCKS => Ok(Built::RowLock),
             // Settlement matches the expiry the claim wrote, and the claim knows it only when the
             // crate's clock computes it.
             Form::Lease(_) if spec.uses_database_clock() => {
@@ -279,6 +285,31 @@ pub(crate) trait BuiltIn: Dialect {
         Ok(sql.finish())
     }
 
+    /// The move of a row whose attempts are spent into another table, as two statements of one
+    /// transaction: a copy of the row while the delivery holds it, then its delete. For a database
+    /// that cannot feed a delete's rows into an insert.
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
+    fn copy_then_delete(
+        &self,
+        spec: &TableSpec<'_>,
+        target: TableName<'_>,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.movable(spec, target)?;
+        let mut copy = SqlWriter::new(self);
+        copy.push("INSERT INTO ").table_name(target);
+        if !spec.selects_all() {
+            copy.push(" (").columns(spec).push(")");
+        }
+        copy.push(" SELECT ")
+            .moved_columns(spec)
+            .push(" FROM ")
+            .table(spec)
+            .settled_row(spec);
+        let mut delete = SqlWriter::new(self);
+        delete.push("DELETE FROM ").table(spec).settled_row(spec);
+        Ok(vec![copy.finish(), delete.finish()])
+    }
+
     /// The insert of a row: every column the database does not fill.
     fn insert_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.spec_fits(spec)?;
@@ -431,14 +462,45 @@ where
     /// The columns a reader that knows no struct reads, each under its role's attribute name:
     /// `id`, `partition_key`, `attempt`, `headers` and `payload`, in [`Role::ALL`] order and only
     /// where the table has them.
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
     pub(crate) fn role_columns(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        self.roles_read(spec, false)
+    }
+
+    /// The columns a reader that knows no struct reads, under their roles' names, with the attempt
+    /// one less than the row holds where `counted`: the rows of an update that counted it, read
+    /// as they were before.
+    fn roles_read(&mut self, spec: &TableSpec<'_>, counted: bool) -> &mut Self {
         for (index, (role, column)) in read_by_role(spec).enumerate() {
             if index > 0 {
                 self.push(", ");
             }
-            self.ident(column.name())
-                .push(" AS ")
-                .ident(role.attribute());
+            self.ident(column.name());
+            if counted && role == Role::Attempt {
+                self.push(" - 1");
+            }
+            self.push(" AS ").ident(role.attribute());
+        }
+        self
+    }
+
+    /// Every column of a row an update that counted its attempt returns, the attempt one less
+    /// under its own name, so the row reads as it was before; `*` when the struct flattens
+    /// another, whose columns the description cannot see.
+    #[cfg(feature = "sqlite")]
+    fn columns_before_count(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        if spec.selects_all() {
+            return self.push("*");
+        }
+        let attempt = spec.column(Role::Attempt).map(|column| column.name());
+        for (index, column) in spec.columns().enumerate() {
+            if index > 0 {
+                self.push(", ");
+            }
+            self.ident(column.name());
+            if attempt == Some(column.name()) {
+                self.push(" - 1 AS ").ident(column.name());
+            }
         }
         self
     }
@@ -537,6 +599,7 @@ where
     }
 
     /// The columns a claim of `shape` selects.
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
     fn claimed_columns(&mut self, spec: &TableSpec<'_>, shape: ClaimShape) -> &mut Self {
         match shape {
             ClaimShape::Rows => self.columns(spec),
@@ -559,6 +622,7 @@ where
 
     /// The claim that selects rows and locks them with `lock`: the columns of `shape`, of the
     /// claimable rows in claim order.
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
     pub(crate) fn claim(
         &mut self,
         spec: &TableSpec<'_>,
@@ -621,6 +685,40 @@ where
             ClaimShape::Roles => self.role_names(spec),
         };
         self.push(" FROM __claimed").claim_order(spec, claimed_id)
+    }
+
+    /// The lease claim as one update that returns the rows it took: it writes the lease
+    /// ([`Param::Lease`]) into `expiry` and counts the attempt of the claimable rows a subquery
+    /// picks in claim order, and returns the columns of `shape` as the rows were before.
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn returning_claim(
+        &mut self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+        expiry: &str,
+    ) -> &mut Self {
+        let id = spec.id().name();
+        self.push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .ident(expiry)
+            .push(" = ")
+            .param(Param::Lease);
+        if let Some(attempt) = spec.column(Role::Attempt) {
+            self.push(", ").increment(attempt.name());
+        }
+        // The subquery takes no lock: the update holds the database's one write lock.
+        self.push(" WHERE ")
+            .ident(id)
+            .push(" IN (SELECT ")
+            .ident(id)
+            .claimed_rows(spec, "")
+            .push(") RETURNING ");
+        match shape {
+            ClaimShape::Rows => self.columns_before_count(spec),
+            ClaimShape::Ids => self.ident(id),
+            ClaimShape::Roles => self.roles_read(spec, true),
+        }
     }
 
     /// `"column" = "column" + 1`.

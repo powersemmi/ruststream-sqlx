@@ -295,3 +295,30 @@ mod on_postgres {
         assert!(!format!("{server:?}").contains("s3cr3t"));
     }
 }
+
+/// What only SQLite says: it runs inside the service, so its description names no host.
+#[cfg(feature = "sqlite")]
+mod on_sqlite {
+    use ruststream::DescribeServer;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_server_description_names_no_host() {
+        // A database in memory and one in a file: neither has a host, and a path is configuration.
+        for url in [
+            "sqlite::memory:",
+            "sqlite:file:jobs?mode=memory&cache=shared",
+            "sqlite:///var/lib/app/jobs.db?mode=rwc",
+        ] {
+            let pool = SqlitePoolOptions::new()
+                .connect_lazy(url)
+                .expect("a lazy pool is built without I/O");
+            let server = SqlxBroker::new(pool).describe_server();
+            assert_eq!(server.host, None, "{url}");
+            assert_eq!(server.protocol, "sqlite");
+            assert!(!format!("{server:?}").contains("jobs"), "{server:?}");
+        }
+    }
+}

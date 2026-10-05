@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use futures::TryStreamExt;
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ruststream_sqlx_dialect as dialect;
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::Row as _;
@@ -16,6 +16,8 @@ use sqlx::{
 use sqlx::{MySql, MySqlConnection};
 #[cfg(feature = "postgres")]
 use sqlx::{PgConnection, Postgres};
+#[cfg(feature = "sqlite")]
+use sqlx::{Sqlite, SqliteConnection};
 
 use super::QueueRow;
 use super::engine::{Claimed, IdAt};
@@ -23,9 +25,10 @@ use super::engine::{Claimed, IdAt};
 /// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
 /// statements bind, runs statements on a connection, and reports the rows a statement changed.
 ///
-/// Every database whose sqlx driver does so implements it; Postgres and MySQL do. The rows a
-/// statement changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx converts
-/// its result into; a driver outside sqlx provides that conversion for its own result type.
+/// Every database whose sqlx driver does so implements it; Postgres, MySQL and SQLite do. The
+/// rows a statement changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx
+/// converts its result into; a driver outside sqlx provides that conversion for its own result
+/// type.
 ///
 /// # Examples
 ///
@@ -186,7 +189,10 @@ where
 }
 
 /// A database whose dialect is built into this crate, so `SqlxBroker::new` needs no dialect of
-/// the service's own: Postgres (feature `postgres`) and MySQL with MariaDB (feature `mysql`).
+/// the service's own.
+///
+/// Postgres (feature `postgres`), MySQL with MariaDB (feature `mysql`) and SQLite (feature
+/// `sqlite`) have one.
 ///
 /// # Examples
 ///
@@ -230,6 +236,79 @@ impl BuiltInDialect for MySql {
     }
 }
 
+#[cfg(feature = "sqlite")]
+impl BuiltInDialect for Sqlite {
+    fn dialect() -> &'static dyn Dialect {
+        &dialect::Sqlite
+    }
+}
+
+/// A database that locks rows for a transaction, so a table on it may take its rows by row lock:
+/// the form of a table that declares neither `#[field(locked_until)]` nor `advisory_lock`.
+///
+/// Postgres (feature `postgres`) and MySQL with MariaDB (feature `mysql`) implement it. SQLite
+/// locks the whole database for a writer, not rows: a subscription on it to a table in the row
+/// lock form does not compile, and the error names the forms that run there.
+///
+/// # Examples
+///
+/// A service on SQLite declares `locked_until`, and its queue takes rows by lease:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "sqlite", feature = "chrono"))]
+/// # mod demo {
+/// use chrono::{DateTime, Utc};
+/// use ruststream::prelude::*;
+/// use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
+/// use serde::Deserialize;
+/// use sqlx::SqlitePool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs")]
+/// pub struct Job {
+///     #[field(id, generated)]
+///     id: i64,
+///     // Without it the table is in the row lock form, which a database without row locks
+///     // does not serve.
+///     #[field(locked_until)]
+///     locked_until: Option<DateTime<Utc>>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Task {
+///     n: u32,
+/// }
+///
+/// #[subscriber(InboxQueue::<Job>::new("jobs"))]
+/// async fn work(task: &Task) -> HandlerOutcome {
+///     tracing::info!(n = task.n, "working");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: SqlitePool) -> RustStream {
+///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(work);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no row locks, so a table on it cannot use the row lock form",
+    label = "a table without `locked_until` or `advisory_lock` takes rows by row lock",
+    note = "declare `#[field(locked_until)]` (the lease form) or \
+            `#[inbox(advisory_lock = \"..\")]` (the advisory lock form) on the struct"
+)]
+pub trait RowLocks: QueueDatabase {}
+
+#[cfg(feature = "postgres")]
+impl RowLocks for Postgres {}
+
+#[cfg(feature = "mysql")]
+impl RowLocks for MySql {}
+
 /// The inserts the derive builds at compile time, one per built-in dialect it was built with.
 /// Machinery; the derive writes it, never a service.
 #[doc(hidden)]
@@ -239,6 +318,8 @@ pub struct InsertSql<'s> {
     pub postgres: Option<&'s str>,
     /// The MySQL and MariaDB insert.
     pub mysql: Option<&'s str>,
+    /// The SQLite insert.
+    pub sqlite: Option<&'s str>,
 }
 
 /// A connection the inserts the derive builds at compile time run on: its database, and which
@@ -279,6 +360,19 @@ impl OnConnection for MySqlConnection {
 
     fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
         sql.mysql
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl OnConnection for SqliteConnection {
+    type Database = Sqlite;
+
+    fn connection(&mut self) -> &mut Self {
+        self
+    }
+
+    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
+        sql.sqlite
     }
 }
 

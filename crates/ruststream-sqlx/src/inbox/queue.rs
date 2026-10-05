@@ -27,7 +27,7 @@ use super::subscriber::{Holding, InboxSubscriber};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
 use super::time::LeaseRow;
-use super::{InboxRow, PayloadRow};
+use super::{FormOn, InboxRow, PayloadRow};
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
@@ -44,7 +44,8 @@ use super::{InboxRow, PayloadRow};
 /// lease, a delivery dropped unsettled releases its row at once, and after a crash the row
 /// returns once the lease runs out. The lease is the broker's
 /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the subscription sets its own
-/// ([`lease`](Self::lease)).
+/// ([`lease`](Self::lease)). SQLite has no row locks ([`RowLocks`](crate::RowLocks)), so a table
+/// there takes the lease form, and a subscription to one without `locked_until` does not compile.
 ///
 /// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table: at the cap the
 /// row moves to the `dead_letter` group (with a `group` field) or into the `dead_letter` table
@@ -254,6 +255,7 @@ impl<DB, Row> SubscriptionSource<ConnectedSqlxBroker<DB>> for InboxQueue<Row>
 where
     DB: QueueDatabase,
     Row: InboxRow + Events<DB> + PayloadRow,
+    Row::Form: FormOn<DB>,
 {
     type Subscriber = InboxSubscriber<DB, Row>;
     type Copies = BrokerMoves;
@@ -459,6 +461,9 @@ pub struct Queue {
     /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
     /// names one.
     pub begin_claim: Option<&'static str>,
+    /// Whether the rows the claim returns carry the attempt it counted, so a delivery reports one
+    /// less.
+    pub counted_attempt: bool,
     /// How long the claim loop waits after a claim that found the queue short.
     pub poll_interval: Duration,
     /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
@@ -632,6 +637,7 @@ where
         kinds: description.kinds,
         prepared,
         begin_claim: shared.dialect.get().begin_claim(),
+        counted_attempt: counted_attempt(shared.dialect.get(), description),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
             .leased()
@@ -660,6 +666,15 @@ where
         registration,
         keeper,
     ))
+}
+
+/// Whether the rows the crate's lease claim of `description` returns carry the attempt the claim
+/// counted: whole rows, where the dialect says so. Ids and rows read by role carry none of it.
+fn counted_attempt(dialect: &dyn Dialect, description: &Description) -> bool {
+    description.leased()
+        && !description.shape.custom_claim
+        && description.claim == ClaimShape::Rows
+        && dialect.claim_counts_attempt(&description.spec)
 }
 
 /// Why the startup check failed: no connection, a version the server did not report, a server

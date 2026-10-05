@@ -1,19 +1,28 @@
 //! What a database gives a by-name subscription: the columns every driver reads, and the JSON
 //! headers and times each database with a built-in dialect decodes and binds.
 
-#[cfg(all(feature = "json", any(feature = "postgres", feature = "mysql")))]
+#[cfg(all(
+    feature = "json",
+    any(feature = "postgres", feature = "mysql", feature = "sqlite")
+))]
 use std::collections::BTreeMap;
 
 use ruststream::HeaderMap;
 use sqlx::error::BoxDynError;
-#[cfg(all(feature = "json", any(feature = "postgres", feature = "mysql")))]
+#[cfg(all(
+    feature = "json",
+    any(feature = "postgres", feature = "mysql", feature = "sqlite")
+))]
 use sqlx::types::Json;
 use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Row, Type, TypeInfo, ValueRef,
 };
 
 use super::row::{NamedBytes, NamedId, NamedTime};
-#[cfg(all(feature = "json", any(feature = "postgres", feature = "mysql")))]
+#[cfg(all(
+    feature = "json",
+    any(feature = "postgres", feature = "mysql", feature = "sqlite")
+))]
 use crate::inbox::HeaderColumn;
 use crate::inbox::database::QueueDatabase;
 
@@ -215,7 +224,7 @@ pub trait NamedDatabase: QueueDatabase + RoleColumns {
 
 /// Implements [`NamedDatabase`] for a database whose driver decodes JSON and binds the `chrono`
 /// and `time` types, with the features that bring them: each built-in dialect's database.
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 macro_rules! named_database {
     ($database:ty) => {
         impl NamedDatabase for $database {
@@ -260,6 +269,8 @@ macro_rules! named_database {
 named_database!(sqlx::Postgres);
 #[cfg(feature = "mysql")]
 named_database!(sqlx::MySql);
+#[cfg(feature = "sqlite")]
+named_database!(sqlx::Sqlite);
 
 impl<DB: RoleColumns> Type<DB> for NamedId {
     fn type_info() -> DB::TypeInfo {
