@@ -42,7 +42,8 @@ impl DialectHandle {
 ///
 /// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
 /// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
-/// database. Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors;
+/// database. A message in work holds one of the pool's connections until it settles, and a
+/// publish takes another, so the pool is sized for both. Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors;
 /// publishing writes them through [`Repository`](crate::Repository) policies or through the
 /// routes this builder records.
 ///

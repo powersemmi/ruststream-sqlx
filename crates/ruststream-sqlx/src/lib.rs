@@ -86,7 +86,12 @@
 //! [`SqlxBroker`] serves the queues in the tables of the service's sqlx pool, and the pool stays
 //! the service's. An [`InboxQueue`] subscription claims rows with `FOR UPDATE SKIP LOCKED`, one
 //! transaction per message or per batch, and polls when the queue runs dry. A batch's
-//! settlements take effect together, when its last delivery settles. The name selects a
+//! settlements take effect together, when its last delivery settles.
+//!
+//! A message in work holds a connection of the pool until it settles, a batch holds one for all
+//! its messages, and a publish takes one more for its insert. A subscription with `workers(n)`
+//! holds up to n + 1 connections, and handlers that publish need room for their inserts on top: a
+//! pool without that room makes them wait for its `acquire_timeout`. The name selects a
 //! group where the table has one; without a group the table is one queue. The bytes reach the
 //! codec lent from the row. What a handler answers decides the row's fate:
 //!
