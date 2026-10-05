@@ -1,4 +1,7 @@
 -- The tables the live suites read and write. Each test runs in a database of its own.
+--
+-- A queue table the suites run in both forms carries a nullable `locked_until`: a lease writes it,
+-- and the row lock form leaves it NULL.
 
 -- The email queue: a group per name, every role of this phase.
 CREATE TABLE email_jobs (
@@ -8,6 +11,7 @@ CREATE TABLE email_jobs (
     retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
     attempt      SMALLINT NOT NULL DEFAULT 1,
     processed_at TIMESTAMPTZ,
+    locked_until TIMESTAMPTZ,
     meta         JSONB,
     payload      BYTEA NOT NULL
 );
@@ -17,9 +21,10 @@ CREATE TABLE email_jobs_dead (LIKE email_jobs INCLUDING DEFAULTS);
 
 -- One queue per table: no group, no time, rows deleted when finished.
 CREATE TABLE plain_jobs (
-    id      BIGSERIAL PRIMARY KEY,
-    attempt SMALLINT NOT NULL DEFAULT 1,
-    payload BYTEA NOT NULL
+    id           BIGSERIAL PRIMARY KEY,
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
 );
 
 CREATE TABLE plain_jobs_dead (LIKE plain_jobs INCLUDING DEFAULTS);
@@ -53,26 +58,29 @@ CREATE TABLE clock_jobs (
 
 -- The conformance suites' tables: by-name subscriptions read the first, the lifecycle the second.
 CREATE TABLE conformance_jobs (
-    id          BIGSERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,
-    retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
-    attempt     SMALLINT NOT NULL DEFAULT 1,
-    meta        JSONB,
-    payload     BYTEA NOT NULL
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until TIMESTAMPTZ,
+    meta         JSONB,
+    payload      BYTEA NOT NULL
 );
 
 CREATE TABLE lifecycle_jobs (
-    id          BIGSERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,
-    retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
-    attempt     SMALLINT NOT NULL DEFAULT 1,
-    payload     BYTEA NOT NULL
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
 );
 
 -- Jobs another table may still point at: acknowledging a referenced job fails its statement.
 CREATE TABLE fragile_jobs (
-    id      BIGSERIAL PRIMARY KEY,
-    payload BYTEA NOT NULL
+    id           BIGSERIAL PRIMARY KEY,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
 );
 
 CREATE TABLE fragile_refs (

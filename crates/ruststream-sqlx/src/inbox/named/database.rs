@@ -1,19 +1,19 @@
 //! What a database gives a by-name subscription: the columns every driver reads, and the JSON
 //! headers and times each database with a built-in dialect decodes and binds.
 
-#[cfg(feature = "json")]
+#[cfg(all(feature = "json", feature = "postgres"))]
 use std::collections::BTreeMap;
 
 use ruststream::HeaderMap;
 use sqlx::error::BoxDynError;
-#[cfg(feature = "json")]
+#[cfg(all(feature = "json", feature = "postgres"))]
 use sqlx::types::Json;
 use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Row, Type, TypeInfo, ValueRef,
 };
 
 use super::row::{NamedBytes, NamedId, NamedTime};
-#[cfg(feature = "json")]
+#[cfg(all(feature = "json", feature = "postgres"))]
 use crate::inbox::HeaderColumn;
 use crate::inbox::database::QueueDatabase;
 

@@ -19,10 +19,12 @@ use ruststream::{
     Subscribe, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::{InboxQueue, Repository, Routed, SqlxBroker, SqlxBrokerError};
-use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{PgPool, Postgres};
 
-use live::{Database, Plain, database, url};
+use live::postgres::{URL, database};
+use live::rows::row_lock::Plain;
+use live::{Database, url};
 
 #[global_allocator]
 static ALLOCATOR: dhat::Alloc = dhat::Alloc;
@@ -41,12 +43,12 @@ fn blocks() -> u64 {
 
 /// A pool on the test's database that does nothing in the background: one connection, none opened
 /// ahead of a call or closed behind one, so every message runs on the same warm connection.
-async fn quiet_pool(db: &Database) -> PgPool {
+async fn quiet_pool(db: &Database<Postgres>) -> PgPool {
     let name: String = sqlx::query_scalar("SELECT current_database()")
         .fetch_one(&db.pool)
         .await
         .expect("the test database names itself");
-    let options: PgConnectOptions = url()
+    let options: PgConnectOptions = url(URL)
         .expect("the stand's URL")
         .parse()
         .expect("the stand's URL parses");

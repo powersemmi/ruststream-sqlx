@@ -22,7 +22,7 @@ use ruststream_sqlx::{Claim, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerE
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool, Postgres};
 
-use live::database;
+use live::postgres::database;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Task {
