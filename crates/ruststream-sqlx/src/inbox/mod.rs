@@ -1,20 +1,26 @@
 //! The inbox: task queues in tables a service describes with its own structs.
 
+mod broker;
 mod columns;
 mod database;
 pub(crate) mod engine;
+mod error;
 mod events;
+mod publish;
 mod time;
 
 use std::fmt::Debug;
 
 use ruststream_sqlx_dialect::TableSpec;
 
+pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
 #[cfg(feature = "postgres")]
 pub use database::OnPostgres;
 pub use database::{BuiltInDialect, QueueDatabase};
+pub use error::SqlxBrokerError;
 pub use events::{Ack, Claim, DeadLetter, Discard, Fetch, Insert, Publish, Retry, RetryAfter};
+pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use time::{Clock, DatabaseClock, QueueTime, SystemClock, TimeColumn, TimeSource};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.

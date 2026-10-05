@@ -47,6 +47,7 @@ jobs:
               - 'rustfmt.toml'
               - 'clippy.toml'
               - '.github/workflows/ci.yml'
+              - 'docker-compose.test.yml'
             docs:
               - 'docs/**'
               - 'properdocs.yml'
@@ -265,6 +266,39 @@ jobs:
           RUSTUP_TOOLCHAIN: "1.95"
         run: cargo test --workspace --all-features --no-fail-fast
 
+  postgres:
+    name: Postgres integration
+    needs: changes
+    if: ${{ needs.changes.outputs.rust == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # The compose file runs Postgres on the host network at 127.0.0.1:55432, the address the
+      # test process uses. `--wait` blocks until its healthcheck answers.
+      - name: Start Postgres
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      # RUSTSTREAM_REQUIRE_LIVE is this job's contract with the suites: the database is up, so a
+      # test that skips is a defect rather than a convenience.
+      - name: Run the live suites
+        env:
+          POSTGRES_TEST_URL: postgres://ruststream:ruststream@127.0.0.1:55432/ruststream
+          RUSTSTREAM_REQUIRE_LIVE: "1"
+        run: cargo test -p ruststream-sqlx --all-features --no-fail-fast
+
+      - name: Stop Postgres
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
   docs:
     name: Build site
     needs: [changes, lint]
@@ -333,6 +367,7 @@ jobs:
       - changes
       - lint
       - rust
+      - postgres
       - docs
       - codeql
     if: >-

@@ -26,6 +26,22 @@ test:
     # The inbox without the built-in dialect, as a service with a dialect of its own builds it.
     cargo test -p ruststream-sqlx --no-default-features --features inbox
 
+brokers-up:
+    docker compose -f docker-compose.test.yml up -d --wait
+
+brokers-down:
+    docker compose -f docker-compose.test.yml down -v
+
+# Runs the suites against the compose stand's Postgres. RUSTSTREAM_REQUIRE_LIVE turns a skipped
+# live test into a failure, so a stand the suites never reached is reported instead of passing.
+test-brokers: brokers-up
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'just brokers-down' EXIT
+    POSTGRES_TEST_URL=postgres://ruststream:ruststream@127.0.0.1:55432/ruststream \
+    RUSTSTREAM_REQUIRE_LIVE=1 \
+        cargo test -p ruststream-sqlx --all-features --no-fail-fast
+
 fmt:
     cargo fmt --all
 

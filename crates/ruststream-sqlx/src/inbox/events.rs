@@ -303,7 +303,7 @@ settle_event!(
 /// Writes a published message into the table: the name, the bytes and the headers reach the
 /// service's SQL, which lays them out in its columns.
 ///
-/// It has no default. With it, the struct's `Repository` is a publisher and
+/// It has no default. With it, the struct's [`Repository`](crate::Repository) is a publisher and
 /// a route can lead names to it; without it, a mount that needs one does not compile, rather than
 /// publish into nothing.
 ///
