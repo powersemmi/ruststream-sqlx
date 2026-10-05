@@ -1,0 +1,17 @@
+error[E0277]: `Job` does not describe a queue table
+  --> tests/ui/not_an_inbox_row.rs:14:19
+   |
+14 |     queue_table::<Job>();
+   |                   ^^^ not an inbox row
+   |
+help: the trait `InboxRow` is not implemented for `Job`
+  --> tests/ui/not_an_inbox_row.rs:4:1
+   |
+ 4 | struct Job {
+   | ^^^^^^^^^^
+   = note: derive it: `#[derive(Inbox)]` with `#[inbox(table = "..")]` and a `#[field(id)]` field
+note: required by a bound in `queue_table`
+  --> tests/ui/not_an_inbox_row.rs:8:21
+   |
+ 8 | fn queue_table<Row: InboxRow>() -> &'static str {
+   |                     ^^^^^^^^ required by this bound in `queue_table`

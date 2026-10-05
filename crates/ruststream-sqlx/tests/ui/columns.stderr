@@ -1,0 +1,29 @@
+error: unknown `rename_all` casing `camel`: sqlx takes lowercase, snake_case, UPPERCASE, SCREAMING_SNAKE_CASE, kebab-case, camelCase or PascalCase
+ --> tests/ui/columns.rs:5:21
+  |
+5 | #[sqlx(rename_all = "camel")]
+  |                     ^^^^^^^
+
+error: the column name is empty
+  --> tests/ui/columns.rs:15:21
+   |
+15 |     #[sqlx(rename = "")]
+   |                     ^^
+
+error: `#[sqlx(skip)]` leaves `job_id` without a column, so it cannot play `id`
+  --> tests/ui/columns.rs:22:13
+   |
+22 |     #[field(id)]
+   |             ^^
+
+error: `#[sqlx(flatten)]` leaves `headers` without a column, so it cannot play `headers`
+  --> tests/ui/columns.rs:32:13
+   |
+32 |     #[field(headers)]
+   |             ^^^^^^^
+
+error: `#[sqlx(skip)]` leaves `created_at` without a column for the database to fill in
+  --> tests/ui/columns.rs:42:13
+   |
+42 |     #[field(generated)]
+   |             ^^^^^^^^^

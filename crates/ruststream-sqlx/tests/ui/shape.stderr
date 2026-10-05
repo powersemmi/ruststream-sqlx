@@ -1,0 +1,11 @@
+error: #[derive(Inbox)] describes a table: it takes a struct with named fields
+ --> tests/ui/shape.rs:6:6
+  |
+6 | enum Job {
+  |      ^^^
+
+error: #[derive(Inbox)] describes a table: it takes a struct with named fields
+  --> tests/ui/shape.rs:12:18
+   |
+12 | struct Positional(i64, Vec<u8>);
+   |                  ^^^^^^^^^^^^^^

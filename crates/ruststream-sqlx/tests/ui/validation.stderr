@@ -1,0 +1,29 @@
+error: table `jobs` has no `id` field: mark the field that identifies a row with `#[field(id)]`
+ --> tests/ui/validation.rs:6:8
+  |
+6 | struct NoId {
+  |        ^^^^
+
+error: `job_id` plays `id` already: a role belongs to one field
+  --> tests/ui/validation.rs:17:5
+   |
+17 |     id: i64,
+   |     ^^
+
+error: `legacy_id` reads column `job_id`, which `job_id` reads already: a column is named in one place
+  --> tests/ui/validation.rs:26:5
+   |
+26 |     legacy_id: i64,
+   |     ^^^^^^^^^
+
+error: `locked_until` selects the lease form and `advisory_lock` the advisory lock form: a table has one form
+  --> tests/ui/validation.rs:35:5
+   |
+35 |     locked_until: Option<i64>,
+   |     ^^^^^^^^^^^^
+
+error: `fifo = true` does not combine with `advisory_lock`: drop it and put the group's field into the lock key, as in `advisory_lock = "ledger-{account}"`
+  --> tests/ui/validation.rs:44:20
+   |
+44 |     #[field(group, fifo = true)]
+   |                    ^^^^

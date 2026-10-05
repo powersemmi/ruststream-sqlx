@@ -16,3 +16,17 @@ workspace = true
 
 [package.metadata.docs.rs]
 all-features = true
+
+[features]
+default = []
+# The task queue in the service's own tables: `#[derive(Inbox)]` describes a queue table.
+inbox = ["dep:ruststream-sqlx-macros"]
+# The built-in Postgres dialect.
+postgres = ["ruststream-sqlx-dialect/postgres"]
+
+[dependencies]
+ruststream-sqlx-dialect.workspace = true
+ruststream-sqlx-macros = { workspace = true, optional = true }
+
+[dev-dependencies]
+trybuild.workspace = true

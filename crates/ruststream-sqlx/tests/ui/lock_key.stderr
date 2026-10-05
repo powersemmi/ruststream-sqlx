@@ -1,0 +1,29 @@
+error: the lock key has a `{` without its `}`: a field is named between braces
+ --> tests/ui/lock_key.rs:4:41
+  |
+4 | #[inbox(table = "jobs", advisory_lock = "jobs-{job_id")]
+  |                                         ^^^^^^^^^^^^^^
+
+error: the lock key has a `}` without its `{`: a field is named between braces
+  --> tests/ui/lock_key.rs:11:41
+   |
+11 | #[inbox(table = "jobs", advisory_lock = "jobs-}")]
+   |                                         ^^^^^^^^
+
+error: the lock key has empty braces: name a field between them
+  --> tests/ui/lock_key.rs:18:41
+   |
+18 | #[inbox(table = "jobs", advisory_lock = "jobs-{}")]
+   |                                         ^^^^^^^^^
+
+error: the lock key names `tenant`, which is not a field of the struct
+  --> tests/ui/lock_key.rs:25:41
+   |
+25 | #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}")]
+   |                                         ^^^^^^^^^^^^^^^
+
+error: the lock key names `tenant`, a field without a column
+  --> tests/ui/lock_key.rs:32:41
+   |
+32 | #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}")]
+   |                                         ^^^^^^^^^^^^^^^

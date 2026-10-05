@@ -14,6 +14,19 @@ license = "Apache-2.0"
 repository = "https://github.com/powersemmi/ruststream-sqlx"
 authors = ["RustStream contributors"]
 
+[workspace.dependencies]
+# The three published crates move in lockstep: one version, exact pins between them.
+ruststream-sqlx-dialect = { version = "=0.7.0", path = "crates/ruststream-sqlx-dialect" }
+ruststream-sqlx-macros = { version = "=0.7.0", path = "crates/ruststream-sqlx-macros" }
+
+# The casing functions sqlx's own derives apply for `rename_all`, at the version sqlx 0.9 uses.
+heck = "0.5"
+proc-macro2 = "1"
+quote = "1"
+syn = "3"
+thiserror = "2"
+trybuild = "1.0.121"
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 unreachable_pub = "deny"
