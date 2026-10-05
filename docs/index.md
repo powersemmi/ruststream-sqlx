@@ -3,9 +3,10 @@
 `ruststream-sqlx` brings SQL databases into a [RustStream](https://powersemmi.github.io/ruststream/)
 service through [`sqlx`](https://docs.rs/sqlx). It has two components:
 
-- A transactional outbox over any RustStream broker. The messages a handler publishes are stored
-  in the transaction that holds its own writes, and the broker receives them once the transaction
-  commits.
+- A transactional outbox over any RustStream broker. A publish records the message in a table
+  the service owns, and the message carries the record's id. The subscription takes the task into
+  work by that id and marks it processed on acknowledgement. Unprocessed records are published
+  again at startup.
 - Task queues in Postgres, MySQL/MariaDB and SQLite tables that the service owns.
 
 ## Where the rest is
