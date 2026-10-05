@@ -193,3 +193,38 @@ pub(crate) async fn plain_rows(pool: &PgPool, table: &'static str) -> Vec<Vec<u8
     .await
     .expect("the table reads")
 }
+
+/// A job another table may point at: its acknowledgement fails while a reference stands.
+#[derive(Debug, Inbox, sqlx::FromRow)]
+#[inbox(table = "fragile_jobs")]
+pub(crate) struct Fragile {
+    #[field(id, generated)]
+    pub(crate) id: i64,
+    #[field(payload)]
+    pub(crate) payload: Vec<u8>,
+}
+
+/// Writes one fragile job per payload and returns their ids.
+pub(crate) async fn fragile(pool: &PgPool, payloads: &[&str]) -> Vec<i64> {
+    let mut ids = Vec::new();
+    for payload in payloads {
+        let id: i64 =
+            sqlx::query_scalar("INSERT INTO fragile_jobs (payload) VALUES ($1) RETURNING id")
+                .bind(payload.as_bytes())
+                .fetch_one(pool)
+                .await
+                .expect("the job writes");
+        ids.push(id);
+    }
+    ids
+}
+
+pub(crate) async fn fragile_rows(pool: &PgPool) -> Vec<String> {
+    let rows: Vec<Vec<u8>> = sqlx::query_scalar("SELECT payload FROM fragile_jobs ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .expect("the table reads");
+    rows.into_iter()
+        .map(|row| String::from_utf8(row).expect("text"))
+        .collect()
+}

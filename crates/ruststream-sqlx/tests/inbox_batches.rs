@@ -17,46 +17,11 @@ use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::TestApp;
 use ruststream::{AckError, BatchSubscriber, ConnectedBroker, SubscriptionSource};
-use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker, SqlxBrokerError};
+use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, Postgres};
+use sqlx::Postgres;
 
-use live::{Plain, database, plain_rows};
-
-/// A job another table may point at: its acknowledgement fails while a reference stands.
-#[derive(Debug, Inbox, sqlx::FromRow)]
-#[inbox(table = "fragile_jobs")]
-struct Fragile {
-    #[field(id, generated)]
-    id: i64,
-    #[field(payload)]
-    payload: Vec<u8>,
-}
-
-/// Writes one fragile job per payload and returns their ids.
-async fn fragile(pool: &PgPool, payloads: &[&str]) -> Vec<i64> {
-    let mut ids = Vec::new();
-    for payload in payloads {
-        let id: i64 =
-            sqlx::query_scalar("INSERT INTO fragile_jobs (payload) VALUES ($1) RETURNING id")
-                .bind(payload.as_bytes())
-                .fetch_one(pool)
-                .await
-                .expect("the job writes");
-        ids.push(id);
-    }
-    ids
-}
-
-async fn fragile_rows(pool: &PgPool) -> Vec<String> {
-    let rows: Vec<Vec<u8>> = sqlx::query_scalar("SELECT payload FROM fragile_jobs ORDER BY id")
-        .fetch_all(pool)
-        .await
-        .expect("the table reads");
-    rows.into_iter()
-        .map(|row| String::from_utf8(row).expect("text"))
-        .collect()
-}
+use live::{Fragile, Plain, database, fragile, fragile_rows, plain_rows};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Line {

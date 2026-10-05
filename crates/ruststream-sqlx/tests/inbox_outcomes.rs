@@ -285,6 +285,37 @@ async fn a_binary_payload_reaches_the_handler_byte_for_byte() {
     db.finish().await;
 }
 
+#[subscriber(InboxQueue::<Plain>::new("plain"))]
+async fn nothing(frame: &Frame<'_>) -> HandlerOutcome {
+    if frame.0.is_empty() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::drop()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_payload_reaches_the_handler_empty() {
+    let Some(db) = database().await else { return };
+    let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
+        b.include(nothing);
+    });
+    let tb = TestApp::start_live(app).await.expect("the app starts");
+    tb.broker::<SqlxBroker<Postgres>>()
+        .message(&Blob(Vec::new()))
+        .to("plain")
+        .publish()
+        .await
+        .expect("the publish settles");
+    tb.broker::<SqlxBroker<Postgres>>()
+        .subscriber("plain")
+        .assert_called_once()
+        .with_raw(&[])
+        .settled(HandlerOutcome::ack());
+    tb.shutdown().await.expect("the app stops");
+    db.finish().await;
+}
+
 /// An email that carries its tenant in a header.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 #[outgoing(headers = Tenant)]
