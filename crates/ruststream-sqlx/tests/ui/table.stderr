@@ -21,3 +21,15 @@ error: `table` is given twice
    |
 26 | #[inbox(table = "jobs_v2")]
    |         ^^^^^^^^^^^^^^^^^
+
+error: `table` holds a dot: name the table alone, and its schema with `schema = ".."`
+  --> tests/ui/table.rs:34:17
+   |
+34 | #[inbox(table = "app.jobs")]
+   |                 ^^^^^^^^^^
+
+error: `schema` holds a dot: name the schema alone, without its database or table
+  --> tests/ui/table.rs:41:34
+   |
+41 | #[inbox(table = "jobs", schema = "db.app")]
+   |                                  ^^^^^^^^

@@ -116,6 +116,12 @@ fn named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, Toke
 }
 
 fn table(input: &DeriveInput) -> syn::Result<Table> {
+    // A dot would read as a schema in one place and as part of a quoted name in another (a
+    // dead-letter `TableName` splits on it), so `table` and `schema` each name one thing.
+    const DOTTED_TABLE: &str =
+        "`table` holds a dot: name the table alone, and its schema with `schema = \"..\"`";
+    const DOTTED_SCHEMA: &str =
+        "`schema` holds a dot: name the schema alone, without its database or table";
     let mut name = None;
     let mut schema = None;
     let mut advisory_lock = None;
@@ -130,10 +136,10 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
                 .get_ident()
                 .map(ToString::to_string)
                 .unwrap_or_default();
-            let slot = match key.as_str() {
-                "table" => &mut name,
-                "schema" => &mut schema,
-                "advisory_lock" => &mut advisory_lock,
+            let (slot, dotted) = match key.as_str() {
+                "table" => (&mut name, Some(DOTTED_TABLE)),
+                "schema" => (&mut schema, Some(DOTTED_SCHEMA)),
+                "advisory_lock" => (&mut advisory_lock, None),
                 _ => {
                     return Err(meta.error(
                         "unknown `#[inbox(..)]` option: expected `table`, `schema` or \
@@ -144,6 +150,11 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
             let value: LitStr = meta.value()?.parse()?;
             if value.value().is_empty() {
                 return Err(syn::Error::new(value.span(), format!("`{key}` is empty")));
+            }
+            if let Some(message) = dotted
+                && value.value().contains('.')
+            {
+                return Err(syn::Error::new(value.span(), message));
             }
             if slot.replace(value).is_some() {
                 return Err(meta.error(format!("`{key}` is given twice")));
@@ -491,7 +502,7 @@ mod tests {
 
     #[test]
     fn misuse_of_the_attributes_is_reported() {
-        let cases: [(DeriveInput, &str); 15] = [
+        let cases: [(DeriveInput, &str); 17] = [
             (
                 parse_quote! { struct Job { #[field(id)] id: i64 } },
                 "#[derive(Inbox)] needs the table: add `#[inbox(table = \"..\")]`",
@@ -503,6 +514,14 @@ mod tests {
             (
                 parse_quote! { #[inbox(table = "")] struct Job { #[field(id)] id: i64 } },
                 "`table` is empty",
+            ),
+            (
+                parse_quote! { #[inbox(table = "app.jobs")] struct Job { #[field(id)] id: i64 } },
+                "`table` holds a dot: name the table alone, and its schema with `schema = \"..\"`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", schema = "db.app")] struct Job { #[field(id)] id: i64 } },
+                "`schema` holds a dot: name the schema alone, without its database or table",
             ),
             (
                 parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(identity)] id: i64 } },

@@ -58,7 +58,8 @@ pub use inbox::InboxRow;
 /// # The table
 ///
 /// `#[inbox(table = "..")]` names the table and is required. `schema = ".."` places it in a
-/// schema. `advisory_lock = "jobs-{job_id}"` selects the advisory lock form, with a key built
+/// schema. Each names one thing and holds no dot: the schema goes into `schema`, never into the
+/// table's name. `advisory_lock = "jobs-{job_id}"` selects the advisory lock form, with a key built
 /// from the fields named between braces. A placeholder names a field as written in Rust, without
 /// `r#` (`{type}` for `r#type`), and the key reads that field's column. In that form a group
 /// keeps its order through the key, as in `advisory_lock = "jobs-{name}"`, so `fifo = true` does
@@ -95,9 +96,9 @@ pub use inbox::InboxRow;
 ///
 /// # Compile errors
 ///
-/// A struct that cannot drive a queue does not compile, and the error points at the field that
-/// causes it: no `id`, a role played twice, a column named twice, a role or `generated` on a
-/// field without a column, `fifo` outside the `group` role, `locked_until` or `fifo = true`
-/// beside `advisory_lock`, a lock key naming no field.
+/// A struct that cannot drive a queue does not compile, and the error points at the field or
+/// the name that causes it: no `id`, a role played twice, a column named twice, a role or
+/// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until` or
+/// `fifo = true` beside `advisory_lock`, a lock key naming no field, a dot in `table` or `schema`.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;
