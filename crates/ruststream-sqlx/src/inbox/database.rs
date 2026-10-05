@@ -10,7 +10,7 @@ use sqlx::{
     SqlStr, Type,
 };
 
-use super::InboxRow;
+use super::QueueRow;
 use super::engine::{Claimed, IdAt};
 
 /// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
@@ -58,7 +58,7 @@ pub trait QueueDatabase: Database {
         out: &'c mut Vec<Claimed<Row>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'c
     where
-        Row: InboxRow + for<'r> FromRow<'r, Self::Row> + Unpin,
+        Row: QueueRow + for<'r> FromRow<'r, Self::Row> + Unpin,
         Row::Id: for<'r> Decode<'r, Self> + Type<Self>;
 
     /// Runs a claim of ids. Machinery.
@@ -114,7 +114,7 @@ where
         out: &'c mut Vec<Claimed<Row>>,
     ) -> Result<(), Error>
     where
-        Row: InboxRow + for<'r> FromRow<'r, Self::Row> + Unpin,
+        Row: QueueRow + for<'r> FromRow<'r, Self::Row> + Unpin,
         Row::Id: for<'r> Decode<'r, Self> + Type<Self>,
     {
         // The decode `query_as` runs, one row at a time, so a row that fails it fails alone.

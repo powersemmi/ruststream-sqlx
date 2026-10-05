@@ -10,23 +10,24 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use ruststream::{DefaultPublish, Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream_sqlx_dialect::TableSpec;
 use sqlx::Database;
 #[cfg(feature = "testing")]
 use sqlx::Pool;
 
+use super::PayloadRow;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
-use super::named::{self, NamedSubscriber};
+use super::named::{self, ErasedStream};
+use super::queue::Description;
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
-use super::{InboxRow, PayloadRow};
 
-/// The table of `Row`, qualified with its schema, for messages.
-pub(crate) fn table_of<Row: InboxRow>() -> String {
-    let spec = Row::SPEC;
+/// The table `spec` describes, qualified with its schema, for messages.
+pub(crate) fn table_of(spec: &TableSpec<'_>) -> String {
     spec.schema().map_or_else(
         || spec.table().to_owned(),
         |schema| format!("{schema}.{}", spec.table()),
@@ -45,7 +46,7 @@ where
 {
     let failed = |source| SqlxBrokerError::Publish {
         name: message.name().to_owned(),
-        table: table_of::<Row>(),
+        table: table_of(&Row::SPEC),
         row: type_name::<Row>(),
         source: Box::new(source),
     };
@@ -59,7 +60,7 @@ where
     if let Some(header) = Row::unfit_header(message.headers()) {
         return Err(SqlxBrokerError::Header {
             name: message.name().to_owned(),
-            table: table_of::<Row>(),
+            table: table_of(&Row::SPEC),
             row: type_name::<Row>(),
             header: header.to_owned(),
         });
@@ -293,12 +294,16 @@ pub(crate) trait Route<DB: Database>: Send + Sync {
         message: &'a OutgoingMessage<'a>,
     ) -> BoxFuture<'a, Result<(), SqlxBrokerError>>;
 
-    /// Opens a by-name subscription to `name` of the route's table.
+    /// What a by-name subscription knows of the route's table: its description, and whether its
+    /// row can be read by role.
+    fn description(&self) -> Description;
+
+    /// Opens a by-name subscription to `name` of the route's table through the row's own code.
     fn subscribe<'a>(
         &'a self,
         shared: &'a Arc<Shared<DB>>,
         name: &'a str,
-    ) -> BoxFuture<'a, Result<NamedSubscriber<DB>, SqlxBrokerError>>;
+    ) -> BoxFuture<'a, Result<ErasedStream, SqlxBrokerError>>;
 
     /// The row type, for messages.
     fn row(&self) -> &'static str;
@@ -319,12 +324,16 @@ where
         Box::pin(insert::<DB, Row>(shared, message))
     }
 
+    fn description(&self) -> Description {
+        Description::of::<DB, Row>()
+    }
+
     fn subscribe<'a>(
         &'a self,
         shared: &'a Arc<Shared<DB>>,
         name: &'a str,
-    ) -> BoxFuture<'a, Result<NamedSubscriber<DB>, SqlxBrokerError>> {
-        named::subscribe::<DB, Row>(shared, name)
+    ) -> BoxFuture<'a, Result<ErasedStream, SqlxBrokerError>> {
+        named::erased::<DB, Row>(shared, name)
     }
 
     fn row(&self) -> &'static str {

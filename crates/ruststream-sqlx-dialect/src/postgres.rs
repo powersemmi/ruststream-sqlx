@@ -146,6 +146,7 @@ impl Dialect for Postgres {
         match shape {
             ClaimShape::Rows => sql.columns(spec),
             ClaimShape::Ids => sql.ident(id),
+            ClaimShape::Roles => sql.role_columns(spec),
         };
         sql.push(" FROM ")
             .table(spec)

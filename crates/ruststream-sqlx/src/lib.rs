@@ -121,9 +121,11 @@
 //!
 //! A [`Repository`] publishes into its struct's table, and a struct without [`Publish`] does not
 //! compile as one. A route leads a name to a table, and a publish to a name no route leads
-//! anywhere fails at publish time. `#[subscriber("emails")]` opens through the route too; such a
-//! subscription boxes each delivery and settles through a dynamic call, which an [`InboxQueue`]
-//! does not.
+//! anywhere fails at publish time. `#[subscriber("emails")]` opens through the route too. A route
+//! whose struct leaves every event to the crate, with role columns of the types the crate reads
+//! itself, is read by those columns: no box and no dynamic call per message, as through an
+//! [`InboxQueue`]. A struct that overrides an event, or holds another column type, costs one
+//! boxed delivery and one boxed settlement future per message.
 //!
 //! # Testing a service on the inbox
 //!
@@ -210,12 +212,17 @@ pub mod __private {
 
     #[cfg(feature = "postgres")]
     pub use crate::inbox::OnPostgres;
-    pub use crate::inbox::QueueDatabase;
     pub use crate::inbox::engine::{
         Claimed, Claiming, Event, Events, IdAt, Now, Prepared, Released, Settling, Shape, Stmt,
         TimeFor, Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids,
         first_header, later, match_claimed, match_rows, micros, now, put, retry, retry_after,
     };
+    pub use crate::inbox::kinds::{Kinds, KindsOf};
+    pub use crate::inbox::named::{
+        NamedBytes, NamedDatabase, NamedId, NamedRow, NamedTime, RoleColumns,
+    };
+    pub use crate::inbox::queue::Queue;
+    pub use crate::inbox::{QueueDatabase, QueueRow};
 }
 
 /// Describes a queue table with a struct and implements [`InboxRow`] for it.

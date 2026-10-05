@@ -236,9 +236,8 @@ where
 {
     let mut tx = pool.begin().await.map_err(|source| ("BEGIN", source))?;
     let cx = Claiming {
-        queue: queue.name,
+        queue,
         limit: i64::try_from(limit).unwrap_or(i64::MAX),
-        prepared: &queue.prepared,
         now,
     };
     rows.clear();

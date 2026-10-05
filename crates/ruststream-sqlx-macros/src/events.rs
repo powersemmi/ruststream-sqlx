@@ -2,7 +2,7 @@
 //! `Events<DB>`, one implementation for every database the field types allow.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{quote, quote_spanned};
+use quote::{format_ident, quote, quote_spanned};
 use ruststream_sqlx_dialect::Role;
 use syn::spanned::Spanned;
 use syn::{DeriveInput, Generics, Path, Type, WherePredicate, parse_quote};
@@ -49,6 +49,46 @@ impl TimeRole {
         predicates.push(parse_quote!(#ty: #p::TimeFor<__DB>));
         let time = quote!(<#ty as #p::TimeFor<__DB>>::Time);
         Self { time }
+    }
+}
+
+/// The answer to "can a by-name subscription read and bind this row from its description alone":
+/// the kinds of its columns, or `None` when an event is the service's own, for the described path
+/// runs the crate's defaults only.
+fn kinds(
+    inbox: &Inbox<'_>,
+    clock: &Path,
+    id_ty: &Type,
+    custom: bool,
+    [retry_after, processed_at]: [Option<&TimeRole>; 2],
+) -> TokenStream2 {
+    if custom {
+        return quote!(::core::option::Option::None);
+    }
+    let p = quote!(::ruststream_sqlx::__private);
+    let step = |role: Role, step: &str| {
+        playing(inbox, role).map(|field| {
+            let step = format_ident!("{step}");
+            let ty = field.ty;
+            quote!(.#step::<#ty>())
+        })
+    };
+    let payload = step(Role::Payload, "payload");
+    let headers = step(Role::Headers, "headers");
+    let key = step(Role::PartitionKey, "partition_key");
+    let attempt = step(Role::Attempt, "attempt");
+    let retry_after = retry_after.map(|role| {
+        let time = &role.time;
+        quote!(.retry_after::<#time>())
+    });
+    let processed_at = processed_at.map(|role| {
+        let time = &role.time;
+        quote!(.processed_at::<#time>())
+    });
+    quote! {
+        #p::KindsOf::new::<#id_ty, #clock>()
+            #payload #headers #key #attempt #retry_after #processed_at
+            .finish()
     }
 }
 
@@ -196,7 +236,7 @@ pub(crate) fn events(
         (false, false) => quote!(#p::claim_rows::<__DB, Self>(conn, cx, out)),
         (claim, fetch) => {
             let ids = if claim {
-                quote!(<Self as #r::Claim<__DB>>::claim(&mut *conn, cx.queue, cx.limit).await?)
+                quote!(<Self as #r::Claim<__DB>>::claim(&mut *conn, cx.queue.name, cx.limit).await?)
             } else {
                 quote!(#p::claim_ids::<__DB, Self>(&mut *conn, cx).await?)
             };
@@ -259,8 +299,14 @@ pub(crate) fn events(
         custom.retry_after,
         custom.discard,
         custom.dead_letter,
-        retry_after.is_some(),
     ];
+    let kinds = kinds(
+        inbox,
+        &clock,
+        id_ty,
+        flags.contains(&true),
+        [retry_after.as_ref(), processed_at.as_ref()],
+    );
     let [
         c_claim,
         c_fetch,
@@ -269,7 +315,6 @@ pub(crate) fn events(
         c_retry_after,
         c_discard,
         c_dead,
-        retry_after_column,
     ] = flags;
 
     let mut generics = generics.clone();
@@ -288,10 +333,13 @@ pub(crate) fn events(
                 custom_retry_after: #c_retry_after,
                 custom_discard: #c_discard,
                 custom_dead_letter: #c_dead,
-                retry_after_column: #retry_after_column,
             };
 
-            fn id(&self) -> &<Self as #r::InboxRow>::Id {
+            fn kinds() -> ::core::option::Option<#p::Kinds> {
+                #kinds
+            }
+
+            fn id(&self) -> &<Self as #p::QueueRow>::Id {
                 &self.#id_ident
             }
 
@@ -325,7 +373,7 @@ pub(crate) fn events(
                         ::core::option::Option::None => false,
                     },
                     (#p::Param::Group, _) => {
-                        <__DB as #p::QueueDatabase>::bind_str(arguments, values.queue)?;
+                        <__DB as #p::QueueDatabase>::bind_str(arguments, values.queue.name)?;
                         true
                     }
                     (#p::Param::Limit, _) => {
@@ -349,7 +397,7 @@ pub(crate) fn events(
 
             fn claim<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
-                cx: &'__a #p::Claiming<'__a>,
+                cx: &'__a #p::Claiming,
                 out: &'__a mut ::std::vec::Vec<#p::Claimed<Self>>,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {
@@ -358,8 +406,8 @@ pub(crate) fn events(
 
             fn ack<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
-                cx: &'__a #p::Settling<'__a>,
-                id: &'__a <Self as #r::InboxRow>::Id,
+                cx: &'__a #p::Settling,
+                id: &'__a <Self as #p::QueueRow>::Id,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {
                 #ack
@@ -367,8 +415,8 @@ pub(crate) fn events(
 
             fn retry<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
-                cx: &'__a #p::Settling<'__a>,
-                id: &'__a <Self as #r::InboxRow>::Id,
+                cx: &'__a #p::Settling,
+                id: &'__a <Self as #p::QueueRow>::Id,
             ) -> impl ::core::future::Future<
                 Output = ::core::result::Result<#p::Released, #p::sqlx::Error>,
             > + ::core::marker::Send + '__a {
@@ -377,8 +425,8 @@ pub(crate) fn events(
 
             fn retry_after<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
-                cx: &'__a #p::Settling<'__a>,
-                id: &'__a <Self as #r::InboxRow>::Id,
+                cx: &'__a #p::Settling,
+                id: &'__a <Self as #p::QueueRow>::Id,
                 delay: ::core::time::Duration,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {
@@ -387,8 +435,8 @@ pub(crate) fn events(
 
             fn discard<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
-                cx: &'__a #p::Settling<'__a>,
-                id: &'__a <Self as #r::InboxRow>::Id,
+                cx: &'__a #p::Settling,
+                id: &'__a <Self as #p::QueueRow>::Id,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {
                 #discard
@@ -396,8 +444,8 @@ pub(crate) fn events(
 
             fn dead_letter<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
-                cx: &'__a #p::Settling<'__a>,
-                id: &'__a <Self as #r::InboxRow>::Id,
+                cx: &'__a #p::Settling,
+                id: &'__a <Self as #p::QueueRow>::Id,
                 destination: &'__a str,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {

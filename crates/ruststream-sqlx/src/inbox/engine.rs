@@ -14,17 +14,23 @@ use ruststream::HeaderMap;
 use ruststream_sqlx_dialect::{Param, Statement, TableSpec};
 use sqlx::{Arguments, Database, Decode, Encode, Error, FromRow, Type};
 
-use super::InboxRow;
+use super::QueueRow;
 use super::database::QueueDatabase;
+use super::kinds::Kinds;
+use super::queue::Queue;
 #[cfg(feature = "testing")]
 use super::testing::TestClock;
 use super::time::{QueueTime, TimeSource};
 
 /// A row's whole contract with the broker. Machinery; the derive implements it, a service never
 /// names it.
-pub trait Events<DB: QueueDatabase>: InboxRow + for<'r> FromRow<'r, DB::Row> + Unpin {
-    /// Which events the service implements itself, and what the table can do natively.
+pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + Unpin {
+    /// Which events the service implements itself.
     const SHAPE: Shape;
+
+    /// The kinds a by-name subscription reads and binds the row's columns by, or `None` when it
+    /// needs the row's own code: an event of the service's own, or a column type outside them.
+    fn kinds() -> Option<Kinds>;
 
     /// The row's id.
     fn id(&self) -> &Self::Id;
@@ -56,28 +62,28 @@ pub trait Events<DB: QueueDatabase>: InboxRow + for<'r> FromRow<'r, DB::Row> + U
     /// Claims up to `cx.limit` rows into `out`.
     fn claim<'a>(
         conn: &'a mut DB::Connection,
-        cx: &'a Claiming<'a>,
+        cx: &'a Claiming,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 
     /// The `ack` event.
     fn ack<'a>(
         conn: &'a mut DB::Connection,
-        cx: &'a Settling<'a>,
+        cx: &'a Settling,
         id: &'a Self::Id,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 
     /// The `retry` event; says whether it wrote anything for the commit to keep.
     fn retry<'a>(
         conn: &'a mut DB::Connection,
-        cx: &'a Settling<'a>,
+        cx: &'a Settling,
         id: &'a Self::Id,
     ) -> impl Future<Output = Result<Released, Error>> + Send + 'a;
 
     /// The `retry_after` event.
     fn retry_after<'a>(
         conn: &'a mut DB::Connection,
-        cx: &'a Settling<'a>,
+        cx: &'a Settling,
         id: &'a Self::Id,
         delay: Duration,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
@@ -85,20 +91,20 @@ pub trait Events<DB: QueueDatabase>: InboxRow + for<'r> FromRow<'r, DB::Row> + U
     /// The `discard` event.
     fn discard<'a>(
         conn: &'a mut DB::Connection,
-        cx: &'a Settling<'a>,
+        cx: &'a Settling,
         id: &'a Self::Id,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 
     /// The `dead_letter` event.
     fn dead_letter<'a>(
         conn: &'a mut DB::Connection,
-        cx: &'a Settling<'a>,
+        cx: &'a Settling,
         id: &'a Self::Id,
         destination: &'a str,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 }
 
-/// Which events a row's service implements itself, and whether the table holds `retry_after`.
+/// Which events a row's service implements itself.
 // One switch per event, read once per subscription at startup.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -117,17 +123,6 @@ pub struct Shape {
     pub custom_discard: bool,
     /// `custom(dead_letter)`.
     pub custom_dead_letter: bool,
-    /// A field plays `retry_after`.
-    pub retry_after_column: bool,
-}
-
-impl Shape {
-    /// Whether a delayed retry is the database's own: the table holds `retry_after`, or the
-    /// service implements the event.
-    #[must_use]
-    pub const fn native_retry_after(self) -> bool {
-        self.custom_retry_after || self.retry_after_column
-    }
 }
 
 /// The event a statement serves, for binding and for messages.
@@ -167,11 +162,12 @@ impl Event {
 
 /// The values one statement may bind, by meaning.
 #[derive(Debug)]
-pub struct Values<'a, Row: InboxRow> {
+pub struct Values<'a, Row: QueueRow> {
     /// The event the statement serves.
     pub event: Event,
-    /// The subscription's name: its group, or the table's address.
-    pub queue: &'a str,
+    /// The subscription: its name (its group, or the table's address) and what it knows of the
+    /// table.
+    pub queue: &'static Queue,
     /// The most rows a claim takes.
     pub limit: i64,
     /// The row a settlement settles.
@@ -186,8 +182,8 @@ pub struct Values<'a, Row: InboxRow> {
     pub now: Now,
 }
 
-impl<'a, Row: InboxRow> Values<'a, Row> {
-    const fn claiming(cx: Claiming<'a>, event: Event) -> Self {
+impl<'a, Row: QueueRow> Values<'a, Row> {
+    const fn claiming(cx: Claiming, event: Event) -> Self {
         Self {
             event,
             queue: cx.queue,
@@ -200,7 +196,7 @@ impl<'a, Row: InboxRow> Values<'a, Row> {
         }
     }
 
-    const fn settling(cx: Settling<'a>, event: Event, id: &'a Row::Id) -> Self {
+    const fn settling(cx: Settling, event: Event, id: &'a Row::Id) -> Self {
         Self {
             event,
             queue: cx.queue,
@@ -217,7 +213,7 @@ impl<'a, Row: InboxRow> Values<'a, Row> {
 /// One claimed row, a claimed id the fetch found no row for, or a row whose columns do not decode
 /// into its struct.
 #[derive(Debug)]
-pub enum Claimed<Row: InboxRow> {
+pub enum Claimed<Row: QueueRow> {
     /// The row.
     Row(Row),
     /// The id; its delivery carries no payload and fails to decode.
@@ -295,24 +291,20 @@ pub struct Prepared {
 
 /// A claim in progress.
 #[derive(Debug, Clone, Copy)]
-pub struct Claiming<'a> {
-    /// The subscription's name.
-    pub queue: &'a str,
+pub struct Claiming {
+    /// The subscription: its name, its statements and what it knows of the table.
+    pub queue: &'static Queue,
     /// The most rows to take.
     pub limit: i64,
-    /// The subscription's statements.
-    pub prepared: &'a Prepared,
     /// Where "now" comes from.
     pub now: Now,
 }
 
 /// A settlement in progress.
 #[derive(Debug, Clone, Copy)]
-pub struct Settling<'a> {
-    /// The subscription's name.
-    pub queue: &'a str,
-    /// The subscription's statements.
-    pub prepared: &'a Prepared,
+pub struct Settling {
+    /// The subscription: its name, its statements and what it knows of the table.
+    pub queue: &'static Queue,
     /// Where "now" comes from.
     pub now: Now,
 }
@@ -466,7 +458,7 @@ where
 /// The database's error.
 pub async fn claim_rows<DB, Row>(
     conn: &mut DB::Connection,
-    cx: &Claiming<'_>,
+    cx: &Claiming,
     out: &mut Vec<Claimed<Row>>,
 ) -> Result<(), Error>
 where
@@ -474,9 +466,13 @@ where
     Row: Events<DB>,
     Row::Id: for<'r> Decode<'r, DB> + Type<DB>,
 {
-    let statement = cx.prepared.claim.ok_or_else(|| unprepared(Event::Claim))?;
+    let statement = cx
+        .queue
+        .prepared
+        .claim
+        .ok_or_else(|| unprepared(Event::Claim))?;
     let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim))?;
-    DB::fetch_rows(conn, statement.sql, arguments, IdAt::of(&Row::SPEC), out).await
+    DB::fetch_rows(conn, statement.sql, arguments, cx.queue.id_at, out).await
 }
 
 /// The default claim of ids, for a fetch of the service's own.
@@ -486,14 +482,18 @@ where
 /// The database's error.
 pub async fn claim_ids<DB, Row>(
     conn: &mut DB::Connection,
-    cx: &Claiming<'_>,
+    cx: &Claiming,
 ) -> Result<Vec<Row::Id>, Error>
 where
     DB: QueueDatabase,
     Row: Events<DB>,
     Row::Id: for<'r> Decode<'r, DB> + Type<DB> + Unpin,
 {
-    let statement = cx.prepared.claim.ok_or_else(|| unprepared(Event::Claim))?;
+    let statement = cx
+        .queue
+        .prepared
+        .claim
+        .ok_or_else(|| unprepared(Event::Claim))?;
     let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim))?;
     DB::fetch_ids(conn, statement.sql, arguments).await
 }
@@ -507,7 +507,7 @@ where
 /// The database's error, or the decode error of a row whose id does not decode either.
 pub async fn fetch_by_ids<DB, Row>(
     conn: &mut DB::Connection,
-    cx: &Claiming<'_>,
+    cx: &Claiming,
     ids: &[Row::Id],
 ) -> Result<Vec<Claimed<Row>>, Error>
 where
@@ -515,21 +515,18 @@ where
     Row: Events<DB>,
     Row::Id: for<'r> Decode<'r, DB> + Type<DB>,
 {
-    let statement = cx.prepared.fetch.ok_or_else(|| unprepared(Event::Fetch))?;
+    let statement = cx
+        .queue
+        .prepared
+        .fetch
+        .ok_or_else(|| unprepared(Event::Fetch))?;
     let values = Values {
         ids,
         ..Values::claiming(*cx, Event::Fetch)
     };
     let arguments = arguments::<DB, Row>(statement, &values)?;
     let mut fetched = Vec::with_capacity(ids.len());
-    DB::fetch_rows(
-        conn,
-        statement.sql,
-        arguments,
-        IdAt::of(&Row::SPEC),
-        &mut fetched,
-    )
-    .await?;
+    DB::fetch_rows(conn, statement.sql, arguments, cx.queue.id_at, &mut fetched).await?;
     Ok(fetched)
 }
 
@@ -568,7 +565,7 @@ fn pair<Row, Entry>(
     claimed: impl Fn(Entry) -> Claimed<Row>,
     out: &mut Vec<Claimed<Row>>,
 ) where
-    Row: InboxRow,
+    Row: QueueRow,
     Row::Id: PartialEq,
 {
     for id in ids {
@@ -600,10 +597,15 @@ where
 /// The database's error.
 pub async fn ack<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
-    cx: &Settling<'_>,
+    cx: &Settling,
     id: &Row::Id,
 ) -> Result<(), Error> {
-    run::<DB, Row>(conn, cx.prepared.ack, Values::settling(*cx, Event::Ack, id)).await
+    run::<DB, Row>(
+        conn,
+        cx.queue.prepared.ack,
+        Values::settling(*cx, Event::Ack, id),
+    )
+    .await
 }
 
 /// The default `retry()`.
@@ -613,10 +615,10 @@ pub async fn ack<DB: QueueDatabase, Row: Events<DB>>(
 /// The database's error.
 pub async fn retry<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
-    cx: &Settling<'_>,
+    cx: &Settling,
     id: &Row::Id,
 ) -> Result<Released, Error> {
-    let Some(statement) = cx.prepared.retry else {
+    let Some(statement) = cx.queue.prepared.retry else {
         return Ok(Released::Untouched);
     };
     run::<DB, Row>(
@@ -635,7 +637,7 @@ pub async fn retry<DB: QueueDatabase, Row: Events<DB>>(
 /// The database's error.
 pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
-    cx: &Settling<'_>,
+    cx: &Settling,
     id: &Row::Id,
     delay: Duration,
 ) -> Result<(), Error> {
@@ -643,7 +645,7 @@ pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
         delay,
         ..Values::settling(*cx, Event::RetryAfter, id)
     };
-    run::<DB, Row>(conn, cx.prepared.retry_after, values).await
+    run::<DB, Row>(conn, cx.queue.prepared.retry_after, values).await
 }
 
 /// The default `drop`.
@@ -653,12 +655,12 @@ pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
 /// The database's error.
 pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
-    cx: &Settling<'_>,
+    cx: &Settling,
     id: &Row::Id,
 ) -> Result<(), Error> {
     run::<DB, Row>(
         conn,
-        cx.prepared.discard,
+        cx.queue.prepared.discard,
         Values::settling(*cx, Event::Discard, id),
     )
     .await
@@ -671,7 +673,7 @@ pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
 /// The database's error.
 pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
-    cx: &Settling<'_>,
+    cx: &Settling,
     id: &Row::Id,
     destination: &str,
 ) -> Result<(), Error> {
@@ -679,10 +681,10 @@ pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
         destination,
         ..Values::settling(*cx, Event::DeadLetter, id)
     };
-    run::<DB, Row>(conn, cx.prepared.dead_letter, values).await
+    run::<DB, Row>(conn, cx.queue.prepared.dead_letter, values).await
 }
 
-impl<Row: InboxRow> Claimed<Row> {
+impl<Row: QueueRow> Claimed<Row> {
     /// The claimed id.
     pub fn id<DB: QueueDatabase>(&self) -> &Row::Id
     where
@@ -753,22 +755,7 @@ impl Prepared {
 mod tests {
     use std::time::Duration;
 
-    use super::{Event, Shape, micros};
-
-    #[test]
-    fn a_native_retry_after_comes_from_the_column_or_the_service() {
-        assert!(!Shape::default().native_retry_after());
-        let column = Shape {
-            retry_after_column: true,
-            ..Shape::default()
-        };
-        assert!(column.native_retry_after());
-        let custom = Shape {
-            custom_retry_after: true,
-            ..Shape::default()
-        };
-        assert!(custom.native_retry_after());
-    }
+    use super::{Event, micros};
 
     #[test]
     fn delays_bind_in_microseconds_and_saturate() {

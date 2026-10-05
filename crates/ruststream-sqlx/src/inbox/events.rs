@@ -65,13 +65,13 @@ pub trait Claim<DB: Database>: InboxRow {
     ///
     /// ```
     /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx::{Claim, InboxRow};
+    /// use ruststream_sqlx::Claim;
     /// use sqlx::{PgConnection, Postgres};
     ///
     /// // What the crate calls inside the claim's transaction.
     /// async fn ids<Row: Claim<Postgres>>(
     ///     conn: &mut PgConnection,
-    /// ) -> Result<Vec<<Row as InboxRow>::Id>, sqlx::Error> {
+    /// ) -> Result<Vec<Row::Id>, sqlx::Error> {
     ///     Row::claim(conn, "emails", 10).await
     /// }
     /// # let _ = ids::<Never>;

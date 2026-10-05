@@ -376,11 +376,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
                 source: Box::new(source),
             }))
         };
-        let cx = Settling {
-            queue: queue.name,
-            prepared: &queue.prepared,
-            now,
-        };
+        let cx = Settling { queue, now };
         let id = self.claimed.id::<DB>();
         match hold {
             Hold::Own(tx) => {
@@ -432,7 +428,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
 /// Runs the statement of `step` for the row `id` on `conn`.
 async fn run_step<DB, Row>(
     conn: &mut DB::Connection,
-    cx: &Settling<'_>,
+    cx: &Settling,
     id: &Row::Id,
     step: Step,
 ) -> Result<Released, sqlx::Error>
@@ -499,7 +495,7 @@ where
     fn supports_nack_after(&self) -> bool {
         // A delivery whose retry moves the row elsewhere has no delayed redelivery to offer: the
         // runtime then settles it with `nack(true)`, which moves it, and expects nothing back.
-        Row::SHAPE.native_retry_after() && self.redirected().is_none()
+        self.queue.native_retry_after && self.redirected().is_none()
     }
 
     async fn nack_after(self, delay: Duration) -> Result<(), AckError> {

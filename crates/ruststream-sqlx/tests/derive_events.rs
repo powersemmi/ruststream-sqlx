@@ -9,11 +9,14 @@
 ))]
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};
-use ruststream_sqlx::__private::{Event, Events, Now, Param, Shape, Values};
-use ruststream_sqlx::{Ack, DatabaseClock, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow};
+use ruststream_sqlx::__private::{Event, Events, IdAt, Now, Param, Prepared, Queue, Shape, Values};
+use ruststream_sqlx::{
+    Ack, Clock, DatabaseClock, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow,
+};
 use sqlx::postgres::PgArguments;
 use sqlx::types::Json;
 use sqlx::{Arguments, PgConnection, Postgres};
@@ -55,14 +58,36 @@ fn email() -> SendEmail {
 
 #[test]
 fn the_derive_hands_every_event_to_the_crate_by_default() {
-    assert_eq!(
-        <SendEmail as Events<Postgres>>::SHAPE,
-        Shape {
-            retry_after_column: true,
-            ..Shape::default()
-        }
-    );
-    assert!(<SendEmail as Events<Postgres>>::SHAPE.native_retry_after());
+    assert_eq!(<SendEmail as Events<Postgres>>::SHAPE, Shape::default());
+    // Every column type of the row is one a by-name subscription reads and binds itself.
+    assert!(<SendEmail as Events<Postgres>>::kinds().is_some());
+}
+
+/// A queue on a clock of the service's own.
+struct Office;
+
+impl Clock for Office {
+    fn now() -> SystemTime {
+        SystemTime::UNIX_EPOCH
+    }
+}
+
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "jobs", clock = Office)]
+struct OfficeHours {
+    #[field(id)]
+    id: i64,
+    #[field(retry_after)]
+    retry_after: DateTime<Utc>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[test]
+fn a_clock_of_the_services_own_needs_the_rows_code() {
+    // Only the row's own code knows the clock: a by-name subscription keeps the row's events.
+    assert_eq!(<OfficeHours as Events<Postgres>>::kinds(), None);
+    let _ = |row: OfficeHours| (row.id, row.retry_after, row.payload);
 }
 
 #[test]
@@ -82,10 +107,25 @@ fn a_row_lends_its_parts_to_the_delivery() {
     let _ = (&row.name, row.retry_after, row.processed_at, row.job_id);
 }
 
+/// The subscription the bound statements serve: the `emails` group of `email_jobs`.
+static EMAILS: LazyLock<Queue> = LazyLock::new(|| Queue {
+    name: "emails",
+    table: "email_jobs",
+    row: "SendEmail",
+    spec: SendEmail::SPEC,
+    id_at: IdAt::First,
+    native_retry_after: true,
+    kinds: None,
+    prepared: Prepared::default(),
+    poll_interval: Duration::from_secs(1),
+    max_attempts: None,
+    dead_letter: None,
+});
+
 fn values(event: Event, id: &i64) -> Values<'_, SendEmail> {
     Values {
         event,
-        queue: "emails",
+        queue: &EMAILS,
         limit: 1,
         id: Some(id),
         ids: &[],
@@ -164,7 +204,8 @@ fn listed_events_are_the_services_own() {
     let shape = <Assembled as Events<Postgres>>::SHAPE;
     assert!(shape.custom_fetch && shape.custom_ack);
     assert!(!shape.custom_claim && !shape.custom_discard);
-    assert!(!shape.native_retry_after());
+    // The service's own events run only through the row's code.
+    assert_eq!(<Assembled as Events<Postgres>>::kinds(), None);
     assert!(Assembled::SPEC.uses_database_clock());
     assert!(!SendEmail::SPEC.uses_database_clock());
 }

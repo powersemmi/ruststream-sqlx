@@ -1,4 +1,4 @@
-//! The `InboxRow` impl `#[derive(Inbox)]` generates.
+//! The `QueueRow` and `InboxRow` impls `#[derive(Inbox)]` generates.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -224,9 +224,13 @@ fn generate(
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     quote! {
         #[automatically_derived]
+        impl #impl_generics ::ruststream_sqlx::__private::QueueRow for #name #ty_generics #where_clause {
+            type Id = #id_type;
+        }
+
+        #[automatically_derived]
         impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
             const SPEC: #dialect::TableSpec<'static> = #spec;
-            type Id = #id_type;
         }
     }
 }

@@ -11,20 +11,21 @@ use std::time::Duration;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
-use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, TableName};
+use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, TableName, TableSpec};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 use sqlx::{Database, Pool};
 
-use super::PayloadRow;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
-use super::engine::{Events, Prepared, Stmt, intern, intern_name};
+use super::engine::{Events, IdAt, Prepared, Shape, Stmt, intern, intern_name};
 use super::error::SqlxBrokerError;
+use super::kinds::Kinds;
 use super::publish::table_of;
 use super::subscriber::InboxSubscriber;
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
+use super::{InboxRow, PayloadRow};
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
@@ -172,7 +173,7 @@ impl<Row> fmt::Debug for InboxQueue<Row> {
 impl<DB, Row> SubscriptionSource<ConnectedSqlxBroker<DB>> for InboxQueue<Row>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: InboxRow + Events<DB> + PayloadRow,
 {
     type Subscriber = InboxSubscriber<DB, Row>;
     type Copies = BrokerMoves;
@@ -190,6 +191,7 @@ where
             &self.name,
             self.poll_interval,
             &self.declaration,
+            &Description::of::<DB, Row>(),
         )
         .await
     }
@@ -203,7 +205,7 @@ where
     fn channel_bindings(&self) -> Bindings {
         let group = Row::SPEC.column(Role::Group).map(|_| self.name.as_ref());
         let table = TableBinding {
-            table: table_of::<Row>(),
+            table: table_of(&Row::SPEC),
             group,
         };
         // A binding that fails to build is a binding the document goes without.
@@ -219,9 +221,10 @@ where
         // Why a startup check rather than a bound: the core's `max_attempts(..)` and
         // `dead_letter(..)` steps do not consult the descriptor's type, so the table's roles can
         // only answer once the declaration reaches it.
-        refused_declaration::<Row>(&self.name, declaration).map_or(Ok(()), |error| {
-            Err(DeclareRetryError::Broker(Box::new(error)))
-        })
+        refused_declaration(&self.name, declaration, &Description::of::<DB, Row>())
+            .map_or(Ok(()), |error| {
+                Err(DeclareRetryError::Broker(Box::new(error)))
+            })
     }
 }
 
@@ -235,16 +238,81 @@ struct TableBinding<'a> {
     group: Option<&'a str>,
 }
 
-/// Why `declaration` cannot apply to `Row`'s table, if it cannot.
-pub(crate) fn refused_declaration<Row: super::InboxRow>(
+/// What a subscription knows of its table when it opens: the description, the events the
+/// service implements itself, how the claim selects, and the struct that reads the rows.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Description {
+    /// The table.
+    pub(crate) spec: TableSpec<'static>,
+    /// The events the service implements itself.
+    pub(crate) shape: Shape,
+    /// What the claim selects.
+    pub(crate) claim: ClaimShape,
+    /// The struct's type, for messages.
+    pub(crate) row: &'static str,
+    /// The kinds a by-name subscription reads the rows by, where the struct's types allow it.
+    pub(crate) kinds: Option<Kinds>,
+}
+
+impl Description {
+    /// The description `Row`'s derive gives: its table, its events, and whole rows to claim (ids
+    /// alone where the service fetches the rows itself).
+    pub(crate) fn of<DB, Row>() -> Self
+    where
+        DB: QueueDatabase,
+        Row: InboxRow + Events<DB>,
+    {
+        let shape = Row::SHAPE;
+        Self {
+            spec: Row::SPEC,
+            shape,
+            claim: if shape.custom_fetch {
+                ClaimShape::Ids
+            } else {
+                ClaimShape::Rows
+            },
+            row: type_name::<Row>(),
+            kinds: Row::kinds(),
+        }
+    }
+
+    /// The description a by-name subscription reads the table by: the crate's own events, and
+    /// the columns that run the queue under their roles' names.
+    pub(crate) fn by_role(self) -> Self {
+        Self {
+            shape: Shape::default(),
+            claim: ClaimShape::Roles,
+            ..self
+        }
+    }
+
+    /// Whether a delayed retry is the database's own: the table holds `retry_after`, or the
+    /// service implements the event.
+    pub(crate) const fn native_retry_after(&self) -> bool {
+        self.shape.custom_retry_after || self.spec.column(Role::RetryAfter).is_some()
+    }
+
+    /// Where the claim's select carries the id of a row read alone.
+    pub(crate) const fn id_at(&self) -> IdAt {
+        match self.claim {
+            // Role aliases list the id first, whatever the struct flattens.
+            ClaimShape::Roles => IdAt::First,
+            ClaimShape::Rows | ClaimShape::Ids => IdAt::of(&self.spec),
+        }
+    }
+}
+
+/// Why `declaration` cannot apply to the table `description` reads, if it cannot.
+pub(crate) fn refused_declaration(
     name: &str,
     declaration: &RetryDeclaration,
+    description: &Description,
 ) -> Option<SqlxBrokerError> {
-    let spec = Row::SPEC;
+    let spec = description.spec;
     let refuse = |reason: String| SqlxBrokerError::Declaration {
         subscription: name.to_owned(),
-        table: table_of::<Row>(),
-        row: type_name::<Row>(),
+        table: table_of(&spec),
+        row: description.row,
         reason,
     };
     if declaration.max_attempts().is_some() && spec.column(Role::Attempt).is_none() {
@@ -263,16 +331,32 @@ pub(crate) fn refused_declaration<Row: super::InboxRow>(
 }
 
 /// One open subscription, interned for the life of the process: what its deliveries read to settle
-/// and to name themselves.
+/// and to name themselves. Machinery; statements bind its name, a service never names it.
+#[doc(hidden)]
 #[derive(Debug, PartialEq, Eq, Hash)]
-pub(crate) struct Queue {
-    pub(crate) name: &'static str,
-    pub(crate) table: &'static str,
-    pub(crate) row: &'static str,
-    pub(crate) prepared: Prepared,
-    pub(crate) poll_interval: Duration,
-    pub(crate) max_attempts: Option<NonZeroU32>,
-    pub(crate) dead_letter: Option<&'static str>,
+pub struct Queue {
+    /// The subscription's name: its group, or the table's address.
+    pub name: &'static str,
+    /// The table, qualified with its schema, for messages.
+    pub table: &'static str,
+    /// The struct that describes the table, for messages.
+    pub row: &'static str,
+    /// The table's description.
+    pub spec: TableSpec<'static>,
+    /// Where the claim's select carries the id of a row read alone.
+    pub id_at: IdAt,
+    /// Whether a delayed retry is the database's own.
+    pub native_retry_after: bool,
+    /// The kinds the statements of a by-name subscription bind by.
+    pub kinds: Option<Kinds>,
+    /// The subscription's statements.
+    pub prepared: Prepared,
+    /// How long the claim loop waits after a claim that found the queue short.
+    pub poll_interval: Duration,
+    /// The declared cap on attempts.
+    pub max_attempts: Option<NonZeroU32>,
+    /// The declared dead-letter destination.
+    pub dead_letter: Option<&'static str>,
 }
 
 static QUEUES: LazyLock<Mutex<Vec<&'static Queue>>> = LazyLock::new(Mutex::default);
@@ -291,31 +375,23 @@ impl Queue {
     }
 }
 
-/// The statements a subscription to `Row` runs, built by `dialect`.
-fn build<DB, Row>(
+/// The statements a subscription to the table `description` reads runs, built by `dialect`.
+fn build(
     dialect: &dyn Dialect,
     declaration: &RetryDeclaration,
+    description: &Description,
     fail: &impl Fn(String) -> SqlxBrokerError,
-) -> Result<Prepared, SqlxBrokerError>
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-{
-    let spec = Row::SPEC;
-    let shape = Row::SHAPE;
+) -> Result<Prepared, SqlxBrokerError> {
+    let spec = description.spec;
+    let shape = description.shape;
     let refused = |source| SqlxBrokerError::Dialect {
         subscription: String::new(),
         table: String::new(),
         row: "",
         source,
     };
-    let claim_shape = if shape.custom_fetch {
-        ClaimShape::Ids
-    } else {
-        ClaimShape::Rows
-    };
     let claim = (!shape.custom_claim)
-        .then(|| dialect.claim(&spec, claim_shape))
+        .then(|| dialect.claim(&spec, description.claim))
         .transpose()
         .map_err(refused)?;
     let fetch = (shape.custom_claim && !shape.custom_fetch)
@@ -331,7 +407,7 @@ where
     } else {
         dialect.retry(&spec).map_err(refused)?
     };
-    let retry_after = (!shape.custom_retry_after && shape.retry_after_column)
+    let retry_after = (!shape.custom_retry_after && spec.column(Role::RetryAfter).is_some())
         .then(|| dialect.retry_after(&spec))
         .transpose()
         .map_err(refused)?;
@@ -370,20 +446,21 @@ where
     })
 }
 
-/// Opens a subscription to the queue `name` of `Row`'s table: builds and checks its statements,
-/// and registers it so a second one is refused.
+/// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
+/// `Row`: builds and checks its statements, and registers it so a second one is refused.
 pub(crate) async fn open<DB, Row>(
     shared: &Arc<Shared<DB>>,
     name: &str,
     poll_interval: Option<Duration>,
     declaration: &RetryDeclaration,
+    description: &Description,
 ) -> Result<InboxSubscriber<DB, Row>, SqlxBrokerError>
 where
     DB: QueueDatabase,
     Row: Events<DB> + PayloadRow,
 {
-    let table = table_of::<Row>();
-    let row = type_name::<Row>();
+    let table = table_of(&description.spec);
+    let row = description.row;
     if shared.is_closed() {
         return Err(SqlxBrokerError::Closed);
     }
@@ -393,10 +470,10 @@ where
         row,
         reason,
     };
-    if let Some(refused) = refused_declaration::<Row>(name, declaration) {
+    if let Some(refused) = refused_declaration(name, declaration, description) {
         return Err(refused);
     }
-    let prepared = build::<DB, Row>(shared.dialect.get(), declaration, &declared).map_err(
+    let prepared = build(shared.dialect.get(), declaration, description, &declared).map_err(
         |err| match err {
             SqlxBrokerError::Dialect { source, .. } => SqlxBrokerError::Dialect {
                 subscription: name.to_owned(),
@@ -409,7 +486,7 @@ where
     )?;
     let table_name = intern_name(&table);
     // A table without groups is one queue, whatever name the subscription gives it.
-    let group = Row::SPEC.column(Role::Group).map(|_| name);
+    let group = description.spec.column(Role::Group).map(|_| name);
     let registration = Registration::take(shared, table_name, group, name, row)?;
     check(shared, &prepared)
         .await
@@ -433,6 +510,10 @@ where
         name: intern_name(name),
         table: table_name,
         row,
+        spec: description.spec,
+        id_at: description.id_at(),
+        native_retry_after: description.native_retry_after(),
+        kinds: description.kinds,
         prepared,
         poll_interval: poll_interval.unwrap_or(shared.poll_interval),
         max_attempts: declaration.max_attempts(),
@@ -545,5 +626,60 @@ impl<DB: Database> fmt::Debug for Registration<DB> {
             .field("table", &self.table)
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruststream_sqlx_dialect::{ClaimShape, Column, Form, TableSpec};
+
+    use super::Description;
+    use crate::inbox::engine::{IdAt, Shape};
+
+    const JOBS: TableSpec<'static> =
+        TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("body"));
+
+    fn described(spec: &TableSpec<'static>, shape: Shape, claim: ClaimShape) -> Description {
+        Description {
+            spec: *spec,
+            shape,
+            claim,
+            row: "Job",
+            kinds: None,
+        }
+    }
+
+    #[test]
+    fn a_delayed_retry_is_native_with_its_column_or_the_services_event() {
+        let bare = described(&JOBS, Shape::default(), ClaimShape::Rows);
+        assert!(!bare.native_retry_after());
+        let column = described(
+            &JOBS.retry_after(Column::new("retry_after")),
+            Shape::default(),
+            ClaimShape::Rows,
+        );
+        assert!(column.native_retry_after());
+        let custom = Shape {
+            custom_retry_after: true,
+            ..Shape::default()
+        };
+        assert!(described(&JOBS, custom, ClaimShape::Rows).native_retry_after());
+    }
+
+    #[test]
+    fn a_claim_by_role_carries_the_id_first_whatever_the_struct_flattens() {
+        let flat = JOBS.selecting_all();
+        assert_eq!(
+            described(&flat, Shape::default(), ClaimShape::Rows).id_at(),
+            IdAt::Named("job_id")
+        );
+        assert_eq!(
+            described(&flat, Shape::default(), ClaimShape::Roles).id_at(),
+            IdAt::First
+        );
+        assert_eq!(
+            described(&JOBS, Shape::default(), ClaimShape::Rows).id_at(),
+            IdAt::First
+        );
     }
 }

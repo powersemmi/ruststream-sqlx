@@ -8,9 +8,10 @@ pub(crate) mod engine;
 mod error;
 mod events;
 pub mod keys;
-mod named;
+pub(crate) mod kinds;
+pub(crate) mod named;
 mod publish;
-mod queue;
+pub(crate) mod queue;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
@@ -67,11 +68,17 @@ pub use time::{Clock, DatabaseClock, QueueTime, SystemClock, TimeColumn, TimeSou
     label = "not an inbox row",
     note = "derive it: `#[derive(Inbox)]` with `#[inbox(table = \"..\")]` and a `#[field(id)]` field"
 )]
-pub trait InboxRow: Sized + Send + Sync + 'static {
+pub trait InboxRow: QueueRow {
     /// The table the struct describes: its name, its columns and their roles, and the form its
     /// rows are claimed in.
     const SPEC: TableSpec<'static>;
+}
 
+/// A row a subscription delivers, and the type of its id. Machinery: `#[derive(Inbox)]`
+/// implements it beside [`InboxRow`], and the row of a by-name subscription implements it without
+/// a table description of its own.
+#[doc(hidden)]
+pub trait QueueRow: Sized + Send + Sync + 'static {
     /// The type of the field that plays `id`; logs name a row by it.
     type Id: Debug + Send + Sync + 'static;
 }
@@ -105,7 +112,7 @@ pub trait InboxRow: Sized + Send + Sync + 'static {
     label = "no `#[field(payload)]` field",
     note = "mark the column that holds the message bytes with `#[field(payload)]`"
 )]
-pub trait PayloadRow: InboxRow {
+pub trait PayloadRow: QueueRow {
     /// The message bytes, lent from the row.
     ///
     /// # Examples

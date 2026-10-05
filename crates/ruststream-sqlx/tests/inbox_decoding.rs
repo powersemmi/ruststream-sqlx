@@ -124,6 +124,46 @@ async fn a_row_that_does_not_decode_is_settled_by_the_decode_policy() {
     db.finish().await;
 }
 
+#[subscriber("mistyped")]
+async fn never_decoded_by_name(_task: &Task) -> HandlerOutcome {
+    // The decode policy drops what does not decode; reaching this would acknowledge instead.
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_by_name_row_is_held_to_the_types_of_its_struct() {
+    let Some(db) = database().await else { return };
+    let broker = SqlxBroker::new(db.pool.clone())
+        .poll_interval(Duration::from_millis(20))
+        .route::<Mistyped>("mistyped");
+    let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
+        b.include(never_decoded_by_name.on_failure(decode_drops()));
+    });
+    let tb = TestApp::start_live(app).await.expect("the app starts");
+    for n in 0..2 {
+        tb.broker::<SqlxBroker<Postgres>>()
+            .message(&Task { n })
+            .to("mistyped")
+            .publish()
+            .await
+            .expect("the publish settles");
+    }
+    // The subscription reads the row by its role columns, and a text column still does not hold
+    // the bytes the struct reads: both rows reach the policy, as through the struct itself.
+    tb.broker::<SqlxBroker<Postgres>>()
+        .subscriber("mistyped")
+        .assert_called(2)
+        .settled(HandlerOutcome::drop())
+        .assert_last_failed_to_decode();
+    assert_eq!(
+        rows(&db.pool, "mistyped_jobs").await,
+        0,
+        "the policy dropped both rows"
+    );
+    tb.shutdown().await.expect("the app stops");
+    db.finish().await;
+}
+
 #[subscriber(InboxQueue::<Partial>::new("partial"))]
 async fn settle_batch(tasks: &[Task]) -> Vec<HandlerOutcome> {
     tasks.iter().map(|_| HandlerOutcome::ack()).collect()

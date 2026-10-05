@@ -101,6 +101,33 @@ fn a_claim_of_a_flattening_struct_selects_everything() -> Result<(), StatementEr
 }
 
 #[test]
+fn a_claim_by_role_names_each_column_by_its_role() -> Result<(), StatementError> {
+    const KEYED: TableSpec<'static> =
+        TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+            .group(Column::new("name"))
+            .partition_key(Column::new("customer"))
+            .retry_after(Column::new("retry_after"))
+            .attempt(Column::new("attempt"))
+            .headers(Column::new("meta"))
+            .payload(Column::new("payload"))
+            .data(&[Column::new("subject")]);
+    let claim = Postgres.claim(&KEYED, ClaimShape::Roles)?;
+    assert_eq!(
+        claim.sql(),
+        r#"SELECT "job_id" AS "id", "customer" AS "partition_key", "attempt" AS "attempt", "meta" AS "headers", "payload" AS "payload" FROM "email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 ORDER BY "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#,
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
+    // A struct that flattens still names its role columns one by one.
+    let flat = Postgres.claim(&KEYED.selecting_all(), ClaimShape::Roles)?;
+    assert!(
+        flat.sql().starts_with(r#"SELECT "job_id" AS "id", "#),
+        "{}",
+        flat.sql()
+    );
+    Ok(())
+}
+
+#[test]
 fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementError> {
     let spec = TableSpec::new("Email Jobs", Column::new("Job Id"), Form::RowLock)
         .within("Mail")

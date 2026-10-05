@@ -133,7 +133,8 @@ impl Statement {
     }
 }
 
-/// What a claim selects: whole rows, or only their ids for a service's own fetch.
+/// What a claim selects: whole rows, only their ids for a service's own fetch, or the columns
+/// that run the queue, each named by its role, for a reader that knows no struct.
 ///
 /// # Examples
 ///
@@ -145,12 +146,31 @@ impl Statement {
 /// let shape = if custom_fetch { ClaimShape::Ids } else { ClaimShape::Rows };
 /// assert_eq!(shape, ClaimShape::Ids);
 /// ```
+///
+/// A claim by role reads each column under the name of the role it plays:
+///
+/// ```
+/// # #[cfg(feature = "postgres")] {
+/// use ruststream_sqlx_dialect::{ClaimShape, Column, Dialect, Form, Postgres, TableSpec};
+///
+/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+///     .payload(Column::new("body"));
+///
+/// let claim = Postgres.claim(&JOBS, ClaimShape::Roles)?;
+/// assert!(claim.sql().starts_with(r#"SELECT "job_id" AS "id", "body" AS "payload" FROM"#));
+/// # }
+/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClaimShape {
     /// Every column of the claimed rows.
     Rows,
     /// Only the id of each claimed row.
     Ids,
+    /// Only the columns that play `id`, `partition_key`, `attempt`, `headers` and `payload`,
+    /// each under its role's attribute name as an alias, in [`Role::ALL`](crate::Role::ALL)
+    /// order.
+    Roles,
 }
 
 /// Why a dialect cannot build a statement for a table.

@@ -99,6 +99,29 @@ where
         self
     }
 
+    /// The columns a reader that knows no struct reads, each under its role's attribute name:
+    /// `id`, `partition_key`, `attempt`, `headers` and `payload`, in [`Role::ALL`] order and only
+    /// where the table has them.
+    pub(crate) fn role_columns(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        let read = Role::ALL.iter().filter(|role| {
+            matches!(
+                role,
+                Role::Id | Role::PartitionKey | Role::Attempt | Role::Headers | Role::Payload
+            )
+        });
+        let mut separator = "";
+        for &role in read {
+            if let Some(column) = spec.column(role) {
+                self.push(separator)
+                    .ident(column.name())
+                    .push(" AS ")
+                    .ident(role.attribute());
+                separator = ", ";
+            }
+        }
+        self
+    }
+
     /// The conditions a row meets to be claimed, each present only with its column: the
     /// subscription's group, a time that has come, no finish mark.
     pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>, database_now: &str) -> &mut Self {
