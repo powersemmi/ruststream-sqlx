@@ -127,7 +127,7 @@ impl Harness {
     }
 
     /// A message counted for `name` never reached the table.
-    fn refused(&self, name: &str) {
+    pub(crate) fn refused(&self, name: &str) {
         let Some(coordinator) = self.books() else {
             return;
         };
@@ -167,10 +167,10 @@ impl Harness {
         self.released();
     }
 
-    /// A message one of the broker's own publishers wrote.
+    /// A message one of the broker's own publishers wrote; it was counted before its insert, so
+    /// a claim that lands right after the insert finds it counted.
     pub(crate) fn published(&self, message: &OutgoingMessage<'_>) {
         self.record(message);
-        self.expect(message.name());
     }
 
     fn record(&self, message: &OutgoingMessage<'_>) {

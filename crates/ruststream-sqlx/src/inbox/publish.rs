@@ -106,10 +106,15 @@ where
     DB: QueueDatabase,
     Row: Publish<DB> + Events<DB>,
 {
-    insert::<DB, Row>(shared, message).await?;
     #[cfg(feature = "testing")]
-    shared.harness.published(message);
-    Ok(())
+    shared.harness.expect(message.name());
+    let inserted = insert::<DB, Row>(shared, message).await;
+    #[cfg(feature = "testing")]
+    match &inserted {
+        Ok(()) => shared.harness.published(message),
+        Err(_) => shared.harness.refused(message.name()),
+    }
+    inserted
 }
 
 /// The typed publish policy of a row with [`Publish`]: a message published through it becomes a
@@ -536,10 +541,15 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
                 name: msg.name().to_owned(),
             });
         };
-        route.insert(&self.shared, &msg).await?;
         #[cfg(feature = "testing")]
-        self.shared.harness.published(&msg);
-        Ok(())
+        self.shared.harness.expect(msg.name());
+        let inserted = route.insert(&self.shared, &msg).await;
+        #[cfg(feature = "testing")]
+        match &inserted {
+            Ok(()) => self.shared.harness.published(&msg),
+            Err(_) => self.shared.harness.refused(msg.name()),
+        }
+        inserted
     }
 }
 
