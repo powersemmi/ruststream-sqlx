@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
-use ruststream::SubscriptionSource;
 use ruststream::testing::InProcess;
-use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
-use sqlx::{PgPool, SqlitePool};
+use ruststream::{OutgoingMessage, SubscriptionSource};
+use ruststream_sqlx::{Inbox, InboxQueue, Publish, SqlxBroker};
+use sqlx::{PgPool, Sqlite, SqliteConnection, SqlitePool};
 
 /// A lease table, a form SQLite serves, at an isolation level, which SQLite does not open.
 #[derive(Inbox, sqlx::FromRow)]
@@ -14,6 +14,15 @@ struct Serializable {
     locked_until: Option<DateTime<Utc>>,
     #[field(payload)]
     payload: Vec<u8>,
+}
+
+impl Publish<Sqlite> for Serializable {
+    async fn publish(
+        _conn: &mut SqliteConnection,
+        _message: &OutgoingMessage<'_>,
+    ) -> Result<(), sqlx::Error> {
+        Ok(())
+    }
 }
 
 /// A row lock table, a form Postgres serves, in a SQLite mode, which Postgres does not open.
@@ -40,6 +49,11 @@ async fn on_postgres(pool: PgPool) {
     let _ = InboxQueue::<Immediate>::new("jobs").subscribe(&connected).await;
 }
 
+/// The route a by-name subscription to the SQLite table reads it through, checked alike.
+fn routed(pool: SqlitePool) -> SqlxBroker<Sqlite> {
+    SqlxBroker::new(pool).route::<Serializable>("jobs")
+}
+
 fn main() {
-    let _ = (on_sqlite, on_postgres);
+    let _ = (on_sqlite, on_postgres, routed);
 }
