@@ -440,9 +440,9 @@ impl<DB: QueueDatabase> ContextField for Pool<DB> {
 
 /// Reads the attempt off a context richer than the one [`Attempt`] names.
 #[derive(Clone, Copy)]
-struct AttemptIn;
+struct AttemptOf;
 
-impl<DB: QueueDatabase> Field<PoolContext<DB>> for AttemptIn {
+impl<DB: QueueDatabase> Field<PoolContext<DB>> for AttemptOf {
     type Value<'a>
         = Option<u64>
     where
@@ -453,7 +453,7 @@ impl<DB: QueueDatabase> Field<PoolContext<DB>> for AttemptIn {
     }
 }
 
-impl<DB: QueueDatabase> Field<TxContext<DB>> for AttemptIn {
+impl<DB: QueueDatabase> Field<TxContext<DB>> for AttemptOf {
     type Value<'a>
         = Option<u64>
     where
@@ -466,9 +466,9 @@ impl<DB: QueueDatabase> Field<TxContext<DB>> for AttemptIn {
 
 /// Reads the pool off a transactional delivery's context.
 #[derive(Clone, Copy)]
-struct PoolIn;
+struct PoolOf;
 
-impl<DB: QueueDatabase> Field<TxContext<DB>> for PoolIn {
+impl<DB: QueueDatabase> Field<TxContext<DB>> for PoolOf {
     type Value<'a>
         = &'static DbPool<DB>
     where
@@ -489,7 +489,7 @@ impl<S: Sync, DB: QueueDatabase> FromContext<PoolContext<DB>, S> for Ctx<Attempt
     fn from_context(
         ctx: &mut Context<'_, PoolContext<DB>, S>,
     ) -> impl Future<Output = Result<Self, Infallible>> + Send {
-        let attempt = ctx.context(AttemptIn);
+        let attempt = ctx.context(AttemptOf);
         async move { Ok(Self(attempt)) }
     }
 }
@@ -500,7 +500,7 @@ impl<S: Sync, DB: QueueDatabase> FromContext<TxContext<DB>, S> for Ctx<Attempt> 
     fn from_context(
         ctx: &mut Context<'_, TxContext<DB>, S>,
     ) -> impl Future<Output = Result<Self, Infallible>> + Send {
-        let attempt = ctx.context(AttemptIn);
+        let attempt = ctx.context(AttemptOf);
         async move { Ok(Self(attempt)) }
     }
 }
@@ -511,7 +511,7 @@ impl<S: Sync, DB: QueueDatabase> FromContext<TxContext<DB>, S> for Ctx<Pool<DB>>
     fn from_context(
         ctx: &mut Context<'_, TxContext<DB>, S>,
     ) -> impl Future<Output = Result<Self, Infallible>> + Send {
-        let pool = ctx.context(PoolIn).clone();
+        let pool = ctx.context(PoolOf).clone();
         async move { Ok(Self(pool)) }
     }
 }
