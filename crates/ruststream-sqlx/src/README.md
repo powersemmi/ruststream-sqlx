@@ -326,7 +326,7 @@ Each database keeps the locks in its own way, and keeps the locks of two databas
 - Postgres locks a 64-bit hash of the key (`hashtextextended`, Postgres 11 or later), and a claim
   leaves out the keys other sessions hold. Two keys with one hash wait for each other: a delay,
   never a double delivery. A lock lives in the database session that took it, so the form needs a
-  direct connection or PgBouncer in session pooling. In transaction pooling the session that took
+  direct connection or `PgBouncer` in session pooling. In transaction pooling the session that took
   a lock serves other clients between statements, and the lock goes with it.
 - MySQL and MariaDB lock a name with `GET_LOCK`: the table's database in lower case, a dot and the
   key, as in `app.jobs-7`. A name longer than the 64 characters the server takes is locked by its
@@ -796,7 +796,7 @@ without that index a claim held for a handler keeps the rest of its group from o
 table with FIFO groups a claim first locks the unfinished rows of its group until its transaction
 ends, which in the row lock form is when the delivery settles. The same index keeps that read to
 the group's own rows. A row lock table with FIFO groups that declares `serializable` stops its
-subscription when it opens, with [`SqlxBrokerError::Dialect`]: at that level InnoDB locks every
+subscription when it opens, with [`SqlxBrokerError::Dialect`]: at that level `InnoDB` locks every
 row a read touches, and a claim would wait for the group's row in work.
 
 ## SQLite
