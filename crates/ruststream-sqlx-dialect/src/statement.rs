@@ -164,12 +164,12 @@ impl Statement {
 ///
 /// ```
 /// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Dialect, Form, Postgres, TableSpec};
+/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
 ///
 /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
 ///     .payload(Column::new("body"));
 ///
-/// let claim = Postgres.claim(&JOBS, ClaimShape::Roles)?;
+/// let claim = Postgres.lock_claim(&JOBS, ClaimShape::Roles)?;
 /// assert!(claim.sql().starts_with(r#"SELECT "job_id" AS "id", "body" AS "payload" FROM"#));
 /// # }
 /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
@@ -259,14 +259,14 @@ impl Display for NameLimit {
 /// ```
 /// # #[cfg(feature = "postgres")] {
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Column, Dialect, Form, Postgres, StatementError, TableSpec,
+///     ClaimShape, Column, Form, Lease, Postgres, StatementError, TableSpec,
 /// };
 ///
 /// const JOBS: TableSpec<'static> =
 ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
 ///         .database_clock();
 ///
-/// let refused = Postgres.claim(&JOBS, ClaimShape::Rows);
+/// let refused = Postgres.lease_claim(&JOBS, ClaimShape::Rows);
 /// assert_eq!(
 ///     refused,
 ///     Err(StatementError::LeaseOnDatabaseClock { dialect: "postgres" })
@@ -292,6 +292,15 @@ pub enum StatementError {
     UnsupportedForm {
         /// The dialect's name.
         dialect: &'static str,
+        /// The name of the table's form.
+        form: &'static str,
+    },
+    /// The statement belongs to one form, and the table takes rows in another: the row lock
+    /// claim asked for a lease table, or a lease statement for a table without a lease.
+    #[error("the {statement} statement does not serve a table in the {form} form")]
+    FormMismatch {
+        /// The statement being built.
+        statement: &'static str,
         /// The name of the table's form.
         form: &'static str,
     },
@@ -432,6 +441,14 @@ mod tests {
             .to_string(),
             "the insert statement needs every column, and a `#[sqlx(flatten)]` field hides some: \
              write it in the service"
+        );
+        assert_eq!(
+            StatementError::FormMismatch {
+                statement: "extend",
+                form: "row lock",
+            }
+            .to_string(),
+            "the extend statement does not serve a table in the row lock form"
         );
     }
 }

@@ -3,6 +3,8 @@
 use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
+use crate::lease::Lease;
+use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
@@ -42,33 +44,34 @@ const MARIADB_FLOOR: Floor = Floor {
 /// MySQL and MariaDB: backtick-quoted names, `?` placeholders, rows claimed with
 /// `FOR UPDATE SKIP LOCKED`.
 ///
-/// It builds the statements of the row lock and lease forms and the insert, for MySQL 8.0.1 and
-/// MariaDB 10.6 or later, the first versions that skip locked rows;
-/// [`check_server`](Dialect::check_server) refuses an older server. A lease claim selects the
-/// claimable rows, then stamps each one with its lease ([`stamp`](Dialect::stamp)) before its
+/// It builds the statements of the row lock form ([`RowLock`]), of the lease form ([`Lease`]), and
+/// the insert, for MySQL 8.0.1 and MariaDB 10.6 or later, the first versions that skip locked
+/// rows; [`check_server`](Dialect::check_server) refuses an older server. A lease claim selects
+/// the claimable rows, then stamps each one with its lease ([`stamp`](Lease::stamp)) before its
 /// transaction commits. A dead letter into a table copies the row, then deletes it, in one
 /// transaction. Every name is quoted, so a name keeps its case and may hold any character; a name
 /// over 64 characters, which MySQL refuses, is refused before it reaches the server. A table on
 /// the database's clock reads `UTC_TIMESTAMP(6)`. [`fetch`](Dialect::fetch) is refused, so a
 /// claim of the service's own brings a fetch of its own.
 ///
-/// A claim's transaction opens at READ COMMITTED ([`begin_claim`](Dialect::begin_claim)): under
-/// the default REPEATABLE READ a locking read also locks the gaps between the rows it scans, so a
-/// claim held for a handler would block every insert into the table until it ends. A server whose
-/// binary log records statements (`binlog_format = STATEMENT`) refuses writes in such a
-/// transaction; the row and mixed formats accept them.
+/// A claim's transaction opens at READ COMMITTED in both forms
+/// ([`begin_lock_claim`](RowLock::begin_lock_claim), [`begin_lease_claim`](Lease::begin_lease_claim)):
+/// under the default REPEATABLE READ a locking read also locks the gaps between the rows it
+/// scans, so a claim held for a handler would block every insert into the table until it ends. A
+/// server whose binary log records statements (`binlog_format = STATEMENT`) refuses writes in
+/// such a transaction; the row and mixed formats accept them.
 ///
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Dialect, Form, MySql, TableSpec};
+/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, MySql, RowLock, TableSpec};
 ///
 /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
 ///     .within("app")
 ///     .priority(Column::new("priority"))
 ///     .payload(Column::new("payload"));
 ///
-/// let claim = MySql.claim(&JOBS, ClaimShape::Rows)?;
+/// let claim = MySql.lock_claim(&JOBS, ClaimShape::Rows)?;
 /// assert_eq!(
 ///     claim.sql(),
 ///     "SELECT `job_id`, `priority`, `payload` FROM `app`.`jobs` ORDER BY `priority`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -79,14 +82,14 @@ const MARIADB_FLOOR: Floor = Floor {
 /// In the lease form the claim only selects, and its transaction stamps each row it took:
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Dialect, Form, MySql, Param, TableSpec};
+/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Lease, MySql, Param, TableSpec};
 ///
 /// const JOBS: TableSpec<'static> =
 ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
 ///         .attempt(Column::new("attempt"));
 ///
 /// // What a broker prepares to claim leased rows: the select, and the stamp it runs per row.
-/// let mut claiming = vec![MySql.claim(&JOBS, ClaimShape::Rows)?];
+/// let mut claiming = vec![MySql.lease_claim(&JOBS, ClaimShape::Rows)?];
 /// if !MySql.claim_writes_lease() {
 ///     claiming.push(MySql.stamp(&JOBS)?);
 /// }
@@ -159,15 +162,6 @@ impl Dialect for MySql {
         out.push('?');
     }
 
-    fn claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> {
-        // An update cannot return the rows it changed here, so both forms select the claimable
-        // rows under a lock; in the lease form the claim's transaction then stamps each of them.
-        self.claim_form(spec)?;
-        let mut sql = SqlWriter::new(self);
-        sql.claim(spec, shape, LOCK);
-        Ok(sql.finish())
-    }
-
     fn fetch(&self, _: &TableSpec<'_>) -> Result<Statement, StatementError> {
         // A statement is prepared once with fixed text, and MySQL binds no list as one parameter.
         Err(StatementError::UnsupportedFetch {
@@ -204,20 +198,8 @@ impl Dialect for MySql {
         self.copy_then_delete(spec, target)
     }
 
-    fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.extend_statement(spec)
-    }
-
-    fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.stamp_statement(spec)
-    }
-
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.insert_statement(spec)
-    }
-
-    fn claim_writes_lease(&self) -> bool {
-        false
     }
 
     fn server_version(&self) -> Option<&'static str> {
@@ -240,8 +222,54 @@ impl Dialect for MySql {
             required: floor.name,
         })
     }
+}
 
-    fn begin_claim(&self) -> Option<&'static str> {
+impl RowLock for MySql {
+    fn lock_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        self.locked(spec, "lock_claim")?;
+        self.in_order(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.claim(spec, shape, LOCK);
+        Ok(sql.finish())
+    }
+
+    fn begin_lock_claim(&self) -> Option<&'static str> {
+        Some(BEGIN_CLAIM)
+    }
+}
+
+impl Lease for MySql {
+    fn lease_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        // An update cannot return the rows it changed here, so the claim selects the claimable
+        // rows under a lock, and its transaction then stamps each of them.
+        self.leased(spec, "lease_claim")?;
+        self.in_order(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.claim(spec, shape, LOCK);
+        Ok(sql.finish())
+    }
+
+    fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.extend_statement(spec)
+    }
+
+    fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.stamp_statement(spec)
+    }
+
+    fn claim_writes_lease(&self) -> bool {
+        false
+    }
+
+    fn begin_lease_claim(&self) -> Option<&'static str> {
         Some(BEGIN_CLAIM)
     }
 }

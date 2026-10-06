@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, NameLimit, Param, Postgres, Role, Statement,
-    StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, KeyPart, Lease, NameLimit, Param, Postgres, Role, RowLock,
+    Statement, StatementError, TableName, TableSpec,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -57,7 +57,7 @@ fn placeholders_count_from_one() {
 
 #[test]
 fn the_claim_reads_every_role_it_has() -> Result<(), StatementError> {
-    let claim = Postgres.claim(&EMAILS, ClaimShape::Rows)?;
+    let claim = Postgres.lock_claim(&EMAILS, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         format!(
@@ -70,7 +70,7 @@ fn the_claim_reads_every_role_it_has() -> Result<(), StatementError> {
 
 #[test]
 fn a_claim_for_a_custom_fetch_selects_only_ids() -> Result<(), StatementError> {
-    let claim = Postgres.claim(&EMAILS, ClaimShape::Ids)?;
+    let claim = Postgres.lock_claim(&EMAILS, ClaimShape::Ids)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT "job_id" FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 AND "processed_at" IS NULL ORDER BY "priority", "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#
@@ -80,7 +80,7 @@ fn a_claim_for_a_custom_fetch_selects_only_ids() -> Result<(), StatementError> {
 
 #[test]
 fn a_claim_without_conditions_orders_by_id() -> Result<(), StatementError> {
-    let claim = Postgres.claim(&BARE, ClaimShape::Rows)?;
+    let claim = Postgres.lock_claim(&BARE, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT "job_id", "payload" FROM "jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#
@@ -92,7 +92,7 @@ fn a_claim_without_conditions_orders_by_id() -> Result<(), StatementError> {
 #[test]
 fn a_claim_of_a_flattening_struct_selects_everything() -> Result<(), StatementError> {
     let spec = BARE.selecting_all();
-    let claim = Postgres.claim(&spec, ClaimShape::Rows)?;
+    let claim = Postgres.lock_claim(&spec, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT * FROM "jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#
@@ -111,14 +111,14 @@ fn a_claim_by_role_names_each_column_by_its_role() -> Result<(), StatementError>
             .headers(Column::new("meta"))
             .payload(Column::new("payload"))
             .data(&[Column::new("subject")]);
-    let claim = Postgres.claim(&KEYED, ClaimShape::Roles)?;
+    let claim = Postgres.lock_claim(&KEYED, ClaimShape::Roles)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT "job_id" AS "id", "customer" AS "partition_key", "attempt" AS "attempt", "meta" AS "headers", "payload" AS "payload" FROM "email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 ORDER BY "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#,
     );
     assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
     // A struct that flattens still names its role columns one by one.
-    let flat = Postgres.claim(&KEYED.selecting_all(), ClaimShape::Roles)?;
+    let flat = Postgres.lock_claim(&KEYED.selecting_all(), ClaimShape::Roles)?;
     assert!(
         flat.sql().starts_with(r#"SELECT "job_id" AS "id", "#),
         "{}",
@@ -132,7 +132,7 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
     let spec = TableSpec::new("Email Jobs", Column::new("Job Id"), Form::RowLock)
         .within("Mail")
         .payload(Column::new(r#"pay"load"#));
-    let claim = Postgres.claim(&spec, ClaimShape::Rows)?;
+    let claim = Postgres.lock_claim(&spec, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT "Job Id", "pay""load" FROM "Mail"."Email Jobs" ORDER BY "Job Id" LIMIT $1 FOR UPDATE SKIP LOCKED"#
@@ -141,17 +141,29 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
 }
 
 #[test]
-fn the_claim_refuses_what_the_row_lock_form_cannot_do() {
+fn the_row_lock_claim_refuses_tables_of_other_forms_and_fifo_groups() {
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     assert_eq!(
-        Postgres.claim(&advisory, ClaimShape::Rows),
-        Err(StatementError::UnsupportedForm {
-            dialect: "postgres",
+        Postgres.lock_claim(&advisory, ClaimShape::Rows),
+        Err(StatementError::FormMismatch {
+            statement: "lock_claim",
             form: "advisory lock",
         })
     );
+    let leased = TableSpec::new(
+        "jobs",
+        Column::new("job_id"),
+        Form::Lease(Column::new("locked_until")),
+    );
     assert_eq!(
-        Postgres.claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
+        Postgres.lock_claim(&leased, ClaimShape::Rows),
+        Err(StatementError::FormMismatch {
+            statement: "lock_claim",
+            form: "lease",
+        })
+    );
+    assert_eq!(
+        Postgres.lock_claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
         Err(StatementError::UnsupportedFifo {
             dialect: "postgres"
         })
@@ -160,7 +172,8 @@ fn the_claim_refuses_what_the_row_lock_form_cannot_do() {
 
 #[test]
 fn a_claim_transaction_opens_with_a_plain_begin() {
-    assert_eq!(Postgres.begin_claim(), None);
+    assert_eq!(Postgres.begin_lock_claim(), None);
+    assert_eq!(Postgres.begin_lease_claim(), None);
 }
 
 #[test]
@@ -288,10 +301,22 @@ fn settlement_refuses_forms_this_dialect_does_not_build() -> Result<(), Box<dyn 
     );
     assert_eq!(
         Postgres.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
-        Err(unsupported.clone())
+        Err(unsupported)
     );
-    assert_eq!(Postgres.extend(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.stamp(&advisory), Err(unsupported));
+    assert_eq!(
+        Postgres.extend(&advisory),
+        Err(StatementError::FormMismatch {
+            statement: "extend",
+            form: "advisory lock",
+        })
+    );
+    assert_eq!(
+        Postgres.stamp(&advisory),
+        Err(StatementError::FormMismatch {
+            statement: "stamp",
+            form: "advisory lock",
+        })
+    );
     assert!(
         Postgres.fetch(&advisory).is_ok(),
         "a fetch reads rows in every form"
@@ -331,7 +356,7 @@ fn a_name_longer_than_63_bytes_is_refused() {
 
     let table = TableSpec::new(&long, Column::new("job_id"), Form::RowLock);
     assert_eq!(
-        Postgres.claim(&table, ClaimShape::Rows),
+        Postgres.lock_claim(&table, ClaimShape::Rows),
         Err(refused(&long))
     );
     assert_eq!(Postgres.ack(&table), Err(refused(&long)));
@@ -358,7 +383,7 @@ fn a_name_longer_than_63_bytes_is_refused() {
     assert_eq!(Postgres.ack(&accented), Err(refused(&wide)));
 
     let edge = TableSpec::new(&fits, Column::new(&fits), Form::RowLock).within(&fits);
-    assert!(Postgres.claim(&edge, ClaimShape::Rows).is_ok());
+    assert!(Postgres.lock_claim(&edge, ClaimShape::Rows).is_ok());
 }
 
 #[test]
@@ -418,7 +443,7 @@ fn a_flattening_struct_has_no_insert() {
 #[test]
 fn the_database_clock_reads_the_statement_timestamp() -> Result<(), StatementError> {
     let spec = EMAILS.database_clock();
-    let claim = Postgres.claim(&spec, ClaimShape::Ids)?;
+    let claim = Postgres.lock_claim(&spec, ClaimShape::Ids)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT "job_id" FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= statement_timestamp() AND "processed_at" IS NULL ORDER BY "priority", "retry_after", "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED"#

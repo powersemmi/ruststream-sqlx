@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, MySql, NameLimit, Param, Role, Statement,
-    StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, KeyPart, Lease, MySql, NameLimit, Param, Role, RowLock,
+    Statement, StatementError, TableName, TableSpec,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -86,7 +86,7 @@ fn every_placeholder_is_a_question_mark() {
 
 #[test]
 fn the_row_lock_claim_skips_locked_rows() -> Result<(), StatementError> {
-    let claim = MySql.claim(&EMAILS, ClaimShape::Rows)?;
+    let claim = MySql.lock_claim(&EMAILS, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         "SELECT `job_id`, `name`, `priority`, `retry_after`, `attempt`, `processed_at`, `payload` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL ORDER BY `priority`, `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -97,14 +97,14 @@ fn the_row_lock_claim_skips_locked_rows() -> Result<(), StatementError> {
 
 #[test]
 fn a_claim_of_ids_or_roles_selects_only_those_columns() -> Result<(), StatementError> {
-    let ids = MySql.claim(&EMAILS, ClaimShape::Ids)?;
+    let ids = MySql.lock_claim(&EMAILS, ClaimShape::Ids)?;
     assert_eq!(
         ids.sql(),
         "SELECT `job_id` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL ORDER BY `priority`, `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
     );
     assert_eq!(ids.params(), [Param::Group, Param::Now, Param::Limit]);
 
-    let roles = MySql.claim(&KEYED, ClaimShape::Roles)?;
+    let roles = MySql.lock_claim(&KEYED, ClaimShape::Roles)?;
     assert_eq!(
         roles.sql(),
         "SELECT `job_id` AS `id`, `customer` AS `partition_key`, `attempt` AS `attempt`, `meta` AS `headers`, `payload` AS `payload` FROM `email_jobs` WHERE `name` = ? AND `retry_after` <= ? ORDER BY `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -115,13 +115,13 @@ fn a_claim_of_ids_or_roles_selects_only_those_columns() -> Result<(), StatementE
 
 #[test]
 fn a_claim_without_conditions_orders_by_id() -> Result<(), StatementError> {
-    let claim = MySql.claim(&BARE, ClaimShape::Rows)?;
+    let claim = MySql.lock_claim(&BARE, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         "SELECT `job_id`, `payload` FROM `jobs` ORDER BY `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
     );
     assert_eq!(claim.params(), [Param::Limit]);
-    let flat = MySql.claim(&BARE.selecting_all(), ClaimShape::Rows)?;
+    let flat = MySql.lock_claim(&BARE.selecting_all(), ClaimShape::Rows)?;
     assert_eq!(
         flat.sql(),
         "SELECT * FROM `jobs` ORDER BY `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -134,7 +134,7 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
     let spec = TableSpec::new("Email Jobs", Column::new("Job Id"), Form::RowLock)
         .within("Mail")
         .payload(Column::new("pay`load"));
-    let claim = MySql.claim(&spec, ClaimShape::Rows)?;
+    let claim = MySql.lock_claim(&spec, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         "SELECT `Job Id`, `pay``load` FROM `Mail`.`Email Jobs` ORDER BY `Job Id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -144,7 +144,7 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
 
 #[test]
 fn the_lease_claim_selects_and_each_row_is_stamped() -> Result<(), StatementError> {
-    let claim = MySql.claim(&LEASED, ClaimShape::Rows)?;
+    let claim = MySql.lease_claim(&LEASED, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         "SELECT `job_id`, `name`, `retry_after`, `attempt`, `locked_until`, `payload` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -169,12 +169,12 @@ fn the_lease_claim_selects_and_each_row_is_stamped() -> Result<(), StatementErro
 
 #[test]
 fn a_lease_claim_of_ids_or_roles_is_the_same_select() -> Result<(), StatementError> {
-    let ids = MySql.claim(&LEASED, ClaimShape::Ids)?;
+    let ids = MySql.lease_claim(&LEASED, ClaimShape::Ids)?;
     assert_eq!(
         ids.sql(),
         "SELECT `job_id` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
     );
-    let roles = MySql.claim(&LEASED, ClaimShape::Roles)?;
+    let roles = MySql.lease_claim(&LEASED, ClaimShape::Roles)?;
     assert_eq!(
         roles.sql(),
         "SELECT `job_id` AS `id`, `attempt` AS `attempt`, `payload` AS `payload` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -415,7 +415,7 @@ fn an_insert_of_only_generated_columns_writes_an_empty_row() -> Result<(), State
 #[test]
 fn the_database_clock_reads_utc_timestamp() -> Result<(), StatementError> {
     let spec = EMAILS.database_clock();
-    let claim = MySql.claim(&spec, ClaimShape::Ids)?;
+    let claim = MySql.lock_claim(&spec, ClaimShape::Ids)?;
     assert_eq!(
         claim.sql(),
         "SELECT `job_id` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= UTC_TIMESTAMP(6) AND `processed_at` IS NULL ORDER BY `priority`, `retry_after`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
@@ -448,7 +448,10 @@ fn a_name_longer_than_64_characters_is_refused() -> Result<(), Box<dyn Error>> {
     };
 
     let table = TableSpec::new(&long, Column::new("job_id"), Form::RowLock);
-    assert_eq!(MySql.claim(&table, ClaimShape::Rows), Err(refused(&long)));
+    assert_eq!(
+        MySql.lock_claim(&table, ClaimShape::Rows),
+        Err(refused(&long))
+    );
     assert_eq!(MySql.ack(&table), Err(refused(&long)));
     assert_eq!(MySql.insert(&table), Err(refused(&long)));
 
@@ -468,7 +471,7 @@ fn a_name_longer_than_64_characters_is_refused() -> Result<(), Box<dyn Error>> {
     // MySQL counts characters: 64 two-byte letters fit.
     let wide = "\u{e9}".repeat(64);
     let edge = TableSpec::new(&wide, Column::new(&wide), Form::RowLock).within(&wide);
-    assert!(MySql.claim(&edge, ClaimShape::Rows).is_ok());
+    assert!(MySql.lock_claim(&edge, ClaimShape::Rows).is_ok());
     Ok(())
 }
 
@@ -485,7 +488,7 @@ fn the_lease_cannot_read_the_database_clock() {
     let clocked = LEASED.database_clock();
     let refused = StatementError::LeaseOnDatabaseClock { dialect: "mysql" };
     assert_eq!(
-        MySql.claim(&clocked, ClaimShape::Rows),
+        MySql.lease_claim(&clocked, ClaimShape::Rows),
         Err(refused.clone())
     );
     assert_eq!(MySql.ack(&clocked), Err(refused.clone()));
@@ -501,8 +504,18 @@ fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<
         form: "advisory lock",
     };
     assert_eq!(
-        MySql.claim(&advisory, ClaimShape::Rows),
-        Err(unsupported.clone())
+        MySql.lock_claim(&advisory, ClaimShape::Rows),
+        Err(StatementError::FormMismatch {
+            statement: "lock_claim",
+            form: "advisory lock",
+        })
+    );
+    assert_eq!(
+        MySql.lease_claim(&advisory, ClaimShape::Rows),
+        Err(StatementError::FormMismatch {
+            statement: "lease_claim",
+            form: "advisory lock",
+        })
     );
     assert_eq!(MySql.ack(&advisory), Err(unsupported.clone()));
     assert_eq!(MySql.retry(&advisory), Err(unsupported.clone()));
@@ -511,31 +524,43 @@ fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<
     assert_eq!(MySql.dead_letter_group(&advisory), Err(unsupported.clone()));
     assert_eq!(
         MySql.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
-        Err(unsupported.clone())
+        Err(unsupported)
     );
-    assert_eq!(MySql.extend(&advisory), Err(unsupported.clone()));
-    assert_eq!(MySql.stamp(&advisory), Err(unsupported));
+    let other = |statement, form| StatementError::FormMismatch { statement, form };
+    assert_eq!(
+        MySql.extend(&advisory),
+        Err(other("extend", "advisory lock"))
+    );
+    assert_eq!(MySql.stamp(&advisory), Err(other("stamp", "advisory lock")));
 
-    let row_lock = StatementError::UnsupportedForm {
-        dialect: "mysql",
-        form: "row lock",
-    };
-    assert_eq!(MySql.extend(&BARE), Err(row_lock.clone()));
-    assert_eq!(MySql.stamp(&BARE), Err(row_lock));
+    // The lease statements serve lease tables, and the row lock claim the others.
+    assert_eq!(
+        MySql.lease_claim(&BARE, ClaimShape::Rows),
+        Err(other("lease_claim", "row lock"))
+    );
+    assert_eq!(MySql.extend(&BARE), Err(other("extend", "row lock")));
+    assert_eq!(MySql.stamp(&BARE), Err(other("stamp", "row lock")));
+    assert_eq!(
+        MySql.lock_claim(&LEASED, ClaimShape::Rows),
+        Err(other("lock_claim", "lease"))
+    );
 
     assert_eq!(
-        MySql.claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
+        MySql.lock_claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
+        Err(StatementError::UnsupportedFifo { dialect: "mysql" })
+    );
+    assert_eq!(
+        MySql.lease_claim(&LEASED.fifo_group(Column::new("name")), ClaimShape::Rows),
         Err(StatementError::UnsupportedFifo { dialect: "mysql" })
     );
     Ok(())
 }
 
 #[test]
-fn a_claim_transaction_opens_at_read_committed() {
-    assert_eq!(
-        MySql.begin_claim(),
-        Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION")
-    );
+fn a_claim_transaction_opens_at_read_committed_in_both_forms() {
+    let read_committed = Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION");
+    assert_eq!(MySql.begin_lock_claim(), read_committed);
+    assert_eq!(MySql.begin_lease_claim(), read_committed);
 }
 
 #[test]

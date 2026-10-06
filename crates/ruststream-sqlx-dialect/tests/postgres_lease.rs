@@ -5,7 +5,7 @@
 use std::error::Error;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, Param, Postgres, StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, Lease, Param, Postgres, StatementError, TableName, TableSpec,
 };
 
 const EXPIRY: Column<'static> = Column::new("locked_until");
@@ -27,7 +27,7 @@ const BARE: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), F
 
 #[test]
 fn a_lease_claim_locks_stamps_and_returns_the_rows_as_they_were() -> Result<(), StatementError> {
-    let claim = Postgres.claim(&LEASED, ClaimShape::Rows)?;
+    let claim = Postgres.lease_claim(&LEASED, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         r#"WITH __claimed AS (SELECT "job_id", "name", "priority", "retry_after", "attempt", "locked_until", "processed_at", "payload" FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= $3) ORDER BY "priority", "retry_after", "job_id" LIMIT $4 FOR UPDATE SKIP LOCKED), __stamped AS (UPDATE "app"."email_jobs" AS __row SET "locked_until" = $5, "attempt" = __row."attempt" + 1 FROM __claimed WHERE __row."job_id" = __claimed."job_id") SELECT * FROM __claimed ORDER BY "priority", "retry_after", "job_id""#,
@@ -42,7 +42,7 @@ fn a_lease_claim_locks_stamps_and_returns_the_rows_as_they_were() -> Result<(), 
             Param::Lease
         ]
     );
-    let bare = Postgres.claim(&BARE, ClaimShape::Rows)?;
+    let bare = Postgres.lease_claim(&BARE, ClaimShape::Rows)?;
     assert_eq!(
         bare.sql(),
         r#"WITH __claimed AS (SELECT "job_id", "locked_until", "payload" FROM "jobs" WHERE ("locked_until" IS NULL OR "locked_until" <= $1) ORDER BY "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED), __stamped AS (UPDATE "jobs" AS __row SET "locked_until" = $3 FROM __claimed WHERE __row."job_id" = __claimed."job_id") SELECT * FROM __claimed ORDER BY "job_id""#,
@@ -54,7 +54,7 @@ fn a_lease_claim_locks_stamps_and_returns_the_rows_as_they_were() -> Result<(), 
 
 #[test]
 fn a_lease_claim_of_ids_or_roles_keeps_its_order_columns() -> Result<(), StatementError> {
-    let ids = Postgres.claim(&LEASED, ClaimShape::Ids)?;
+    let ids = Postgres.lease_claim(&LEASED, ClaimShape::Ids)?;
     assert!(
         ids.sql().ends_with(
             r#"SELECT "job_id" FROM __claimed ORDER BY "priority", "retry_after", "job_id""#
@@ -62,7 +62,7 @@ fn a_lease_claim_of_ids_or_roles_keeps_its_order_columns() -> Result<(), Stateme
         "{}",
         ids.sql()
     );
-    let roles = Postgres.claim(&LEASED, ClaimShape::Roles)?;
+    let roles = Postgres.lease_claim(&LEASED, ClaimShape::Roles)?;
     assert!(
         roles.sql().ends_with(r#"SELECT "id", "attempt", "payload" FROM __claimed ORDER BY "priority", "retry_after", "id""#),
         "{}",
@@ -167,21 +167,25 @@ fn an_extension_and_a_stamp_write_the_lease() -> Result<(), StatementError> {
 }
 
 #[test]
-fn the_row_lock_form_has_no_extension_and_the_lease_no_database_clock() {
+fn the_lease_statements_refuse_other_forms_and_the_database_clock() {
     const LOCKED: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
         .payload(Column::new("payload"));
-    let unsupported = StatementError::UnsupportedForm {
-        dialect: "postgres",
+    let other = |statement| StatementError::FormMismatch {
+        statement,
         form: "row lock",
     };
-    assert_eq!(Postgres.extend(&LOCKED), Err(unsupported.clone()));
-    assert_eq!(Postgres.stamp(&LOCKED), Err(unsupported));
+    assert_eq!(
+        Postgres.lease_claim(&LOCKED, ClaimShape::Rows),
+        Err(other("lease_claim"))
+    );
+    assert_eq!(Postgres.extend(&LOCKED), Err(other("extend")));
+    assert_eq!(Postgres.stamp(&LOCKED), Err(other("stamp")));
     let clocked = BARE.database_clock();
     let refused = StatementError::LeaseOnDatabaseClock {
         dialect: "postgres",
     };
     assert_eq!(
-        Postgres.claim(&clocked, ClaimShape::Rows),
+        Postgres.lease_claim(&clocked, ClaimShape::Rows),
         Err(refused.clone())
     );
     assert_eq!(Postgres.ack(&clocked), Err(refused.clone()));

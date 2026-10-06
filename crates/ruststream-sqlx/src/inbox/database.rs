@@ -5,7 +5,7 @@ use std::future::Future;
 use futures::TryStreamExt;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ruststream_sqlx_dialect as dialect;
-use ruststream_sqlx_dialect::Dialect;
+use ruststream_sqlx_dialect::Lease;
 use sqlx::Row as _;
 use sqlx::any::AnyQueryResult;
 #[cfg(feature = "any")]
@@ -20,6 +20,9 @@ use sqlx::{PgConnection, Postgres};
 #[cfg(feature = "sqlite")]
 use sqlx::{Sqlite, SqliteConnection};
 
+#[cfg(feature = "any")]
+use super::built_in::AnyDialect;
+use super::built_in::BuiltIn;
 use super::engine::{Claimed, Events, IdAt};
 use super::queue::Queue;
 
@@ -209,10 +212,10 @@ where
 /// the service's own.
 ///
 /// Postgres (feature `postgres`), MySQL with MariaDB (feature `mysql`) and SQLite (feature
-/// `sqlite`) have one. `Any` (feature `any`) takes the dialect of the database its pool reaches,
-/// among those whose features are on, and the broker picks it when it connects. A row on an
-/// `AnyPool` holds only the types `sqlx::Any` carries, and no time is among them, so a table with
-/// `locked_until`, `retry_after` or `processed_at` is out of its reach.
+/// `sqlite`) have one, [`BuiltIn<DB>`](BuiltIn). `Any` (feature `any`) takes the dialect of the
+/// database its pool reaches, among those whose features are on, and the broker picks it when it
+/// connects. A row on an `AnyPool` holds only the types `sqlx::Any` carries, and no time is among
+/// them, so a table with `locked_until`, `retry_after` or `processed_at` is out of its reach.
 ///
 /// # Examples
 ///
@@ -220,6 +223,7 @@ where
 /// # #[cfg(feature = "any")]
 /// # async fn run(pool: sqlx::AnyPool) -> Result<(), sqlx::Error> {
 /// use ruststream_sqlx::BuiltInDialect;
+/// use ruststream_sqlx::dialect::Dialect;
 ///
 /// // The statements the broker builds for the database behind the pool.
 /// let conn = pool.acquire().await?;
@@ -230,7 +234,18 @@ where
 /// # Ok(())
 /// # }
 /// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no dialect built into the crate",
+    label = "no built-in dialect for this database",
+    note = "build the broker with a dialect of the service's own: \
+            `SqlxBroker::with_dialect(pool, dialect)`, a `SqlxBroker<{Self}, YourDialect>`"
+)]
 pub trait BuiltInDialect: QueueDatabase {
+    /// The dialect of the crate's `dialect` module that builds the database's statements.
+    /// Machinery; [`BuiltIn`] holds it.
+    #[doc(hidden)]
+    type Picked: Lease + Copy + 'static;
+
     /// The dialect that builds the statements of the database `conn` reaches, or `None` when no
     /// built-in dialect serves it: an `AnyPool`'s backend whose feature is off.
     ///
@@ -241,6 +256,7 @@ pub trait BuiltInDialect: QueueDatabase {
     ///
     /// ```
     /// use ruststream_sqlx::BuiltInDialect;
+    /// use ruststream_sqlx::dialect::Dialect;
     /// use sqlx::Pool;
     ///
     /// /// The dialect the broker builds statements with for the database `pool` reaches.
@@ -251,7 +267,7 @@ pub trait BuiltInDialect: QueueDatabase {
     ///     Ok(DB::dialect(&conn).map(|dialect| dialect.name()))
     /// }
     /// ```
-    fn dialect(conn: &Self::Connection) -> Option<&'static dyn Dialect>;
+    fn dialect(conn: &Self::Connection) -> Option<BuiltIn<Self>>;
 
     /// The name of the database `conn` reaches, which an error names when no built-in dialect
     /// serves it. Machinery; the broker calls it.
@@ -264,29 +280,37 @@ pub trait BuiltInDialect: QueueDatabase {
 
 #[cfg(feature = "postgres")]
 impl BuiltInDialect for Postgres {
-    fn dialect(_: &PgConnection) -> Option<&'static dyn Dialect> {
-        Some(&dialect::Postgres)
+    type Picked = dialect::Postgres;
+
+    fn dialect(_: &PgConnection) -> Option<BuiltIn<Self>> {
+        Some(BuiltIn::new(dialect::Postgres))
     }
 }
 
 #[cfg(feature = "mysql")]
 impl BuiltInDialect for MySql {
-    fn dialect(_: &MySqlConnection) -> Option<&'static dyn Dialect> {
-        Some(&dialect::MySql)
+    type Picked = dialect::MySql;
+
+    fn dialect(_: &MySqlConnection) -> Option<BuiltIn<Self>> {
+        Some(BuiltIn::new(dialect::MySql))
     }
 }
 
 #[cfg(feature = "sqlite")]
 impl BuiltInDialect for Sqlite {
-    fn dialect(_: &SqliteConnection) -> Option<&'static dyn Dialect> {
-        Some(&dialect::Sqlite)
+    type Picked = dialect::Sqlite;
+
+    fn dialect(_: &SqliteConnection) -> Option<BuiltIn<Self>> {
+        Some(BuiltIn::new(dialect::Sqlite))
     }
 }
 
 #[cfg(feature = "any")]
 impl BuiltInDialect for Any {
-    fn dialect(conn: &AnyConnection) -> Option<&'static dyn Dialect> {
-        any_dialect(conn.backend_name())
+    type Picked = AnyDialect;
+
+    fn dialect(conn: &AnyConnection) -> Option<BuiltIn<Self>> {
+        AnyDialect::of(conn.backend_name()).map(BuiltIn::new)
     }
 
     fn backend(conn: &AnyConnection) -> &str {
@@ -297,105 +321,15 @@ impl BuiltInDialect for Any {
 /// The name an `AnyConnection` reports for a Postgres backend: its sqlx driver's
 /// `Database::NAME`.
 #[cfg(feature = "any")]
-const POSTGRES_BACKEND: &str = "PostgreSQL";
+pub(crate) const POSTGRES_BACKEND: &str = "PostgreSQL";
 
 /// The name an `AnyConnection` reports for a MySQL or MariaDB backend.
 #[cfg(feature = "any")]
-const MYSQL_BACKEND: &str = "MySQL";
+pub(crate) const MYSQL_BACKEND: &str = "MySQL";
 
 /// The name an `AnyConnection` reports for a SQLite backend.
 #[cfg(feature = "any")]
-const SQLITE_BACKEND: &str = "SQLite";
-
-/// The built-in dialect of the `AnyPool` backend named `backend`, where its feature is on.
-#[cfg(feature = "any")]
-fn any_dialect(backend: &str) -> Option<&'static dyn Dialect> {
-    let dialects: &[(&str, &'static dyn Dialect)] = &[
-        #[cfg(feature = "postgres")]
-        (POSTGRES_BACKEND, &dialect::Postgres),
-        #[cfg(feature = "mysql")]
-        (MYSQL_BACKEND, &dialect::MySql),
-        #[cfg(feature = "sqlite")]
-        (SQLITE_BACKEND, &dialect::Sqlite),
-    ];
-    dialects
-        .iter()
-        .find(|(name, _)| *name == backend)
-        .map(|&(_, dialect)| dialect)
-}
-
-/// A database that locks rows for a transaction, so a table on it may take its rows by row lock:
-/// the form of a table that declares neither `#[field(locked_until)]` nor `advisory_lock`.
-///
-/// Postgres (feature `postgres`), MySQL with MariaDB (feature `mysql`) and `Any` (feature `any`)
-/// implement it. SQLite locks the whole database for a writer, not rows: a subscription on it to
-/// a table in the row lock form does not compile, and the error names the forms that run there.
-/// An `AnyPool` names its database only when the broker connects, so a subscription there to a
-/// row lock table on SQLite stops at startup with the dialect's refusal.
-///
-/// # Examples
-///
-/// A service on SQLite declares `locked_until`, and its queue takes rows by lease:
-///
-/// ```no_run
-/// # #[cfg(all(feature = "sqlite", feature = "chrono"))]
-/// # mod demo {
-/// use chrono::{DateTime, Utc};
-/// use ruststream::prelude::*;
-/// use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
-/// use serde::Deserialize;
-/// use sqlx::SqlitePool;
-///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "jobs")]
-/// pub struct Job {
-///     #[field(id, generated)]
-///     id: i64,
-///     // Without it the table is in the row lock form, which a database without row locks
-///     // does not serve.
-///     #[field(locked_until)]
-///     locked_until: Option<DateTime<Utc>>,
-///     #[field(payload)]
-///     payload: Vec<u8>,
-/// }
-///
-/// #[derive(Deserialize)]
-/// pub struct Task {
-///     n: u32,
-/// }
-///
-/// #[subscriber(InboxQueue::<Job>::new("jobs"))]
-/// async fn work(task: &Task) -> HandlerOutcome {
-///     tracing::info!(n = task.n, "working");
-///     HandlerOutcome::ack()
-/// }
-///
-/// pub fn app(pool: SqlitePool) -> RustStream {
-///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(work);
-///     })
-/// }
-/// # }
-/// # fn main() {}
-/// ```
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has no row locks, so a table on it cannot use the row lock form",
-    label = "a table without `locked_until` or `advisory_lock` takes rows by row lock",
-    note = "declare `#[field(locked_until)]` (the lease form) or \
-            `#[inbox(advisory_lock = \"..\")]` (the advisory lock form) on the struct"
-)]
-pub trait RowLocks: QueueDatabase {}
-
-#[cfg(feature = "postgres")]
-impl RowLocks for Postgres {}
-
-#[cfg(feature = "mysql")]
-impl RowLocks for MySql {}
-
-// Why a runtime refusal remains: the backend of an `AnyPool` is known only at connect, so a SQLite
-// backend refuses a row lock table when its subscription starts.
-#[cfg(feature = "any")]
-impl RowLocks for Any {}
+pub(crate) const SQLITE_BACKEND: &str = "SQLite";
 
 /// The inserts the derive builds at compile time, one per built-in dialect it was built with.
 /// Machinery; the derive writes it, never a service.
@@ -506,29 +440,13 @@ pub fn no_insert(row: &'static str) -> Error {
 mod tests {
     use sqlx::Database;
 
-    use super::{Dialect, InsertSql, MYSQL_BACKEND, POSTGRES_BACKEND, SQLITE_BACKEND, any_dialect};
+    use super::{InsertSql, MYSQL_BACKEND, POSTGRES_BACKEND, SQLITE_BACKEND};
 
     #[test]
     fn the_backend_names_are_those_sqlx_reports() {
         assert_eq!(POSTGRES_BACKEND, <sqlx::Postgres as Database>::NAME);
         assert_eq!(MYSQL_BACKEND, <sqlx::MySql as Database>::NAME);
         assert_eq!(SQLITE_BACKEND, <sqlx::Sqlite as Database>::NAME);
-    }
-
-    #[test]
-    fn an_any_backend_takes_the_dialect_of_its_database() {
-        let picked = |backend| any_dialect(backend).map(Dialect::name);
-        #[cfg(feature = "postgres")]
-        assert_eq!(picked(POSTGRES_BACKEND), Some("postgres"));
-        #[cfg(feature = "mysql")]
-        assert_eq!(picked(MYSQL_BACKEND), Some("mysql"));
-        #[cfg(feature = "sqlite")]
-        assert_eq!(picked(SQLITE_BACKEND), Some("sqlite"));
-        assert_eq!(
-            picked("MSSQL"),
-            None,
-            "a backend without a built-in dialect"
-        );
     }
 
     #[test]

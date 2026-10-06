@@ -77,24 +77,39 @@ fn a_claim_by_role_carries_the_id_first_whatever_the_struct_flattens() {
 #[cfg(feature = "postgres")]
 mod built {
     use std::num::NonZeroUsize;
+    use std::sync::Arc;
 
     use ruststream::RetryDeclaration;
     use ruststream_sqlx_dialect::{
-        ClaimShape, Column, Dialect, Form, Postgres, Statement, StatementError, TableName,
-        TableSpec,
+        ClaimShape, Column, Dialect, Form, KeyPart, Lease, Param, Postgres, RowLock, Statement,
+        StatementError, TableName, TableSpec,
     };
 
     use super::described;
+    use crate::inbox::FormDialect;
     use crate::inbox::engine::{Prepared, Shape};
     use crate::inbox::error::SqlxBrokerError;
     use crate::inbox::queue::build;
 
-    /// The Postgres dialect, its dead-letter move cut into `parts` statements, and its lease
-    /// claim writing the lease or only selecting the rows.
+    /// The Postgres dialect, its dead-letter move cut into `parts` statements, its lease claim
+    /// writing the lease or only selecting the rows, and each form's claim and transaction
+    /// opening marked with the trait that built it.
     #[derive(Debug)]
     struct Reshaped {
         parts: usize,
         writes_lease: bool,
+    }
+
+    /// The claim `trait_name` built for `spec`: Postgres's text, marked with the trait's name.
+    fn marked(
+        trait_name: &str,
+        claim: Result<Statement, StatementError>,
+    ) -> Result<Statement, StatementError> {
+        let claim = claim?;
+        Ok(Statement::new(
+            format!("/* {trait_name} */ {}", claim.sql()),
+            claim.params().iter().copied(),
+        ))
     }
 
     impl Dialect for Reshaped {
@@ -108,14 +123,6 @@ mod built {
 
         fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) {
             Postgres.placeholder_into(index, out);
-        }
-
-        fn claim(
-            &self,
-            spec: &TableSpec<'_>,
-            shape: ClaimShape,
-        ) -> Result<Statement, StatementError> {
-            Postgres.claim(spec, shape)
         }
 
         fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
@@ -152,6 +159,34 @@ mod built {
             Ok(moves)
         }
 
+        fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+            Postgres.insert(spec)
+        }
+    }
+
+    impl RowLock for Reshaped {
+        fn lock_claim(
+            &self,
+            spec: &TableSpec<'_>,
+            shape: ClaimShape,
+        ) -> Result<Statement, StatementError> {
+            marked("RowLock", Postgres.lock_claim(spec, shape))
+        }
+
+        fn begin_lock_claim(&self) -> Option<&'static str> {
+            Some("BEGIN /* RowLock */")
+        }
+    }
+
+    impl Lease for Reshaped {
+        fn lease_claim(
+            &self,
+            spec: &TableSpec<'_>,
+            shape: ClaimShape,
+        ) -> Result<Statement, StatementError> {
+            marked("Lease", Postgres.lease_claim(spec, shape))
+        }
+
         fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
             Postgres.extend(spec)
         }
@@ -160,12 +195,12 @@ mod built {
             Postgres.stamp(spec)
         }
 
-        fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-            Postgres.insert(spec)
-        }
-
         fn claim_writes_lease(&self) -> bool {
             self.writes_lease
+        }
+
+        fn begin_lease_claim(&self) -> Option<&'static str> {
+            Some("BEGIN /* Lease */")
         }
     }
 
@@ -176,8 +211,22 @@ mod built {
     )
     .payload(Column::new("body"));
 
+    const RESHAPED: Reshaped = Reshaped {
+        parts: 1,
+        writes_lease: true,
+    };
+
+    /// `dialect` seen through the trait of `spec`'s form, as a subscription to it sees it.
+    fn form_of(dialect: Reshaped, spec: &TableSpec<'_>) -> FormDialect {
+        match spec.form() {
+            Form::RowLock => FormDialect::RowLock(Arc::new(dialect)),
+            Form::Lease(_) => FormDialect::Lease(Arc::new(dialect)),
+            _ => FormDialect::Unbuilt(Arc::new(dialect)),
+        }
+    }
+
     fn prepared(
-        dialect: &Reshaped,
+        dialect: Reshaped,
         spec: &TableSpec<'static>,
         shape: Shape,
         declaration: &RetryDeclaration,
@@ -189,7 +238,7 @@ mod built {
             reason,
         };
         build(
-            dialect,
+            &form_of(dialect, spec),
             declaration,
             &described(spec, shape, ClaimShape::Rows),
             &fail,
@@ -197,19 +246,119 @@ mod built {
     }
 
     #[test]
+    fn each_form_claims_with_the_statement_of_its_trait() -> Result<(), SqlxBrokerError> {
+        let none = RetryDeclaration::new();
+        let locked = prepared(RESHAPED, &super::JOBS, Shape::default(), &none)?;
+        assert_eq!(
+            locked.claim.map(|claim| claim.sql),
+            Some(
+                r#"/* RowLock */ SELECT "job_id", "body" FROM "jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#
+            )
+        );
+        let leased = prepared(RESHAPED, &LEASED, Shape::default(), &none)?;
+        assert!(
+            leased
+                .claim
+                .is_some_and(|claim| claim.sql.starts_with("/* Lease */ WITH __claimed AS")),
+            "{:?}",
+            leased.claim
+        );
+        assert_eq!(
+            leased.claim.map(|claim| claim.params),
+            Some([Param::LeaseNow, Param::Limit, Param::Lease].as_slice())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn each_form_opens_its_claim_with_the_statement_of_its_trait() {
+        assert_eq!(
+            form_of(RESHAPED, &super::JOBS).begin_claim(),
+            Some("BEGIN /* RowLock */")
+        );
+        assert_eq!(
+            form_of(RESHAPED, &LEASED).begin_claim(),
+            Some("BEGIN /* Lease */")
+        );
+    }
+
+    #[test]
+    fn a_form_no_trait_builds_stops_the_subscription() {
+        const KEY: &[KeyPart<'static>] = &[KeyPart::Column("job_id")];
+        let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY));
+        let refused = prepared(
+            RESHAPED,
+            &advisory,
+            Shape::default(),
+            &RetryDeclaration::new(),
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(SqlxBrokerError::Dialect {
+                    source: StatementError::UnsupportedForm {
+                        dialect: "reshaped",
+                        form: "advisory lock",
+                    },
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_lease_table_seen_through_another_form_stops_the_subscription() {
+        // A description written by hand that pairs a lease table with the row lock form: the
+        // service claims itself, so only the lease's own statements can refuse it.
+        let own = Shape {
+            custom_claim: true,
+            custom_fetch: true,
+            ..Shape::default()
+        };
+        let fail = |reason: String| SqlxBrokerError::Declaration {
+            subscription: "jobs".to_owned(),
+            table: "jobs".to_owned(),
+            row: "Job",
+            reason,
+        };
+        let refused = build(
+            &FormDialect::RowLock(Arc::new(RESHAPED)),
+            &RetryDeclaration::new(),
+            &described(&LEASED, own, ClaimShape::Ids),
+            &fail,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(SqlxBrokerError::Dialect {
+                    source: StatementError::UnsupportedForm {
+                        dialect: "reshaped",
+                        form: "lease",
+                    },
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
     fn a_dead_letter_moves_in_one_statement_or_two() -> Result<(), SqlxBrokerError> {
         let dead = RetryDeclaration::new().with_dead_letter("jobs_dead");
-        let one = Reshaped {
-            parts: 1,
-            writes_lease: true,
-        };
-        let moved = prepared(&one, &LEASED, Shape::default(), &dead)?;
+        let moved = prepared(RESHAPED, &LEASED, Shape::default(), &dead)?;
         assert!(moved.dead_letter.is_some() && moved.dead_letter_then.is_none());
-        let two = Reshaped { parts: 2, ..one };
-        let split = prepared(&two, &LEASED, Shape::default(), &dead)?;
+        let two = Reshaped {
+            parts: 2,
+            ..RESHAPED
+        };
+        let split = prepared(two, &LEASED, Shape::default(), &dead)?;
         assert!(split.dead_letter.is_some() && split.dead_letter_then.is_some());
-        let three = Reshaped { parts: 3, ..two };
-        let refused = prepared(&three, &LEASED, Shape::default(), &dead)
+        let three = Reshaped {
+            parts: 3,
+            ..RESHAPED
+        };
+        let refused = prepared(three, &LEASED, Shape::default(), &dead)
             .map_or_else(|error| error.to_string(), |_| String::new());
         assert!(
             refused.contains(
@@ -224,11 +373,7 @@ mod built {
     #[test]
     fn a_lease_table_stamps_where_its_claim_only_selects() -> Result<(), SqlxBrokerError> {
         let none = RetryDeclaration::new();
-        let writing = Reshaped {
-            parts: 1,
-            writes_lease: true,
-        };
-        let leased = prepared(&writing, &LEASED, Shape::default(), &none)?;
+        let leased = prepared(RESHAPED, &LEASED, Shape::default(), &none)?;
         assert!(
             leased.extend.is_some(),
             "a lease table can extend its leases"
@@ -239,13 +384,13 @@ mod built {
             custom_claim: true,
             ..Shape::default()
         };
-        let claimed = prepared(&writing, &LEASED, own, &none)?;
+        let claimed = prepared(RESHAPED, &LEASED, own, &none)?;
         assert!(claimed.stamps && claimed.stamp.is_some());
         let selecting = Reshaped {
             writes_lease: false,
-            ..writing
+            ..RESHAPED
         };
-        let stamped = prepared(&selecting, &LEASED, Shape::default(), &none)?;
+        let stamped = prepared(selecting, &LEASED, Shape::default(), &none)?;
         assert!(stamped.stamps && stamped.stamp.is_some());
         // The service's own extension needs no statement of the crate's.
         let extending = Shape {
@@ -253,12 +398,16 @@ mod built {
             ..Shape::default()
         };
         assert!(
-            prepared(&writing, &LEASED, extending, &none)?
+            prepared(RESHAPED, &LEASED, extending, &none)?
                 .extend
                 .is_none()
         );
         // A row lock table neither extends nor stamps.
-        let locked = prepared(&selecting, &super::JOBS, Shape::default(), &none)?;
+        let selecting = Reshaped {
+            writes_lease: false,
+            ..RESHAPED
+        };
+        let locked = prepared(selecting, &super::JOBS, Shape::default(), &none)?;
         assert!(locked.extend.is_none() && !locked.stamps && locked.stamp.is_none());
         Ok(())
     }

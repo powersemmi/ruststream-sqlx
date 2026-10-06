@@ -60,8 +60,10 @@ pub(crate) enum Built<'a> {
 /// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, whether it
 /// locks rows, how an insert of no column reads, and the database's own clock.
 ///
-/// The provided methods check a table against the dialect and build the statements every
-/// built-in dialect writes the same way, through its quoting, placeholders and clock.
+/// The provided methods check a table against the dialect, and against a statement of one form
+/// for the dialect's [`RowLock`](crate::RowLock) and [`Lease`](crate::Lease) implementations, and
+/// build the statements every built-in dialect writes the same way, through its quoting,
+/// placeholders and clock.
 pub(crate) trait BuiltIn: Dialect {
     /// The longest name the database keeps; `None` where it keeps a name of any length.
     const NAME_LIMIT: Option<NameLimit>;
@@ -130,27 +132,53 @@ pub(crate) trait BuiltIn: Dialect {
         }
     }
 
-    /// The table's form, for a claim: a FIFO group is refused, because the built-in claims skip
-    /// locked rows and would skip a group's head.
-    fn claim_form<'a>(&self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
-        let form = self.form(spec)?;
+    /// Checks a table for `statement`, a statement of the row lock form: the table takes its rows
+    /// by row lock, and its names fit.
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
+    fn locked(&self, spec: &TableSpec<'_>, statement: &'static str) -> Result<(), StatementError> {
+        self.spec_fits(spec)?;
+        match spec.form() {
+            Form::RowLock => Ok(()),
+            other => Err(StatementError::FormMismatch {
+                statement,
+                form: other.name(),
+            }),
+        }
+    }
+
+    /// The lease column of a table, for `statement`, a statement of the lease form: the table
+    /// takes its rows by lease on the crate's clock, and its names fit.
+    fn leased<'a>(
+        &self,
+        spec: &TableSpec<'a>,
+        statement: &'static str,
+    ) -> Result<Column<'a>, StatementError> {
+        self.spec_fits(spec)?;
+        match spec.form() {
+            // Settlement matches the expiry the claim wrote, and the claim knows it only when the
+            // crate's clock computes it.
+            Form::Lease(_) if spec.uses_database_clock() => {
+                Err(StatementError::LeaseOnDatabaseClock {
+                    dialect: self.name(),
+                })
+            }
+            Form::Lease(expiry) => Ok(expiry),
+            other => Err(StatementError::FormMismatch {
+                statement,
+                form: other.name(),
+            }),
+        }
+    }
+
+    /// Refuses a table with FIFO groups for a claim: the built-in claims skip locked rows and
+    /// would skip a group's head.
+    fn in_order(&self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
         if spec.is_fifo() {
             return Err(StatementError::UnsupportedFifo {
                 dialect: self.name(),
             });
         }
-        Ok(form)
-    }
-
-    /// The lease column of a lease table; every other form is refused.
-    fn lease<'a>(&self, spec: &TableSpec<'a>) -> Result<Column<'a>, StatementError> {
-        match self.form(spec)? {
-            Built::Lease(expiry) => Ok(expiry),
-            Built::RowLock => Err(StatementError::UnsupportedForm {
-                dialect: self.name(),
-                form: spec.form().name(),
-            }),
-        }
+        Ok(())
     }
 
     /// Checks that a row of `spec` can move into `target`: the form is built, a lease table
@@ -250,7 +278,7 @@ pub(crate) trait BuiltIn: Dialect {
 
     /// The extension of a delivery's lease while the row still holds its token.
     fn extend_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        let expiry = self.lease(spec)?;
+        let expiry = self.leased(spec, "extend")?;
         let mut sql = SqlWriter::new(self);
         sql.push("UPDATE ")
             .table(spec)
@@ -264,7 +292,7 @@ pub(crate) trait BuiltIn: Dialect {
 
     /// The lease of one claimed row, written while no lease holds the row.
     fn stamp_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        let expiry = self.lease(spec)?;
+        let expiry = self.leased(spec, "stamp")?;
         let id = spec.id().name();
         let mut sql = SqlWriter::new(self);
         sql.push("UPDATE ")

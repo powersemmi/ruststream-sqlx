@@ -6,7 +6,7 @@ use std::time::SystemTime;
 
 use ruststream_sqlx::Inbox;
 use ruststream_sqlx::InboxRow;
-use ruststream_sqlx::dialect::{ClaimShape, Dialect, Postgres, StatementError};
+use ruststream_sqlx::dialect::{ClaimShape, Dialect, Postgres, RowLock, StatementError};
 
 #[derive(Inbox)]
 #[inbox(table = "email_jobs", schema = "app")]
@@ -29,7 +29,7 @@ struct SendEmail {
 
 #[test]
 fn the_derived_table_claims_in_role_order() -> Result<(), StatementError> {
-    let claim = Postgres.claim(&SendEmail::SPEC, ClaimShape::Rows)?;
+    let claim = Postgres.lock_claim(&SendEmail::SPEC, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         r#"SELECT "job_id", "name", "priority", "retry_after", "attempt", "processed_at", "payload" FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 AND "processed_at" IS NULL ORDER BY "priority", "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#

@@ -23,7 +23,7 @@ Where things are:
 - [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
 - [`Repository`] and [`Routed`]: publishing into tables.
 - [`keys`]: what a handler reads off a delivery.
-- [`dialect`]: the SQL each database runs, and the trait a dialect of the service's own
+- [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
   implements.
 
 # The inbox broker
@@ -268,8 +268,9 @@ pub fn app(pool: SqlitePool) -> RustStream {
 
 A built-in dialect builds a subscription's statements once, when it opens; the derive builds the
 insert of every enabled dialect at compile time. A database whose sqlx driver lives outside sqlx
-is served by a [`Dialect`](dialect::Dialect) of the service's own
-([`SqlxBroker::with_dialect`]), in the lease form and through [`InboxQueue`] descriptors.
+is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a type that
+implements [`Dialect`](dialect::Dialect), and [`RowLock`](dialect::RowLock) and
+[`Lease`](dialect::Lease) for the forms it serves.
 
 ## Postgres
 
@@ -296,10 +297,11 @@ without one stops at startup.
 ## SQLite
 
 `sqlite` serves the lease form. SQLite locks the whole database for a writer, so no claim can hold
-rows for a handler, and a subscription to a table without `locked_until` does not compile
-([`RowLocks`]). A claim is one `UPDATE .. RETURNING` that leases its rows, and one writer at a time
-keeps two claims apart. The rows of one claim come in no particular order. A claim of the
-service's own opens its transaction with `BEGIN IMMEDIATE` and comes with a [`Fetch`] of its own.
+rows for a handler: its dialect implements no [`RowLock`](dialect::RowLock), and a subscription
+to a table without `locked_until` does not compile. A claim is one `UPDATE .. RETURNING` that
+leases its rows, and one writer at a time keeps two claims apart. The rows of one claim come in
+no particular order. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE`
+and comes with a [`Fetch`] of its own.
 
 SQLite keeps times as text and compares them as text. `chrono` times sort exactly. `time` values
 sort right only across seconds, so with them a lease may end up to a second late, and a delayed

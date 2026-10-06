@@ -1,0 +1,31 @@
+error[E0277]: the `LeasesOnly` dialect builds no row lock claim, so a table on it cannot take its rows by row lock
+   --> tests/ui/own_dialect_row_lock.rs:101:16
+    |
+101 |     subscribes(InboxQueue::<Locked>::new("jobs"));
+    |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a table without `locked_until` or `advisory_lock` takes its rows by row lock
+    |     |
+    |     required by a bound introduced by this call
+    |
+help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::RowLock` is not implemented for `LeasesOnly`
+   --> tests/ui/own_dialect_row_lock.rs:12:1
+    |
+ 12 | struct LeasesOnly;
+    | ^^^^^^^^^^^^^^^^^
+    = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
+    = note: a dialect of the service's own serves the row lock form by implementing `RowLock`, where its database locks rows
+    = help: the following other types implement trait `ruststream_sqlx::ruststream_sqlx_dialect::RowLock`:
+              BuiltIn<sqlx::Any>
+              BuiltIn<sqlx::MySql>
+              BuiltIn<sqlx::Postgres>
+              ruststream_sqlx::ruststream_sqlx_dialect::MySql
+              ruststream_sqlx::ruststream_sqlx_dialect::Postgres
+    = note: required for `ruststream_sqlx::__private::RowLockForm` to implement `ruststream_sqlx::__private::FormOn<LeasesOnly>`
+    = note: required for `InboxQueue<Locked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres, LeasesOnly>>`
+note: required by a bound in `subscribes`
+   --> tests/ui/own_dialect_row_lock.rs:85:13
+    |
+ 83 | fn subscribes<Source>(source: Source)
+    |    ---------- required by a bound in this function
+ 84 | where
+ 85 |     Source: SubscriptionSource<Connected<SqlxBroker<Postgres, LeasesOnly>>>,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`

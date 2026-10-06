@@ -18,11 +18,13 @@ use futures::{Stream, StreamExt};
 use ruststream::{
     AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Subscribe, Subscriber,
 };
+use ruststream_sqlx_dialect::Dialect;
 use sync_wrapper::SyncWrapper;
 
 pub use database::{NamedDatabase, RoleColumns};
 pub use row::{NamedBytes, NamedId, NamedRow, NamedTime};
 
+use super::FormDialect;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
@@ -346,9 +348,10 @@ impl<DB: NamedDatabase> Subscriber for NamedSubscriber<DB> {
 }
 
 /// Opens the by-name subscription to `name` of `Row`'s table through `Row`'s own code, its row
-/// type erased.
+/// type erased, its statements built by `form`.
 pub(crate) fn erased<'a, DB, Row>(
     shared: &'a Arc<Shared<DB>>,
+    form: &'a FormDialect,
     name: &'a str,
 ) -> BoxFuture<'a, Result<ErasedStream, SqlxBrokerError>>
 where
@@ -359,6 +362,7 @@ where
         let description = Description::of::<DB, Row>();
         let subscriber = open::<DB, Row>(
             shared,
+            form,
             name,
             Timing::default(),
             &RetryDeclaration::new(),
@@ -373,12 +377,12 @@ where
     })
 }
 
-impl<DB: NamedDatabase> Subscribe for ConnectedSqlxBroker<DB> {
+impl<DB: NamedDatabase, D: Dialect + 'static> Subscribe for ConnectedSqlxBroker<DB, D> {
     type Subscriber = NamedSubscriber<DB>;
     type Copies = BrokerMoves;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, SqlxBrokerError> {
-        let Some(route) = self.shared.routes.find(name) else {
+        let Some((route, form)) = self.shared.routes.find(name) else {
             return Err(SqlxBrokerError::NoRoute {
                 name: name.to_owned(),
             });
@@ -395,6 +399,7 @@ impl<DB: NamedDatabase> Subscribe for ConnectedSqlxBroker<DB> {
             );
             let subscriber = open::<DB, NamedRow>(
                 &self.shared,
+                form,
                 name,
                 Timing::default(),
                 &RetryDeclaration::new(),
@@ -413,7 +418,7 @@ impl<DB: NamedDatabase> Subscribe for ConnectedSqlxBroker<DB> {
             row = description.row,
             "a by-name subscription runs its row's own code, a box per delivery and per settlement",
         );
-        let stream = route.subscribe(&self.shared, name).await?;
+        let stream = route.subscribe(&self.shared, form, name).await?;
         Ok(NamedSubscriber {
             opened: Opened::Erased(SyncWrapper::new(stream)),
         })
