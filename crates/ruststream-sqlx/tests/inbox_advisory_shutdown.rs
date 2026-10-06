@@ -4,8 +4,8 @@
 //! connections closed instead. A delivery whose lock it released settles no more, and a claim
 //! dropped midway, or a handler that panics under `fail_fast`, leaves no lock behind.
 //!
-//! MySQL and MariaDB keep their named locks per server, not per database, so every key here
-//! carries the process id and the test's name.
+//! MySQL and MariaDB name their locks server-wide, so the broker names each lock by the table's
+//! database and the key, and the probes here ask the server for that name.
 
 #![cfg(all(
     feature = "inbox",
@@ -103,8 +103,9 @@ fn key(tenant: &str) -> String {
 /// A stand's database, and the advisory locks it shows.
 trait Locks: Database {
     /// Whether the database `pool` reaches shows a lock of the broker: on Postgres any advisory
-    /// lock of the test's database, on MySQL and MariaDB the lock on `key`. `None` where the
-    /// database keeps no locks, as SQLite does, whose keys in work live in the process.
+    /// lock of the test's database, on MySQL and MariaDB the lock the broker takes on `key`, named
+    /// by the database and the key. `None` where the database keeps no locks, as SQLite does,
+    /// whose keys in work live in the process.
     fn locked(pool: &Pool<Self>, key: &str) -> impl Future<Output = Option<bool>> + Send;
 }
 
@@ -125,12 +126,8 @@ impl Locks for sqlx::Postgres {
 #[cfg(feature = "mysql")]
 impl Locks for sqlx::MySql {
     async fn locked(pool: &Pool<Self>, key: &str) -> Option<bool> {
-        let held: bool = sqlx::query_scalar("SELECT IS_USED_LOCK(?) IS NOT NULL")
-            .bind(key)
-            .fetch_one(pool)
-            .await
-            .expect("the lock reads");
-        Some(held)
+        let name = live::mysql::lock_name(pool, key).await;
+        Some(live::mysql::lock_held(pool, &name).await)
     }
 }
 
