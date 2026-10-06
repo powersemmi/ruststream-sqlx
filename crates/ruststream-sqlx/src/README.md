@@ -269,8 +269,8 @@ pub fn app(pool: SqlitePool) -> RustStream {
 A built-in dialect builds a subscription's statements once, when it opens; the derive builds the
 insert of every enabled dialect at compile time. A database whose sqlx driver lives outside sqlx
 is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a type that
-implements [`Dialect`](dialect::Dialect), and [`RowLock`](dialect::RowLock) and
-[`Lease`](dialect::Lease) for the forms it serves.
+implements [`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock) and
+[`Lease`](dialect::Lease) for the forms it serves, and [`ByName`] for subscriptions by name.
 
 ## Postgres
 
@@ -532,9 +532,9 @@ A by-name subscription takes the broker's poll interval and lease. Where the rou
 every event to the crate and holds column types the crate reads itself, listed on
 [`NamedSubscriber`], the subscription reads the rows by those columns: no box and no dynamic call
 per message, in either form, as through an [`InboxQueue`]. Any other row runs its own code, at one
-boxed delivery and one boxed settlement future per message. By-name subscriptions run on the
-databases with a built-in dialect, and refuse `max_attempts(..)` and `dead_letter(..)` at
-startup: an [`InboxQueue`] takes those.
+boxed delivery and one boxed settlement future per message. By-name subscriptions run on a
+dialect that implements [`ByName`] for its database, as every built-in dialect does, and refuse
+`max_attempts(..)` and `dead_letter(..)` at startup: an [`InboxQueue`] takes those.
 
 # Testing a service on the inbox
 

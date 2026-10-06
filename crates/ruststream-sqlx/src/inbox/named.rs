@@ -5,6 +5,7 @@
 //! [`NamedRow`], one concrete type whatever the route; any other row is read by its own code and
 //! erased behind a box.
 
+mod by_name;
 mod database;
 mod row;
 
@@ -18,13 +19,12 @@ use futures::{Stream, StreamExt};
 use ruststream::{
     AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Subscribe, Subscriber,
 };
-use ruststream_sqlx_dialect::Dialect;
 use sync_wrapper::SyncWrapper;
 
-pub use database::{NamedDatabase, RoleColumns};
+pub use by_name::ByName;
+pub use database::RoleColumns;
 pub use row::{NamedBytes, NamedId, NamedRow, NamedTime};
 
-use super::FormDialect;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
@@ -33,6 +33,7 @@ use super::error::SqlxBrokerError;
 use super::publish::table_of;
 use super::queue::{Description, Timing, open};
 use super::subscriber::InboxSubscriber;
+use super::{BuiltIn, FormDialect};
 use super::{InboxRow, PayloadRow};
 
 /// A delivery of a by-name subscription whose row runs its own code, its row type erased.
@@ -154,20 +155,32 @@ where
 /// # }
 /// # fn main() {}
 /// ```
-pub struct NamedDelivery<DB: NamedDatabase> {
-    delivered: Delivered<DB>,
+pub struct NamedDelivery<DB, D = BuiltIn<DB>>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
+    delivered: Delivered<DB, D>,
 }
 
 /// A by-name delivery of either path.
-enum Delivered<DB: NamedDatabase> {
+enum Delivered<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     /// A row read by role.
-    Described(InboxDelivery<DB, NamedRow>),
+    Described(InboxDelivery<DB, NamedRow<D>>),
     /// A row read by its own code.
     Erased(Box<dyn Erased>),
 }
 
-impl<DB: NamedDatabase> NamedDelivery<DB> {
-    const fn described(delivery: InboxDelivery<DB, NamedRow>) -> Self {
+impl<DB, D> NamedDelivery<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
+    const fn described(delivery: InboxDelivery<DB, NamedRow<D>>) -> Self {
         Self {
             delivered: Delivered::Described(delivery),
         }
@@ -180,7 +193,11 @@ impl<DB: NamedDatabase> NamedDelivery<DB> {
     }
 }
 
-impl<DB: NamedDatabase> fmt::Debug for NamedDelivery<DB> {
+impl<DB, D> fmt::Debug for NamedDelivery<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut tuple = f.debug_tuple("NamedDelivery");
         match &self.delivered {
@@ -191,7 +208,11 @@ impl<DB: NamedDatabase> fmt::Debug for NamedDelivery<DB> {
     }
 }
 
-impl<DB: NamedDatabase> IncomingMessage for NamedDelivery<DB> {
+impl<DB, D> IncomingMessage for NamedDelivery<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     fn payload(&self) -> &[u8] {
         match &self.delivered {
             Delivered::Described(delivery) => IncomingMessage::payload(delivery),
@@ -257,7 +278,8 @@ pub(crate) type ErasedStream =
 /// leads to.
 ///
 /// It claims as an [`InboxSubscriber`](crate::InboxSubscriber) does, with the broker's poll
-/// interval, on the databases with a built-in dialect. A route whose row leaves every event to
+/// interval, on a broker whose dialect implements [`ByName`](crate::ByName) for its database, as
+/// every built-in dialect does. A route whose row leaves every event to
 /// the crate, with role columns of types the crate reads itself, is read by those columns alone,
 /// in the row lock form and in the lease form: no box and no dynamic call per message. Each
 /// column is held to the type the struct reads it as, so a row that would not decode into the
@@ -302,20 +324,32 @@ pub(crate) type ErasedStream =
 /// # }
 /// # fn main() {}
 /// ```
-pub struct NamedSubscriber<DB: NamedDatabase> {
-    opened: Opened<DB>,
+pub struct NamedSubscriber<DB, D = BuiltIn<DB>>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
+    opened: Opened<DB, D>,
 }
 
 /// A by-name subscription of either path.
-enum Opened<DB: NamedDatabase> {
+enum Opened<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     /// Rows read by role.
-    Described(InboxSubscriber<DB, NamedRow>),
+    Described(InboxSubscriber<DB, NamedRow<D>>),
     /// Rows read by their own code. The stream is polled only through `&mut`, so the wrapper
     /// shares the subscriber between threads, as a mount that publishes requires, at no cost.
     Erased(SyncWrapper<ErasedStream>),
 }
 
-impl<DB: NamedDatabase> fmt::Debug for NamedSubscriber<DB> {
+impl<DB, D> fmt::Debug for NamedSubscriber<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.opened {
             Opened::Described(subscriber) => {
@@ -326,8 +360,12 @@ impl<DB: NamedDatabase> fmt::Debug for NamedSubscriber<DB> {
     }
 }
 
-impl<DB: NamedDatabase> Subscriber for NamedSubscriber<DB> {
-    type Message = NamedDelivery<DB>;
+impl<DB, D> Subscriber for NamedSubscriber<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
+    type Message = NamedDelivery<DB, D>;
     type Error = SqlxBrokerError;
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
@@ -377,8 +415,12 @@ where
     })
 }
 
-impl<DB: NamedDatabase, D: Dialect + 'static> Subscribe for ConnectedSqlxBroker<DB, D> {
-    type Subscriber = NamedSubscriber<DB>;
+impl<DB, D> Subscribe for ConnectedSqlxBroker<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
+    type Subscriber = NamedSubscriber<DB, D>;
     type Copies = BrokerMoves;
 
     async fn subscribe(&self, name: &str) -> Result<Self::Subscriber, SqlxBrokerError> {
@@ -397,7 +439,7 @@ impl<DB: NamedDatabase, D: Dialect + 'static> Subscribe for ConnectedSqlxBroker<
                 row = description.row,
                 "a by-name subscription reads its rows by role",
             );
-            let subscriber = open::<DB, NamedRow>(
+            let subscriber = open::<DB, NamedRow<D>>(
                 &self.shared,
                 form,
                 name,

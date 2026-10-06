@@ -2,6 +2,7 @@
 //! is held to the types of the route's own struct.
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem;
 use std::time::Duration;
 
@@ -9,11 +10,13 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use ruststream::HeaderMap;
 use ruststream_sqlx_dialect::Param;
-use sqlx::{Column, Error, FromRow, Row, ValueRef};
+use sqlx::{Column, Database, Error, FromRow, Row, ValueRef};
 #[cfg(feature = "time")]
 use time::OffsetDateTime;
 
-use super::database::NamedDatabase;
+use super::by_name::ByName;
+use super::database::RoleColumns;
+use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{
     self, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape, Values,
 };
@@ -25,11 +28,11 @@ use crate::inbox::queue::Queue;
 use crate::inbox::time::{QueueTime, SystemClock};
 use crate::inbox::{PayloadRow, QueueRow};
 
-/// A claimed row of a by-name subscription, read by the role aliases of `ClaimShape::Roles`.
-/// Machinery: a by-name subscription delivers it in place of the route's own row.
+/// A claimed row of a by-name subscription, read by the role aliases of `ClaimShape::Roles`, its
+/// headers and times read and bound by the dialect `D`. Machinery: a by-name subscription
+/// delivers it in place of the route's own row.
 #[doc(hidden)]
-#[derive(Debug)]
-pub struct NamedRow {
+pub struct NamedRow<D> {
     id: NamedId,
     payload: NamedBytes,
     /// Taken at decode: the alias `headers`, read as JSON.
@@ -37,6 +40,20 @@ pub struct NamedRow {
     key: Option<NamedBytes>,
     attempt: Option<u64>,
     fits: Fits,
+    dialect: PhantomData<fn() -> D>,
+}
+
+impl<D> fmt::Debug for NamedRow<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamedRow")
+            .field("id", &self.id)
+            .field("payload", &self.payload)
+            .field("headers", &self.headers)
+            .field("key", &self.key)
+            .field("attempt", &self.attempt)
+            .field("fits", &self.fits)
+            .finish()
+    }
 }
 
 /// Which of the types a by-name subscription reads each role column holds, a bit per type in the
@@ -50,7 +67,7 @@ struct Fits {
     attempt: u8,
 }
 
-impl NamedRow {
+impl<D> NamedRow<D> {
     /// The role column whose type in the table does not hold the type the struct reads it as,
     /// and that type, if one does not.
     fn unfit(&self, kinds: Kinds) -> Option<(&'static str, &'static str)> {
@@ -90,7 +107,7 @@ const fn attempt_fits(kind: IntKind, held: u8) -> bool {
 /// Holds a claimed row to the types its struct reads, as the struct's own `FromRow` would: a row
 /// whose role column does not hold its type goes to the decode-failure policy, and an id that
 /// does not fails the claim.
-fn hold_to(kinds: Kinds, claimed: &mut Claimed<NamedRow>) -> Result<(), Error> {
+fn hold_to<D: 'static>(kinds: Kinds, claimed: &mut Claimed<NamedRow<D>>) -> Result<(), Error> {
     let Claimed::Row(row) = claimed else {
         return Ok(());
     };
@@ -189,10 +206,35 @@ impl NamedBytes {
     }
 }
 
-/// A time a by-name subscription binds, in the type its column holds; in the lease form, the
-/// lease a delivery holds. Machinery.
-#[doc(hidden)]
+/// A time a by-name subscription binds, in the type its column holds: the current time, a delayed
+/// retry's, or in the lease form a lease's expiry.
+///
+/// A dialect binds it in [`ByName::bind_time`](crate::ByName::bind_time). Each variant comes with
+/// the feature of its time type, so a match keeps a wildcard arm.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))] {
+/// use ruststream_sqlx::NamedTime;
+/// use sqlx::postgres::PgArguments;
+/// use sqlx::{Arguments, Error};
+///
+/// // How a dialect over a driver that binds `chrono` times alone binds one.
+/// fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), Error> {
+///     match time {
+///         NamedTime::Chrono(at) => arguments.add(at).map_err(Error::Encode),
+///         _ => Err(Error::Configuration("this driver binds `chrono` times alone".into())),
+///     }
+/// }
+///
+/// let mut arguments = PgArguments::default();
+/// bind_time(&mut arguments, NamedTime::Chrono(chrono::Utc::now()))?;
+/// # }
+/// # Ok::<(), sqlx::Error>(())
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum NamedTime {
     /// A `chrono` column.
     #[cfg(feature = "chrono")]
@@ -203,8 +245,12 @@ pub enum NamedTime {
 }
 
 /// Reads a claimed row by the role aliases of `ClaimShape::Roles`: one look at each column's name
-/// and one decode per column, as a struct's own `FromRow` does.
-fn read<DB: NamedDatabase>(row: &DB::Row) -> Result<NamedRow, Error> {
+/// and one decode per column, as a struct's own `FromRow` does; the dialect `D` reads the headers.
+fn read<DB, D>(row: &DB::Row) -> Result<NamedRow<D>, Error>
+where
+    DB: RoleColumns,
+    D: ByName<DB>,
+{
     let mut id = None;
     let mut payload = None;
     let mut headers = HeaderMap::new();
@@ -244,7 +290,7 @@ fn read<DB: NamedDatabase>(row: &DB::Row) -> Result<NamedRow, Error> {
             "headers" => {
                 let value = value()?;
                 if !value.is_null() {
-                    headers = DB::headers(value).map_err(failed)?;
+                    headers = D::headers(value).map_err(failed)?;
                 }
             }
             "attempt" => {
@@ -261,24 +307,26 @@ fn read<DB: NamedDatabase>(row: &DB::Row) -> Result<NamedRow, Error> {
         key,
         attempt,
         fits,
+        dialect: PhantomData,
     })
 }
 
-impl<'r, R> FromRow<'r, R> for NamedRow
+impl<'r, R, D> FromRow<'r, R> for NamedRow<D>
 where
     R: Row,
-    R::Database: NamedDatabase<Row = R>,
+    R::Database: RoleColumns + Database<Row = R>,
+    D: ByName<R::Database>,
 {
     fn from_row(row: &'r R) -> Result<Self, Error> {
-        read::<R::Database>(row)
+        read::<R::Database, D>(row)
     }
 }
 
-impl QueueRow for NamedRow {
+impl<D: 'static> QueueRow for NamedRow<D> {
     type Id = NamedId;
 }
 
-impl PayloadRow for NamedRow {
+impl<D: 'static> PayloadRow for NamedRow<D> {
     fn payload(&self) -> &[u8] {
         self.payload.as_bytes()
     }
@@ -287,12 +335,16 @@ impl PayloadRow for NamedRow {
 /// Binds now on the host's clock, or `delay` later, in the time `column` holds; `false` where
 /// the table has no such column or reads the database's clock.
 #[cfg(any(feature = "chrono", feature = "time"))]
-fn bind_now<DB: NamedDatabase>(
+fn bind_now<DB, D>(
     arguments: &mut DB::Arguments,
-    values: &Values<'_, DB, NamedRow>,
+    values: &Values<'_, DB, NamedRow<D>>,
     column: fn(Kinds) -> Option<TimeKind>,
     delay: Option<Duration>,
-) -> Result<bool, Error> {
+) -> Result<bool, Error>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     let Some(kinds) = values.queue.kinds else {
         return Ok(false);
     };
@@ -302,41 +354,53 @@ fn bind_now<DB: NamedDatabase>(
     match kind {
         #[cfg(feature = "chrono")]
         TimeKind::Chrono => {
-            bind_at::<DB, DateTime<Utc>>(arguments, values, delay, NamedTime::Chrono)
+            bind_at::<DB, D, DateTime<Utc>>(arguments, values, delay, NamedTime::Chrono)
         }
         #[cfg(feature = "time")]
-        TimeKind::Time => bind_at::<DB, OffsetDateTime>(arguments, values, delay, NamedTime::Time),
+        TimeKind::Time => {
+            bind_at::<DB, D, OffsetDateTime>(arguments, values, delay, NamedTime::Time)
+        }
     }
 }
 
 /// Binds `lease`; `false` where the statement has no lease to bind.
 #[cfg(any(feature = "chrono", feature = "time"))]
-fn bind_lease<DB: NamedDatabase>(
-    arguments: &mut DB::Arguments,
-    lease: Option<NamedTime>,
-) -> Result<bool, Error> {
+fn bind_lease<DB, D>(arguments: &mut DB::Arguments, lease: Option<NamedTime>) -> Result<bool, Error>
+where
+    DB: Database,
+    D: ByName<DB>,
+{
     let Some(lease) = lease else {
         return Ok(false);
     };
-    DB::bind_time(arguments, lease)?;
+    D::bind_time(arguments, lease)?;
     Ok(true)
 }
 
 /// Binds now, or `delay` later, as a `Time`.
 #[cfg(any(feature = "chrono", feature = "time"))]
-fn bind_at<DB: NamedDatabase, Time: QueueTime>(
+fn bind_at<DB, D, Time>(
     arguments: &mut DB::Arguments,
-    values: &Values<'_, DB, NamedRow>,
+    values: &Values<'_, DB, NamedRow<D>>,
     delay: Option<Duration>,
     named: fn(Time) -> NamedTime,
-) -> Result<bool, Error> {
-    let now = engine::now::<SystemClock, Time, DB, NamedRow>(values)?;
+) -> Result<bool, Error>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+    Time: QueueTime,
+{
+    let now = engine::now::<SystemClock, Time, DB, NamedRow<D>>(values)?;
     let at = delay.map_or(now, |delay| now.after(delay));
-    DB::bind_time(arguments, named(at))?;
+    D::bind_time(arguments, named(at))?;
     Ok(true)
 }
 
-impl<DB: NamedDatabase> Events<DB> for NamedRow {
+impl<DB, D> Events<DB> for NamedRow<D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     const SHAPE: Shape = Shape {
         custom_claim: false,
         custom_fetch: false,
@@ -421,14 +485,14 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
             // column, and these fall through to `false`.
             #[cfg(any(feature = "chrono", feature = "time"))]
             (Param::Now, Event::Claim) => {
-                bind_now::<DB>(arguments, values, |kinds| kinds.retry_after, None)?
+                bind_now::<DB, D>(arguments, values, |kinds| kinds.retry_after, None)?
             }
             #[cfg(any(feature = "chrono", feature = "time"))]
             (Param::Now, Event::Ack | Event::Discard) => {
-                bind_now::<DB>(arguments, values, |kinds| kinds.processed_at, None)?
+                bind_now::<DB, D>(arguments, values, |kinds| kinds.processed_at, None)?
             }
             #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::RetryAfter, Event::RetryAfter) => bind_now::<DB>(
+            (Param::RetryAfter, Event::RetryAfter) => bind_now::<DB, D>(
                 arguments,
                 values,
                 |kinds| kinds.retry_after,
@@ -436,12 +500,12 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
             )?,
             #[cfg(any(feature = "chrono", feature = "time"))]
             (Param::LeaseNow, _) => {
-                bind_lease::<DB>(arguments, values.leasing.map(|leasing| leasing.now))?
+                bind_lease::<DB, D>(arguments, values.leasing.map(|leasing| leasing.now))?
             }
             #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::Lease, _) => bind_lease::<DB>(arguments, values.lease)?,
+            (Param::Lease, _) => bind_lease::<DB, D>(arguments, values.lease)?,
             #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::Held, _) => bind_lease::<DB>(arguments, values.held)?,
+            (Param::Held, _) => bind_lease::<DB, D>(arguments, values.held)?,
             _ => false,
         })
     }
@@ -546,6 +610,8 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
 
 #[cfg(test)]
 mod tests {
+    use std::marker::PhantomData;
+
     use ruststream::HeaderMap;
     use sqlx::Error;
 
@@ -565,8 +631,8 @@ mod tests {
         locked_until: None,
     };
 
-    /// A row whose columns hold the types `KINDS` reads, and only those.
-    fn row(fits: Fits) -> NamedRow {
+    /// A row whose columns hold the types `KINDS` reads, and only those, for the dialect `D`.
+    fn row<D>(fits: Fits) -> NamedRow<D> {
         NamedRow {
             id: NamedId::I64(7),
             payload: NamedBytes::Bytes(b"{}".to_vec()),
@@ -574,6 +640,7 @@ mod tests {
             key: Some(NamedBytes::Text("acme".to_owned())),
             attempt: Some(2),
             fits,
+            dialect: PhantomData,
         }
     }
 
@@ -585,7 +652,7 @@ mod tests {
     };
 
     /// The column a held row names as not holding its struct's type, and the attempt it keeps.
-    fn unfit_column(claimed: &Claimed<NamedRow>) -> Option<(String, Option<u64>)> {
+    fn unfit_column(claimed: &Claimed<NamedRow<()>>) -> Option<(String, Option<u64>)> {
         match claimed {
             Claimed::Undecodable { id, attempt, error } => {
                 assert_eq!(id, &NamedId::I64(7), "the row keeps its id for the policy");
@@ -643,11 +710,11 @@ mod tests {
 
     #[test]
     fn a_row_whose_columns_hold_its_structs_types_stays_a_row() -> Result<(), Error> {
-        let mut claimed = Claimed::Row(row(FITTING));
+        let mut claimed = Claimed::Row(row::<()>(FITTING));
         hold_to(KINDS, &mut claimed)?;
         assert!(matches!(claimed, Claimed::Row(_)));
         // A null key fits whatever its column's type.
-        let mut keyless = Claimed::Row(row(Fits {
+        let mut keyless = Claimed::Row(row::<()>(Fits {
             key: u8::MAX,
             ..FITTING
         }));
@@ -683,7 +750,7 @@ mod tests {
             (wide_attempt, "\"attempt\"", None),
             (text_payload_wide_attempt, "\"payload\"", None),
         ] {
-            let mut claimed = Claimed::Row(row(fits));
+            let mut claimed = Claimed::Row(row::<()>(fits));
             hold_to(KINDS, &mut claimed)?;
             assert_eq!(
                 unfit_column(&claimed),
@@ -696,7 +763,7 @@ mod tests {
 
     #[test]
     fn an_id_that_does_not_hold_its_structs_type_fails_the_claim() {
-        let mut claimed = Claimed::Row(row(Fits {
+        let mut claimed = Claimed::Row(row::<()>(Fits {
             id: IdKind::I32.bit(),
             ..FITTING
         }));
@@ -709,7 +776,7 @@ mod tests {
 
     #[test]
     fn a_row_already_undecodable_is_left_to_the_policy() -> Result<(), Error> {
-        let mut claimed = Claimed::<NamedRow>::Undecodable {
+        let mut claimed = Claimed::<NamedRow<()>>::Undecodable {
             id: NamedId::I64(7),
             attempt: Some(3),
             error: Box::new(Error::ColumnNotFound("payload".to_owned())),
@@ -735,11 +802,14 @@ mod tests {
 
         use super::super::{NamedId, NamedRow, NamedTime};
         use super::{FITTING, KINDS, row};
-        use crate::inbox::PayloadRow;
         use crate::inbox::engine::{Event, Events, IdAt, Leasing, Now, Prepared, Shape, Values};
         use crate::inbox::kinds::{ClockKind, Kinds, TimeKind};
         use crate::inbox::queue::Queue;
         use crate::inbox::time::QueueTime;
+        use crate::inbox::{BuiltIn, PayloadRow};
+
+        /// The row of a by-name subscription on Postgres, read and bound by its built-in dialect.
+        type Named = NamedRow<BuiltIn<Postgres>>;
 
         const SPEC: TableSpec<'static> =
             TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
@@ -814,7 +884,7 @@ mod tests {
                 held: lease,
             };
             let mut arguments = PgArguments::default();
-            let bound = <NamedRow as Events<Postgres>>::bind(param, &mut arguments, &values)?;
+            let bound = <Named as Events<Postgres>>::bind(param, &mut arguments, &values)?;
             Ok((bound, arguments.len()))
         }
 
@@ -825,7 +895,7 @@ mod tests {
                 ..KINDS
             }));
             let before = Utc::now();
-            let lease = <NamedRow as Events<Postgres>>::lease(queue, Now::default())?;
+            let lease = <Named as Events<Postgres>>::lease(queue, Now::default())?;
             assert!(
                 matches!(
                     lease,
@@ -853,8 +923,7 @@ mod tests {
                 (false, 0)
             );
             // A queue whose kinds name no lease cannot tell one.
-            let refused =
-                <NamedRow as Events<Postgres>>::lease(leased(Some(KINDS)), Now::default());
+            let refused = <Named as Events<Postgres>>::lease(leased(Some(KINDS)), Now::default());
             assert!(
                 matches!(refused, Err(sqlx::Error::Configuration(_))),
                 "{refused:?}"
@@ -953,25 +1022,22 @@ mod tests {
         fn a_named_row_lends_its_parts_and_leaves_every_event_to_the_crate() {
             let mut row = row(FITTING);
             assert_eq!(row.payload(), b"{}");
-            assert_eq!(<NamedRow as Events<Postgres>>::id(&row), &NamedId::I64(7));
+            assert_eq!(<Named as Events<Postgres>>::id(&row), &NamedId::I64(7));
             assert_eq!(
-                <NamedRow as Events<Postgres>>::partition_key(&row),
+                <Named as Events<Postgres>>::partition_key(&row),
                 Some(b"acme".as_slice())
             );
-            assert_eq!(<NamedRow as Events<Postgres>>::attempt(&row), Some(2));
+            assert_eq!(<Named as Events<Postgres>>::attempt(&row), Some(2));
             let mut headers = HeaderMap::new();
             headers.insert("x-tenant", "acme");
             row.headers = headers.clone();
             // The delivery takes the headers once: they move out of the row.
+            assert_eq!(<Named as Events<Postgres>>::take_headers(&mut row), headers);
+            assert!(<Named as Events<Postgres>>::take_headers(&mut row).is_empty());
+            assert_eq!(<Named as Events<Postgres>>::SHAPE, Shape::default());
+            assert_eq!(<Named as Events<Postgres>>::kinds(), None);
             assert_eq!(
-                <NamedRow as Events<Postgres>>::take_headers(&mut row),
-                headers
-            );
-            assert!(<NamedRow as Events<Postgres>>::take_headers(&mut row).is_empty());
-            assert_eq!(<NamedRow as Events<Postgres>>::SHAPE, Shape::default());
-            assert_eq!(<NamedRow as Events<Postgres>>::kinds(), None);
-            assert_eq!(
-                <NamedRow as Events<Postgres>>::unfit_header(&headers),
+                <Named as Events<Postgres>>::unfit_header(&headers),
                 Some("x-tenant")
             );
         }

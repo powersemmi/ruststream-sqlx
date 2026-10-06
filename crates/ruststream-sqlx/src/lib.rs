@@ -10,12 +10,12 @@ pub mod prelude;
 
 #[cfg(feature = "inbox")]
 pub use inbox::{
-    Ack, AttemptColumn, BuiltIn, BuiltInDialect, Claim, Clock, ClosedSqlxBroker,
+    Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
     InboxDelivery, InboxQueue, InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow,
-    NamedDelivery, NamedSubscriber, PayloadRow, Publish, QueueDatabase, QueueTime, Repository,
-    RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker, SqlxBrokerError,
-    SystemClock, TimeColumn, TimeSource,
+    NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Publish, QueueDatabase, QueueTime,
+    Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker,
+    SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -38,9 +38,7 @@ pub mod __private {
         no_lease, now, put, retry, retry_after,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
-    pub use crate::inbox::named::{
-        NamedBytes, NamedDatabase, NamedId, NamedRow, NamedTime, RoleColumns,
-    };
+    pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{
         AdvisoryForm, FormDialect, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase,

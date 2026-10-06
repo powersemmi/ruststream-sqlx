@@ -1,5 +1,5 @@
 //! A dialect of the service's own on Postgres: it wraps the built-in dialect, writes its own
-//! acknowledgement, and takes the forms whose traits it implements.
+//! acknowledgement, and takes the forms and the by-name subscriptions whose traits it implements.
 
 #![cfg(all(
     feature = "inbox",
@@ -14,15 +14,18 @@ mod live;
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
+use ruststream::HeaderMap;
 use ruststream::prelude::*;
 use ruststream::testing::TestApp;
 use ruststream_sqlx::dialect::{
     self, ClaimShape, Dialect, Param, Role, RowLock, Statement, StatementError, TableName,
     TableSpec,
 };
-use ruststream_sqlx::{InboxQueue, SqlxBroker};
+use ruststream_sqlx::{BuiltIn, ByName, InboxQueue, NamedTime, SqlxBroker};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::error::BoxDynError;
+use sqlx::postgres::{PgArguments, PgValueRef};
+use sqlx::{PgPool, Postgres};
 
 use live::postgres::{Db, database};
 use live::rows::row_lock::SendEmail;
@@ -112,6 +115,16 @@ impl RowLock for Audited {
     }
 }
 
+impl ByName<Postgres> for Audited {
+    fn headers(value: PgValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
+        <BuiltIn<Postgres> as ByName<Postgres>>::headers(value)
+    }
+
+    fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), sqlx::Error> {
+        <BuiltIn<Postgres> as ByName<Postgres>>::bind_time(arguments, time)
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Email {
     to: String,
@@ -132,6 +145,11 @@ fn broker(pool: &PgPool) -> SqlxBroker<Db, Audited> {
 
 #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 async fn send(_email: &Email) -> HandlerOutcome {
+    HandlerOutcome::ack()
+}
+
+#[subscriber("emails")]
+async fn send_by_name(_email: &Email) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
@@ -163,6 +181,39 @@ async fn a_dialect_of_the_services_own_takes_rows_by_row_lock_and_acknowledges_i
             false
         )],
         "the dialect's own acknowledgement moved the row and left it unmarked"
+    );
+    tb.shutdown().await.expect("the app stops");
+    db.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dialect_of_the_services_own_serves_subscriptions_by_name() {
+    let Some(db) = database().await else { return };
+    let app = RustStream::new(AppInfo::new("audit", "0.0.0")).with_broker(broker(&db.pool), |b| {
+        b.include(send_by_name);
+    });
+    let tb = TestApp::start_live(app).await.expect("the app starts");
+    tb.broker::<SqlxBroker<Db, Audited>>()
+        .message(&email())
+        .to("emails")
+        .publish()
+        .await
+        .expect("the publish settles");
+
+    tb.broker::<SqlxBroker<Db, Audited>>()
+        .subscriber("emails")
+        .assert_called_once()
+        .with(&email())
+        .settled(HandlerOutcome::ack());
+    assert_eq!(
+        db.email_rows("email_jobs").await,
+        [(
+            ACKNOWLEDGED.to_owned(),
+            br#"{"to":"a@example.com"}"#.to_vec(),
+            1,
+            false
+        )],
+        "the by-name subscription acknowledged through the dialect's own statement"
     );
     tb.shutdown().await.expect("the app stops");
     db.finish().await;

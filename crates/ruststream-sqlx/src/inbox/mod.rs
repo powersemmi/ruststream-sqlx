@@ -37,7 +37,7 @@ pub use events::{
     Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Publish, Retry, RetryAfter,
 };
 pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
-pub use named::{NamedDelivery, NamedSubscriber};
+pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use subscriber::InboxSubscriber;
