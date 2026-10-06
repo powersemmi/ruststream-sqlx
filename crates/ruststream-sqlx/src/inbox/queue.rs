@@ -754,7 +754,7 @@ where
             drop(shared.runtime.spawn(lease::keep(book, stop.clone())));
             (Holding::Leases(book), Some(stop.drop_guard()))
         }
-        None => (Holding::Locks, None),
+        None => (Holding::Transaction, None),
     };
     Ok(InboxSubscriber::new(
         Arc::clone(shared),

@@ -4,7 +4,6 @@
 //! Nothing here is named by a service; the derive and the broker are its only callers.
 
 use std::collections::{HashMap, HashSet};
-use std::convert::identity;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, PoisonError};
@@ -24,8 +23,13 @@ use super::testing::TestClock;
 use super::time::{QueueTime, TimeSource};
 
 mod advisory;
+mod claim;
+mod settle;
 
 pub use advisory::{Candidates, lock, match_taken, take, take_id, unlock};
+pub use claim::{claim_ids, claim_rows, fetch_by_ids, match_claimed, match_rows};
+pub(crate) use claim::{stamp, take_group};
+pub use settle::{ack, dead_letter, discard, extend, retry, retry_after};
 
 /// A row's whole contract with the broker. Machinery; the derive implements it, a service never
 /// names it.
@@ -699,134 +703,6 @@ where
     Ok(arguments)
 }
 
-/// The default claim: whole rows, in one statement.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn claim_rows<DB, Row>(
-    conn: &mut DB::Connection,
-    cx: &Claiming,
-    lease: Option<&Leasing<Row::Token>>,
-    out: &mut Vec<Claimed<Row>>,
-) -> Result<(), Error>
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-    Row::Id: for<'r> Decode<'r, DB> + Type<DB>,
-{
-    let statement = cx
-        .queue
-        .prepared
-        .claim
-        .ok_or_else(|| unprepared(Event::Claim))?;
-    let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim, lease))?;
-    DB::fetch_rows(conn, statement.sql, arguments, cx.queue, out).await
-}
-
-/// The default claim of ids, for a fetch of the service's own.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn claim_ids<DB, Row>(
-    conn: &mut DB::Connection,
-    cx: &Claiming,
-    lease: Option<&Leasing<Row::Token>>,
-) -> Result<Vec<Row::Id>, Error>
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-    Row::Id: for<'r> Decode<'r, DB> + Type<DB> + Unpin,
-{
-    let statement = cx
-        .queue
-        .prepared
-        .claim
-        .ok_or_else(|| unprepared(Event::Claim))?;
-    let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim, lease))?;
-    DB::fetch_ids(conn, statement.sql, arguments).await
-}
-
-/// The default fetch of the rows of `ids`, after a claim of the service's own.
-///
-/// Each row comes as the claim reads it: whole, or [`Claimed::Undecodable`].
-///
-/// # Errors
-///
-/// The database's error, or the decode error of a row whose id does not decode either.
-pub async fn fetch_by_ids<DB, Row>(
-    conn: &mut DB::Connection,
-    cx: &Claiming,
-    lease: Option<&Leasing<Row::Token>>,
-    ids: &[Row::Id],
-) -> Result<Vec<Claimed<Row>>, Error>
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-    Row::Id: for<'r> Decode<'r, DB> + Type<DB>,
-{
-    let statement = cx
-        .queue
-        .prepared
-        .fetch
-        .ok_or_else(|| unprepared(Event::Fetch))?;
-    let values = Values {
-        ids,
-        ..Values::claiming(*cx, Event::Fetch, lease)
-    };
-    let arguments = arguments::<DB, Row>(statement, &values)?;
-    let mut fetched = Vec::with_capacity(ids.len());
-    DB::fetch_rows(conn, statement.sql, arguments, cx.queue, &mut fetched).await?;
-    Ok(fetched)
-}
-
-/// Pairs claimed ids with what the crate's fetch returned, in claim order.
-///
-/// A row or an [`Claimed::Undecodable`] entry goes with its id, an id with neither is
-/// [`Claimed::Missing`], and an entry no id claimed is left alone.
-pub fn match_claimed<DB, Row>(
-    ids: Vec<Row::Id>,
-    fetched: Vec<Claimed<Row>>,
-    out: &mut Vec<Claimed<Row>>,
-) where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-    Row::Id: PartialEq,
-{
-    pair(ids, fetched, Claimed::id::<DB>, identity, out);
-}
-
-/// Pairs claimed ids with the rows a fetch of the service's own returned, as [`match_claimed`]
-/// does.
-pub fn match_rows<DB, Row>(ids: Vec<Row::Id>, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-    Row::Id: PartialEq,
-{
-    pair(ids, rows, Row::id, Claimed::Row, out);
-}
-
-/// Pairs each of `ids` with the entry `id_of` names it in, turned into its row by `claimed`.
-fn pair<Row, Entry>(
-    ids: Vec<Row::Id>,
-    mut fetched: Vec<Entry>,
-    id_of: impl Fn(&Entry) -> &Row::Id,
-    claimed: impl Fn(Entry) -> Claimed<Row>,
-    out: &mut Vec<Claimed<Row>>,
-) where
-    Row: QueueRow,
-    Row::Id: PartialEq,
-{
-    for id in ids {
-        match fetched.iter().position(|entry| id_of(entry) == &id) {
-            Some(position) => out.push(claimed(fetched.swap_remove(position))),
-            None => out.push(Claimed::Missing(id)),
-        }
-    }
-}
-
 /// Runs `statement` with `values` and returns the rows it changed.
 async fn run<DB, Row>(
     conn: &mut DB::Connection,
@@ -840,183 +716,6 @@ where
     let statement = statement.ok_or_else(|| unprepared(values.event))?;
     let arguments = arguments::<DB, Row>(statement, &values)?;
     DB::execute(conn, statement.sql, arguments).await
-}
-
-/// What a settlement statement of `queue` that changed `changed` rows did.
-const fn settled(queue: &Queue, changed: u64) -> Settled {
-    // Why the form decides: a statement names the row and its token only in the lease form, where
-    // a row that changed nothing holds another lease; a row lock settlement commits whatever ran.
-    if queue.lease.is_some() && changed == 0 {
-        Settled::Lost
-    } else {
-        Settled::Written
-    }
-}
-
-/// The default `ack`.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn ack<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: Option<&Row::Token>,
-) -> Result<Settled, Error> {
-    let values = Values::settling(*cx, Event::Ack, id, held.copied());
-    let changed = run::<DB, Row>(conn, cx.queue.prepared.ack, values).await?;
-    Ok(settled(cx.queue, changed))
-}
-
-/// The default `retry()`.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn retry<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: Option<&Row::Token>,
-) -> Result<Settled, Error> {
-    let Some(statement) = cx.queue.prepared.retry else {
-        return Ok(Settled::Untouched);
-    };
-    let values = Values::settling(*cx, Event::Retry, id, held.copied());
-    let changed = run::<DB, Row>(conn, Some(statement), values).await?;
-    Ok(settled(cx.queue, changed))
-}
-
-/// The default `retry_after(d)`.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: Option<&Row::Token>,
-    delay: Duration,
-) -> Result<Settled, Error> {
-    let values = Values {
-        delay,
-        ..Values::settling(*cx, Event::RetryAfter, id, held.copied())
-    };
-    let changed = run::<DB, Row>(conn, cx.queue.prepared.retry_after, values).await?;
-    Ok(settled(cx.queue, changed))
-}
-
-/// The default `drop`.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: Option<&Row::Token>,
-) -> Result<Settled, Error> {
-    let values = Values::settling(*cx, Event::Discard, id, held.copied());
-    let changed = run::<DB, Row>(conn, cx.queue.prepared.discard, values).await?;
-    Ok(settled(cx.queue, changed))
-}
-
-/// The default dead-letter move: one statement, or two where the dialect splits the move, the
-/// second run only once the first moved the row.
-///
-/// In the lease form every statement of the move must change the row: one that changes nothing
-/// found the row under another lease, and the move is [`Settled::Lost`], which rolls back the
-/// transaction both statements run in.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: Option<&Row::Token>,
-    destination: &str,
-) -> Result<Settled, Error> {
-    let values = Values {
-        destination,
-        ..Values::settling(*cx, Event::DeadLetter, id, held.copied())
-    };
-    let changed = run::<DB, Row>(conn, cx.queue.prepared.dead_letter, values).await?;
-    let moved = settled(cx.queue, changed);
-    let (Settled::Written, Some(then)) = (moved, cx.queue.prepared.dead_letter_then) else {
-        return Ok(moved);
-    };
-    // Why the second count matters: the copy may read the row without locking it (it does at READ
-    // COMMITTED), so another claim may take the row before the delete runs, and committing then
-    // would leave the row in the queue and in the destination at once.
-    let values = Values {
-        destination,
-        ..Values::settling(*cx, Event::DeadLetter, id, held.copied())
-    };
-    let changed = run::<DB, Row>(conn, Some(then), values).await?;
-    Ok(settled(cx.queue, changed))
-}
-
-/// The default extension: writes `until` into the lease while the row holds `held`.
-///
-/// # Errors
-///
-/// The database's error.
-pub async fn extend<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: &Row::Token,
-    until: &Row::Token,
-) -> Result<Settled, Error> {
-    let values = Values {
-        lease: Some(*until),
-        ..Values::settling(*cx, Event::Extend, id, Some(*held))
-    };
-    let changed = run::<DB, Row>(conn, cx.queue.prepared.extend, values).await?;
-    Ok(settled(cx.queue, changed))
-}
-
-/// Takes the subscription's group for the claim's transaction with `guard`, the queue's guard;
-/// `false` when another transaction holds the group, and the claim then takes nothing.
-///
-/// The guard binds as the claim binds, with the claim's `lease`, so the guard of a dialect of the
-/// service's own may compare the times the claim compares.
-///
-/// # Errors
-///
-/// The database's error.
-pub(crate) async fn take_group<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Claiming,
-    guard: Stmt,
-    lease: Option<&Leasing<Row::Token>>,
-) -> Result<bool, Error> {
-    let arguments = arguments::<DB, Row>(guard, &Values::claiming(*cx, Event::Claim, lease))?;
-    DB::fetch_flag(conn, guard.sql, arguments).await
-}
-
-/// Leases the claimed row `id` with `lease`, inside the claim's transaction; `false` when another
-/// lease holds the row, which the claim then passes over.
-///
-/// # Errors
-///
-/// The database's error.
-pub(crate) async fn stamp<DB: QueueDatabase, Row: Events<DB>>(
-    conn: &mut DB::Connection,
-    cx: &Claiming,
-    id: &Row::Id,
-    lease: &Leasing<Row::Token>,
-) -> Result<bool, Error> {
-    let values = Values {
-        id: Some(id),
-        ..Values::claiming(*cx, Event::Stamp, Some(lease))
-    };
-    Ok(run::<DB, Row>(conn, cx.queue.prepared.stamp, values).await? > 0)
 }
 
 impl<Row: QueueRow> Claimed<Row> {

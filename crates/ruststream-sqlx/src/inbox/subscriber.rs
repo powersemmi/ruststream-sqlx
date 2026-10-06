@@ -95,7 +95,7 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>> {
 /// How a subscription holds the rows it claimed until they settle.
 pub(crate) enum Holding<DB: QueueDatabase, Row: Events<DB>> {
     /// In the claim's transaction: the row lock form.
-    Locks,
+    Transaction,
     /// By the lease the claim wrote and committed, each delivery's kept in the subscription's
     /// book: the lease form.
     Leases(&'static LeaseBook<DB, Row>),
@@ -316,7 +316,7 @@ where
     };
     rows.clear();
     let book = match holding {
-        Holding::Locks => {
+        Holding::Transaction => {
             let mut tx = begin(pool, queue).await?;
             let claimed = async {
                 // The transaction keeps the group until the delivery settles. A claim that finds
