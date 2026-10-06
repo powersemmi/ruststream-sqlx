@@ -382,3 +382,58 @@ mod side_by_side {
         }
     }
 }
+
+/// What MySQL and MariaDB refuse: a group that keeps its order, claimed at SERIALIZABLE.
+#[cfg(feature = "mysql")]
+mod at_serializable {
+    use chrono::DateTime;
+    use ruststream_sqlx::dialect::StatementError;
+    use ruststream_sqlx::{Inbox, SqlxBrokerError};
+    use sqlx::FromRow;
+
+    use super::*;
+
+    /// The ledger in the row lock form, its claims opened at SERIALIZABLE.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "ledger", isolation = serializable)]
+    struct SerialEntry {
+        #[field(id, generated)]
+        id: i64,
+        #[field(group, fifo = true)]
+        account: String,
+        #[field(retry_after)]
+        retry_after: DateTime<Utc>,
+        #[field(processed_at)]
+        processed_at: Option<DateTime<Utc>>,
+        #[field(payload)]
+        payload: Vec<u8>,
+    }
+
+    crate::live::mysql_stands! {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_fifo_row_lock_table_at_serializable_is_refused() {
+            let Some(db) = database().await else { return };
+            let connected = SqlxBroker::new(db.pool.clone())
+                .connect_in_process()
+                .await
+                .expect("the broker connects");
+            let refused = InboxQueue::<SerialEntry>::new(ACCOUNT)
+                .subscribe(&connected)
+                .await;
+            // The guard refuses the level, and the subscription stops when it starts.
+            assert!(
+                matches!(
+                    &refused,
+                    Err(SqlxBrokerError::Dialect {
+                        subscription,
+                        source: StatementError::FifoAtSerializable { dialect: "mysql" },
+                        ..
+                    }) if subscription == ACCOUNT
+                ),
+                "{refused:?}"
+            );
+            connected.shutdown().await.expect("the broker shuts down");
+            db.finish().await;
+        }
+    }
+}

@@ -630,6 +630,37 @@ fn a_fifo_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn a_fifo_row_lock_table_claims_below_serializable() -> Result<(), Box<dyn Error>> {
+    // Every read of a SERIALIZABLE transaction locks, so the guard's count of the group would wait
+    // for the row another claim holds instead of answering at once.
+    let serializable = LEDGER.isolation(Isolation::Serializable);
+    assert_eq!(
+        MySql.fifo_guard(&serializable),
+        Err(StatementError::FifoAtSerializable { dialect: "mysql" })
+    );
+    // The levels below it keep the guard.
+    for level in [
+        Isolation::ReadUncommitted,
+        Isolation::ReadCommitted,
+        Isolation::RepeatableRead,
+    ] {
+        assert!(
+            MySql.fifo_guard(&LEDGER.isolation(level))?.is_some(),
+            "{level:?}"
+        );
+    }
+    // A lease claim opens at READ COMMITTED whatever the table names, and keeps its guard.
+    let leased = LEASED_LEDGER.isolation(Isolation::Serializable);
+    assert!(MySql.fifo_guard(&leased)?.is_some());
+    // A table whose groups keep no order takes no group at any level.
+    assert_eq!(
+        MySql.fifo_guard(&EMAILS.isolation(Isolation::Serializable))?,
+        None
+    );
+    Ok(())
+}
+
+#[test]
 fn a_claim_transaction_opens_at_read_committed_in_both_forms() -> Result<(), StatementError> {
     let read_committed = Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION");
     // A table that names no isolation level opens its row lock claim at READ COMMITTED.

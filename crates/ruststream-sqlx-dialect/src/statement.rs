@@ -414,6 +414,18 @@ pub enum StatementError {
         /// The opening, as [`Opening::name`](crate::Opening::name) names it.
         opening: &'static str,
     },
+    /// The table keeps its groups in order, takes its rows by row lock and opens its claims at
+    /// SERIALIZABLE, a level at which the dialect's [`fifo_guard`](crate::Dialect::fifo_guard)
+    /// would wait for the group's row in work instead of answering at once.
+    #[error(
+        "the {dialect} dialect claims FIFO groups below SERIALIZABLE: InnoDB turns every read of a \
+         SERIALIZABLE transaction into a locking read, so a claim would wait for the group's row in \
+         work; declare `isolation = repeatable_read` or a lower level"
+    )]
+    FifoAtSerializable {
+        /// The dialect's name.
+        dialect: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -505,6 +517,12 @@ mod tests {
             }
             .to_string(),
             "the postgres dialect opens no transaction at isolation `read_uncommitted`"
+        );
+        assert_eq!(
+            StatementError::FifoAtSerializable { dialect: "mysql" }.to_string(),
+            "the mysql dialect claims FIFO groups below SERIALIZABLE: InnoDB turns every read of a \
+             SERIALIZABLE transaction into a locking read, so a claim would wait for the group's \
+             row in work; declare `isolation = repeatable_read` or a lower level"
         );
     }
 }

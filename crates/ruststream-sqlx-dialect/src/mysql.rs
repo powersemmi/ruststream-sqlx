@@ -4,7 +4,7 @@ use std::num::NonZeroUsize;
 
 use crate::advisory::Advisory;
 use crate::dialect::Dialect;
-use crate::form::KeyPart;
+use crate::form::{Form, KeyPart};
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
 use crate::row_lock::RowLock;
@@ -95,7 +95,10 @@ const MARIADB_FLOOR: Floor = Floor {
 /// skips the rows other transactions hold: the group is the claim's when the read took all of
 /// them. The rows stay locked until the transaction ends, in the row lock form until the delivery
 /// settles, and a write to one of them from elsewhere waits that long. Each claim reads every
-/// unfinished row of its group, and the whole table where the group's column has no index.
+/// unfinished row of its group, and the whole table where the group's column has no index. A row
+/// lock table with FIFO groups claims below SERIALIZABLE: every read of a SERIALIZABLE
+/// transaction locks the rows it reads, so the guard would wait for the group's row in work, and
+/// it refuses such a table with [`StatementError::FifoAtSerializable`].
 ///
 /// # Examples
 ///
@@ -303,6 +306,17 @@ impl Dialect for MySql {
     fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
         if !self.guards_group(spec)? {
             return Ok(None);
+        }
+        // Why a refusal: InnoDB turns every read of a SERIALIZABLE transaction into a locking
+        // read, so the plain count below would wait for the row another claim holds instead of
+        // answering at once. A lease claim opens at READ COMMITTED whatever the table names, so
+        // only the row lock form claims at the table's level.
+        if matches!(spec.form(), Form::RowLock)
+            && spec.opening() == Opening::Isolation(Isolation::Serializable)
+        {
+            return Err(StatementError::FifoAtSerializable {
+                dialect: self.name(),
+            });
         }
         // A named lock belongs to the session here, not to the transaction. A locking read that
         // skips the rows other transactions hold takes every unfinished row of the group only
