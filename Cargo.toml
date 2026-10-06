@@ -26,7 +26,7 @@ quote = "1"
 syn = "3"
 thiserror = "2"
 trybuild = "1.0.121"
-ruststream = { version = "0.7", default-features = false }
+ruststream = { version = "0.7.1", default-features = false }
 # The drivers come from the `postgres` and `mysql` features; TLS and the compile-time macros come
 # from the service's own sqlx dependency, which cargo unifies with this one.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
