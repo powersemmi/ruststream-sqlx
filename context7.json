@@ -8,6 +8,9 @@
     "Declare `max_attempts(..)` and `dead_letter(..)` together on an inbox mount: `max_attempts(1)` sends every failure to the dead letter at once, and one without the other stops the service at startup.",
     "In the advisory lock form (`#[inbox(advisory_lock = \"..\")]`) each delivery in work holds a pool connection of its own until it settles, batches included: size the pool for `workers(n)` or the batch size, plus the inserts the handlers publish.",
     "Serve a SQLite file with advisory lock tables from one process: the process keeps their locks, and two processes on one file deliver a row twice.",
-    "On Postgres, advisory lock tables need a direct connection or PgBouncer in session pooling: the lock lives in the database session, which transaction pooling hands to other clients."
+    "On Postgres, advisory lock tables need a direct connection or PgBouncer in session pooling: the lock lives in the database session, which transaction pooling hands to other clients.",
+    "Mount an inbox handler with `.transactional()` (`b.include(handler.transactional())`) before it takes its delivery's transaction as its first `Ctx`, `Ctx(mut tx): Ctx<keys::Tx<DB>>`, and writes through `&mut *tx`: acknowledgement commits those writes, and every other outcome rolls them back.",
+    "Take an inbox handler's `Ctx` keys in the order `keys::Tx`, `keys::Pool`, `keys::Attempt`, leaving out the ones it does not need: the first `Ctx` decides which keys compile after it.",
+    "In transactional mode each delivery in work holds a pool connection for its transaction, in the lease form too: a handler that takes another one, through `Ctx<keys::Pool<DB>>` or a publish, needs a pool larger than its `workers(n)`."
   ]
 }

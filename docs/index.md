@@ -17,6 +17,11 @@ database session of the connection that serves the delivery. No transaction stay
 that share a key go into work one at a time. SQLite tables take the lease or the advisory lock
 form.
 
+A handler mounted with `.transactional()` writes through its delivery's transaction, in every
+form. Acknowledgement commits the handler's writes and finishes the row in one transaction. Every
+other outcome rolls the writes back. While a delivery is in work, its transaction holds a
+connection of the pool.
+
 A subscription caps the deliveries of a message with `max_attempts(n)` and names, with
 `dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are
 declared together. With `max_attempts(1)`, every failure moves the row at once.

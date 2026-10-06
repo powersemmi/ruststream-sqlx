@@ -23,6 +23,8 @@ Where things are:
 - [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
 - [`Repository`] and [`Routed`]: publishing into tables.
 - [`keys`]: what a handler reads off a delivery.
+- [`InboxSettings::transactional`] and [`Tx`]: transactional mode, where a handler writes through
+  its delivery's transaction.
 - [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
   implements.
 
@@ -197,7 +199,9 @@ A publish takes a connection of its own for its insert. In the row lock form a s
 on top: a pool without that room makes them wait for its `acquire_timeout`. In the lease form a
 claim and a settlement each take a connection only for their statements, and each subscription
 takes one each half lease to extend the leases in work. In the advisory lock form each delivery
-in work holds a connection of its own until it settles, in a batch too.
+in work holds a connection of its own until it settles, in a batch too. In
+[transactional mode](#transactional-mode) each delivery in work holds a connection for the
+transaction its handler writes through, in every form.
 
 ## The lease form
 
@@ -282,10 +286,10 @@ key that starts with its table's name keeps them apart.
 
 A claim selects candidates: as many due rows of the queue as it may take, in claim order, each
 with its key. It locks each candidate's key on a connection of its own, without waiting, and
-passes over a key held elsewhere. Then it takes the row while the row is still claimable: the take counts the attempt and
-reads the row. A row that another holder settled between the select and the lock is passed over,
-and its lock released. The take commits the count, so a crash spends an attempt, as in the lease
-form. A delivery reports the attempt as it stood before its claim.
+passes over a key held elsewhere. Then it takes the row while the row is still claimable: the
+take counts the attempt and reads the row. A row that another holder settled between the select
+and the lock is passed over, and its lock released. The take commits the count, so a crash spends
+an attempt, as in the lease form. A delivery reports the attempt as it stood before its claim.
 
 A settlement runs its statement on the delivery's connection, where it commits on its own. Then
 the lock is released, and the connection goes back to the pool. `retry()` runs no statement: the
@@ -412,6 +416,149 @@ and the take. On SQL Server its lock runs `sp_getapplock` with the session as th
 wait, and its release runs `sp_releaseapplock`. Each of the two answers one 64-bit integer,
 nonzero where it took or released the lock.
 
+# Transactional mode
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use std::error::Error;
+
+use ruststream_sqlx::prelude::*;
+use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, PgPool, Postgres};
+
+// signup_jobs: id BIGSERIAL PRIMARY KEY, attempt SMALLINT NOT NULL DEFAULT 1,
+// payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "signup_jobs")]
+pub struct OpenAccount {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    attempt: i16,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+// welcome_jobs, the mailer's queue: id BIGSERIAL PRIMARY KEY, payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "welcome_jobs")]
+pub struct SendWelcome {
+    #[field(id, generated)]
+    id: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Signup {
+    email: String,
+}
+
+#[derive(Serialize)]
+pub struct Welcome<'a> {
+    to: &'a str,
+}
+
+// The account and its welcome email, written on the connection of the delivery's transaction.
+async fn open(
+    conn: &mut PgConnection,
+    signup: &Signup,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    sqlx::query("INSERT INTO accounts (email) VALUES ($1)")
+        .bind(&signup.email)
+        .execute(&mut *conn)
+        .await?;
+    let welcome = SendWelcome {
+        id: 0,
+        payload: serde_json::to_vec(&Welcome { to: &signup.email })?,
+    };
+    welcome.insert(conn).await?;
+    Ok(())
+}
+
+#[subscriber(InboxQueue::<OpenAccount>::new("signups"))]
+async fn open_account(
+    signup: &Signup,
+    Ctx(mut tx): Ctx<keys::Tx<Postgres>>,
+    Ctx(pool): Ctx<keys::Pool<Postgres>>,
+    Ctx(attempt): Ctx<keys::Attempt>,
+) -> HandlerOutcome {
+    if let Err(error) = open(&mut *tx, signup).await {
+        // Through the pool: the note stays when the retry rolls the transaction back.
+        let _ = sqlx::query("INSERT INTO signup_errors (email, error) VALUES ($1, $2)")
+            .bind(&signup.email)
+            .bind(format!("attempt {}: {error}", attempt.unwrap_or(1)))
+            .execute(&pool)
+            .await;
+        return HandlerOutcome::retry();
+    }
+    // The commit keeps the account and its welcome email, and finishes the signup.
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(open_account.transactional());
+    })
+}
+# }
+# fn main() {}
+```
+
+`.transactional()` at the mount site switches an [`InboxQueue`] subscription to transactional
+mode, where the handler writes through its delivery's transaction. The handler takes that
+transaction as its first `Ctx` parameter, `Ctx(mut tx): Ctx<keys::Tx<Postgres>>`, and runs its
+statements through `&mut *tx`. A handler that takes `keys::Tx` on a subscription without the step
+does not compile, and the error names the step.
+
+Acknowledgement commits the handler's writes together with the row's settlement. Every other
+outcome rolls them back first, then settles the row as it would without the step. A handler that
+panics while it holds `tx` commits none of its writes, even where its panic policy acknowledges
+the delivery. A delivery dropped unsettled closes its connection, and the server rolls its
+transaction back.
+
+A task the handler writes through `tx` into a queue table, with [`Insert`] or its own SQL, commits
+with the acknowledgement too. A write through the pool that `Ctx<keys::Pool<DB>>` gives commits on
+its own, whatever the outcome. So does a publish through the broker.
+
+A handler's first `Ctx` decides which of the inbox's keys compile after it: the other two after
+`keys::Tx`, only `keys::Attempt` after `keys::Pool`, none after `keys::Attempt`. The order
+`keys::Tx`, `keys::Pool`, `keys::Attempt` fits every handler, with the keys it does not need left
+out.
+
+What the transaction is depends on the form:
+
+- In the row lock form it is the claim's transaction. The subscription sets a savepoint right
+  after each claim, one more statement per delivery. A settlement other than acknowledgement rolls
+  back to it, so a retry discards the handler's writes and still counts the attempt.
+- In the lease form the crate opens a transaction for each delivery once its claim has committed.
+  Acknowledgement runs in it and takes effect only while the row still holds the delivery's lease.
+  A lost lease rolls the whole transaction back, and the settlement returns
+  [`SqlxBrokerError::LeaseLost`].
+- In the advisory lock form the crate opens the transaction on the connection that holds the row's
+  key, after the take. The settlement ends the transaction before it releases the lock.
+
+Each of these transactions opens at the table's isolation level or SQLite mode
+([Isolation and mode](#isolation-and-mode)). On SQLite a delivery's transaction takes the
+database's write lock at its first write, or at its start under `mode = immediate` or
+`exclusive`, and holds it until the delivery settles. It keeps every other writer of the database
+out meanwhile, claims included.
+
+Each delivery in work holds one connection of the pool for its transaction, in every form. A
+handler that takes a second connection, through `keys::Pool` or a publish, needs a pool larger
+than its `workers(n)`: a pool without that room makes it wait for the pool's `acquire_timeout`.
+Transactional mode serves single deliveries: a batch handler mounted with `.transactional()` does
+not compile.
+
+The transaction goes back to the delivery when the handler's `Tx` drops. A settlement that finds
+it still out, in a task the handler moved it into, returns [`SqlxBrokerError::TransactionHeld`],
+and the transaction rolls back when that `Tx` drops.
+
+On MySQL and MariaDB the settlement after a handler that cut a statement through `tx` short, as a
+`select!` around a query does, can read that statement's reply as its own, a bug of sqlx-mysql
+0.9.0.
+
 # Isolation and mode
 
 ```no_run
@@ -462,8 +609,10 @@ transaction serializable. Its mode decides when a transaction takes the write lo
 
 The declaration governs the transactions the crate opens for a delivery's work. In the row lock
 form that is the claim's transaction: it holds the rows while their handler runs, and their
-settlement commits it. A table that declares neither opens them with a plain `BEGIN` on Postgres
-and SQLite, at the database's default, and at READ COMMITTED on MySQL and MariaDB.
+settlement commits it. In [transactional mode](#transactional-mode) it is also the transaction the
+handler writes through, in every form. A table that declares neither opens them with a plain
+`BEGIN` on Postgres and SQLite, at the database's default, and at READ COMMITTED on MySQL and
+MariaDB.
 
 Each database takes the levels it keeps: Postgres `read_committed`, `repeatable_read` and
 `serializable`; MySQL and MariaDB all four; SQLite the three modes. Postgres runs READ UNCOMMITTED
@@ -790,8 +939,9 @@ The dialect is the broker's second type parameter, and each thing its tables can
 implements:
 
 - [`Dialect`](dialect::Dialect): names, placeholders, the statement that opens a transaction at a
-  table's level, and the statements every form runs to settle a row, move a dead letter, fetch
-  rows and insert one;
+  table's level, the savepoint a [transactional](#transactional-mode) handler's writes start
+  after, and the statements every form runs to settle a row, move a dead letter, fetch rows and
+  insert one;
 - [`RowLock`](dialect::RowLock): the row lock form and its claim;
 - [`Lease`](dialect::Lease): the lease form, its claim, the extension of a lease in work and the
   stamp of a row a claim only selected;
