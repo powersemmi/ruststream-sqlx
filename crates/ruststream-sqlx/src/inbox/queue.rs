@@ -597,12 +597,15 @@ fn build(
         None => (None, None),
     };
     // The advisory lock form's own statements: the lock and the unlock where the database keeps
-    // the locks, and the take of a candidate whose lock the delivery's session holds.
+    // the locks and the service runs none of its own, and the take of a candidate whose lock the
+    // delivery's session holds.
     let (lock, unlock, take, take_then) = match form.advisory() {
         Some(advisory) => {
             let takes = advisory.take(&spec, description.claim).map_err(refused)?;
             let (take, then) = one_or_two(dialect, "takes a candidate", takes, fail)?;
-            (advisory.lock(), advisory.unlock(), Some(take), then)
+            let lock = advisory.lock().filter(|_| !shape.custom_lock);
+            let unlock = advisory.unlock().filter(|_| !shape.custom_unlock);
+            (lock, unlock, Some(take), then)
         }
         None => (None, None, None, None),
     };

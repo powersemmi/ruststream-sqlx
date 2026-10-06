@@ -1,8 +1,8 @@
-error: unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, `retry_after`, `discard`, `dead_letter` or `extend`
+error: unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, `retry_after`, `discard`, `dead_letter`, `extend`, `lock` or `unlock`
  --> tests/ui/custom.rs:4:32
   |
-4 | #[inbox(table = "jobs", custom(lock))]
-  |                                ^^^^
+4 | #[inbox(table = "jobs", custom(lease))]
+  |                                ^^^^^
 
 error: `publish` has no default to hand over: implement `Publish` for the struct without listing it
   --> tests/ui/custom.rs:11:32
@@ -16,8 +16,26 @@ error: `ack` is listed twice
 18 | #[inbox(table = "jobs", custom(ack, ack))]
    |                                     ^^^
 
-error: `clock` is given twice
-  --> tests/ui/custom.rs:25:46
+error: `lock` is an event of the advisory lock form: add `advisory_lock = ".."` or drop `lock` from `custom(..)`
+  --> tests/ui/custom.rs:25:32
    |
-25 | #[inbox(table = "jobs", clock = SystemClock, clock = SystemClock)]
+25 | #[inbox(table = "jobs", custom(lock, unlock))]
+   |                                ^^^^
+
+error: `unlock` is an event of the advisory lock form: add `advisory_lock = ".."` or drop `unlock` from `custom(..)`
+  --> tests/ui/custom.rs:25:38
+   |
+25 | #[inbox(table = "jobs", custom(lock, unlock))]
+   |                                      ^^^^^^
+
+error: `lock` is listed without `unlock`: the service's own lock is released by its own unlock, so list both in `custom(..)`
+  --> tests/ui/custom.rs:32:61
+   |
+32 | #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock))]
+   |                                                             ^^^^
+
+error: `clock` is given twice
+  --> tests/ui/custom.rs:39:46
+   |
+39 | #[inbox(table = "jobs", clock = SystemClock, clock = SystemClock)]
    |                                              ^^^^^^^^^^^^^^^^^^^

@@ -201,6 +201,11 @@ pub struct Shape {
     pub custom_dead_letter: bool,
     /// `custom(extend)`.
     pub custom_extend: bool,
+    /// `custom(lock)`: the advisory lock form's lock is the service's, so the database, not the
+    /// process, keeps the keys in work on every dialect.
+    pub custom_lock: bool,
+    /// `custom(unlock)`.
+    pub custom_unlock: bool,
 }
 
 /// The event a statement serves, for binding and for messages.

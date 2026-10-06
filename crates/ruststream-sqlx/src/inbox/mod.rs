@@ -36,7 +36,8 @@ pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_in
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{
-    Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Publish, Retry, RetryAfter,
+    Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Lock, Publish, Retry, RetryAfter,
+    Unlock,
 };
 pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
 pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};

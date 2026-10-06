@@ -14,7 +14,7 @@ use tokio::sync::Notify;
 
 use super::broker::Shared;
 use super::database::QueueDatabase;
-use super::engine::{Events, Now, Settling};
+use super::engine::{Events, Now, Prepared, Settling, Shape};
 use super::queue::Queue;
 use super::session::{Closing, Session, Unlock, Unlocking};
 
@@ -31,7 +31,8 @@ pub(crate) struct LockBook<DB: Database> {
     closing: &'static Closing,
     /// The subscription: its statements, and its names for messages.
     queue: &'static Queue,
-    /// Whether the process keeps the keys in work: the subscription prepared no lock statement.
+    /// Whether the process keeps the keys in work: the dialect builds no lock statement and the
+    /// service runs no lock of its own.
     process: bool,
     /// The row's unlock, for a session that closes while it holds a lock.
     unlock: Unlock<DB>,
@@ -87,7 +88,7 @@ impl<DB: QueueDatabase> LockBook<DB> {
             returned: Notify::new(),
             closing: shared.closing,
             queue,
-            process: queue.prepared.lock.is_none(),
+            process: in_process(&queue.prepared, Row::SHAPE),
             unlock: unlock::<DB, Row>,
             #[cfg(feature = "testing")]
             now: shared.harness.now(),
@@ -250,6 +251,12 @@ impl<DB: Database> Drop for LockHold<DB> {
             None => session.release(),
         }
     }
+}
+
+/// Whether the process keeps a subscription's keys in work: its dialect built no lock statement,
+/// and its row runs no lock of the service's own, which holds a key where the service says.
+const fn in_process(prepared: &Prepared, shape: Shape) -> bool {
+    prepared.lock.is_none() && !shape.custom_lock
 }
 
 /// `Row`'s unlock of `key` on `conn`, boxed so the book runs it without the row's type: for a

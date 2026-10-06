@@ -411,6 +411,8 @@ where
         custom_discard: false,
         custom_dead_letter: false,
         custom_extend: false,
+        custom_lock: false,
+        custom_unlock: false,
     };
 
     // The lease in the type of the route's `locked_until` column, which the queue's kinds name.

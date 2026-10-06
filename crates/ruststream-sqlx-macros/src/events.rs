@@ -315,6 +315,8 @@ pub(crate) fn events(
     event_bound(custom.discard, quote!(Discard), &mut predicates);
     event_bound(custom.dead_letter, quote!(DeadLetter), &mut predicates);
     event_bound(custom.extend.is_some(), quote!(Extend), &mut predicates);
+    event_bound(custom.lock.is_some(), quote!(Lock), &mut predicates);
+    event_bound(custom.unlock.is_some(), quote!(Unlock), &mut predicates);
 
     let claim = match (claimed, custom.fetch) {
         (false, false) => quote!(#p::claim_rows::<__DB, Self>(conn, cx, lease, out)),
@@ -416,6 +418,24 @@ pub(crate) fn events(
     } else {
         quote!(#p::extend::<__DB, Self>(conn, cx, id, held, until))
     };
+    // The service's own lock and unlock name the key alone; the crate's bind it into the
+    // statements its dialect built.
+    let lock_event = if custom.lock.is_some() {
+        quote!(async move {
+            let _ = cx;
+            <Self as #r::Lock<__DB>>::lock(conn, key).await
+        })
+    } else {
+        quote!(#p::lock::<__DB, Self>(conn, cx, key))
+    };
+    let unlock_event = if custom.unlock.is_some() {
+        quote!(async move {
+            let _ = cx;
+            <Self as #r::Unlock<__DB>>::unlock(conn, key).await
+        })
+    } else {
+        quote!(#p::unlock::<__DB, Self>(conn, cx, key))
+    };
 
     let flags = [
         claimed,
@@ -426,6 +446,8 @@ pub(crate) fn events(
         custom.discard,
         custom.dead_letter,
         custom.extend.is_some(),
+        custom.lock.is_some(),
+        custom.unlock.is_some(),
     ];
     let kinds = kinds(
         inbox,
@@ -444,6 +466,8 @@ pub(crate) fn events(
         c_discard,
         c_dead,
         c_extend,
+        c_lock_event,
+        c_unlock_event,
     ] = flags;
 
     let mut generics = generics.clone();
@@ -463,6 +487,8 @@ pub(crate) fn events(
                 custom_discard: #c_discard,
                 custom_dead_letter: #c_dead,
                 custom_extend: #c_extend,
+                custom_lock: #c_lock_event,
+                custom_unlock: #c_unlock_event,
             };
 
             type Token = #token;
@@ -638,7 +664,7 @@ pub(crate) fn events(
             ) -> impl ::core::future::Future<
                 Output = ::core::result::Result<bool, #p::sqlx::Error>,
             > + ::core::marker::Send + '__a {
-                #p::lock::<__DB, Self>(conn, cx, key)
+                #lock_event
             }
 
             fn unlock<'__a>(
@@ -648,7 +674,7 @@ pub(crate) fn events(
             ) -> impl ::core::future::Future<
                 Output = ::core::result::Result<bool, #p::sqlx::Error>,
             > + ::core::marker::Send + '__a {
-                #p::unlock::<__DB, Self>(conn, cx, key)
+                #unlock_event
             }
 
             fn take<'__a>(

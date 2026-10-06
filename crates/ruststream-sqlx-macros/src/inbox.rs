@@ -49,8 +49,9 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
 /// The rules `TableSpec`'s types leave to the struct: one id, one field per role, one field per
 /// column, one form, FIFO groups and a claim of the service's own outside the advisory lock form,
-/// `extend` in the lease form. Every broken rule is reported at once, on the field or the event
-/// that breaks it; the field playing `id` comes back.
+/// `extend` in the lease form, `lock` and `unlock` together in the advisory lock form. Every broken
+/// rule is reported at once, on the field or the event that breaks it; the field playing `id` comes
+/// back.
 fn check<'i, 'a>(
     input: &DeriveInput,
     inbox: &'i Inbox<'a>,
@@ -138,8 +139,44 @@ fn check<'i, 'a>(
              `extend` from `custom(..)`",
         ));
     }
+    check_lock(inbox, &mut errors);
     errors.finish()?;
     id.ok_or_else(missing_id)
+}
+
+/// The service's own `lock` and `unlock`: events of the advisory lock form, listed together, since
+/// the service's unlock is what releases the lock its own lock took. Without `advisory_lock` each
+/// listed one is refused; beside it, one listed without the other.
+fn check_lock(inbox: &Inbox<'_>, errors: &mut Errors) {
+    let custom = inbox.table.custom;
+    let listed = [("lock", custom.lock), ("unlock", custom.unlock)];
+    if inbox.table.advisory_lock.is_none() {
+        for (event, span) in listed {
+            if let Some(span) = span {
+                errors.push(syn::Error::new(
+                    span,
+                    format!(
+                        "`{event}` is an event of the advisory lock form: add \
+                         `advisory_lock = \"..\"` or drop `{event}` from `custom(..)`"
+                    ),
+                ));
+            }
+        }
+        return;
+    }
+    match (custom.lock, custom.unlock) {
+        (Some(span), None) => errors.push(syn::Error::new(
+            span,
+            "`lock` is listed without `unlock`: the service's own lock is released by its own \
+             unlock, so list both in `custom(..)`",
+        )),
+        (None, Some(span)) => errors.push(syn::Error::new(
+            span,
+            "`unlock` is listed without `lock`: the service's own unlock releases what its own \
+             lock took, so list both in `custom(..)`",
+        )),
+        _ => {}
+    }
 }
 
 /// The lock key the template names, with each field resolved to the column it reads.
@@ -512,6 +549,84 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(errors(&input), [expected]);
         }
+    }
+
+    #[test]
+    fn the_services_lock_belongs_to_the_advisory_lock_form_and_comes_with_its_unlock() {
+        let unlocked: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(lock, unlock))]
+            struct Job { #[field(id)] job_id: i64 }
+        };
+        assert_eq!(
+            errors(&unlocked),
+            [
+                "`lock` is an event of the advisory lock form: add `advisory_lock = \"..\"` or \
+                 drop `lock` from `custom(..)`",
+                "`unlock` is an event of the advisory lock form: add `advisory_lock = \"..\"` or \
+                 drop `unlock` from `custom(..)`",
+            ]
+        );
+        let lock_alone: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{job_id}", custom(lock))]
+            struct Job { #[field(id)] job_id: i64 }
+        };
+        assert_eq!(
+            errors(&lock_alone),
+            [
+                "`lock` is listed without `unlock`: the service's own lock is released by its own \
+              unlock, so list both in `custom(..)`"
+            ]
+        );
+        let unlock_alone: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{job_id}", custom(unlock))]
+            struct Job { #[field(id)] job_id: i64 }
+        };
+        assert_eq!(
+            errors(&unlock_alone),
+            [
+                "`unlock` is listed without `lock`: the service's own unlock releases what its own \
+              lock took, so list both in `custom(..)`"
+            ]
+        );
+        let paired: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{job_id}", custom(lock, unlock))]
+            struct Job { #[field(id)] job_id: i64 }
+        };
+        assert_eq!(errors(&paired), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_listed_lock_and_unlock_run_the_services_own() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let impls = expand(&input)?.to_string();
+        for expected in [
+            "custom_lock : true",
+            "custom_unlock : true",
+            "Self : :: ruststream_sqlx :: Lock < __DB >",
+            "Self : :: ruststream_sqlx :: Unlock < __DB >",
+            "< Self as :: ruststream_sqlx :: Lock < __DB >> :: lock (conn , key)",
+            "< Self as :: ruststream_sqlx :: Unlock < __DB >> :: unlock (conn , key)",
+        ] {
+            assert!(impls.contains(expected), "{expected}: {impls}");
+        }
+        // The crate's own lock and unlock run for a table that lists neither.
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{id}")]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let impls = expand(&input)?.to_string();
+        for expected in [
+            "custom_lock : false",
+            "custom_unlock : false",
+            ":: ruststream_sqlx :: __private :: lock :: < __DB , Self > (conn , cx , key)",
+            ":: ruststream_sqlx :: __private :: unlock :: < __DB , Self > (conn , cx , key)",
+        ] {
+            assert!(impls.contains(expected), "{expected}: {impls}");
+        }
+        Ok(())
     }
 
     #[test]

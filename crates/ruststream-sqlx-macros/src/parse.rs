@@ -112,6 +112,11 @@ pub(crate) struct Custom {
     /// Where `extend` is listed: an event of the lease form only, which the struct is checked
     /// for.
     pub(crate) extend: Option<Span>,
+    /// Where `lock` is listed: an event of the advisory lock form, listed with `unlock`, which
+    /// the struct is checked for.
+    pub(crate) lock: Option<Span>,
+    /// Where `unlock` is listed, as `lock` is.
+    pub(crate) unlock: Option<Span>,
 }
 
 impl Custom {
@@ -137,7 +142,7 @@ impl Custom {
         let Some(slot) = self.slot(&word) else {
             return Err(event.error(
                 "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
-                 `retry_after`, `discard`, `dead_letter` or `extend`",
+                 `retry_after`, `discard`, `dead_letter`, `extend`, `lock` or `unlock`",
             ));
         };
         if std::mem::replace(slot, true) {
@@ -151,6 +156,8 @@ impl Custom {
         Some(match word {
             "claim" => &mut self.claim,
             "extend" => &mut self.extend,
+            "lock" => &mut self.lock,
+            "unlock" => &mut self.unlock,
             _ => return None,
         })
     }
@@ -878,9 +885,9 @@ mod tests {
                 "`#[field(..)]` names nothing: give it a role, `generated`, or both",
             ),
             (
-                parse_quote! { #[inbox(table = "jobs", custom(lock))] struct Job { #[field(id)] id: i64 } },
+                parse_quote! { #[inbox(table = "jobs", custom(lease))] struct Job { #[field(id)] id: i64 } },
                 "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
-                 `retry_after`, `discard`, `dead_letter` or `extend`",
+                 `retry_after`, `discard`, `dead_letter`, `extend`, `lock` or `unlock`",
             ),
             (
                 parse_quote! { #[inbox(table = "jobs", custom(publish))] struct Job { #[field(id)] id: i64 } },
@@ -959,6 +966,31 @@ mod tests {
             .clock
             .map(|path| quote::quote!(#path).to_string());
         assert_eq!(clock.as_deref(), Some("crate :: Offset"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_lock_and_the_unlock_are_read_where_they_are_listed() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(unlock, lock))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let custom = inbox(&input)?.table.custom;
+        assert!(custom.lock.is_some() && custom.unlock.is_some());
+        let neither: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(ack))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let custom = inbox(&neither)?.table.custom;
+        assert!(custom.lock.is_none() && custom.unlock.is_none());
+        for event in ["lock", "unlock"] {
+            let event = format_ident!("{event}");
+            let twice: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", custom(#event, #event))]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(error(&twice), format!("`{event}` is listed twice"));
+        }
         Ok(())
     }
 

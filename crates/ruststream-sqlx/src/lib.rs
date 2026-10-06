@@ -12,10 +12,10 @@ pub mod prelude;
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
-    InboxDelivery, InboxQueue, InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow,
+    InboxDelivery, InboxQueue, InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow, Lock,
     NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Publish, QueueDatabase, QueueTime,
     Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker,
-    SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    SqlxBrokerError, SystemClock, TimeColumn, TimeSource, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -91,8 +91,9 @@ pub mod __private {
 /// `r#` (`{type}` for `r#type`), and the key reads that field's column. In that form a group
 /// keeps its order through the key, as in `advisory_lock = "jobs-{name}"`, so `fifo = true` does
 /// not apply there. The form selects its candidates with their keys itself, so `custom(..)` does
-/// not take `claim` beside it. Every built-in dialect builds the lease and advisory lock forms;
-/// Postgres and MySQL build the row lock form too.
+/// not take `claim` beside it; `custom(lock, unlock)` hands the lock and the unlock of each key to
+/// the service ([`Lock`], [`Unlock`]). Every built-in dialect builds the lease and advisory lock
+/// forms; Postgres and MySQL build the row lock form too.
 ///
 /// # Isolation and mode
 ///
@@ -169,7 +170,8 @@ pub mod __private {
 /// the name that causes it: no `id`, a role played twice, a column named twice, a role or
 /// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until`,
 /// `fifo = true` or `claim` in `custom(..)` beside `advisory_lock`, `extend` in `custom(..)`
-/// without `locked_until`, `locked_until` on `clock = DatabaseClock`, a lock key naming no field,
-/// a dot in `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
+/// without `locked_until`, `lock` or `unlock` in `custom(..)` without `advisory_lock` or without
+/// each other, `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in
+/// `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;
