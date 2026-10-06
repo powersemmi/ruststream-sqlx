@@ -16,21 +16,23 @@ use ruststream_sqlx_dialect::{
 };
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use super::advisory::LockBook;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
-use super::engine::{Events, IdAt, Prepared, Shape, Stmt, intern, intern_name};
+use super::engine::{Events, IdAt, Prepared, Shape, intern, intern_name};
 use super::error::SqlxBrokerError;
 use super::kinds::Kinds;
 use super::lease::{self, LeaseBook};
 use super::publish::table_of;
 use super::subscriber::{Holding, InboxSubscriber};
-#[cfg(feature = "testing")]
-use super::testing::{cancelled, off_clock};
 use super::time::LeaseRow;
 use super::{FormDialect, FormOn, InboxRow, PayloadRow};
+
+mod check;
+
+use check::check;
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
@@ -803,109 +805,6 @@ fn counted_attempt(form: &FormDialect, description: &Description, prepared: &Pre
         ClaimShape::Ids => true,
         ClaimShape::Roles => false,
     }
-}
-
-/// Why the startup check failed: no connection, a version the server did not report, a server
-/// the dialect refuses, or a statement the server refused.
-enum Unchecked {
-    Acquire(sqlx::Error),
-    Version(&'static str, sqlx::Error),
-    Server(StatementError),
-    Statement(&'static str, sqlx::Error),
-}
-
-impl Unchecked {
-    /// The error of the subscription `name` to `table`, read as `row`.
-    fn named(self, name: &str, table: &str, row: &'static str) -> SqlxBrokerError {
-        let (subscription, table) = (name.to_owned(), table.to_owned());
-        match self {
-            Self::Acquire(source) => SqlxBrokerError::Sqlx {
-                subscription,
-                table,
-                row,
-                statement: "acquire",
-                source: Box::new(source),
-            },
-            Self::Version(statement, source) => SqlxBrokerError::Sqlx {
-                subscription,
-                table,
-                row,
-                statement,
-                source: Box::new(source),
-            },
-            Self::Server(StatementError::ServerTooOld {
-                server, required, ..
-            }) => SqlxBrokerError::ServerTooOld {
-                subscription,
-                table,
-                row,
-                server,
-                required,
-            },
-            Self::Server(source) => SqlxBrokerError::Dialect {
-                subscription,
-                table,
-                row,
-                source,
-            },
-            Self::Statement(statement, source) => SqlxBrokerError::Schema {
-                subscription,
-                table,
-                row,
-                statement,
-                source: Box::new(source),
-            },
-        }
-    }
-}
-
-/// The startup check: on one connection of the pool, the server's version where the dialect `form`
-/// shows asks for it, then each of `prepared`'s statements prepared, off a paused clock where the
-/// connection runs in process.
-async fn check<DB: QueueDatabase>(
-    shared: &Arc<Shared<DB>>,
-    form: &FormDialect,
-    spec: &TableSpec<'static>,
-    prepared: &Prepared,
-) -> Result<(), Unchecked> {
-    #[cfg(feature = "testing")]
-    if shared.harness.in_process() {
-        let shared = Arc::clone(shared);
-        let form = form.clone();
-        let spec = *spec;
-        let statements: Vec<Stmt> = prepared.statements().collect();
-        return off_clock(async move {
-            verify(&shared.pool, form.dialect(), &spec, statements.into_iter()).await
-        })
-        .await
-        .unwrap_or_else(|| Err(Unchecked::Acquire(cancelled())));
-    }
-    verify(&shared.pool, form.dialect(), spec, prepared.statements()).await
-}
-
-/// Checks the server's version against `dialect`'s floor for `spec`, where the dialect has one,
-/// then prepares each of `statements`, on one connection of `pool`.
-async fn verify<DB: QueueDatabase>(
-    pool: &Pool<DB>,
-    dialect: &dyn Dialect,
-    spec: &TableSpec<'_>,
-    statements: impl Iterator<Item = Stmt>,
-) -> Result<(), Unchecked> {
-    let mut conn = pool.acquire().await.map_err(Unchecked::Acquire)?;
-    if let Some(query) = dialect.server_version() {
-        let version = DB::fetch_text(&mut conn, query)
-            .await
-            .map_err(|source| Unchecked::Version(query, source))?;
-        dialect
-            .check_server(spec, &version)
-            .map_err(Unchecked::Server)?;
-    }
-    for statement in statements {
-        DB::prepare(&mut conn, statement.sql)
-            .await
-            .map_err(|source| Unchecked::Statement(statement.sql, source))?;
-    }
-    Ok(())
 }
 
 /// A queue's place in its connection's register of open subscriptions; dropping it frees the
