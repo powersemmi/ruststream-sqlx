@@ -15,8 +15,11 @@ use super::time::LeaseRow;
 ///
 /// The derive builds it from the roles; a service lists `claim` in `custom(..)` to take it over,
 /// for a database without a built-in dialect or a claim of its own. The crate then reads the
-/// rows with [`Fetch`]. In the lease form the crate also leases each id the claim returns, in the
-/// same transaction, and passes over an id whose row another lease holds.
+/// rows with the service's [`Fetch`], or with its own fetch by a list of ids, which Postgres
+/// alone runs: on MySQL and SQLite a claim of the service's own comes with a `Fetch` of its own,
+/// and a subscription without one stops at startup. In the lease form the crate also leases each
+/// id the claim returns, in the same transaction, and passes over an id whose row another lease
+/// holds.
 ///
 /// # Examples
 ///

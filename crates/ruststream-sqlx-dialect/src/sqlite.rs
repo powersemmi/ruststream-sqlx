@@ -27,11 +27,11 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// transaction. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE`
 /// ([`begin_claim`](Dialect::begin_claim)), so it takes the write lock before it selects. Every
 /// name is quoted, so a name keeps its case and may hold any character, and SQLite keeps a name of
-/// any length. Rows are not read by a list of ids, so a claim of the service's own brings its own
-/// fetch.
+/// any length. [`fetch`](Dialect::fetch) is refused, so a claim of the service's own brings a
+/// fetch of its own.
 ///
-/// SQLite keeps times as text, so the statements compare times as text: a time column holds a
-/// layout that sorts as the times it holds.
+/// SQLite keeps times as text, so the statements compare times as text: two times compare right
+/// when their text sorts as the times do.
 ///
 /// # Examples
 ///

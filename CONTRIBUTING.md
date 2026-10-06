@@ -57,7 +57,7 @@ just ci             # check and test, plus codespell, cargo deny and zizmor
 ```
 
 The inbox's live tests run against the three servers of `docker-compose.test.yml`: Postgres 17,
-MySQL 8.0 and MariaDB 10.6.
+MySQL 8.0 and MariaDB 10.6. The SQLite suites run in memory, with no server, and never skip.
 
 ```bash
 just test-brokers   # starts the stand, runs the crate's suite against it, stops the stand
@@ -72,7 +72,7 @@ there:
 | MySQL | `MYSQL_TEST_URL` | `mysql://root:ruststream@127.0.0.1:53306` |
 | MariaDB | `MARIADB_TEST_URL` | `mysql://root:ruststream@127.0.0.1:53307` |
 
-Without its variable a test skips, so `just test` passes on a machine with no Docker.
+Without its variable a server's test skips, so `just test` passes on a machine with no Docker.
 `RUSTSTREAM_REQUIRE_LIVE` turns that skip into a failure; `just test-brokers` and CI set it, so a
 suite that never reached the stand cannot pass. `just brokers-up` and `just brokers-down` start
 and stop the stand alone, for running one live test by hand:

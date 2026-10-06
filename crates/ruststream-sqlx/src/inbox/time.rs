@@ -320,6 +320,10 @@ impl Clock for SystemClock {
 /// (`statement_timestamp()` on Postgres, `UTC_TIMESTAMP(6)` on MySQL) instead of binding the
 /// host's time.
 ///
+/// A table in the lease form reads the host's clock: every settlement names the expiry its claim
+/// wrote, so the crate computes that expiry, and `#[field(locked_until)]` beside
+/// `clock = DatabaseClock` does not compile.
+///
 /// # Examples
 ///
 /// ```

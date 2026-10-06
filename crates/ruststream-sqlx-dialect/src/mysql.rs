@@ -49,8 +49,8 @@ const MARIADB_FLOOR: Floor = Floor {
 /// transaction commits. A dead letter into a table copies the row, then deletes it, in one
 /// transaction. Every name is quoted, so a name keeps its case and may hold any character; a name
 /// over 64 characters, which MySQL refuses, is refused before it reaches the server. A table on
-/// the database's clock reads `UTC_TIMESTAMP(6)`. Rows are not read by a list of ids, so a claim
-/// of the service's own brings its own fetch.
+/// the database's clock reads `UTC_TIMESTAMP(6)`. [`fetch`](Dialect::fetch) is refused, so a
+/// claim of the service's own brings a fetch of its own.
 ///
 /// A claim's transaction opens at READ COMMITTED ([`begin_claim`](Dialect::begin_claim)): under
 /// the default REPEATABLE READ a locking read also locks the gaps between the rows it scans, so a
