@@ -216,6 +216,151 @@ takes one each half lease to extend the leases in work.
 - After the broker shuts down, a delivery in work keeps its lease and settles as before; the lease
   is no longer extended.
 
+# Isolation and mode
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::prelude::*;
+use serde::Deserialize;
+use sqlx::PgPool;
+
+// payout_jobs: id BIGSERIAL PRIMARY KEY, payload BYTEA NOT NULL
+// The database's transactions default to SERIALIZABLE; the claims of this table open at
+// READ COMMITTED.
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "payout_jobs", isolation = read_committed)]
+pub struct SendPayout {
+    #[field(id, generated)]
+    id: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Payout {
+    account: String,
+}
+
+# async fn transfer(payout: &Payout) { let _ = &payout.account; }
+#[subscriber(InboxQueue::<SendPayout>::new("payouts"))]
+async fn pay(payout: &Payout) -> HandlerOutcome {
+    transfer(payout).await;
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(pay);
+    })
+}
+# }
+# fn main() {}
+```
+
+`isolation = <level>` in `#[inbox(..)]` declares an isolation level: `read_uncommitted`,
+`read_committed`, `repeatable_read` or `serializable`. A SQLite table declares a mode instead, as
+in `#[inbox(mode = immediate)]`: `deferred`, `immediate` or `exclusive`. SQLite runs every
+transaction serializable. Its mode decides when a transaction takes the write lock
+([`Mode`](dialect::Mode)).
+
+The declaration governs the transactions the crate opens for a delivery's work. In the row lock
+form that is the claim's transaction: it holds the rows while their handler runs, and their
+settlement commits it. A table that declares neither opens them with a plain `BEGIN` on Postgres
+and SQLite, at the database's default, and at READ COMMITTED on MySQL and MariaDB.
+
+Each database takes the levels it keeps: Postgres `read_committed`, `repeatable_read` and
+`serializable`; MySQL and MariaDB all four; SQLite the three modes. Postgres runs READ UNCOMMITTED
+as READ COMMITTED, so its dialect does not open it.
+
+A subscription to a table at a level or mode its broker's dialect does not open does not compile,
+and neither does a route into that table. The error names the dialect and the level, and lists
+what each database opens. An `AnyPool` names its database only when the broker connects, so there
+such a subscription stops when it starts, with [`SqlxBrokerError::Dialect`]. A dialect of the
+service's own opens a level by implementing [`Opens`](dialect::Opens) for it, and its
+[`Dialect::begin`](dialect::Dialect::begin) returns the statement that opens it.
+
+On Postgres a row lock table at `repeatable_read` or `serializable` fails claims with
+serialization errors when claims and settlements of its rows run at once. `read_committed` is the
+practical level for the row lock form there.
+
+On MySQL and MariaDB a row lock claim at `repeatable_read` or `serializable` keeps a lock on every
+row it reads until its settlement. Without an index on the group's column it reads rows of other
+groups as well, and a claim held for a handler keeps those rows from their own claims. An index on
+that column lets a claim read its own group alone.
+
+# FIFO groups
+
+```no_run
+# #[cfg(all(feature = "postgres", feature = "chrono"))]
+# mod demo {
+use chrono::{DateTime, Utc};
+use ruststream_sqlx::prelude::*;
+use serde::Deserialize;
+use sqlx::PgPool;
+
+// sync_jobs: id BIGSERIAL PRIMARY KEY, target TEXT NOT NULL,
+// retry_after TIMESTAMPTZ NOT NULL DEFAULT now(), payload BYTEA NOT NULL
+// Each group holds the changes bound for one system.
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "sync_jobs")]
+pub struct SyncChange {
+    #[field(id, generated)]
+    id: i64,
+    #[field(group, fifo = true)]
+    target: String,
+    #[field(retry_after, generated)]
+    retry_after: DateTime<Utc>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Change {
+    record: String,
+}
+
+# async fn push(change: &Change) -> bool { !change.record.is_empty() }
+// The CRM receives its changes one at a time, in the order they were queued.
+#[subscriber(InboxQueue::<SyncChange>::new("crm"))]
+async fn sync(change: &Change) -> HandlerOutcome {
+    if push(change).await {
+        return HandlerOutcome::ack();
+    }
+    // At once, so the change keeps its place at the head of the group.
+    HandlerOutcome::retry()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(sync);
+    })
+}
+# }
+# fn main() {}
+```
+
+`#[field(group, fifo = true)]` keeps each group of the table in order. A group has at most one
+row in work at a time, however many brokers read it. Its rows go out in claim order: a smaller
+`priority` first, then an earlier `retry_after`, then the smaller id, each where the table has the
+column. The group's first unfinished row in that order is its head. A claim takes the head alone.
+The rows behind the head wait while it is in work or not yet due.
+
+`retry()` keeps the row at the head. `retry_after(d)` gives the row a later `retry_after`, and it
+moves behind the rows that come due before it. On a table with `priority` it moves only among the
+rows of its own priority. A head that keeps failing with `retry()` holds its group back.
+`max_attempts(n)` with `dead_letter(..)` moves such a row out of the group after n attempts. In
+the lease form a crash with a row in work holds its group until that row's lease runs out.
+
+`workers(n)` gives no parallelism inside a group, so one worker serves a FIFO subscription. A
+batch of a FIFO group holds one row, its head. Groups run side by side, each through a
+subscription of its own.
+
+FIFO groups serve the row lock and lease forms. In the advisory lock form a key on the group's
+field keeps one row of the group in work, as `advisory_lock = "sync_jobs-{target}"` would here.
+`fifo = true` beside `advisory_lock` does not compile, and the error says to put the group's field
+into the key.
+
 # Databases
 
 ```no_run
@@ -285,9 +430,11 @@ reads `statement_timestamp()`.
 `mysql` serves MySQL 8.0.1 and MariaDB 10.6 or later, in both forms. Claims skip locked rows in
 both forms, which those versions added: a subscription reads the server's version when it opens,
 and an older server stops it with [`SqlxBrokerError::ServerTooOld`]. A claim's transaction runs
-at READ COMMITTED, so a claim held for a handler locks no gaps between rows and holds back no
-insert into its table. A server whose binary log records statements
-(`binlog_format = STATEMENT`) refuses writes at that level; the row and mixed formats accept them.
+at READ COMMITTED unless a row lock table declares another level
+([Isolation and mode](#isolation-and-mode)). At READ COMMITTED a claim held for a handler locks no
+gaps between rows and holds back no insert into its table. A server whose binary log records
+statements (`binlog_format = STATEMENT`) refuses writes at that level; the row and mixed formats
+accept them.
 
 A lease claim selects its rows, stamps each one with its lease and commits. The expiry is a whole
 second, so a `DATETIME` column without fractions holds the token exactly. A dead letter into a
@@ -431,12 +578,13 @@ own, for a database whose sqlx driver lives outside sqlx, or to write a statemen
 The dialect is the broker's second type parameter, and each thing its tables can do is a trait it
 implements:
 
-- [`Dialect`](dialect::Dialect): names, placeholders, and the statements every form runs to
-  settle a row, move a dead letter, fetch rows and insert one;
-- [`RowLock`](dialect::RowLock): the row lock form, its claim and the statement that opens the
-  claim's transaction;
+- [`Dialect`](dialect::Dialect): names, placeholders, the statement that opens a transaction at a
+  table's level, and the statements every form runs to settle a row, move a dead letter, fetch
+  rows and insert one;
+- [`RowLock`](dialect::RowLock): the row lock form and its claim;
 - [`Lease`](dialect::Lease): the lease form, its claim, the extension of a lease in work and the
   stamp of a row a claim only selected;
+- [`Opens<Level>`](dialect::Opens): an isolation level or SQLite mode a table may declare;
 - [`ByName<DB>`](ByName): subscriptions by name, the JSON headers and the times their rows hold.
 
 A table in a form whose trait the dialect lacks does not compile, and neither does a by-name
