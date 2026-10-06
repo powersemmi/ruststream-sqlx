@@ -3,6 +3,7 @@
 
 use crate::column::Column;
 use crate::form::Form;
+use crate::opening::{Isolation, Mode, Opening};
 use crate::role::Role;
 
 /// Whether the rows of a table split into groups, and whether each group keeps its order.
@@ -14,7 +15,8 @@ enum Grouping<'a> {
 }
 
 /// The description of a queue table: its name, the column that identifies a row, one slot per
-/// role, the message's data columns, and the form its rows are claimed in.
+/// role, the message's data columns, the form its rows are claimed in, and what its transactions
+/// open at.
 ///
 /// `#[derive(Inbox)]` builds one as a constant, and a dialect reads it to build statements. The id
 /// column is part of the constructor and every role has one slot, so a table without an id or
@@ -53,6 +55,7 @@ pub struct TableSpec<'a> {
     payload: Option<Column<'a>>,
     data: &'a [Column<'a>],
     form: Form<'a>,
+    opening: Opening,
     select_all: bool,
     database_clock: bool,
 }
@@ -91,6 +94,7 @@ impl<'a> TableSpec<'a> {
             payload: None,
             data: &[],
             form,
+            opening: Opening::Default,
             select_all: false,
             database_clock: false,
         }
@@ -144,8 +148,15 @@ impl<'a> TableSpec<'a> {
     /// The same table, split into groups by `column`, with each group in order: at most one row of
     /// a group is in work, taken in claim order.
     ///
-    /// The advisory lock form keeps a group in order through its lock key instead, and a dialect
-    /// refuses a FIFO group in that form when it builds the statements.
+    /// A claim takes the group's head, its first unfinished row in claim order, and takes nothing
+    /// while a row of the group is in work or the head is not yet due: the claim's transaction
+    /// first takes the group ([`Dialect::fifo_guard`](crate::Dialect::fifo_guard)), and a lease
+    /// claim waits while a row of the group holds a lease. A delayed retry gives its row a later
+    /// `retry_after`, so the row moves behind the rows of its group due earlier.
+    ///
+    /// The advisory lock form keeps a group in order through its lock key instead, so its claim
+    /// and its take refuse a FIFO group
+    /// ([`StatementError::AdvisoryFifo`](crate::StatementError::AdvisoryFifo)).
     ///
     /// # Examples
     ///
@@ -395,6 +406,68 @@ impl<'a> TableSpec<'a> {
         }
     }
 
+    /// The same table, with its transactions opened at the isolation level `isolation`.
+    ///
+    /// The row lock claim's transaction opens at it, and so does the transaction a broker opens
+    /// for a handler's writes. A table opens at one level or in one mode: the last of `isolation`
+    /// and [`mode`](Self::mode) given is the table's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "mysql")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Isolation, MySql, TableSpec};
+    ///
+    /// // `#[inbox(isolation = repeatable_read)]`: on MySQL the claims open at REPEATABLE READ
+    /// // instead of READ COMMITTED.
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+    ///     .isolation(Isolation::RepeatableRead);
+    ///
+    /// let begin = MySql.begin(JOBS.opening())?;
+    /// assert_eq!(
+    ///     begin,
+    ///     Some("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION"),
+    /// );
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    #[must_use]
+    pub const fn isolation(self, isolation: Isolation) -> Self {
+        Self {
+            opening: Opening::Isolation(isolation),
+            ..self
+        }
+    }
+
+    /// The same table, with its SQLite transactions opened in `mode`.
+    ///
+    /// A table opens in one mode or at one level: the last of `mode` and
+    /// [`isolation`](Self::isolation) given is the table's.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "sqlite")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Mode, Sqlite, TableSpec};
+    ///
+    /// // `#[inbox(mode = exclusive)]` on a SQLite table.
+    /// const JOBS: TableSpec<'static> =
+    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
+    ///         .mode(Mode::Exclusive);
+    ///
+    /// let begin = Sqlite.begin(JOBS.opening())?;
+    /// assert_eq!(begin, Some("BEGIN EXCLUSIVE"));
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    #[must_use]
+    pub const fn mode(self, mode: Mode) -> Self {
+        Self {
+            opening: Opening::Mode(mode),
+            ..self
+        }
+    }
+
     /// The table's name, without its schema.
     ///
     /// # Examples
@@ -477,6 +550,29 @@ impl<'a> TableSpec<'a> {
     #[must_use]
     pub const fn form(&self) -> Form<'a> {
         self.form
+    }
+
+    /// What the table's transactions open at: [`Opening::Default`] unless the table names an
+    /// isolation level or a mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Isolation, Postgres, TableSpec};
+    ///
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+    ///     .isolation(Isolation::Serializable);
+    ///
+    /// // What a broker sends to open a claim's transaction.
+    /// let begin = Postgres.begin(JOBS.opening())?.unwrap_or("BEGIN");
+    /// assert_eq!(begin, "BEGIN ISOLATION LEVEL SERIALIZABLE");
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    #[must_use]
+    pub const fn opening(&self) -> Opening {
+        self.opening
     }
 
     /// Whether each group of the table keeps its order: at most one row of a group is in work.
@@ -605,6 +701,7 @@ impl<'a> TableSpec<'a> {
 mod tests {
     use super::{Column, Form, Role, TableSpec};
     use crate::form::KeyPart;
+    use crate::opening::{Isolation, Mode, Opening};
 
     const EMAILS: TableSpec<'static> = TableSpec::new(
         "email_jobs",
@@ -730,5 +827,23 @@ mod tests {
         let on_database_time = EMAILS.database_clock();
         assert!(on_database_time.uses_database_clock());
         assert_eq!(names(&on_database_time), names(&EMAILS));
+    }
+
+    #[test]
+    fn a_table_opens_its_transactions_at_the_last_opening_it_names() {
+        assert_eq!(EMAILS.opening(), Opening::Default);
+        let serializable = TableSpec::new("jobs", Column::new("id"), Form::RowLock)
+            .isolation(Isolation::Serializable);
+        assert_eq!(
+            serializable.opening(),
+            Opening::Isolation(Isolation::Serializable)
+        );
+        let immediate = serializable.mode(Mode::Immediate);
+        assert_eq!(immediate.opening(), Opening::Mode(Mode::Immediate));
+        assert_eq!(
+            immediate.isolation(Isolation::ReadCommitted).opening(),
+            Opening::Isolation(Isolation::ReadCommitted)
+        );
+        assert_eq!(names(&immediate), ["id"], "an opening adds no column");
     }
 }

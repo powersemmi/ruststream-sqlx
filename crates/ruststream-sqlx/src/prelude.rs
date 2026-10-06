@@ -41,4 +41,6 @@
 
 pub use ruststream::prelude::*;
 
-pub use crate::{Inbox, InboxQueue, Insert, Publish, Repository, Routed, SqlxBroker, keys};
+pub use crate::{
+    Inbox, InboxQueue, InboxSettings, Insert, Publish, Repository, Routed, SqlxBroker, keys,
+};

@@ -14,10 +14,11 @@
 //!
 //! A dialect is a set of traits. [`Dialect`] quotes names, numbers placeholders and builds the
 //! statements every form runs to settle a row. Each form of claiming is a trait over it:
-//! [`RowLock`] builds the claim that locks rows for the transaction a handler settles in, and
-//! [`Lease`] the claim that writes a lease into each row and commits, with the lease's extension.
-//! A dialect implements the traits of the forms its database serves, and a table in a form its
-//! dialect lacks does not compile.
+//! [`RowLock`] builds the claim that locks rows for the transaction a handler settles in,
+//! [`Lease`] the claim that writes a lease into each row and commits, with the lease's extension,
+//! and [`Advisory`] the claim of candidates with their lock keys, the lock and the unlock of a key,
+//! and the take of a row whose key the session holds. A dialect implements the traits of the forms
+//! its database serves, and a table in a form its dialect lacks does not compile.
 //!
 //! In the lease form a claim writes the lease's expiry ([`Param::Lease`]) into each row it takes
 //! and commits, and skips every row whose lease has not ended by [`Param::LeaseNow`]. The expiry
@@ -26,12 +27,34 @@
 //! dialect whose claim only selects the rows says so ([`Lease::claim_writes_lease`]), and each
 //! claimed row is then stamped with its lease ([`Lease::stamp`]).
 //!
+//! In the advisory lock form a session lock on each row's key holds the row. The key's parts
+//! ([`KeyPart`]) name literal text and columns, and the database renders each row's key from them
+//! as text. A claim selects candidates with their keys ([`Advisory::advisory_claim`]), takes the
+//! lock on a key ([`Advisory::lock`], bound as [`Param::Key`]), then the row while it is still
+//! claimable ([`Advisory::take`]); the unlock ([`Advisory::unlock`]) follows the settlement. The
+//! settlements name the row alone, and a retry needs no statement: the take counted the attempt,
+//! and the unlock frees the row.
+//!
+//! A table with FIFO groups ([`TableSpec::fifo_group`]) keeps one row of a group in work. Its
+//! claim takes the group's head, the first unfinished row of the group in claim order, or
+//! nothing. The claim's transaction first takes the group with the statement
+//! [`Dialect::fifo_guard`] gives, so a row that enters the group ahead of the head in work waits
+//! for it; a lease claim also takes nothing while a row of the group holds a lease.
+//!
+//! A table may open its transactions at an isolation level ([`Isolation`]) or, on SQLite, in a
+//! mode ([`Mode`]): its [`Opening`], set with [`TableSpec::isolation`] and [`TableSpec::mode`].
+//! [`Dialect::begin`] gives the statement that opens a transaction at it, and refuses an opening
+//! the database lacks. A dialect also states the openings it serves as types, one [`Opens`]
+//! implementation per [`level`] type, so a table that names a level its dialect lacks does not
+//! compile.
+//!
 //! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
-//! `sqlite` features. [`Postgres`] and [`MySql`] implement [`RowLock`] and [`Lease`], and
-//! [`MySql`] serves MariaDB too; [`Sqlite`] implements [`Lease`]. A database without a built-in
-//! dialect, or a service that writes a statement its own way, takes a type of the service's own:
-//! it implements [`Dialect`] and the trait of each form it builds, with each statement its own or
-//! delegated to a built-in dialect it wraps.
+//! `sqlite` features. [`Postgres`] and [`MySql`] implement [`RowLock`], [`Lease`] and
+//! [`Advisory`], and [`MySql`] serves MariaDB too; [`Sqlite`] implements [`Lease`] and
+//! [`Advisory`]. A database without a built-in dialect, or a service that writes a statement its
+//! own way, takes a type of the service's own: it implements [`Dialect`], the trait of each form
+//! it builds and [`Opens`] for each level it opens, with each statement its own or delegated to a
+//! built-in dialect it wraps.
 //!
 //! # Examples
 //!
@@ -53,12 +76,14 @@
 
 #![forbid(unsafe_code)]
 
+mod advisory;
 mod column;
 mod dialect;
 mod form;
 mod lease;
 #[cfg(feature = "mysql")]
 mod mysql;
+mod opening;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod role;
@@ -71,12 +96,14 @@ mod table_name;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 mod writer;
 
+pub use advisory::Advisory;
 pub use column::Column;
 pub use dialect::Dialect;
 pub use form::{Form, KeyPart};
 pub use lease::Lease;
 #[cfg(feature = "mysql")]
 pub use mysql::MySql;
+pub use opening::{Isolation, Mode, Opening, Opens, level};
 #[cfg(feature = "postgres")]
 pub use postgres::Postgres;
 pub use role::Role;

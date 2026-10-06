@@ -23,14 +23,14 @@ use sqlx_core::transaction::TransactionManager;
 // hangs `Pool::close()`. Once sqlx-mysql reads such a reply before it runs the rollback, this type
 // can go: claims and settlements open `sqlx::Transaction`s with `Pool::begin_with`, and the direct
 // `sqlx-core` dependency, kept for `TransactionManager`, goes with it.
-pub(crate) struct Tx<DB: Database> {
+pub(crate) struct PoolTx<DB: Database> {
     conn: PoolConnection<DB>,
     /// Whether the server may hold the transaction open: from the begin statement until a commit
     /// or a rollback finished.
     open: bool,
 }
 
-impl<DB: Database> Tx<DB> {
+impl<DB: Database> PoolTx<DB> {
     /// Opens a transaction on a connection of `pool`, with `statement` in place of `BEGIN` where
     /// one is given.
     ///
@@ -74,7 +74,7 @@ impl<DB: Database> Tx<DB> {
     }
 }
 
-impl<DB: Database> Deref for Tx<DB> {
+impl<DB: Database> Deref for PoolTx<DB> {
     type Target = DB::Connection;
 
     fn deref(&self) -> &Self::Target {
@@ -82,13 +82,13 @@ impl<DB: Database> Deref for Tx<DB> {
     }
 }
 
-impl<DB: Database> DerefMut for Tx<DB> {
+impl<DB: Database> DerefMut for PoolTx<DB> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.conn
     }
 }
 
-impl<DB: Database> Drop for Tx<DB> {
+impl<DB: Database> Drop for PoolTx<DB> {
     fn drop(&mut self) {
         if self.open {
             self.conn.close_on_drop();
@@ -96,9 +96,9 @@ impl<DB: Database> Drop for Tx<DB> {
     }
 }
 
-impl<DB: Database> fmt::Debug for Tx<DB> {
+impl<DB: Database> fmt::Debug for PoolTx<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Tx")
+        f.debug_struct("PoolTx")
             .field("open", &self.open)
             .finish_non_exhaustive()
     }

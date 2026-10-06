@@ -1,8 +1,8 @@
 //! Reads a struct deriving `Inbox`: its table, sqlx's naming attributes and the roles of its
 //! fields.
 
-use proc_macro2::{Span, TokenTree};
-use ruststream_sqlx_dialect::Role;
+use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
+use ruststream_sqlx_dialect::{Isolation, Mode, Opening, Role};
 use syn::ext::IdentExt;
 use syn::meta::ParseNestedMeta;
 use syn::parse::ParseStream;
@@ -12,13 +12,87 @@ use syn::{Attribute, Data, DeriveInput, Fields, Ident, LitBool, LitStr, Token, T
 
 use crate::naming::RenameAll;
 
-/// `#[inbox(..)]`: the table, its schema and its advisory lock key.
+/// `#[inbox(..)]`: the table, its schema, its advisory lock key and what its transactions open at.
 pub(crate) struct Table {
     pub(crate) name: LitStr,
     pub(crate) schema: Option<LitStr>,
     pub(crate) advisory_lock: Option<LitStr>,
+    /// `isolation = ..` or `mode = ..`; [`Opening::Default`] where the struct names neither.
+    pub(crate) opening: Opening,
     pub(crate) custom: Custom,
     pub(crate) clock: Option<syn::Path>,
+}
+
+/// The isolation levels `isolation = ..` names, each read as [`Isolation::attribute`] spells it.
+const ISOLATIONS: [Isolation; 4] = [
+    Isolation::ReadUncommitted,
+    Isolation::ReadCommitted,
+    Isolation::RepeatableRead,
+    Isolation::Serializable,
+];
+
+/// The SQLite modes `mode = ..` names, each read as [`Mode::attribute`] spells it.
+const MODES: [Mode; 3] = [Mode::Deferred, Mode::Immediate, Mode::Exclusive];
+
+/// Reads `isolation = <level>` or `mode = <mode>` into `opening`, which holds what the attributes
+/// read before it. Every refusal points at the value.
+fn opening(key: &str, meta: &ParseNestedMeta<'_>, opening: &mut Opening) -> syn::Result<()> {
+    let (word, value) = word(meta)?;
+    let refused = |message: &str| {
+        value.as_ref().map_or_else(
+            || meta.error(message),
+            |value| syn::Error::new_spanned(value, message),
+        )
+    };
+    let word = word.as_deref();
+    let read = if key == "isolation" {
+        ISOLATIONS
+            .into_iter()
+            .find(|level| Some(level.attribute()) == word)
+            .map(Opening::Isolation)
+            .ok_or_else(|| {
+                refused(
+                    "unknown isolation level: expected `read_uncommitted`, `read_committed`, \
+                     `repeatable_read` or `serializable`",
+                )
+            })?
+    } else {
+        MODES
+            .into_iter()
+            .find(|mode| Some(mode.attribute()) == word)
+            .map(Opening::Mode)
+            .ok_or_else(|| {
+                refused("unknown mode: expected `deferred`, `immediate` or `exclusive` (SQLite)")
+            })?
+    };
+    match (*opening, read) {
+        (Opening::Default, _) => {
+            *opening = read;
+            Ok(())
+        }
+        (Opening::Isolation(_), Opening::Isolation(_)) | (Opening::Mode(_), Opening::Mode(_)) => {
+            Err(refused(&format!("`{key}` is given twice")))
+        }
+        _ => Err(refused(
+            "a table declares `isolation` (Postgres, MySQL, MariaDB) or `mode` (SQLite), not both",
+        )),
+    }
+}
+
+/// The value after `=`, up to the next comma: the word it is, where it is one, and its tokens,
+/// where it has any, for an error to point at.
+fn word(meta: &ParseNestedMeta<'_>) -> syn::Result<(Option<String>, Option<TokenStream2>)> {
+    let input = meta.value()?;
+    let mut value = TokenStream2::new();
+    while !input.is_empty() && !input.peek(Token![,]) {
+        value.extend([input.parse::<TokenTree>()?]);
+    }
+    let mut tokens = value.clone().into_iter();
+    let word = match (tokens.next(), tokens.next()) {
+        (Some(TokenTree::Ident(word)), None) => Some(word.unraw().to_string()),
+        _ => None,
+    };
+    Ok((word, (!value.is_empty()).then_some(value)))
 }
 
 /// The events a service implements itself: `#[inbox(custom(..))]`.
@@ -26,7 +100,9 @@ pub(crate) struct Table {
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Custom {
-    pub(crate) claim: bool,
+    /// Where `claim` is listed: the advisory lock form selects its candidates itself, which the
+    /// struct is checked for.
+    pub(crate) claim: Option<Span>,
     pub(crate) fetch: bool,
     pub(crate) ack: bool,
     pub(crate) retry: bool,
@@ -36,6 +112,11 @@ pub(crate) struct Custom {
     /// Where `extend` is listed: an event of the lease form only, which the struct is checked
     /// for.
     pub(crate) extend: Option<Span>,
+    /// Where `lock` is listed: an event of the advisory lock form, listed with `unlock`, which
+    /// the struct is checked for.
+    pub(crate) lock: Option<Span>,
+    /// Where `unlock` is listed, as `lock` is.
+    pub(crate) unlock: Option<Span>,
 }
 
 impl Custom {
@@ -52,16 +133,16 @@ impl Custom {
                  without listing it",
             ));
         }
-        if word == "extend" {
-            if self.extend.replace(event.path.span()).is_some() {
-                return Err(event.error("`extend` is listed twice"));
+        if let Some(listed) = self.spanned(&word) {
+            if listed.replace(event.path.span()).is_some() {
+                return Err(event.error(format!("`{word}` is listed twice")));
             }
             return Ok(());
         }
         let Some(slot) = self.slot(&word) else {
             return Err(event.error(
                 "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
-                 `retry_after`, `discard`, `dead_letter` or `extend`",
+                 `retry_after`, `discard`, `dead_letter`, `extend`, `lock` or `unlock`",
             ));
         };
         if std::mem::replace(slot, true) {
@@ -70,10 +151,20 @@ impl Custom {
         Ok(())
     }
 
+    /// Where the event `word` names is listed, for an event the struct is checked for.
+    fn spanned(&mut self, word: &str) -> Option<&mut Option<Span>> {
+        Some(match word {
+            "claim" => &mut self.claim,
+            "extend" => &mut self.extend,
+            "lock" => &mut self.lock,
+            "unlock" => &mut self.unlock,
+            _ => return None,
+        })
+    }
+
     /// The switch of the event `word` names.
     fn slot(&mut self, word: &str) -> Option<&mut bool> {
         Some(match word {
-            "claim" => &mut self.claim,
             "fetch" => &mut self.fetch,
             "ack" => &mut self.ack,
             "retry" => &mut self.retry,
@@ -198,6 +289,7 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
     let mut name = None;
     let mut schema = None;
     let mut advisory_lock = None;
+    let mut opening = Opening::Default;
     let mut custom = Custom::default();
     let mut custom_seen = false;
     let mut clock = None;
@@ -226,6 +318,9 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
                 }
                 return Ok(());
             }
+            if key == "isolation" || key == "mode" {
+                return self::opening(&key, &meta, &mut opening);
+            }
             let (slot, dotted) = match key.as_str() {
                 "table" => (&mut name, Some(DOTTED_TABLE)),
                 "schema" => (&mut schema, Some(DOTTED_SCHEMA)),
@@ -233,7 +328,7 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
                 _ => {
                     return Err(meta.error(
                         "unknown `#[inbox(..)]` option: expected `table`, `schema`, \
-                         `advisory_lock`, `custom` or `clock`",
+                         `advisory_lock`, `isolation`, `mode`, `custom` or `clock`",
                     ));
                 }
             };
@@ -262,6 +357,7 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
         name,
         schema,
         advisory_lock,
+        opening,
         custom,
         clock,
     })
@@ -466,8 +562,8 @@ fn skip_value(input: ParseStream<'_>) -> syn::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use quote::ToTokens;
-    use ruststream_sqlx_dialect::Role;
+    use quote::{ToTokens, format_ident};
+    use ruststream_sqlx_dialect::{Isolation, Mode, Opening, Role};
     use syn::{DeriveInput, parse_quote};
 
     use super::{Inbox, Storage, inbox};
@@ -610,6 +706,111 @@ mod tests {
     }
 
     #[test]
+    fn the_table_opens_at_its_isolation_or_its_mode() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", isolation = serializable)]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(
+            inbox(&input)?.table.opening,
+            Opening::Isolation(Isolation::Serializable)
+        );
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            #[inbox(mode = immediate)]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(inbox(&input)?.table.opening, Opening::Mode(Mode::Immediate));
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(inbox(&input)?.table.opening, Opening::Default);
+        Ok(())
+    }
+
+    #[test]
+    fn every_level_and_every_mode_reads_as_the_dialect_names_it() -> syn::Result<()> {
+        for level in [
+            Isolation::ReadUncommitted,
+            Isolation::ReadCommitted,
+            Isolation::RepeatableRead,
+            Isolation::Serializable,
+        ] {
+            let word = format_ident!("{}", level.attribute());
+            let input: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", isolation = #word)]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(inbox(&input)?.table.opening, Opening::Isolation(level));
+        }
+        for mode in [Mode::Deferred, Mode::Immediate, Mode::Exclusive] {
+            let word = format_ident!("{}", mode.attribute());
+            let input: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", mode = #word)]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(inbox(&input)?.table.opening, Opening::Mode(mode));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn misuse_of_the_opening_is_reported() {
+        const LEVELS: &str = "unknown isolation level: expected `read_uncommitted`, \
+                              `read_committed`, `repeatable_read` or `serializable`";
+        const MODES: &str =
+            "unknown mode: expected `deferred`, `immediate` or `exclusive` (SQLite)";
+        const BOTH: &str =
+            "a table declares `isolation` (Postgres, MySQL, MariaDB) or `mode` (SQLite), not both";
+        let cases: [(DeriveInput, &str); 10] = [
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = snapshot)] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = Serializable)] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = "serializable")] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = read-committed)] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = wal)] struct Job { #[field(id)] id: i64 } },
+                MODES,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = serializable)] struct Job { #[field(id)] id: i64 } },
+                MODES,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = serializable, mode = immediate)] struct Job { #[field(id)] id: i64 } },
+                BOTH,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = immediate)] #[inbox(isolation = serializable)] struct Job { #[field(id)] id: i64 } },
+                BOTH,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = serializable, isolation = serializable)] struct Job { #[field(id)] id: i64 } },
+                "`isolation` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = immediate, mode = exclusive)] struct Job { #[field(id)] id: i64 } },
+                "`mode` is given twice",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(error(&input), expected);
+        }
+    }
+
+    #[test]
     fn misuse_of_the_attributes_is_reported() {
         let cases: [(DeriveInput, &str); 22] = [
             (
@@ -619,7 +820,7 @@ mod tests {
             (
                 parse_quote! { #[inbox(table = "jobs", queue = "emails")] struct Job { #[field(id)] id: i64 } },
                 "unknown `#[inbox(..)]` option: expected `table`, `schema`, `advisory_lock`, \
-                 `custom` or `clock`",
+                 `isolation`, `mode`, `custom` or `clock`",
             ),
             (
                 parse_quote! { #[inbox(table = "")] struct Job { #[field(id)] id: i64 } },
@@ -684,9 +885,9 @@ mod tests {
                 "`#[field(..)]` names nothing: give it a role, `generated`, or both",
             ),
             (
-                parse_quote! { #[inbox(table = "jobs", custom(lock))] struct Job { #[field(id)] id: i64 } },
+                parse_quote! { #[inbox(table = "jobs", custom(lease))] struct Job { #[field(id)] id: i64 } },
                 "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
-                 `retry_after`, `discard`, `dead_letter` or `extend`",
+                 `retry_after`, `discard`, `dead_letter`, `extend`, `lock` or `unlock`",
             ),
             (
                 parse_quote! { #[inbox(table = "jobs", custom(publish))] struct Job { #[field(id)] id: i64 } },
@@ -742,23 +943,54 @@ mod tests {
         let inbox = inbox(&input)?;
         let custom = inbox.table.custom;
         assert!(custom.fetch && custom.dead_letter);
-        assert!(!custom.claim && !custom.ack && !custom.retry);
+        assert!(custom.claim.is_none() && !custom.ack && !custom.retry);
         assert!(!custom.retry_after && !custom.discard && custom.extend.is_none());
         let leased: DeriveInput = parse_quote! {
-            #[inbox(table = "jobs", custom(extend))]
+            #[inbox(table = "jobs", custom(extend, claim))]
             struct Job { #[field(id)] id: i64 }
         };
-        assert!(self::inbox(&leased)?.table.custom.extend.is_some());
+        let listed = self::inbox(&leased)?.table.custom;
+        assert!(listed.extend.is_some() && listed.claim.is_some());
         let twice: DeriveInput = parse_quote! {
             #[inbox(table = "jobs", custom(extend, extend))]
             struct Job { #[field(id)] id: i64 }
         };
         assert_eq!(error(&twice), "`extend` is listed twice");
+        let claimed_twice: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(claim, claim))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(error(&claimed_twice), "`claim` is listed twice");
         let clock = inbox
             .table
             .clock
             .map(|path| quote::quote!(#path).to_string());
         assert_eq!(clock.as_deref(), Some("crate :: Offset"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_lock_and_the_unlock_are_read_where_they_are_listed() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(unlock, lock))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let custom = inbox(&input)?.table.custom;
+        assert!(custom.lock.is_some() && custom.unlock.is_some());
+        let neither: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(ack))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let custom = inbox(&neither)?.table.custom;
+        assert!(custom.lock.is_none() && custom.unlock.is_none());
+        for event in ["lock", "unlock"] {
+            let event = format_ident!("{event}");
+            let twice: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", custom(#event, #event))]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(error(&twice), format!("`{event}` is listed twice"));
+        }
         Ok(())
     }
 

@@ -31,10 +31,25 @@ CREATE TABLE email_jobs_dead (
     payload      BLOB NOT NULL
 );
 
--- One queue per table: no group, no time, rows deleted when finished.
+-- A ledger whose accounts keep their order: a FIFO group per account, claimed by priority, then
+-- by `retry_after`.
+CREATE TABLE ledger (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account      TEXT NOT NULL,
+    priority     INTEGER NOT NULL DEFAULT 0,
+    retry_after  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')),
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    processed_at TEXT,
+    locked_until TEXT,
+    payload      BLOB NOT NULL
+);
+
+-- One queue per table: no group, no time, rows deleted when finished. A job may name its tenant,
+-- which an advisory lock key reads where the jobs of one tenant go one at a time.
 CREATE TABLE plain_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     attempt      INTEGER NOT NULL DEFAULT 1,
+    tenant       TEXT NOT NULL DEFAULT '',
     locked_until TEXT,
     payload      BLOB NOT NULL
 );
@@ -42,6 +57,7 @@ CREATE TABLE plain_jobs (
 CREATE TABLE plain_jobs_dead (
     id           INTEGER PRIMARY KEY,
     attempt      INTEGER NOT NULL DEFAULT 1,
+    tenant       TEXT NOT NULL DEFAULT '',
     locked_until TEXT,
     payload      BLOB NOT NULL
 );
@@ -171,4 +187,11 @@ CREATE TABLE unreadable_jobs_dead (
     attempt      INTEGER NOT NULL DEFAULT 1,
     locked_until TEXT,
     payload      INTEGER NOT NULL
+);
+
+-- What a handler writes beside its job, in the delivery's transaction or through the pool: one
+-- row per write, its note naming the write.
+CREATE TABLE audit (
+    job_id BIGINT,
+    note   TEXT
 );

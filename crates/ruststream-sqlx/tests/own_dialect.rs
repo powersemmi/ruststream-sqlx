@@ -18,7 +18,7 @@ use ruststream::HeaderMap;
 use ruststream::prelude::*;
 use ruststream::testing::TestApp;
 use ruststream_sqlx::dialect::{
-    self, ClaimShape, Dialect, Param, Role, RowLock, Statement, StatementError, TableName,
+    self, ClaimShape, Dialect, Opening, Param, Role, RowLock, Statement, StatementError, TableName,
     TableSpec,
 };
 use ruststream_sqlx::{BuiltIn, ByName, InboxQueue, NamedTime, SqlxBroker};
@@ -99,6 +99,10 @@ impl Dialect for Audited {
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         dialect::Postgres.insert(spec)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        dialect::Postgres.begin(opening)
+    }
 }
 
 impl RowLock for Audited {
@@ -108,10 +112,6 @@ impl RowLock for Audited {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         dialect::Postgres.lock_claim(spec, shape)
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        dialect::Postgres.begin_lock_claim()
     }
 }
 

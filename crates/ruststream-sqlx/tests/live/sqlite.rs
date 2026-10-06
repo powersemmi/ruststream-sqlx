@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ruststream_sqlx::dialect;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{AssertSqlSafe, Connection, Sqlite, SqliteConnection};
 
@@ -12,6 +13,9 @@ use super::Database;
 
 /// The database the stand serves.
 pub(crate) type Db = Sqlite;
+
+/// The dialect the broker builds the stand's statements with.
+pub(crate) const DIALECT: dialect::Sqlite = dialect::Sqlite;
 
 /// A fresh database in memory, shared by every connection that names it.
 ///

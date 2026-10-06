@@ -8,14 +8,19 @@ mod inbox;
 #[cfg(feature = "inbox")]
 pub mod prelude;
 
+/// Machinery behind [`InboxSettings::transactional`]; a service never names it.
+#[cfg(feature = "inbox")]
+#[doc(hidden)]
+pub use inbox::TransactionalStep;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
-    InboxDelivery, InboxQueue, InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow,
-    NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Publish, QueueDatabase, QueueTime,
-    Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker,
-    SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    InboxDelivery, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert, KeyColumn,
+    LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Plain, Publish,
+    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
+    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    Transactional, Tx, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -32,17 +37,18 @@ pub mod __private {
     #[cfg(feature = "any")]
     pub use crate::inbox::AnyDialect;
     pub use crate::inbox::engine::{
-        Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled, Settling, Shape,
-        Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows, dead_letter, discard,
-        extend, fetch_by_ids, first_header, later, lease, match_claimed, match_rows, micros,
-        no_lease, now, put, retry, retry_after,
+        Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint,
+        Settled, Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, candidates,
+        claim_ids, claim_rows, dead_letter, discard, extend, fetch_by_ids, first_header, later,
+        lease, lock, match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry,
+        retry_after, take, take_id, unlock,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{
-        AdvisoryForm, FormDialect, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase,
-        QueueRow, RowLockForm, no_insert,
+        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, LeaseForm, OnConnection,
+        QueueDatabase, QueueRow, RowLockForm, no_insert,
     };
 }
 
@@ -89,8 +95,50 @@ pub mod __private {
 /// from the fields named between braces. A placeholder names a field as written in Rust, without
 /// `r#` (`{type}` for `r#type`), and the key reads that field's column. In that form a group
 /// keeps its order through the key, as in `advisory_lock = "jobs-{name}"`, so `fifo = true` does
-/// not apply there. The built-in dialects build the row lock and lease forms, and refuse a table
-/// in the advisory lock form when its subscription starts.
+/// not apply there. The form selects its candidates with their keys itself, so `custom(..)` does
+/// not take `claim` beside it; `custom(lock, unlock)` hands the lock and the unlock of each key to
+/// the service ([`Lock`], [`Unlock`]). Every built-in dialect builds the lease and advisory lock
+/// forms; Postgres and MySQL build the row lock form too.
+///
+/// # Isolation and mode
+///
+/// `isolation = <level>` opens the table's transactions at an isolation level:
+/// `read_uncommitted`, `read_committed`, `repeatable_read` or `serializable`. `mode = <mode>`
+/// opens them in a SQLite mode instead: `deferred`, `immediate` or `exclusive`. A table names one
+/// of the two, or neither and opens at its database's default (READ COMMITTED on MySQL and
+/// MariaDB). The row lock claim's transaction opens at it, and so does the transaction a delivery
+/// lends its handler in transactional mode, in every form.
+///
+/// ```
+/// # #[cfg(feature = "postgres")] {
+/// use ruststream_sqlx::dialect::{Dialect, Postgres};
+/// use ruststream_sqlx::{Inbox, InboxRow};
+///
+/// #[derive(Inbox)]
+/// #[inbox(table = "ledger_jobs", isolation = repeatable_read)]
+/// struct Posting {
+///     #[field(id)]
+///     id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// // The statement a subscription to `Posting` opens its claims with on Postgres.
+/// let begin = Postgres.begin(Posting::SPEC.opening())?;
+/// assert_eq!(begin, Some("BEGIN ISOLATION LEVEL REPEATABLE READ"));
+/// # }
+/// # Ok::<(), ruststream_sqlx::dialect::StatementError>(())
+/// ```
+///
+/// The broker's dialect opens what its database keeps: Postgres `read_committed`,
+/// `repeatable_read` and `serializable`, MySQL and MariaDB all four levels, SQLite the three
+/// modes. A subscription to a table its dialect does not open does not compile, and the error
+/// names the levels the dialect opens. An `AnyPool` reaches a database named only when the broker
+/// connects, so there the subscription stops when it starts instead. On Postgres a row lock table
+/// at `repeatable_read` or `serializable` fails claims with serialization errors when claims and
+/// settlements of its rows run at once; `read_committed` is the practical level there. A lease
+/// table at either level on Postgres refuses transactional mode when it starts: its transaction
+/// reads every row as its first statement found it, and would not see the lease extended later.
 ///
 /// # Roles
 ///
@@ -128,9 +176,10 @@ pub mod __private {
 ///
 /// A struct that cannot drive a queue does not compile, and the error points at the field or
 /// the name that causes it: no `id`, a role played twice, a column named twice, a role or
-/// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until` or
-/// `fifo = true` beside `advisory_lock`, `extend` in `custom(..)` without `locked_until`,
-/// `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in `table` or
-/// `schema`.
+/// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until`,
+/// `fifo = true` or `claim` in `custom(..)` beside `advisory_lock`, `extend` in `custom(..)`
+/// without `locked_until`, `lock` or `unlock` in `custom(..)` without `advisory_lock` or without
+/// each other, `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in
+/// `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;

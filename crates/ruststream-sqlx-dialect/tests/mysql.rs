@@ -1,4 +1,5 @@
-//! The statements the MySQL and MariaDB dialect builds for the row lock and lease forms.
+//! The statements the MySQL and MariaDB dialect builds for the row lock, lease and advisory lock
+//! forms.
 
 #![cfg(feature = "mysql")]
 
@@ -6,8 +7,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Lease, MySql, NameLimit, Param, Role, RowLock,
-    Statement, StatementError, TableName, TableSpec,
+    Advisory, ClaimShape, Column, Dialect, Form, Isolation, KeyPart, Lease, Mode, MySql, NameLimit,
+    Opening, Opens, Param, Role, RowLock, Statement, StatementError, TableName, TableSpec, level,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -461,6 +462,9 @@ fn a_name_longer_than_64_characters_is_refused() -> Result<(), Box<dyn Error>> {
     let column =
         TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new(&long));
     assert_eq!(MySql.discard(&column), Err(refused(&long)));
+    let group =
+        TableSpec::new("ledger", Column::new("id"), Form::RowLock).fifo_group(Column::new(&long));
+    assert_eq!(MySql.fifo_guard(&group), Err(refused(&long)));
 
     let target = format!("archive.{long}");
     assert_eq!(
@@ -497,12 +501,8 @@ fn the_lease_cannot_read_the_database_clock() {
 }
 
 #[test]
-fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<dyn Error>> {
+fn the_statements_of_a_form_refuse_tables_of_other_forms() {
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
-    let unsupported = StatementError::UnsupportedForm {
-        dialect: "mysql",
-        form: "advisory lock",
-    };
     assert_eq!(
         MySql.lock_claim(&advisory, ClaimShape::Rows),
         Err(StatementError::FormMismatch {
@@ -516,15 +516,6 @@ fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<
             statement: "lease_claim",
             form: "advisory lock",
         })
-    );
-    assert_eq!(MySql.ack(&advisory), Err(unsupported.clone()));
-    assert_eq!(MySql.retry(&advisory), Err(unsupported.clone()));
-    assert_eq!(MySql.retry_after(&advisory), Err(unsupported.clone()));
-    assert_eq!(MySql.discard(&advisory), Err(unsupported.clone()));
-    assert_eq!(MySql.dead_letter_group(&advisory), Err(unsupported.clone()));
-    assert_eq!(
-        MySql.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
-        Err(unsupported)
     );
     let other = |statement, form| StatementError::FormMismatch { statement, form };
     assert_eq!(
@@ -544,23 +535,199 @@ fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<
         MySql.lock_claim(&LEASED, ClaimShape::Rows),
         Err(other("lock_claim", "lease"))
     );
-
     assert_eq!(
-        MySql.lock_claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo { dialect: "mysql" })
+        MySql.advisory_claim(&BARE),
+        Err(other("advisory_claim", "row lock"))
     );
     assert_eq!(
-        MySql.lease_claim(&LEASED.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo { dialect: "mysql" })
+        MySql.take(&LEASED, ClaimShape::Rows),
+        Err(other("take", "lease"))
+    );
+}
+
+/// A ledger whose accounts keep their order: one row of an account in work, taken in claim order.
+const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+    .fifo_group(Column::new("account"))
+    .retry_after(Column::new("retry_after"))
+    .attempt(Column::new("attempt"))
+    .processed_at(Column::new("processed_at"))
+    .payload(Column::new("payload"));
+
+/// The same ledger in the lease form.
+const LEASED_LEDGER: TableSpec<'static> = TableSpec::new(
+    "ledger",
+    Column::new("id"),
+    Form::Lease(Column::new("locked_until")),
+)
+.fifo_group(Column::new("account"))
+.retry_after(Column::new("retry_after"))
+.attempt(Column::new("attempt"))
+.processed_at(Column::new("processed_at"))
+.payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn Error>> {
+    let claim = MySql.lock_claim(&LEDGER, ClaimShape::Rows)?;
+    assert_eq!(
+        claim.sql(),
+        "SELECT `id`, `account`, `retry_after`, `attempt`, `processed_at`, `payload` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? FOR UPDATE SKIP LOCKED",
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Now]);
+    Ok(())
+}
+
+#[test]
+fn a_fifo_lease_claim_selects_the_head_alone() -> Result<(), Box<dyn Error>> {
+    // The claim selects the head under a lock, and its transaction stamps it; nothing while a row
+    // of the group holds a lease.
+    let claim = MySql.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
+    assert_eq!(
+        claim.sql(),
+        "SELECT `id`, `account`, `retry_after`, `attempt`, `locked_until`, `processed_at`, `payload` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) AND NOT EXISTS (SELECT 1 FROM `ledger` AS __work WHERE __work.`account` = ? AND __work.`locked_until` > ?) FOR UPDATE SKIP LOCKED",
+    );
+    assert_eq!(
+        claim.params(),
+        [
+            Param::Group,
+            Param::Now,
+            Param::LeaseNow,
+            Param::Group,
+            Param::LeaseNow
+        ]
+    );
+    Ok(())
+}
+
+/// The ledger without a finish mark: a finished row is deleted.
+const BARE_LEDGER: TableSpec<'static> =
+    TableSpec::new("ledger", Column::new("id"), Form::RowLock).fifo_group(Column::new("account"));
+
+#[test]
+fn a_fifo_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
+    // The group is the claim's when a locking read that skips held rows takes every unfinished
+    // row of it.
+    let guard = MySql
+        .fifo_guard(&LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        guard.sql(),
+        "SELECT CAST((SELECT COUNT(*) FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL) = (SELECT COUNT(*) FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL FOR UPDATE SKIP LOCKED) AS SIGNED)",
+    );
+    assert_eq!(guard.params(), [Param::Group, Param::Group]);
+    // The lease form takes its group the same way, for the claim's transaction.
+    assert_eq!(MySql.fifo_guard(&LEASED_LEDGER)?, Some(guard));
+    let bare = MySql
+        .fifo_guard(&BARE_LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        bare.sql(),
+        "SELECT CAST((SELECT COUNT(*) FROM `ledger` WHERE `account` = ?) = (SELECT COUNT(*) FROM `ledger` WHERE `account` = ? FOR UPDATE SKIP LOCKED) AS SIGNED)",
+    );
+    // A table whose groups keep no order needs no guard.
+    assert_eq!(MySql.fifo_guard(&EMAILS)?, None);
+    assert_eq!(MySql.fifo_guard(&LEASED)?, None);
+    Ok(())
+}
+
+#[test]
+fn a_fifo_row_lock_table_claims_below_serializable() -> Result<(), Box<dyn Error>> {
+    // Every read of a SERIALIZABLE transaction locks, so the guard's count of the group would wait
+    // for the row another claim holds instead of answering at once.
+    let serializable = LEDGER.isolation(Isolation::Serializable);
+    assert_eq!(
+        MySql.fifo_guard(&serializable),
+        Err(StatementError::FifoAtSerializable { dialect: "mysql" })
+    );
+    // The levels below it keep the guard.
+    for level in [
+        Isolation::ReadUncommitted,
+        Isolation::ReadCommitted,
+        Isolation::RepeatableRead,
+    ] {
+        assert!(
+            MySql.fifo_guard(&LEDGER.isolation(level))?.is_some(),
+            "{level:?}"
+        );
+    }
+    // A lease claim opens at READ COMMITTED whatever the table names, and keeps its guard.
+    let leased = LEASED_LEDGER.isolation(Isolation::Serializable);
+    assert!(MySql.fifo_guard(&leased)?.is_some());
+    // A table whose groups keep no order takes no group at any level.
+    assert_eq!(
+        MySql.fifo_guard(&EMAILS.isolation(Isolation::Serializable))?,
+        None
     );
     Ok(())
 }
 
 #[test]
-fn a_claim_transaction_opens_at_read_committed_in_both_forms() {
+fn a_claim_transaction_opens_at_read_committed_in_both_forms() -> Result<(), StatementError> {
     let read_committed = Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION");
-    assert_eq!(MySql.begin_lock_claim(), read_committed);
+    // A table that names no isolation level opens its row lock claim at READ COMMITTED.
+    assert_eq!(MySql.begin(BARE.opening())?, read_committed);
     assert_eq!(MySql.begin_lease_claim(), read_committed);
+    Ok(())
+}
+
+#[test]
+fn transactions_open_at_the_declared_isolation() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        MySql.begin(Opening::Default)?,
+        Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::ReadUncommitted))?,
+        Some("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::ReadCommitted))?,
+        Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::RepeatableRead))?,
+        Some("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::Serializable))?,
+        Some("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Mode(Mode::Immediate)),
+        Err(StatementError::UnsupportedOpening {
+            dialect: "mysql",
+            opening: Opening::Mode(Mode::Immediate).name(),
+        })
+    );
+    assert_eq!(MySql.savepoint(), "SAVEPOINT ruststream_claim");
+    assert_eq!(
+        MySql.rollback_to_savepoint(),
+        "ROLLBACK TO SAVEPOINT ruststream_claim"
+    );
+    Ok(())
+}
+
+/// The text a table that names `Level` opens its transactions with: the bound holds where the
+/// dialect opens the level.
+fn begin_at<Level, D: Opens<Level>>(
+    dialect: &D,
+    opening: Opening,
+) -> Result<Option<&'static str>, StatementError> {
+    dialect.begin(opening)
+}
+
+#[test]
+fn every_level_mysql_opens_is_one_its_begin_accepts() {
+    let opened = [
+        begin_at::<(), _>(&MySql, Opening::Default),
+        begin_at::<level::ReadUncommitted, _>(
+            &MySql,
+            Opening::Isolation(Isolation::ReadUncommitted),
+        ),
+        begin_at::<level::ReadCommitted, _>(&MySql, Opening::Isolation(Isolation::ReadCommitted)),
+        begin_at::<level::RepeatableRead, _>(&MySql, Opening::Isolation(Isolation::RepeatableRead)),
+        begin_at::<level::Serializable, _>(&MySql, Opening::Isolation(Isolation::Serializable)),
+    ];
+    assert!(opened.iter().all(Result::is_ok), "{opened:?}");
 }
 
 #[test]
@@ -601,4 +768,211 @@ fn the_server_floor_is_mysql_8_0_1_and_mariadb_10_6() {
     }
     // Both forms claim with `SKIP LOCKED`, so the floor holds for a lease table too.
     assert!(MySql.check_server(&LEASED, "5.7.44").is_err());
+}
+
+/// `#[inbox(advisory_lock = "jobs-{job_id}")]`.
+const PREFIXED_KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
+
+/// Every role the advisory form reads; a lock on `jobs-{job_id}` holds a row.
+const ADVISED: TableSpec<'static> =
+    TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(PREFIXED_KEY))
+        .group(Column::new("name"))
+        .retry_after(Column::new("retry_after"))
+        .attempt(Column::new("attempt"))
+        .processed_at(Column::new("processed_at"))
+        .payload(Column::new("payload"));
+
+/// The lock name MySQL takes for a key the expression `key` renders: the key itself, or its
+/// SHA-256 where the server refuses it as a name.
+fn guarded(key: &str) -> String {
+    format!("IF(CHAR_LENGTH({key}) BETWEEN 1 AND 64, {key}, SHA2({key}, 256))")
+}
+
+/// The claim of an advisory table of an id alone, with the key `key`.
+fn claim_keyed(key: &'static [KeyPart<'static>]) -> Result<Statement, StatementError> {
+    MySql.advisory_claim(&TableSpec::new(
+        "jobs",
+        Column::new("job_id"),
+        Form::Advisory(key),
+    ))
+}
+
+#[test]
+fn the_candidates_carry_their_guarded_keys_and_skip_the_keys_in_use() -> Result<(), StatementError>
+{
+    let claim = MySql.advisory_claim(&ADVISED)?;
+    assert_eq!(
+        claim.sql(),
+        "SELECT `job_id`, IF(CHAR_LENGTH(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`)) BETWEEN 1 AND 64, CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), SHA2(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), 256)) AS `__lock` FROM `jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND IS_USED_LOCK(IF(CHAR_LENGTH(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`)) BETWEEN 1 AND 64, CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), SHA2(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), 256))) IS NULL ORDER BY `retry_after`, `job_id` LIMIT ?",
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
+    Ok(())
+}
+
+#[test]
+fn the_database_renders_the_key_and_guards_its_length() -> Result<(), StatementError> {
+    // A key of one column renders without a literal, and the probe is the only condition.
+    let key = guarded("CONCAT_WS('', LOWER(DATABASE()), '.', `job_id`)");
+    assert_eq!(
+        claim_keyed(&[KeyPart::Column("job_id")])?.sql(),
+        format!(
+            "SELECT `job_id`, {key} AS `__lock` FROM `jobs` WHERE IS_USED_LOCK({key}) IS NULL ORDER BY `job_id` LIMIT ?"
+        ),
+    );
+    // A quote in a literal doubles, and so does a backslash.
+    let escaped = claim_keyed(&[KeyPart::Literal(r"it's-a\b-"), KeyPart::Column("job_id")])?;
+    let key = guarded(r"CONCAT_WS('', LOWER(DATABASE()), '.', 'it''s-a\\b-', `job_id`)");
+    assert!(
+        escaped
+            .sql()
+            .starts_with(&format!("SELECT `job_id`, {key} AS `__lock`")),
+        "{}",
+        escaped.sql()
+    );
+    // A key of no parts is the empty text: every row waits for one lock, the database's own.
+    let empty = claim_keyed(&[])?;
+    let key = guarded("CONCAT_WS('', LOWER(DATABASE()), '.', '')");
+    assert!(
+        empty
+            .sql()
+            .starts_with(&format!("SELECT `job_id`, {key} AS `__lock`")),
+        "{}",
+        empty.sql()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lock_name_starts_with_the_database_of_its_table() -> Result<(), StatementError> {
+    // A table in a named database puts that name first; a table of the connection's default
+    // database, the name the server reports for it.
+    let within = MySql.advisory_claim(
+        &TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(PREFIXED_KEY)).within("app"),
+    )?;
+    let key = guarded("CONCAT_WS('', LOWER('app'), '.', 'jobs-', `job_id`)");
+    assert_eq!(
+        within.sql(),
+        format!(
+            "SELECT `job_id`, {key} AS `__lock` FROM `app`.`jobs` WHERE IS_USED_LOCK({key}) IS NULL ORDER BY `job_id` LIMIT ?"
+        ),
+    );
+    let key = guarded("CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`)");
+    assert!(
+        claim_keyed(PREFIXED_KEY)?
+            .sql()
+            .starts_with(&format!("SELECT `job_id`, {key} AS `__lock` FROM `jobs`")),
+    );
+    Ok(())
+}
+
+#[test]
+fn the_lock_and_the_unlock_name_the_key_and_return_one_integer() {
+    let lock = MySql.lock();
+    assert_eq!(
+        lock.as_ref().map(Statement::sql),
+        Some("SELECT CAST(COALESCE(GET_LOCK(?, 0), 0) AS SIGNED)")
+    );
+    assert_eq!(
+        lock.as_ref().map(Statement::params),
+        Some([Param::Key].as_slice())
+    );
+    let unlock = MySql.unlock();
+    assert_eq!(
+        unlock.as_ref().map(Statement::sql),
+        Some("SELECT CAST(COALESCE(RELEASE_LOCK(?), 0) AS SIGNED)")
+    );
+    assert_eq!(
+        unlock.as_ref().map(Statement::params),
+        Some([Param::Key].as_slice())
+    );
+}
+
+#[test]
+fn the_take_counts_the_attempt_then_reads_the_row_as_it_was() -> Result<(), StatementError> {
+    let rows = MySql.take(&ADVISED, ClaimShape::Rows)?;
+    assert_eq!(
+        rows.iter().map(Statement::sql).collect::<Vec<_>>(),
+        [
+            "UPDATE `jobs` SET `attempt` = `attempt` + 1 WHERE `job_id` = ? AND `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL",
+            "SELECT `job_id`, `name`, `retry_after`, `attempt` - 1 AS `attempt`, `processed_at`, `payload` FROM `jobs` WHERE `job_id` = ?",
+        ]
+    );
+    assert_eq!(rows[0].params(), [Param::Id, Param::Group, Param::Now]);
+    assert_eq!(rows[1].params(), [Param::Id]);
+    let ids = MySql.take(&ADVISED, ClaimShape::Ids)?;
+    assert_eq!(
+        ids[1].sql(),
+        "SELECT `job_id` FROM `jobs` WHERE `job_id` = ?"
+    );
+    let roles = MySql.take(&ADVISED, ClaimShape::Roles)?;
+    assert_eq!(
+        roles[1].sql(),
+        "SELECT `job_id` AS `id`, `attempt` - 1 AS `attempt`, `payload` AS `payload` FROM `jobs` WHERE `job_id` = ?"
+    );
+    // `*` names no column, so the row reads with the attempt counted.
+    let flat = MySql.take(&ADVISED.selecting_all(), ClaimShape::Rows)?;
+    assert_eq!(flat[1].sql(), "SELECT * FROM `jobs` WHERE `job_id` = ?");
+    Ok(())
+}
+
+#[test]
+fn a_table_without_an_attempt_takes_by_reading_the_row() -> Result<(), StatementError> {
+    let uncounted = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(PREFIXED_KEY))
+        .within("app")
+        .group(Column::new("name"))
+        .payload(Column::new("payload"));
+    let take = MySql.take(&uncounted, ClaimShape::Rows)?;
+    assert_eq!(
+        take.iter().map(Statement::sql).collect::<Vec<_>>(),
+        ["SELECT `job_id`, `name`, `payload` FROM `app`.`jobs` WHERE `job_id` = ? AND `name` = ?"]
+    );
+    assert_eq!(take[0].params(), [Param::Id, Param::Group]);
+    Ok(())
+}
+
+#[test]
+fn the_advisory_form_settles_by_the_row_alone() -> Result<(), Box<dyn Error>> {
+    for statement in [MySql.ack(&ADVISED)?, MySql.discard(&ADVISED)?] {
+        assert_eq!(
+            statement.sql(),
+            "UPDATE `jobs` SET `processed_at` = ? WHERE `job_id` = ?"
+        );
+        assert_eq!(statement.params(), [Param::Now, Param::Id]);
+    }
+    // The claim counted the attempt, and the unlock frees the row.
+    assert_eq!(MySql.retry(&ADVISED)?, None);
+    let retry_after = MySql.retry_after(&ADVISED)?;
+    assert_eq!(
+        retry_after.sql(),
+        "UPDATE `jobs` SET `retry_after` = ? WHERE `job_id` = ?"
+    );
+    assert_eq!(retry_after.params(), [Param::RetryAfter, Param::Id]);
+    let clocked = MySql.retry_after(&ADVISED.database_clock())?;
+    assert_eq!(
+        clocked.sql(),
+        "UPDATE `jobs` SET `retry_after` = UTC_TIMESTAMP(6) + INTERVAL ? MICROSECOND WHERE `job_id` = ?"
+    );
+    let group = MySql.dead_letter_group(&ADVISED)?;
+    assert_eq!(
+        group.sql(),
+        "UPDATE `jobs` SET `name` = ? WHERE `job_id` = ?"
+    );
+    let moves = MySql.dead_letter_table(&ADVISED, TableName::parse("jobs_dead")?)?;
+    assert_eq!(
+        moves.iter().map(Statement::sql).collect::<Vec<_>>(),
+        [
+            "INSERT INTO `jobs_dead` (`job_id`, `name`, `retry_after`, `attempt`, `processed_at`, `payload`) SELECT `job_id`, `name`, `retry_after`, `attempt`, `processed_at`, `payload` FROM `jobs` WHERE `job_id` = ?",
+            "DELETE FROM `jobs` WHERE `job_id` = ?",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn an_advisory_fifo_group_is_refused() {
+    let fifo = ADVISED.fifo_group(Column::new("name"));
+    let refused = StatementError::AdvisoryFifo { dialect: "mysql" };
+    assert_eq!(MySql.advisory_claim(&fifo), Err(refused.clone()));
+    assert_eq!(MySql.take(&fifo, ClaimShape::Ids), Err(refused.clone()));
+    assert_eq!(MySql.fifo_guard(&fifo), Err(refused));
 }

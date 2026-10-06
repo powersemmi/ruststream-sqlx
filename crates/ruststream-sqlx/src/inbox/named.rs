@@ -33,7 +33,7 @@ use super::error::SqlxBrokerError;
 use super::publish::table_of;
 use super::queue::{Description, Timing, open};
 use super::subscriber::InboxSubscriber;
-use super::{BuiltIn, FormDialect};
+use super::{BuiltIn, FormDialect, Plain};
 use super::{InboxRow, PayloadRow};
 
 /// A delivery of a by-name subscription whose row runs its own code, its row type erased.
@@ -164,6 +164,13 @@ where
 }
 
 /// A by-name delivery of either path.
+// Why the size difference stays: a row read by role is the delivery itself, and a box would cost an
+// allocation per delivery. Only `testing` widens it past the lint's bound, with the harness's
+// connection every in-process delivery carries.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a by-name delivery carries its row inline; a box would allocate per delivery"
+)]
 enum Delivered<DB, D>
 where
     DB: QueueDatabase + RoleColumns,
@@ -398,7 +405,7 @@ where
 {
     Box::pin(async move {
         let description = Description::of::<DB, Row>();
-        let subscriber = open::<DB, Row>(
+        let subscriber = open::<DB, Row, Plain>(
             shared,
             form,
             name,
@@ -439,7 +446,7 @@ where
                 row = description.row,
                 "a by-name subscription reads its rows by role",
             );
-            let subscriber = open::<DB, NamedRow<D>>(
+            let subscriber = open::<DB, NamedRow<D>, Plain>(
                 &self.shared,
                 form,
                 name,

@@ -101,9 +101,10 @@ pub trait Claim<DB: Database>: InboxRow {
 /// messages itself, from other tables. Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row is delivered with no payload, which fails to decode, and the log names
 /// the id. It runs inside the claim's transaction, or right after a lease claim that leased the
-/// rows and committed in one statement, as on Postgres and SQLite. Either way a delivery reports
-/// the attempt its row held before the claim. It runs only after a claim that took ids, so `ids`
-/// is never empty.
+/// rows and committed in one statement, as on Postgres and SQLite. In the advisory lock form it
+/// runs once per row, with that row's id alone, after the take that counted its attempt. Either
+/// way a delivery reports the attempt its row held before the claim. It runs only after a claim
+/// that took ids, so `ids` is never empty.
 ///
 /// # Examples
 ///
@@ -457,6 +458,191 @@ pub trait Extend<DB: Database>: LeaseRow {
         id: &Self::Id,
         held: &Self::Lease,
         until: &Self::Lease,
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
+}
+
+/// Takes the advisory lock on a row's key for the session that will hold its delivery, without
+/// waiting: the `lock` event of the advisory lock form.
+///
+/// The dialect takes the lock itself on Postgres and MySQL, and the process keeps the keys in work
+/// on SQLite. A table lists `lock` and `unlock` in `custom(..)` together to run the service's own
+/// SQL for them instead, as a database without a built-in dialect does, MSSQL with
+/// `sp_getapplock` and `sp_releaseapplock`; the dialect still selects the candidates and takes
+/// each row. A claim calls it once per candidate with the key the template renders, on the
+/// connection that holds the delivery; [`Unlock`] releases the lock when the delivery settles,
+/// and where the delivery is dropped unsettled the connection closes after that unlock. With a
+/// lock of the service's own the process keeps no registry of keys, on SQLite too.
+///
+/// The dialect's candidate select cannot see a lock of the service's own, so a claim reads as many
+/// candidates past its limit as the subscription has deliveries in work: a key its deliveries hold
+/// does not hold back the rows behind it. A key the service's lock holds elsewhere, in another
+/// process or system, is passed over within that margin only: while such keys head the claim
+/// order, the claim may end empty and wait for its next poll.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::{Inbox, Lock, Unlock};
+/// use sqlx::{PgConnection, Postgres};
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
+/// pub struct Job {
+///     #[field(id)]
+///     id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// // The pair MSSQL writes with `sp_getapplock` and `sp_releaseapplock`, written here with
+/// // Postgres's session locks on a 32-bit hash of the key.
+/// impl Lock<Postgres> for Job {
+///     async fn lock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+///         sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1))")
+///             .bind(key)
+///             .fetch_one(conn)
+///             .await
+///     }
+/// }
+///
+/// impl Unlock<Postgres> for Job {
+///     async fn unlock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+///         sqlx::query_scalar("SELECT pg_advisory_unlock(hashtext($1))")
+///             .bind(key)
+///             .fetch_one(conn)
+///             .await
+///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` lists `lock` in `#[inbox(custom(..))]` and does not implement `Lock<{DB}>`",
+    label = "the service's own lock is missing",
+    note = "implement `Lock<{DB}>` for `{Self}`, or drop `lock` from `custom(..)`"
+)]
+pub trait Lock<DB: Database>: InboxRow {
+    /// Tries the advisory lock on `key` for the session of `conn`, without waiting: `true` when it
+    /// took the lock. The session holds it until `Unlock` releases it or the session ends.
+    ///
+    /// # Errors
+    ///
+    /// The database's error; the claim fails, its connection closes, and the next claim waits one
+    /// second.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx::Lock;
+    /// use sqlx::{PgConnection, Postgres};
+    ///
+    /// // What a claim calls on the connection that will hold the delivery.
+    /// async fn took<Row: Lock<Postgres>>(conn: &mut PgConnection) -> Result<bool, sqlx::Error> {
+    ///     Row::lock(conn, "jobs-42").await
+    /// }
+    /// # let _ = took::<Never>;
+    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
+    /// # #[inbox(table = "t", advisory_lock = "t-{id}", custom(lock, unlock))]
+    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
+    /// # impl Lock<Postgres> for Never {
+    /// #     async fn lock(_: &mut PgConnection, _: &str) -> Result<bool, sqlx::Error> { Ok(true) }
+    /// # }
+    /// # }
+    /// ```
+    fn lock(
+        conn: &mut DB::Connection,
+        key: &str,
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
+}
+
+/// Releases the advisory lock on a delivery's key: the `unlock` event of the advisory lock form,
+/// which a table lists in `custom(..)` beside [`Lock`].
+///
+/// A settlement calls it after its statement, on the connection that holds the delivery, and the
+/// connection goes back to the pool once it answered `true`. An unlock that answers `false` or
+/// fails closes the connection instead, which ends the session and its locks. A delivery dropped
+/// unsettled runs it before its connection closes, and `shutdown` runs it for every delivery in
+/// work.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::{Inbox, Lock, Unlock};
+/// use sqlx::{PgConnection, Postgres};
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
+/// pub struct Job {
+///     #[field(id)]
+///     id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// // MSSQL releases with `sp_releaseapplock`; Postgres's session lock stands in for it here.
+/// impl Unlock<Postgres> for Job {
+///     async fn unlock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+///         sqlx::query_scalar("SELECT pg_advisory_unlock(hashtext($1))")
+///             .bind(key)
+///             .fetch_one(conn)
+///             .await
+///     }
+/// }
+///
+/// impl Lock<Postgres> for Job {
+///     async fn lock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+///         sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext($1))")
+///             .bind(key)
+///             .fetch_one(conn)
+///             .await
+///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` lists `unlock` in `#[inbox(custom(..))]` and does not implement `Unlock<{DB}>`",
+    label = "the service's own unlock is missing",
+    note = "implement `Unlock<{DB}>` for `{Self}`, or drop `unlock` from `custom(..)`"
+)]
+pub trait Unlock<DB: Database>: InboxRow {
+    /// Releases the advisory lock on `key` the session of `conn` holds: `true` when the session
+    /// held it.
+    ///
+    /// # Errors
+    ///
+    /// The database's error; the connection closes, which ends the session and its locks.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx::Unlock;
+    /// use sqlx::{PgConnection, Postgres};
+    ///
+    /// // What a settlement calls once its statement has run, on the delivery's connection.
+    /// async fn released<Row: Unlock<Postgres>>(
+    ///     conn: &mut PgConnection,
+    /// ) -> Result<bool, sqlx::Error> {
+    ///     Row::unlock(conn, "jobs-42").await
+    /// }
+    /// # let _ = released::<Never>;
+    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
+    /// # #[inbox(table = "t", advisory_lock = "t-{id}", custom(lock, unlock))]
+    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
+    /// # impl Unlock<Postgres> for Never {
+    /// #     async fn unlock(_: &mut PgConnection, _: &str) -> Result<bool, sqlx::Error> { Ok(true) }
+    /// # }
+    /// # }
+    /// ```
+    fn unlock(
+        conn: &mut DB::Connection,
+        key: &str,
     ) -> impl Future<Output = Result<bool, Error>> + Send;
 }
 

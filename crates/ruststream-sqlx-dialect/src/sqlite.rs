@@ -2,12 +2,15 @@
 
 use std::num::NonZeroUsize;
 
+use crate::advisory::Advisory;
 use crate::dialect::Dialect;
+use crate::form::KeyPart;
 use crate::lease::Lease;
+use crate::opening::{Mode, Opening, Opens, level};
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, SqlWriter};
+use crate::writer::{BuiltIn, Probe, SqlWriter};
 
 /// How SQLite reads the current time: as text, in the layout sqlx writes `chrono` times in, so it
 /// compares with the times a service binds.
@@ -17,22 +20,40 @@ const DATABASE_NOW: &str = "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')";
 /// so no other writer comes between its select and its stamps.
 const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 
-/// SQLite: double-quoted names, `?` placeholders, rows claimed by lease.
+/// SQLite: backtick-quoted names, `?` placeholders, rows claimed by lease.
 ///
-/// It builds the statements of the lease form ([`Lease`]) and the insert. A writer locks the whole
-/// database, not rows, so it builds no claim that holds rows for a handler: it does not implement
-/// [`RowLock`](crate::RowLock), and a SQLite table declares `locked_until`. A lease claim is one
+/// It builds the statements of the lease form ([`Lease`]), of the advisory lock form
+/// ([`Advisory`]), and the insert. A writer locks the whole database, not rows, so it builds no
+/// claim that holds rows for a handler: it does not implement [`RowLock`](crate::RowLock), and a
+/// SQLite table declares `locked_until` or `advisory_lock`. A lease claim is one
 /// update that writes the lease, counts the attempt and returns the rows it took, as they were
 /// before; one writer at a time keeps two claims apart. The rows of one claim come back in no
 /// particular order. A dead letter into a table copies the row, then deletes it, in one
 /// transaction. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE`
 /// ([`begin_lease_claim`](Lease::begin_lease_claim)), so it takes the write lock before it
 /// selects. Every name is quoted, so a name keeps its case and may hold any character, and SQLite
-/// keeps a name of any length. [`fetch`](Dialect::fetch) is refused, so a claim of the service's
-/// own brings a fetch of its own.
+/// keeps a name of any length. The quotes are backticks, which SQLite always reads as a name: a
+/// statement that names a column the table lacks fails when it is prepared.
+/// [`fetch`](Dialect::fetch) is refused, so a claim of the service's own brings a fetch of its
+/// own.
 ///
 /// SQLite keeps times as text, so the statements compare times as text: two times compare right
 /// when their text sorts as the times do.
+///
+/// SQLite has no locks a session holds, so in the advisory lock form the broker keeps the keys in
+/// work in the process: [`lock`](Advisory::lock) and [`unlock`](Advisory::unlock) are `None`, and
+/// the claim selects up to [`Param::Limit`] claimable rows in claim order with their keys, the text
+/// the key's parts render, a column without a value read as empty text. The select cannot leave
+/// out the keys in work, so the broker binds a limit that reaches past them. The take counts the
+/// attempt and returns the row in one statement.
+///
+/// A table with FIFO groups needs no guard ([`fifo_guard`](Dialect::fifo_guard) is `None`): one
+/// writer at a time keeps two claims apart, and a lease claim takes nothing while a row of the
+/// group holds a lease.
+///
+/// SQLite runs every transaction serializable, so a table names no isolation level here: it names
+/// a mode, and its transactions open with `BEGIN DEFERRED`, `BEGIN IMMEDIATE` or
+/// `BEGIN EXCLUSIVE` ([`begin`](Dialect::begin)), or with `BEGIN` where it names none.
 ///
 /// # Examples
 ///
@@ -47,7 +68,7 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// let claim = Sqlite.lease_claim(&JOBS, ClaimShape::Rows)?;
 /// assert_eq!(
 ///     claim.sql(),
-///     r#"UPDATE "jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "jobs" WHERE ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "job_id" LIMIT ?) RETURNING "job_id", "attempt" - 1 AS "attempt", "locked_until", "payload""#,
+///     "UPDATE `jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `jobs` WHERE (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `job_id` LIMIT ?) RETURNING `job_id`, `attempt` - 1 AS `attempt`, `locked_until`, `payload`",
 /// );
 /// assert_eq!(claim.params(), [Param::Lease, Param::LeaseNow, Param::Limit]);
 /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
@@ -56,14 +77,18 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// A table in the row lock form finds no claim here, so a subscription to one does not compile:
 ///
 /// ```compile_fail,E0277
-/// use ruststream_sqlx_dialect::{RowLock, Sqlite};
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Column, Form, RowLock, Sqlite, Statement, StatementError, TableSpec,
+/// };
+///
+/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
 ///
 /// // What a subscription to a row lock table asks of its dialect.
-/// fn opens_its_claim(dialect: &impl RowLock) -> &'static str {
-///     dialect.begin_lock_claim().unwrap_or("BEGIN")
+/// fn claims_its_rows(dialect: &impl RowLock) -> Result<Statement, StatementError> {
+///     dialect.lock_claim(&JOBS, ClaimShape::Rows)
 /// }
 ///
-/// let opening = opens_its_claim(&Sqlite);
+/// let claim = claims_its_rows(&Sqlite);
 /// ```
 ///
 /// and its settlements are refused, naming the form:
@@ -91,6 +116,13 @@ impl BuiltIn for Sqlite {
 
     const DEFAULT_ROW: &'static str = " DEFAULT VALUES";
 
+    const BACKSLASH_ESCAPES: bool = false;
+
+    const UPDATE_RETURNS: bool = true;
+
+    /// The process keeps the locks, so the database cannot tell a key in work.
+    const PROBE: Probe = Probe::Blind;
+
     fn database_now(&self) -> &'static str {
         DATABASE_NOW
     }
@@ -100,6 +132,18 @@ impl BuiltIn for Sqlite {
             .param(Param::Delay)
             .push(" / 1000000.0) || ' seconds')");
     }
+
+    // SQLite takes no locks: the broker keeps the keys in work in the process, so the key alone
+    // is rendered.
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, _: Option<&str>, key: &[KeyPart<'_>]) {
+        // `||` with a column without a value gives no text at all, so each column reads as empty
+        // text there; the cast makes a key of one number text.
+        sql.push("CAST(")
+            .key_parts(key, " || ", |sql, column| {
+                sql.push("ifnull(").ident(column).push(", '')");
+            })
+            .push(" AS TEXT)");
+    }
 }
 
 impl Dialect for Sqlite {
@@ -108,14 +152,16 @@ impl Dialect for Sqlite {
     }
 
     fn quote_into(&self, ident: &str, out: &mut String) {
-        out.push('"');
+        // SQLite reads a double-quoted name that matches no column as a string literal, so a
+        // misnamed column would prepare and read as text; a backtick-quoted name is always a name.
+        out.push('`');
         for character in ident.chars() {
-            if character == '"' {
-                out.push('"');
+            if character == '`' {
+                out.push('`');
             }
             out.push(character);
         }
-        out.push('"');
+        out.push('`');
     }
 
     fn placeholder_into(&self, _: NonZeroUsize, out: &mut String) {
@@ -161,6 +207,44 @@ impl Dialect for Sqlite {
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.insert_statement(spec)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        match opening {
+            Opening::Default => Ok(None),
+            Opening::Mode(Mode::Deferred) => Ok(Some("BEGIN DEFERRED")),
+            Opening::Mode(Mode::Immediate) => Ok(Some("BEGIN IMMEDIATE")),
+            Opening::Mode(Mode::Exclusive) => Ok(Some("BEGIN EXCLUSIVE")),
+            Opening::Isolation(_) => Err(opening.refused(self.name())),
+        }
+    }
+}
+
+impl Opens<level::Deferred> for Sqlite {}
+
+impl Opens<level::Immediate> for Sqlite {}
+
+impl Opens<level::Exclusive> for Sqlite {}
+
+impl Advisory for Sqlite {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.advisory_claim_statement(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        None
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        None
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.take_statements(spec, shape)
+    }
 }
 
 impl Lease for Sqlite {
@@ -170,7 +254,6 @@ impl Lease for Sqlite {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         let expiry = self.leased(spec, "lease_claim")?;
-        self.in_order(spec)?;
         let mut sql = SqlWriter::new(self);
         sql.returning_claim(spec, shape, expiry.name());
         Ok(sql.finish())

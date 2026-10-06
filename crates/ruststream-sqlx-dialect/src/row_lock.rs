@@ -4,16 +4,16 @@ use crate::dialect::Dialect;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, Statement, StatementError};
 
-/// The row lock form of a dialect: the claim that locks its rows until its transaction ends, and
-/// the statement that opens that transaction.
+/// The row lock form of a dialect: the claim that locks its rows until its transaction ends.
 ///
 /// A table that declares neither `#[field(locked_until)]` nor `advisory_lock` takes its rows
 /// this way. The claim selects the claimable rows under a lock, the handler runs while the
 /// transaction holds them, and the settlement ends the transaction; after a crash the database
-/// rolls back and the rows return at once. A dialect implements this trait where its database
-/// locks rows for a transaction, and a table in the row lock form does not compile against a
-/// dialect that does not. [`Postgres`](crate::Postgres) and [`MySql`](crate::MySql) implement it;
-/// [`Sqlite`](crate::Sqlite) does not, as its writer locks the whole database.
+/// rolls back and the rows return at once. The transaction opens at the table's isolation level,
+/// with the statement [`Dialect::begin`] gives. A dialect implements this trait where its
+/// database locks rows for a transaction, and a table in the row lock form does not compile
+/// against a dialect that does not. [`Postgres`](crate::Postgres) and [`MySql`](crate::MySql)
+/// implement it; [`Sqlite`](crate::Sqlite) does not, as its writer locks the whole database.
 ///
 /// # Examples
 ///
@@ -32,7 +32,7 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 ///     dialect: &dyn RowLock,
 ///     spec: &TableSpec<'_>,
 /// ) -> Result<(Statement, &'static str), StatementError> {
-///     let opening = dialect.begin_lock_claim().unwrap_or("BEGIN");
+///     let opening = dialect.begin(spec.opening())?.unwrap_or("BEGIN");
 ///     Ok((dialect.lock_claim(spec, ClaimShape::Rows)?, opening))
 /// }
 ///
@@ -55,11 +55,18 @@ pub trait RowLock: Dialect {
     /// The statement that claims up to [`Param::Limit`](crate::Param::Limit) rows of the
     /// subscription's group, in claim order, and locks them until the claim's transaction ends.
     ///
+    /// A table with FIFO groups keeps one row of a group in work. Its claim takes the group's
+    /// head, the first unfinished row of the group in claim order, and takes nothing while the
+    /// head is in work (another claim's transaction holds it) or not yet due. It binds no
+    /// [`Param::Limit`](crate::Param::Limit). The claim's transaction first takes the group with
+    /// the statement [`fifo_guard`](Dialect::fifo_guard) gives and holds it until the delivery
+    /// settles, so a row that enters the group ahead of the head in work waits too.
+    ///
     /// # Errors
     ///
-    /// [`StatementError::FormMismatch`] for a table in another form;
-    /// [`StatementError::UnsupportedFifo`] when the table has FIFO groups and the dialect has no
-    /// claim that keeps them in order.
+    /// [`StatementError::FormMismatch`] for a table in another form. A dialect of the service's
+    /// own that builds no claim for FIFO groups returns [`StatementError::UnsupportedFifo`] for a
+    /// table with them.
     ///
     /// # Examples
     ///
@@ -81,38 +88,29 @@ pub trait RowLock: Dialect {
     /// # }
     /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
     /// ```
+    ///
+    /// The claim of a FIFO group locks the group's head alone:
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Param, Postgres, RowLock, TableSpec};
+    ///
+    /// const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+    ///     .fifo_group(Column::new("account"))
+    ///     .payload(Column::new("payload"));
+    ///
+    /// let claim = Postgres.lock_claim(&LEDGER, ClaimShape::Ids)?;
+    /// assert_eq!(
+    ///     claim.sql(),
+    ///     r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 ORDER BY "id" LIMIT 1) FOR UPDATE SKIP LOCKED"#,
+    /// );
+    /// assert_eq!(claim.params(), [Param::Group]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
     fn lock_claim(
         &self,
         spec: &TableSpec<'_>,
         shape: ClaimShape,
     ) -> Result<Statement, StatementError>;
-
-    /// The statement that opens a claim's transaction in place of `BEGIN`, or `None` when `BEGIN`
-    /// opens it.
-    ///
-    /// The statement leaves the connection inside a transaction, as `BEGIN` does. MySQL opens it
-    /// at READ COMMITTED, so a claim held for a handler locks no gaps between rows and holds back
-    /// no insert into its table.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(all(feature = "postgres", feature = "mysql"))] {
-    /// use ruststream_sqlx_dialect::{MySql, Postgres, RowLock};
-    ///
-    /// // What a broker sends to open a row lock claim's transaction.
-    /// fn opening(dialect: &dyn RowLock) -> &'static str {
-    ///     dialect.begin_lock_claim().unwrap_or("BEGIN")
-    /// }
-    ///
-    /// assert_eq!(opening(&Postgres), "BEGIN");
-    /// assert_eq!(
-    ///     opening(&MySql),
-    ///     "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION",
-    /// );
-    /// # }
-    /// ```
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        None
-    }
 }

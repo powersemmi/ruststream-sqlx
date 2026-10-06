@@ -1,5 +1,6 @@
 //! The inbox: task queues in tables a service describes with its own structs.
 
+mod advisory;
 mod broker;
 mod built_in;
 mod columns;
@@ -15,10 +16,12 @@ mod lease;
 pub(crate) mod named;
 mod publish;
 pub(crate) mod queue;
+mod session;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
 mod time;
+mod transactional;
 mod tx;
 
 use std::fmt::Debug;
@@ -34,7 +37,8 @@ pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_in
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{
-    Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Publish, Retry, RetryAfter,
+    Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Lock, Publish, Retry, RetryAfter,
+    Unlock,
 };
 pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
 pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
@@ -42,6 +46,7 @@ pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use subscriber::InboxSubscriber;
 pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
+pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, TransactionalStep, Tx};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.
 ///
@@ -85,6 +90,13 @@ pub trait InboxRow: QueueRow {
     /// to serve it ([`FormOn`]). Machinery; the derive sets it.
     #[doc(hidden)]
     type Form;
+
+    /// What the table's transactions open at, as a type: a [`level`](crate::dialect::level)
+    /// marker for the isolation level or SQLite mode the struct declares, `()` where it declares
+    /// neither. A subscription requires its dialect to open it
+    /// ([`Opens`](crate::dialect::Opens)). Machinery; the derive sets it.
+    #[doc(hidden)]
+    type Opening;
 }
 
 /// A row a subscription delivers, and the type of its id. Machinery: `#[derive(Inbox)]`

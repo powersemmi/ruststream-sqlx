@@ -5,16 +5,51 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ruststream_sqlx::dialect;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{AssertSqlSafe, Connection, PgConnection, Postgres};
+use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Postgres};
 
 use super::{Database, url};
 
 /// The database the stand serves.
 pub(crate) type Db = Postgres;
 
+/// The dialect the broker builds the stand's statements with.
+pub(crate) const DIALECT: dialect::Postgres = dialect::Postgres;
+
 /// The variable that names the stand: a Postgres URL whose user may create databases.
 pub(crate) const URL: &str = "POSTGRES_TEST_URL";
+
+/// The advisory locks sessions of the database `pool` reaches hold.
+///
+/// # Panics
+///
+/// Panics when the database refuses the query.
+pub(crate) async fn advisory_locks(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND database = \
+         (SELECT oid FROM pg_database WHERE datname = current_database())",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("the locks read")
+}
+
+/// The sessions of the database `pool` reaches that sit in an open transaction between
+/// statements.
+///
+/// # Panics
+///
+/// Panics when the database refuses the query.
+pub(crate) async fn idle_in_transaction(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() \
+         AND state LIKE 'idle in transaction%'",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("the sessions read")
+}
 
 /// A fresh database on the stand, or `None` to skip the test.
 ///

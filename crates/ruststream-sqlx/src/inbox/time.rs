@@ -171,12 +171,12 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 
 /// A queue row taken by lease: its struct has a `#[field(locked_until)]` field.
 ///
-/// A claim writes the lease's expiry into `locked_until` and commits at once, so the handler runs
-/// outside any transaction. The expiry it wrote is the delivery's ownership token: a settlement
-/// takes effect only while the row still holds it. While the handler runs, the subscription
-/// extends the lease each half lease, and each extension's expiry becomes the token. The derive
-/// implements it for a struct with the field, and a subscription of such a struct can set its own
-/// lease ([`InboxQueue::lease`](crate::InboxQueue::lease)).
+/// A claim writes the lease's expiry into `locked_until` and commits at once, so the lease, not a
+/// transaction, holds the row while the handler runs. The expiry it wrote is the delivery's
+/// ownership token: a settlement takes effect only while the row still holds it. While the
+/// handler runs, the subscription extends the lease each half lease, and each extension's expiry
+/// becomes the token. The derive implements it for a struct with the field, and a subscription of
+/// such a struct can set its own lease ([`InboxQueue::lease`](crate::InboxQueue::lease)).
 ///
 /// # Examples
 ///

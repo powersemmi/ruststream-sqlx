@@ -3,6 +3,7 @@
 use std::fmt::Debug;
 use std::num::NonZeroUsize;
 
+use crate::opening::Opening;
 use crate::spec::TableSpec;
 use crate::statement::{Statement, StatementError};
 use crate::table_name::TableName;
@@ -17,14 +18,22 @@ use crate::table_name::TableName;
 ///
 /// The forms of claiming are traits of their own, each over this one: [`RowLock`](crate::RowLock)
 /// builds the claim that locks rows for its transaction, [`Lease`](crate::Lease) the claim that
-/// writes a lease and the lease's extension. A dialect implements the traits of the forms its
-/// database serves, and a table in another form does not compile against it. A dialect of the
-/// service's own does the same: it implements this trait, then the trait of each form it builds,
-/// with every statement its own or delegated to a built-in dialect it wraps.
+/// writes a lease and the lease's extension, [`Advisory`](crate::Advisory) the claim of candidates
+/// with their lock keys, the lock, the unlock and the take. A dialect implements the traits of the
+/// forms its database serves, and a table in another form does not compile against it. A dialect
+/// of the service's own does the same: it implements this trait, then the trait of each form it
+/// builds, with every statement its own or delegated to a built-in dialect it wraps.
 ///
 /// The settlements here serve every form the dialect builds. In the lease form each of them names
 /// the row and the delivery's ownership token ([`Param::Held`](crate::Param::Held)), so a delivery
-/// whose lease ran out, and whose row another claim took, changes nothing.
+/// whose lease ran out, and whose row another claim took, changes nothing. In the advisory lock
+/// form they name the row alone: the lock on its key keeps every other claim off it.
+///
+/// A dialect also opens transactions: [`begin`](Self::begin) gives the statement that opens one
+/// at a table's isolation level or SQLite mode, and [`savepoint`](Self::savepoint) and
+/// [`rollback_to_savepoint`](Self::rollback_to_savepoint) mark where a handler's writes start
+/// and discard them. In a table with FIFO groups, a claim's transaction first takes the
+/// subscription's group with the statement [`fifo_guard`](Self::fifo_guard) gives.
 ///
 /// # Examples
 ///
@@ -155,7 +164,8 @@ pub trait Dialect: Debug + Send + Sync {
     /// The statement that releases a row for another attempt at once, or `None` when releasing
     /// the row needs no statement.
     ///
-    /// In the lease form it clears the lease, and the attempt stays as the claim counted it.
+    /// In the lease form it clears the lease, and the attempt stays as the claim counted it. In the
+    /// advisory lock form it is `None`: the take counted the attempt, and the unlock frees the row.
     ///
     /// # Errors
     ///
@@ -393,5 +403,169 @@ pub trait Dialect: Debug + Send + Sync {
     fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
         let _ = (spec, version);
         Ok(())
+    }
+
+    /// The statement that opens a transaction at `opening` in place of `BEGIN`, or `None` when
+    /// `BEGIN` opens it.
+    ///
+    /// A broker opens the row lock claim's transaction with it, at the table's opening
+    /// ([`TableSpec::opening`]). The statement leaves the connection inside a transaction, as
+    /// `BEGIN` does. A dialect accepts the openings it implements [`Opens`](crate::Opens) for;
+    /// the provided method accepts only [`Opening::Default`], with `BEGIN`.
+    ///
+    /// # Errors
+    ///
+    /// [`StatementError::UnsupportedOpening`] for an opening the dialect does not open: an
+    /// isolation level on SQLite, a SQLite mode elsewhere, READ UNCOMMITTED on Postgres.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "mysql"))] {
+    /// use ruststream_sqlx_dialect::{
+    ///     Column, Dialect, Form, Isolation, MySql, Postgres, StatementError, TableSpec,
+    /// };
+    ///
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
+    ///     .isolation(Isolation::Serializable);
+    ///
+    /// // What a broker sends to open a claim's transaction.
+    /// fn opening(
+    ///     dialect: &dyn Dialect,
+    ///     spec: &TableSpec<'_>,
+    /// ) -> Result<&'static str, StatementError> {
+    ///     Ok(dialect.begin(spec.opening())?.unwrap_or("BEGIN"))
+    /// }
+    ///
+    /// assert_eq!(opening(&Postgres, &JOBS)?, "BEGIN ISOLATION LEVEL SERIALIZABLE");
+    /// assert_eq!(
+    ///     opening(&MySql, &JOBS)?,
+    ///     "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; START TRANSACTION",
+    /// );
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        match opening {
+            Opening::Default => Ok(None),
+            Opening::Isolation(_) | Opening::Mode(_) => Err(opening.refused(self.name())),
+        }
+    }
+
+    /// The statement that sets the savepoint after a claim, inside the claim's transaction: what
+    /// a handler writes after it can be discarded while the claim's own work stays.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{Dialect, Postgres};
+    ///
+    /// // A delivery whose handler writes in the claim's transaction, then retries: the writes
+    /// // go, the claim and the count of the attempt stay.
+    /// let retried = [
+    ///     Postgres.savepoint(),
+    ///     r#"INSERT INTO "audit" ("note") VALUES ('sent')"#,
+    ///     Postgres.rollback_to_savepoint(),
+    ///     r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1"#,
+    ///     "COMMIT",
+    /// ];
+    /// assert_eq!(retried[0], "SAVEPOINT ruststream_claim");
+    /// # }
+    /// ```
+    fn savepoint(&self) -> &'static str {
+        "SAVEPOINT ruststream_claim"
+    }
+
+    /// The statement that discards what the transaction did after [`savepoint`](Self::savepoint),
+    /// and keeps the transaction open.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "mysql")] {
+    /// use ruststream_sqlx_dialect::{Dialect, MySql};
+    ///
+    /// // A delivery whose handler wrote in the claim's transaction and was dropped: its writes go,
+    /// // and the row is finished.
+    /// let dropped = [
+    ///     MySql.rollback_to_savepoint(),
+    ///     "DELETE FROM `jobs` WHERE `job_id` = ?",
+    ///     "COMMIT",
+    /// ];
+    /// assert_eq!(dropped[0], "ROLLBACK TO SAVEPOINT ruststream_claim");
+    /// # }
+    /// ```
+    fn rollback_to_savepoint(&self) -> &'static str {
+        "ROLLBACK TO SAVEPOINT ruststream_claim"
+    }
+
+    /// The statement a claim of a table with FIFO groups runs first in its transaction, to take
+    /// the subscription's group for it; `None` for a table without FIFO groups, or a dialect that
+    /// takes no group.
+    ///
+    /// It binds [`Param::Group`](crate::Param::Group) and returns one row whose first column is a
+    /// 64-bit integer: nonzero when the claim's transaction now holds the group, zero when another
+    /// transaction holds it. It does not wait. A claim that reads zero ends empty, so a row that
+    /// enters the group ahead of a head in work waits for that head to settle. The transaction
+    /// holds the group until it ends: in the row lock form until the delivery settles, in the
+    /// lease form until the claim commits, after which the lease claim takes nothing while a row
+    /// of the group holds a lease.
+    ///
+    /// A dialect of the service's own returns such a statement where its database can hold the
+    /// group for one transaction: a lock the transaction owns, or a locking read of the group's
+    /// rows. `None`, which the provided method returns, leaves the order to the claim alone. That
+    /// suffices where claims run one at a time and see every lease, as on SQLite. Where two claims
+    /// run side by side, it gives the order up: a row that enters the group ahead of a head in
+    /// work (a smaller `priority`, an earlier `retry_after`, a dead letter moved into the group)
+    /// becomes a second head, and the other claim takes it while the first is still in work.
+    ///
+    /// # Errors
+    ///
+    /// For a table with FIFO groups, the refusals of its claim: [`StatementError::AdvisoryFifo`]
+    /// in the advisory lock form, [`StatementError::LeaseOnDatabaseClock`] for a lease table on
+    /// the database's clock, [`StatementError::IdentifierTooLong`] for a name the database does
+    /// not keep. A guard may also refuse the isolation level its claim opens at: MySQL refuses a
+    /// row lock table at SERIALIZABLE with [`StatementError::FifoAtSerializable`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "sqlite"))] {
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Column, Form, Lease, Param, Postgres, Sqlite, Statement, StatementError,
+    ///     TableSpec,
+    /// };
+    ///
+    /// const LEDGER: TableSpec<'static> =
+    ///     TableSpec::new("ledger", Column::new("id"), Form::Lease(Column::new("locked_until")))
+    ///         .fifo_group(Column::new("account"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// // What a claim of a FIFO table runs in its transaction: the guard, then the claim, which
+    /// // runs only when the guard read nonzero.
+    /// fn claiming(
+    ///     dialect: &dyn Lease,
+    ///     spec: &TableSpec<'_>,
+    /// ) -> Result<Vec<Statement>, StatementError> {
+    ///     let mut statements: Vec<Statement> = dialect.fifo_guard(spec)?.into_iter().collect();
+    ///     statements.push(dialect.lease_claim(spec, ClaimShape::Rows)?);
+    ///     Ok(statements)
+    /// }
+    ///
+    /// let postgres = claiming(&Postgres, &LEDGER)?;
+    /// assert_eq!(
+    ///     postgres[0].sql(),
+    ///     "SELECT pg_try_advisory_xact_lock(hashtextextended('ledger:' || $1, 0))::int::bigint",
+    /// );
+    /// assert_eq!(postgres[0].params(), [Param::Group]);
+    /// // One writer at a time keeps two claims apart on SQLite: the claim runs alone.
+    /// assert_eq!(claiming(&Sqlite, &LEDGER)?.len(), 1);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        let _ = spec;
+        Ok(None)
     }
 }

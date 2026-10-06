@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Lease, NameLimit, Param, Postgres, Role, RowLock,
-    Statement, StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, Isolation, KeyPart, Lease, Mode, NameLimit, Opening, Opens,
+    Param, Postgres, Role, RowLock, Statement, StatementError, TableName, TableSpec, level,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -141,7 +141,7 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
 }
 
 #[test]
-fn the_row_lock_claim_refuses_tables_of_other_forms_and_fifo_groups() {
+fn the_row_lock_claim_refuses_tables_of_other_forms() {
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     assert_eq!(
         Postgres.lock_claim(&advisory, ClaimShape::Rows),
@@ -162,18 +162,14 @@ fn the_row_lock_claim_refuses_tables_of_other_forms_and_fifo_groups() {
             form: "lease",
         })
     );
-    assert_eq!(
-        Postgres.lock_claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo {
-            dialect: "postgres"
-        })
-    );
 }
 
 #[test]
-fn a_claim_transaction_opens_with_a_plain_begin() {
-    assert_eq!(Postgres.begin_lock_claim(), None);
+fn a_claim_transaction_opens_with_a_plain_begin() -> Result<(), StatementError> {
+    // A table that names no isolation level opens its row lock claim with `BEGIN`.
+    assert_eq!(Postgres.begin(BARE.opening())?, None);
     assert_eq!(Postgres.begin_lease_claim(), None);
+    Ok(())
 }
 
 #[test]
@@ -284,61 +280,6 @@ fn a_dead_letter_table_without_a_schema_is_one_name() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-#[test]
-fn settlement_refuses_forms_this_dialect_does_not_build() -> Result<(), Box<dyn Error>> {
-    let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
-    let unsupported = StatementError::UnsupportedForm {
-        dialect: "postgres",
-        form: "advisory lock",
-    };
-    assert_eq!(Postgres.ack(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry_after(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.discard(&advisory), Err(unsupported.clone()));
-    assert_eq!(
-        Postgres.dead_letter_group(&advisory),
-        Err(unsupported.clone())
-    );
-    assert_eq!(
-        Postgres.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
-        Err(unsupported)
-    );
-    assert_eq!(
-        Postgres.extend(&advisory),
-        Err(StatementError::FormMismatch {
-            statement: "extend",
-            form: "advisory lock",
-        })
-    );
-    assert_eq!(
-        Postgres.stamp(&advisory),
-        Err(StatementError::FormMismatch {
-            statement: "stamp",
-            form: "advisory lock",
-        })
-    );
-    assert!(
-        Postgres.fetch(&advisory).is_ok(),
-        "a fetch reads rows in every form"
-    );
-
-    // The lease form is built; `tests/postgres_lease.rs` pins its statements.
-    let lease = TableSpec::new(
-        "jobs",
-        Column::new("job_id"),
-        Form::Lease(Column::new("until")),
-    )
-    .group(Column::new("name"))
-    .retry_after(Column::new("retry_after"));
-    Postgres.ack(&lease)?;
-    Postgres.retry(&lease)?;
-    Postgres.retry_after(&lease)?;
-    Postgres.discard(&lease)?;
-    Postgres.dead_letter_group(&lease)?;
-    Postgres.dead_letter_table(&lease, TableName::parse("jobs_dead")?)?;
-    Ok(())
-}
-
 /// A name of `len` bytes.
 fn name_of(len: usize) -> String {
     "n".repeat(len)
@@ -369,6 +310,9 @@ fn a_name_longer_than_63_bytes_is_refused() {
         TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new(&long));
     assert_eq!(Postgres.discard(&column), Err(refused(&long)));
     assert_eq!(Postgres.retry(&column), Err(refused(&long)));
+    let group =
+        TableSpec::new("ledger", Column::new("id"), Form::RowLock).fifo_group(Column::new(&long));
+    assert_eq!(Postgres.fifo_guard(&group), Err(refused(&long)));
 
     let target = format!("archive.{long}");
     let target = TableName::parse(&target).map_err(|err| err.to_string());
@@ -460,8 +404,118 @@ fn the_database_clock_reads_the_statement_timestamp() -> Result<(), StatementErr
     let retry_after = Postgres.retry_after(&spec)?;
     assert_eq!(
         retry_after.sql(),
-        r#"UPDATE "app"."email_jobs" SET "retry_after" = statement_timestamp() + $1 * interval '1 microsecond', "attempt" = "attempt" + 1 WHERE "job_id" = $2"#
+        r#"UPDATE "app"."email_jobs" SET "retry_after" = statement_timestamp() + $1::bigint * interval '1 microsecond', "attempt" = "attempt" + 1 WHERE "job_id" = $2"#
     );
     assert_eq!(retry_after.params(), [Param::Delay, Param::Id]);
     Ok(())
+}
+
+/// A ledger whose accounts keep their order: one row of an account in work, taken in claim order.
+const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+    .fifo_group(Column::new("account"))
+    .retry_after(Column::new("retry_after"))
+    .attempt(Column::new("attempt"))
+    .processed_at(Column::new("processed_at"))
+    .payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn Error>> {
+    let claim = Postgres.lock_claim(&LEDGER, ClaimShape::Rows)?;
+    assert_eq!(
+        claim.sql(),
+        r#"SELECT "id", "account", "retry_after", "attempt", "processed_at", "payload" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 FOR UPDATE SKIP LOCKED"#,
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Now]);
+    let ids = Postgres.lock_claim(&LEDGER, ClaimShape::Ids)?;
+    assert_eq!(
+        ids.sql(),
+        r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 FOR UPDATE SKIP LOCKED"#,
+    );
+    Ok(())
+}
+
+/// The ledger of an odd name inside a schema: the guard's key names it as the claim does.
+const ODD_LEDGER: TableSpec<'static> = TableSpec::new("it's", Column::new("id"), Form::RowLock)
+    .within("app")
+    .fifo_group(Column::new("account"));
+
+#[test]
+fn a_fifo_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
+    let guard = Postgres
+        .fifo_guard(&LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        guard.sql(),
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('ledger:' || $1, 0))::int::bigint",
+    );
+    assert_eq!(guard.params(), [Param::Group]);
+    // The key names the table with its schema, unquoted, and a quote in it doubles.
+    let odd = Postgres
+        .fifo_guard(&ODD_LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        odd.sql(),
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('app.it''s:' || $1, 0))::int::bigint",
+    );
+    // A table whose groups keep no order needs no guard.
+    assert_eq!(Postgres.fifo_guard(&EMAILS)?, None);
+    assert_eq!(Postgres.fifo_guard(&BARE)?, None);
+    Ok(())
+}
+
+#[test]
+fn transactions_open_at_the_declared_isolation() -> Result<(), Box<dyn Error>> {
+    assert_eq!(Postgres.begin(Opening::Default)?, None);
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::Serializable))?,
+        Some("BEGIN ISOLATION LEVEL SERIALIZABLE")
+    );
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::RepeatableRead))?,
+        Some("BEGIN ISOLATION LEVEL REPEATABLE READ")
+    );
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::ReadCommitted))?,
+        Some("BEGIN ISOLATION LEVEL READ COMMITTED")
+    );
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::ReadUncommitted)),
+        Err(StatementError::UnsupportedOpening {
+            dialect: "postgres",
+            opening: Opening::Isolation(Isolation::ReadUncommitted).name(),
+        })
+    );
+    assert!(Postgres.begin(Opening::Mode(Mode::Immediate)).is_err());
+    assert_eq!(Postgres.savepoint(), "SAVEPOINT ruststream_claim");
+    assert_eq!(
+        Postgres.rollback_to_savepoint(),
+        "ROLLBACK TO SAVEPOINT ruststream_claim"
+    );
+    Ok(())
+}
+
+/// The text a table that names `Level` opens its transactions with: the bound holds where the
+/// dialect opens the level.
+fn begin_at<Level, D: Opens<Level>>(
+    dialect: &D,
+    opening: Opening,
+) -> Result<Option<&'static str>, StatementError> {
+    dialect.begin(opening)
+}
+
+#[test]
+fn every_level_postgres_opens_is_one_its_begin_accepts() {
+    let opened = [
+        begin_at::<(), _>(&Postgres, Opening::Default),
+        begin_at::<level::ReadCommitted, _>(
+            &Postgres,
+            Opening::Isolation(Isolation::ReadCommitted),
+        ),
+        begin_at::<level::RepeatableRead, _>(
+            &Postgres,
+            Opening::Isolation(Isolation::RepeatableRead),
+        ),
+        begin_at::<level::Serializable, _>(&Postgres, Opening::Isolation(Isolation::Serializable)),
+    ];
+    assert!(opened.iter().all(Result::is_ok), "{opened:?}");
 }

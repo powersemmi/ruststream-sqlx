@@ -5,14 +5,58 @@ use std::num::NonZeroUsize;
 
 use crate::column::Column;
 use crate::dialect::Dialect;
-use crate::form::Form;
+use crate::form::{Form, KeyPart};
 use crate::role::Role;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
 
+mod advisory;
+
+pub(crate) use advisory::Probe;
+
 /// The keys a claim orders by before the id, the most significant first.
 const ORDER_KEYS: [Role; 2] = [Role::Priority, Role::RetryAfter];
+
+/// A condition a claim puts on a row, written only where the table has the column it reads.
+#[derive(Debug, Clone, Copy)]
+enum Condition {
+    /// The row is in the subscription's group.
+    InGroup,
+    /// The row's time has come.
+    Due,
+    /// The row carries no finish mark.
+    Unfinished,
+    /// No lease holds the row.
+    Free,
+}
+
+impl Condition {
+    /// The role of the column the condition reads.
+    fn role(self) -> Role {
+        match self {
+            Self::InGroup => Role::Group,
+            Self::Due => Role::RetryAfter,
+            Self::Unfinished => Role::ProcessedAt,
+            Self::Free => Role::LockedUntil,
+        }
+    }
+}
+
+/// What a row meets to be claimed, in the order a claim of many rows writes it.
+const CLAIMABLE: [Condition; 4] = [
+    Condition::InGroup,
+    Condition::Due,
+    Condition::Unfinished,
+    Condition::Free,
+];
+
+/// What makes a row a candidate for its group's head: the head is the first of these rows in
+/// claim order.
+const HEAD: [Condition; 2] = [Condition::InGroup, Condition::Unfinished];
+
+/// What the head of a group meets for a claim to take it.
+const TAKING: [Condition; 2] = [Condition::Due, Condition::Free];
 
 /// The columns a reader that knows no struct reads, with the roles they play: `id`,
 /// `partition_key`, `attempt`, `headers` and `payload`, in [`Role::ALL`] order and only where the
@@ -55,15 +99,18 @@ pub(crate) enum Built<'a> {
     RowLock,
     /// The expiry in this column holds the row.
     Lease(Column<'a>),
+    /// A lock on the row's key, held by the delivery's session, holds the row.
+    Advisory,
 }
 
 /// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, whether it
-/// locks rows, how an insert of no column reads, and the database's own clock.
+/// locks rows, how an insert of no column reads, the database's own clock, and how it renders,
+/// probes and takes an advisory lock key.
 ///
 /// The provided methods check a table against the dialect, and against a statement of one form
-/// for the dialect's [`RowLock`](crate::RowLock) and [`Lease`](crate::Lease) implementations, and
-/// build the statements every built-in dialect writes the same way, through its quoting,
-/// placeholders and clock.
+/// for the dialect's [`RowLock`](crate::RowLock), [`Lease`](crate::Lease) and
+/// [`Advisory`](crate::Advisory) implementations, and build the statements every built-in dialect
+/// writes the same way, through its quoting, placeholders and clock.
 pub(crate) trait BuiltIn: Dialect {
     /// The longest name the database keeps; `None` where it keeps a name of any length.
     const NAME_LIMIT: Option<NameLimit>;
@@ -75,11 +122,35 @@ pub(crate) trait BuiltIn: Dialect {
     /// default.
     const DEFAULT_ROW: &'static str;
 
+    /// Whether a backslash in a string literal escapes the character after it, so a literal
+    /// doubles each backslash of its text.
+    const BACKSLASH_ESCAPES: bool;
+
+    /// Whether an update returns the rows it changed, so the take counts the attempt and reads the
+    /// row in one statement.
+    const UPDATE_RETURNS: bool;
+
+    /// How the advisory claim leaves out the candidates whose key another session holds.
+    const PROBE: Probe;
+
+    /// What a read of a row subtracts from the attempt its statement counted, so the attempt
+    /// reads as it was before, in the column's own type.
+    const UNCOUNT: &'static str = " - 1";
+
     /// The database's current time.
     fn database_now(&self) -> &'static str;
 
     /// Writes the database's current time plus [`Param::Delay`] microseconds.
     fn database_later(&self, sql: &mut SqlWriter<'_, Self>);
+
+    /// Writes the lock key of a row of a table in `schema` (`None` for the connection's default):
+    /// the text the database renders from `key`'s parts, as the dialect locks it.
+    fn render_lock_key(
+        &self,
+        sql: &mut SqlWriter<'_, Self>,
+        schema: Option<&str>,
+        key: &[KeyPart<'_>],
+    );
 
     /// Refuses a name longer than the database keeps.
     fn names_fit<'a>(
@@ -112,7 +183,7 @@ pub(crate) trait BuiltIn: Dialect {
     }
 
     /// The table's form, when the dialect builds it: the row lock where the database locks rows,
-    /// or a lease on the crate's clock.
+    /// a lease on the crate's clock, or an advisory lock.
     fn form<'a>(&self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
         self.spec_fits(spec)?;
         match spec.form() {
@@ -125,10 +196,54 @@ pub(crate) trait BuiltIn: Dialect {
                 })
             }
             Form::Lease(expiry) => Ok(Built::Lease(expiry)),
+            Form::Advisory(_) => Ok(Built::Advisory),
             other => Err(StatementError::UnsupportedForm {
                 dialect: self.name(),
                 form: other.name(),
             }),
+        }
+    }
+
+    /// The lock key of a table, for `statement`, a statement of the advisory lock form: the table
+    /// takes its rows by advisory lock without FIFO groups, and its names and its key's fit.
+    fn advised<'a>(
+        &self,
+        spec: &TableSpec<'a>,
+        statement: &'static str,
+    ) -> Result<&'a [KeyPart<'a>], StatementError> {
+        self.spec_fits(spec)?;
+        match spec.form() {
+            // In this form the lock key keeps a group in order.
+            Form::Advisory(_) if spec.is_fifo() => Err(StatementError::AdvisoryFifo {
+                dialect: self.name(),
+            }),
+            Form::Advisory(key) => {
+                self.names_fit(key.iter().filter_map(|part| match part {
+                    KeyPart::Column(column) => Some(*column),
+                    KeyPart::Literal(_) => None,
+                }))?;
+                Ok(key)
+            }
+            other => Err(StatementError::FormMismatch {
+                statement,
+                form: other.name(),
+            }),
+        }
+    }
+
+    /// Whether a claim of `spec` takes its group first: the table keeps its groups in order. Such
+    /// a table is checked as its claim checks it: its names fit, and its form takes a head.
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
+    fn guards_group(&self, spec: &TableSpec<'_>) -> Result<bool, StatementError> {
+        if !spec.is_fifo() {
+            return Ok(false);
+        }
+        match self.form(spec)? {
+            // In this form the lock key keeps a group in order.
+            Built::Advisory => Err(StatementError::AdvisoryFifo {
+                dialect: self.name(),
+            }),
+            Built::RowLock | Built::Lease(_) => Ok(true),
         }
     }
 
@@ -168,17 +283,6 @@ pub(crate) trait BuiltIn: Dialect {
                 form: other.name(),
             }),
         }
-    }
-
-    /// Refuses a table with FIFO groups for a claim: the built-in claims skip locked rows and
-    /// would skip a group's head.
-    fn in_order(&self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
-        if spec.is_fifo() {
-            return Err(StatementError::UnsupportedFifo {
-                dialect: self.name(),
-            });
-        }
-        Ok(())
     }
 
     /// Checks that a row of `spec` can move into `target`: the form is built, a lease table
@@ -226,6 +330,8 @@ pub(crate) trait BuiltIn: Dialect {
                 // The rollback releases the row, and there is no attempt to count.
                 None => return Ok(None),
             },
+            // The take counted the attempt, and the unlock frees the row.
+            Built::Advisory => return Ok(None),
         };
         sql.settled_row(spec);
         Ok(Some(sql.finish()))
@@ -252,6 +358,8 @@ pub(crate) trait BuiltIn: Dialect {
             Built::Lease(_) => {
                 sql.release(spec);
             }
+            // The take counted the attempt, and the unlock frees the row.
+            Built::Advisory => {}
         }
         sql.settled_row(spec);
         Ok(sql.finish())
@@ -311,6 +419,58 @@ pub(crate) trait BuiltIn: Dialect {
             .push(" AND ")
             .lease_free(expiry.name());
         Ok(sql.finish())
+    }
+
+    /// The advisory claim: the id and the lock key of up to [`Param::Limit`] claimable rows in
+    /// claim order, without the rows whose key another session holds where the database can tell.
+    fn advisory_claim_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let key = self.advised(spec, "advisory_claim")?;
+        let mut sql = SqlWriter::new(self);
+        sql.candidates(spec, key);
+        Ok(sql.finish())
+    }
+
+    /// The take of a candidate whose key the session holds: the count of its attempt and the read
+    /// of the row as it was before the count, while the row is still claimable; a read alone in a
+    /// table without an attempt.
+    fn take_statements(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.advised(spec, "take")?;
+        let Some(attempt) = spec.column(Role::Attempt) else {
+            let mut read = SqlWriter::new(self);
+            read.push("SELECT ")
+                .claimed_columns(spec, shape)
+                .push(" FROM ")
+                .table(spec)
+                .taken_row(spec);
+            return Ok(vec![read.finish()]);
+        };
+        let mut count = SqlWriter::new(self);
+        count
+            .push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .increment(attempt.name())
+            .taken_row(spec);
+        if Self::UPDATE_RETURNS {
+            count.push(" RETURNING ").counted_columns(spec, shape);
+            return Ok(vec![count.finish()]);
+        }
+        // The read runs only after the count changed the row, and the session's lock keeps every
+        // other claim off it, so the id alone names the row.
+        let mut read = SqlWriter::new(self);
+        read.push("SELECT ")
+            .counted_columns(spec, shape)
+            .push(" FROM ")
+            .table(spec)
+            .push(" WHERE ")
+            .ident(spec.id().name())
+            .push(" = ")
+            .param(Param::Id);
+        Ok(vec![count.finish(), read.finish()])
     }
 
     /// The move of a row whose attempts are spent into another table, as two statements of one
@@ -490,7 +650,6 @@ where
     /// The columns a reader that knows no struct reads, each under its role's attribute name:
     /// `id`, `partition_key`, `attempt`, `headers` and `payload`, in [`Role::ALL`] order and only
     /// where the table has them.
-    #[cfg(any(feature = "postgres", feature = "mysql"))]
     pub(crate) fn role_columns(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         self.roles_read(spec, false)
     }
@@ -505,7 +664,7 @@ where
             }
             self.ident(column.name());
             if counted && role == Role::Attempt {
-                self.push(" - 1");
+                self.push(D::UNCOUNT);
             }
             self.push(" AS ").ident(role.attribute());
         }
@@ -515,7 +674,6 @@ where
     /// Every column of a row an update that counted its attempt returns, the attempt one less
     /// under its own name, so the row reads as it was before; `*` when the struct flattens
     /// another, whose columns the description cannot see.
-    #[cfg(feature = "sqlite")]
     fn columns_before_count(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         if spec.selects_all() {
             return self.push("*");
@@ -527,7 +685,7 @@ where
             }
             self.ident(column.name());
             if attempt == Some(column.name()) {
-                self.push(" - 1 AS ").ident(column.name());
+                self.push(D::UNCOUNT).push(" AS ").ident(column.name());
             }
         }
         self
@@ -549,31 +707,90 @@ where
     /// The conditions a row meets to be claimed, each present only with its column: the
     /// subscription's group, a time that has come, no finish mark, no lease in force.
     pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>) -> &mut Self {
-        let mut keyword = " WHERE ";
-        if let Some(group) = spec.column(Role::Group) {
-            self.push(keyword)
-                .ident(group.name())
-                .push(" = ")
-                .param(Param::Group);
-            keyword = " AND ";
-        }
-        if let Some(retry_after) = spec.column(Role::RetryAfter) {
-            self.push(keyword)
-                .ident(retry_after.name())
-                .push(" <= ")
-                .now(spec);
-            keyword = " AND ";
-        }
-        if let Some(processed_at) = spec.column(Role::ProcessedAt) {
-            self.push(keyword)
-                .ident(processed_at.name())
-                .push(" IS NULL");
-            keyword = " AND ";
-        }
-        if let Some(expiry) = spec.column(Role::LockedUntil) {
-            self.push(keyword).lease_free(expiry.name());
-        }
+        self.conditions(spec, &CLAIMABLE, " WHERE ")
+    }
+
+    /// The conditions of a row that may be its group's head, each present only with its column:
+    /// the subscription's group, no finish mark.
+    fn head_conditions(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        self.conditions(spec, &HEAD, " WHERE ")
+    }
+
+    /// The conditions the head of a group meets for a claim to take it, each present only with
+    /// its column and each after ` AND `, as they follow the condition that names the head: a
+    /// time that has come, no lease in force.
+    fn taking_conditions(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        self.conditions(spec, &TAKING, " AND ")
+    }
+
+    /// The count of the subscription's group's unfinished rows, read under `lock`.
+    #[cfg(feature = "mysql")]
+    pub(crate) fn group_count(&mut self, spec: &TableSpec<'_>, lock: &str) -> &mut Self {
+        self.push("SELECT COUNT(*) FROM ")
+            .table(spec)
+            .head_conditions(spec)
+            .push(lock)
+    }
+
+    /// Each of `conditions` the table has a column for: the first after `keyword`, the others
+    /// after ` AND `.
+    fn conditions(
+        &mut self,
+        spec: &TableSpec<'_>,
+        conditions: &[Condition],
+        keyword: &'static str,
+    ) -> &mut Self {
+        self.conditions_then(spec, conditions, keyword);
         self
+    }
+
+    /// Each of `conditions` the table has a column for, as [`conditions`](Self::conditions)
+    /// writes them; returns what a condition after them opens with: `keyword` when the table has
+    /// none of them, ` AND ` otherwise.
+    fn conditions_then(
+        &mut self,
+        spec: &TableSpec<'_>,
+        conditions: &[Condition],
+        keyword: &'static str,
+    ) -> &'static str {
+        let mut keyword = keyword;
+        for &condition in conditions {
+            let Some(column) = spec.column(condition.role()) else {
+                continue;
+            };
+            self.push(keyword);
+            keyword = " AND ";
+            match condition {
+                Condition::InGroup => self.ident(column.name()).push(" = ").param(Param::Group),
+                Condition::Due => self.ident(column.name()).push(" <= ").now(spec),
+                Condition::Unfinished => self.ident(column.name()).push(" IS NULL"),
+                Condition::Free => self.lease_free(column.name()),
+            };
+        }
+        keyword
+    }
+
+    /// In the lease form, the condition that no row of the subscription's group holds a lease in
+    /// force at [`Param::LeaseNow`], after ` AND `; nothing in the other forms. A row that enters
+    /// the group ahead of a head in work becomes the head, and this keeps it waiting until the
+    /// row in work settles or its lease ends.
+    fn group_free(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        let (Some(group), Some(expiry)) =
+            (spec.column(Role::Group), spec.column(Role::LockedUntil))
+        else {
+            return self;
+        };
+        self.push(" AND NOT EXISTS (SELECT 1 FROM ")
+            .table(spec)
+            .push(" AS __work WHERE __work.")
+            .ident(group.name())
+            .push(" = ")
+            .param(Param::Group)
+            .push(" AND __work.")
+            .ident(expiry.name())
+            .push(" > ")
+            .param(Param::LeaseNow)
+            .push(")")
     }
 
     /// No lease holds the row: it has none, or its lease ended by [`Param::LeaseNow`].
@@ -627,7 +844,6 @@ where
     }
 
     /// The columns a claim of `shape` selects.
-    #[cfg(any(feature = "postgres", feature = "mysql"))]
     fn claimed_columns(&mut self, spec: &TableSpec<'_>, shape: ClaimShape) -> &mut Self {
         match shape {
             ClaimShape::Rows => self.columns(spec),
@@ -636,16 +852,45 @@ where
         }
     }
 
-    /// A claim's select after its columns: the claimable rows of the table in claim order, at
-    /// most [`Param::Limit`] of them, locked by `lock`.
+    /// The columns of `shape` of a row whose attempt an update counted, read as the row was
+    /// before the count.
+    fn counted_columns(&mut self, spec: &TableSpec<'_>, shape: ClaimShape) -> &mut Self {
+        match shape {
+            ClaimShape::Rows => self.columns_before_count(spec),
+            ClaimShape::Ids => self.ident(spec.id().name()),
+            ClaimShape::Roles => self.roles_read(spec, true),
+        }
+    }
+
+    /// A claim's select after its columns, locked by `lock`: the claimable rows of the table in
+    /// claim order, at most [`Param::Limit`] of them; in a table with FIFO groups, the group's
+    /// head alone, while it is due and free, and in the lease form while no row of the group holds
+    /// a lease.
     fn claimed_rows(&mut self, spec: &TableSpec<'_>, lock: &str) -> &mut Self {
-        self.push(" FROM ")
-            .table(spec)
-            .claimable(spec)
-            .claim_order(spec, spec.id().name())
-            .push(" LIMIT ")
-            .param(Param::Limit)
-            .push(lock)
+        let id = spec.id().name();
+        self.push(" FROM ").table(spec);
+        if spec.is_fifo() {
+            // The select of the head takes no lock, so a head another claim holds stays the head:
+            // `lock` falls on the head row alone, and a held head leaves the claim empty instead
+            // of handing out the row behind it.
+            self.push(" WHERE ")
+                .ident(id)
+                .push(" = (SELECT ")
+                .ident(id)
+                .push(" FROM ")
+                .table(spec)
+                .head_conditions(spec)
+                .claim_order(spec, id)
+                .push(" LIMIT 1)")
+                .taking_conditions(spec)
+                .group_free(spec);
+        } else {
+            self.claimable(spec)
+                .claim_order(spec, id)
+                .push(" LIMIT ")
+                .param(Param::Limit);
+        }
+        self.push(lock)
     }
 
     /// The claim that selects rows and locks them with `lock`: the columns of `shape`, of the
@@ -741,12 +986,8 @@ where
             .push(" IN (SELECT ")
             .ident(id)
             .claimed_rows(spec, "")
-            .push(") RETURNING ");
-        match shape {
-            ClaimShape::Rows => self.columns_before_count(spec),
-            ClaimShape::Ids => self.ident(id),
-            ClaimShape::Roles => self.roles_read(spec, true),
-        }
+            .push(") RETURNING ")
+            .counted_columns(spec, shape)
     }
 
     /// `"column" = "column" + 1`.

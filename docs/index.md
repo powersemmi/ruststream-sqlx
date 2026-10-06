@@ -9,10 +9,18 @@ service through [`sqlx`](https://docs.rs/sqlx). It has two components:
   again at startup.
 - Task queues in Postgres, MySQL/MariaDB and SQLite tables that the service owns.
 
-A subscription takes its rows in one of two forms. In the row lock form it locks a row in a
+A subscription takes its rows in one of three forms. In the row lock form it locks a row in a
 transaction that stays open until the handler settles the row. In the lease form it writes a lease
 into the row and commits at once, so a long handler holds no transaction, and the subscription
-extends the lease while the handler works. SQLite tables take the lease form.
+extends the lease while the handler works. In the advisory lock form it locks the row's key in the
+database session of the connection that serves the delivery. No transaction stays open, and rows
+that share a key go into work one at a time. SQLite tables take the lease or the advisory lock
+form.
+
+A handler mounted with `.transactional()` writes through its delivery's transaction, in every
+form. Acknowledgement commits the handler's writes and finishes the row in one transaction. Every
+other outcome rolls the writes back. While a delivery is in work, its transaction holds a
+connection of the pool.
 
 A subscription caps the deliveries of a message with `max_attempts(n)` and names, with
 `dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are

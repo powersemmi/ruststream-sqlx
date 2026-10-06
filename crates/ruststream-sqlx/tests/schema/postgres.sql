@@ -19,10 +19,25 @@ CREATE TABLE email_jobs (
 -- Where spent emails go when a registration dead-letters them into a table.
 CREATE TABLE email_jobs_dead (LIKE email_jobs INCLUDING DEFAULTS);
 
--- One queue per table: no group, no time, rows deleted when finished.
+-- A ledger whose accounts keep their order: a FIFO group per account, claimed by priority, then
+-- by `retry_after`.
+CREATE TABLE ledger (
+    id           BIGSERIAL PRIMARY KEY,
+    account      TEXT NOT NULL,
+    priority     SMALLINT NOT NULL DEFAULT 0,
+    retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    processed_at TIMESTAMPTZ,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
+);
+
+-- One queue per table: no group, no time, rows deleted when finished. A job may name its tenant,
+-- which an advisory lock key reads where the jobs of one tenant go one at a time.
 CREATE TABLE plain_jobs (
     id           BIGSERIAL PRIMARY KEY,
     attempt      SMALLINT NOT NULL DEFAULT 1,
+    tenant       TEXT NOT NULL DEFAULT '',
     locked_until TIMESTAMPTZ,
     payload      BYTEA NOT NULL
 );
@@ -151,3 +166,16 @@ CREATE TABLE unreadable_jobs (
 
 -- Where spent jobs of `unreadable_jobs` go.
 CREATE TABLE unreadable_jobs_dead (LIKE unreadable_jobs INCLUDING DEFAULTS);
+
+-- The isolation level each claim of a test's subscription ran at, written from inside the claim's
+-- transaction.
+CREATE TABLE seen_isolation (
+    level TEXT NOT NULL
+);
+
+-- What a handler writes beside its job, in the delivery's transaction or through the pool: one
+-- row per write, its note naming the write.
+CREATE TABLE audit (
+    job_id BIGINT,
+    note   TEXT
+);

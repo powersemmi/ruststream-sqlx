@@ -5,7 +5,7 @@ use std::future::Future;
 use futures::TryStreamExt;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ruststream_sqlx_dialect as dialect;
-use ruststream_sqlx_dialect::Lease;
+use ruststream_sqlx_dialect::{Advisory, Lease};
 use sqlx::Row as _;
 use sqlx::any::AnyQueryResult;
 #[cfg(feature = "any")]
@@ -23,11 +23,11 @@ use sqlx::{Sqlite, SqliteConnection};
 #[cfg(feature = "any")]
 use super::built_in::AnyDialect;
 use super::built_in::BuiltIn;
-use super::engine::{Claimed, Events, IdAt};
+use super::engine::{Candidates, Claimed, Events, IdAt};
 use super::queue::Queue;
 
-/// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
-/// statements bind, runs statements on a connection, and reports the rows a statement changed.
+/// A sqlx database the inbox runs on: one that binds and reads the values the queue's own
+/// statements use, runs statements on a connection, and reports the rows a statement changed.
 ///
 /// Every database whose sqlx driver does so implements it; Postgres, MySQL, SQLite and `Any` do.
 /// The rows a statement changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx
@@ -62,6 +62,14 @@ pub trait QueueDatabase: Database {
         sql: &'static str,
         arguments: Self::Arguments,
     ) -> impl Future<Output = Result<u64, Error>> + Send + 'c;
+
+    /// Runs a statement that binds nothing as text, unprepared: a savepoint, which MySQL does not
+    /// prepare. Machinery.
+    #[doc(hidden)]
+    fn execute_text<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
 
     /// Runs a claim or a fetch of whole rows of `queue` into `out`: a row its struct does not
     /// decode is [`Claimed::Undecodable`], its id read alone where the queue's select carries it
@@ -108,6 +116,37 @@ pub trait QueueDatabase: Database {
         conn: &'c mut Self::Connection,
         sql: &'static str,
     ) -> impl Future<Output = Result<String, Error>> + Send + 'c;
+
+    /// Runs a statement whose one row starts with a 64-bit integer, such as the guard a FIFO
+    /// claim takes its group with, or the lock and the unlock of the advisory lock form, and
+    /// returns whether the integer is nonzero. Machinery.
+    #[doc(hidden)]
+    fn fetch_flag<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'c;
+
+    /// Runs the advisory claim of candidates into `out`: the id in the first column, the lock key
+    /// as text in the second, copied into the buffers `out` keeps. Machinery.
+    #[doc(hidden)]
+    fn fetch_candidates<'c, Id>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+        out: &'c mut Candidates<Id>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c
+    where
+        Id: for<'r> Decode<'r, Self> + Type<Self> + Send + 'c;
+
+    /// Runs a statement and says whether it returned a row, such as the take of a candidate the
+    /// service's own fetch reads. Machinery.
+    #[doc(hidden)]
+    fn fetch_found<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'c;
 }
 
 impl<DB> QueueDatabase for DB
@@ -116,7 +155,8 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
-    for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: Decode<'r, DB>,
+    for<'a> i64: Encode<'a, DB> + Decode<'a, DB> + Type<DB>,
     for<'r> String: Decode<'r, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
     for<'a> &'a str: ColumnIndex<DB::Row>,
@@ -137,6 +177,12 @@ where
     ) -> Result<u64, Error> {
         let result: AnyQueryResult = sqlx::query_with(sql, arguments).execute(conn).await?.into();
         Ok(result.rows_affected())
+    }
+
+    async fn execute_text(conn: &mut Self::Connection, sql: &'static str) -> Result<(), Error> {
+        // A bare text binds nothing, so sqlx sends it as is, without preparing it.
+        conn.execute(sql).await?;
+        Ok(())
     }
 
     async fn fetch_rows<'c, Row>(
@@ -206,6 +252,49 @@ where
     ) -> impl Future<Output = Result<String, Error>> + Send + 'c {
         sqlx::query_scalar::<Self, String>(sql).fetch_one(conn)
     }
+
+    async fn fetch_flag(
+        conn: &mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> Result<bool, Error> {
+        let flag: i64 = sqlx::query_scalar_with::<Self, i64, _>(sql, arguments)
+            .fetch_one(conn)
+            .await?;
+        Ok(flag != 0)
+    }
+
+    async fn fetch_candidates<'c, Id>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+        out: &'c mut Candidates<Id>,
+    ) -> Result<(), Error>
+    where
+        Id: for<'r> Decode<'r, Self> + Type<Self> + Send + 'c,
+    {
+        let mut rows = sqlx::query_with::<Self, _>(sql, arguments).fetch(conn);
+        while let Some(row) = rows.try_next().await? {
+            // The key is read where the row holds it, and copied once, into a kept buffer.
+            let key = row.try_get::<&str, _>(1_usize)?;
+            out.push(row.try_get::<Id, _>(0_usize)?, key);
+        }
+        Ok(())
+    }
+
+    async fn fetch_found(
+        conn: &mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> Result<bool, Error> {
+        // Every row is read, so the statement has run to its end when the answer comes.
+        let mut rows = sqlx::query_with::<Self, _>(sql, arguments).fetch(conn);
+        let mut found = false;
+        while rows.try_next().await?.is_some() {
+            found = true;
+        }
+        Ok(found)
+    }
 }
 
 /// A database whose dialect is built into this crate, so `SqlxBroker::new` needs no dialect of
@@ -244,7 +333,7 @@ pub trait BuiltInDialect: QueueDatabase {
     /// The dialect of the crate's `dialect` module that builds the database's statements.
     /// Machinery; [`BuiltIn`] holds it.
     #[doc(hidden)]
-    type Picked: Lease + Copy + 'static;
+    type Picked: Lease + Advisory + Copy + 'static;
 
     /// The dialect that builds the statements of the database `conn` reaches, or `None` when no
     /// built-in dialect serves it: an `AnyPool`'s backend whose feature is off.

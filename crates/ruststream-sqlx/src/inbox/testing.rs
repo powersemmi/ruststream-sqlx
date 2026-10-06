@@ -220,6 +220,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
         })?;
         let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current());
         let _ = connected.shared.harness.clock.set(TestClock::start());
+        connected.shared.closing.run_in_process();
         Ok(connected)
     }
 }

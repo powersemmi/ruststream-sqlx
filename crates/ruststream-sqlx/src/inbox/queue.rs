@@ -11,23 +11,30 @@ use std::time::Duration;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
-use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, StatementError, TableName, TableSpec};
+use ruststream_sqlx_dialect::{
+    ClaimShape, Dialect, Form, Isolation, Opening, Opens, Role, Statement, StatementError,
+    TableName, TableSpec,
+};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 use sqlx::{Database, Pool};
 
+use super::advisory::LockBook;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
-use super::engine::{Events, IdAt, Prepared, Shape, Stmt, intern, intern_name};
+use super::engine::{Events, IdAt, Prepared, Savepoint, Shape, intern, intern_name};
 use super::error::SqlxBrokerError;
 use super::kinds::Kinds;
 use super::lease::{self, LeaseBook};
 use super::publish::table_of;
 use super::subscriber::{Holding, InboxSubscriber};
-#[cfg(feature = "testing")]
-use super::testing::{cancelled, off_clock};
 use super::time::LeaseRow;
+use super::transactional::{InboxMode, Plain, Transactional, TxBook};
 use super::{FormDialect, FormOn, InboxRow, PayloadRow};
+
+mod check;
+
+use check::check;
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
@@ -35,19 +42,28 @@ use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 /// the name is its address. By default rows are claimed with `FOR UPDATE SKIP LOCKED` in a
 /// transaction held for the whole handler: acknowledgement is the delete (or the `processed_at`
 /// mark) and the commit, a retry counts the attempt and commits, and after a crash the database
-/// rolls back and the row returns at once.
+/// rolls back and the row returns at once. That transaction opens at the table's `isolation`
+/// where the struct declares one, and a subscription to a table at a level the broker's dialect
+/// does not open ([`Opens`](crate::dialect::Opens)) does not compile.
+///
+/// Mounted with [`transactional`](crate::InboxSettings::transactional), a subscription lends its
+/// handler a transaction to write through, in every form: acknowledgement commits the handler's
+/// writes with the row's settlement, and every other outcome discards them first. A row lock
+/// subscription lends the claim's transaction.
 ///
 /// A table with a `#[field(locked_until)]` field is claimed by lease instead: the claim writes the
-/// lease's expiry into the row, counts the attempt and commits at once, so the handler runs
-/// outside any transaction. While the handler runs, the subscription extends the lease each half
-/// lease. Each settlement is one statement that takes effect only while the row still holds the
-/// lease, a delivery dropped unsettled releases its row at once, and after a crash the row
-/// returns once the lease runs out. The lease is the broker's
+/// lease's expiry into the row, counts the attempt and commits at once, so the lease, not a
+/// transaction, holds the row while the handler runs. While the handler runs, the subscription
+/// extends the lease each half lease. Each settlement is one statement that takes effect only
+/// while the row still holds the lease, a delivery dropped unsettled releases its row at once,
+/// and after a crash the row returns once the lease runs out. The lease is the broker's
 /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the subscription sets its own
 /// ([`lease`](Self::lease)). The broker's dialect serves a table's form when it implements the
 /// form's trait: [`RowLock`](crate::dialect::RowLock) for the row lock form,
-/// [`Lease`](crate::dialect::Lease) for the lease form. SQLite has no row locks, so a table there
-/// takes the lease form, and a subscription to one without `locked_until` does not compile.
+/// [`Lease`](crate::dialect::Lease) for the lease form, [`Advisory`](crate::dialect::Advisory) for
+/// the advisory lock form. SQLite has no row locks, so a table there takes the lease form or the
+/// advisory lock form, and a subscription to one without `locked_until` or `advisory_lock` does not
+/// compile.
 ///
 /// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table, declared together:
 /// at the cap the row moves to the `dead_letter` group (with a `group` field) or into the
@@ -100,16 +116,18 @@ use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 /// # }
 /// # fn main() {}
 /// ```
-pub struct InboxQueue<Row> {
+pub struct InboxQueue<Row, Mode = Plain> {
     name: Cow<'static, str>,
     poll_interval: Option<Duration>,
     lease: Option<Duration>,
     declaration: RetryDeclaration,
-    _row: PhantomData<fn() -> Row>,
+    _row: PhantomData<fn() -> (Row, Mode)>,
 }
 
 impl<Row> InboxQueue<Row> {
-    /// A subscription to the queue `name` of `Row`'s table.
+    /// A subscription to the queue `name` of `Row`'s table, in the plain mode: the handler leaves
+    /// the delivery's transaction alone. The mount-site step
+    /// [`transactional`](crate::InboxSettings::transactional) switches it to transactional mode.
     ///
     /// # Examples
     ///
@@ -228,9 +246,21 @@ impl<Row> InboxQueue<Row> {
         self.lease = Some(lease);
         self
     }
+
+    /// The same subscription in transactional mode: what the mount-site step
+    /// [`transactional`](crate::InboxSettings::transactional) makes of it.
+    pub(crate) fn into_transactional(self) -> InboxQueue<Row, Transactional> {
+        InboxQueue {
+            name: self.name,
+            poll_interval: self.poll_interval,
+            lease: self.lease,
+            declaration: self.declaration,
+            _row: PhantomData,
+        }
+    }
 }
 
-impl<Row> Clone for InboxQueue<Row> {
+impl<Row, Mode> Clone for InboxQueue<Row, Mode> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -242,10 +272,11 @@ impl<Row> Clone for InboxQueue<Row> {
     }
 }
 
-impl<Row> fmt::Debug for InboxQueue<Row> {
+impl<Row, Mode: InboxMode> fmt::Debug for InboxQueue<Row, Mode> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InboxQueue")
             .field("row", &type_name::<Row>())
+            .field("transactional", &Mode::TRANSACTIONAL)
             .field("name", &self.name)
             .field("poll_interval", &self.poll_interval)
             .field("lease", &self.lease)
@@ -254,14 +285,15 @@ impl<Row> fmt::Debug for InboxQueue<Row> {
     }
 }
 
-impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
+impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
 where
     DB: QueueDatabase,
-    D: Dialect + 'static,
+    D: Dialect + Opens<Row::Opening> + 'static,
     Row: InboxRow + Events<DB> + PayloadRow,
     Row::Form: FormOn<D>,
+    Mode: InboxMode,
 {
-    type Subscriber = InboxSubscriber<DB, Row>;
+    type Subscriber = InboxSubscriber<DB, Row, Mode>;
     type Copies = BrokerMoves;
 
     fn name(&self) -> &str {
@@ -272,7 +304,7 @@ where
         self,
         connected: &ConnectedSqlxBroker<DB, D>,
     ) -> Result<Self::Subscriber, SqlxBrokerError> {
-        open::<DB, Row>(
+        open::<DB, Row, Mode>(
             &connected.shared,
             &<Row::Form as FormOn<D>>::erase(&connected.dialect),
             &self.name,
@@ -404,6 +436,11 @@ impl Description {
         self.spec.column(Role::LockedUntil).is_some()
     }
 
+    /// Whether the table is claimed by advisory lock: its struct names a lock key.
+    pub(crate) const fn advisory(&self) -> bool {
+        matches!(self.spec.form(), Form::Advisory(_))
+    }
+
     /// Where the claim's select carries the id of a row read alone.
     pub(crate) const fn id_at(&self) -> IdAt {
         match self.claim {
@@ -483,7 +520,7 @@ pub struct Queue {
     /// The subscription's statements.
     pub prepared: Prepared,
     /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
-    /// names one.
+    /// names one: the row lock claim's at the table's opening.
     pub begin_claim: Option<&'static str>,
     /// Whether the rows a claim hands out carry the attempt it counted, so a delivery reports one
     /// less.
@@ -524,8 +561,8 @@ impl Queue {
 }
 
 /// The statements a subscription to the table `description` reads runs, built by the dialect
-/// `form` shows: the claim and the lease's statements by the trait of the table's form, the
-/// settlements by the dialect itself.
+/// `form` shows: the claim and the statements of the lease and advisory lock forms by the trait of
+/// the table's form, the guard of a FIFO group and the settlements by the dialect itself.
 fn build(
     form: &FormDialect,
     declaration: &RetryDeclaration,
@@ -545,6 +582,9 @@ fn build(
         .then(|| form.claim(&spec, description.claim))
         .transpose()
         .map_err(refused)?;
+    // Whoever writes the claim: a claim of the service's own takes its rows in the transaction the
+    // guard took the group in, as the crate's does.
+    let fifo_guard = dialect.fifo_guard(&spec).map_err(refused)?;
     let fetch = (shape.custom_claim && !shape.custom_fetch)
         .then(|| dialect.fetch(&spec))
         .transpose()
@@ -576,20 +616,23 @@ fn build(
             let target = TableName::parse(target)
                 .map_err(|err| fail(format!("the dead-letter table {err}")))?;
             let moves = dialect.dead_letter_table(&spec, target).map_err(refused)?;
-            let count = moves.len();
-            let mut moves = moves.into_iter();
-            match (moves.next(), moves.next(), moves.next()) {
-                (Some(first), then, None) => (Some(first), then),
-                _ => {
-                    return Err(fail(format!(
-                        "the {} dialect moves a dead letter in {count} statements, and the inbox \
-                         runs one or two",
-                        dialect.name(),
-                    )));
-                }
-            }
+            let (first, then) = one_or_two(dialect, "moves a dead letter", moves, fail)?;
+            (Some(first), then)
         }
         None => (None, None),
+    };
+    // The advisory lock form's own statements: the lock and the unlock where the database keeps
+    // the locks and the service runs none of its own, and the take of a candidate whose lock the
+    // delivery's session holds.
+    let (lock, unlock, take, take_then) = match form.advisory() {
+        Some(advisory) => {
+            let takes = advisory.take(&spec, description.claim).map_err(refused)?;
+            let (take, then) = one_or_two(dialect, "takes a candidate", takes, fail)?;
+            let lock = advisory.lock().filter(|_| !shape.custom_lock);
+            let unlock = advisory.unlock().filter(|_| !shape.custom_unlock);
+            (lock, unlock, Some(take), then)
+        }
+        None => (None, None, None, None),
     };
     // Why a startup refusal: the derive gives a table that declares a lease the lease form's
     // type, so only a description written by hand pairs one with another form's dialect.
@@ -617,6 +660,7 @@ fn build(
         .transpose()
         .map_err(refused)?;
     Ok(Prepared {
+        fifo_guard: fifo_guard.as_ref().map(intern),
         claim: claim.as_ref().map(intern),
         fetch: fetch.as_ref().map(intern),
         ack: ack.as_ref().map(intern),
@@ -627,24 +671,53 @@ fn build(
         dead_letter_then: dead_letter_then.as_ref().map(intern),
         extend: extend.as_ref().map(intern),
         stamp: stamp.as_ref().map(intern),
+        lock: lock.as_ref().map(intern),
+        unlock: unlock.as_ref().map(intern),
+        take: take.as_ref().map(intern),
+        take_then: take_then.as_ref().map(intern),
         stamps,
+        // The mode's own texts, which `open` sets for the subscription's mode.
+        ..Prepared::default()
     })
 }
 
+/// The one or two statements `dialect` builds to do `what`, the second run after the first.
+///
+/// # Errors
+///
+/// `fail`'s error where the dialect builds none or more than two.
+fn one_or_two(
+    dialect: &dyn Dialect,
+    what: &str,
+    statements: Vec<Statement>,
+    fail: &impl Fn(String) -> SqlxBrokerError,
+) -> Result<(Statement, Option<Statement>), SqlxBrokerError> {
+    let count = statements.len();
+    let mut statements = statements.into_iter();
+    match (statements.next(), statements.next(), statements.next()) {
+        (Some(first), then, None) => Ok((first, then)),
+        _ => Err(fail(format!(
+            "the {} dialect {what} in {count} statements, and the inbox runs one or two",
+            dialect.name(),
+        ))),
+    }
+}
+
 /// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
-/// `Row`: builds its statements with the dialect `form` shows, checks them, and registers the
-/// subscription so a second one is refused.
-pub(crate) async fn open<DB, Row>(
+/// `Row`, in `Mode`: builds its statements with the dialect `form` shows, checks them, and
+/// registers the subscription so a second one is refused.
+pub(crate) async fn open<DB, Row, Mode>(
     shared: &Arc<Shared<DB>>,
     form: &FormDialect,
     name: &str,
     timing: Timing,
     declaration: &RetryDeclaration,
     description: &Description,
-) -> Result<InboxSubscriber<DB, Row>, SqlxBrokerError>
+) -> Result<InboxSubscriber<DB, Row, Mode>, SqlxBrokerError>
 where
     DB: QueueDatabase,
     Row: Events<DB> + PayloadRow,
+    Mode: InboxMode,
 {
     let table = table_of(&description.spec);
     let row = description.row;
@@ -660,15 +733,33 @@ where
     if let Some(refused) = refused_declaration(name, declaration, description) {
         return Err(refused);
     }
+    let refused = |source| SqlxBrokerError::Dialect {
+        subscription: name.to_owned(),
+        table: table.clone(),
+        row,
+        source,
+    };
     let prepared = build(form, declaration, description, &declared).map_err(|err| match err {
-        SqlxBrokerError::Dialect { source, .. } => SqlxBrokerError::Dialect {
-            subscription: name.to_owned(),
-            table: table.clone(),
-            row,
-            source,
-        },
+        SqlxBrokerError::Dialect { source, .. } => refused(source),
         other => other,
     })?;
+    let begin_claim = form.begin_claim(&description.spec).map_err(refused)?;
+    // The claim's opening answered for the table's: what the row lock claim opens with, and what
+    // transactional mode opens a delivery's own transaction with.
+    let begin_work = form
+        .dialect()
+        .begin(description.spec.opening())
+        .map_err(refused)?;
+    if let Some(reason) = lease_unseen_at::<Mode>(form, description) {
+        return Err(declared(reason));
+    }
+    let savepoint = savepoint_of::<Mode>(form);
+    let prepared = Prepared {
+        transactional: Mode::TRANSACTIONAL,
+        begin_work,
+        savepoint,
+        ..prepared
+    };
     let table_name = intern_name(&table);
     // A table without groups is one queue, whatever name the subscription gives it.
     let group = description.spec.column(Role::Group).map(|_| name);
@@ -685,7 +776,7 @@ where
         native_retry_after: description.native_retry_after(),
         kinds: description.kinds,
         prepared,
-        begin_claim: form.begin_claim(),
+        begin_claim,
         counted_attempt: counted_attempt(form, description, &prepared),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
@@ -711,25 +802,95 @@ where
             drop(shared.runtime.spawn(lease::keep(book, stop.clone())));
             (Holding::Leases(book), Some(stop.drop_guard()))
         }
-        None => (Holding::Locks, None),
+        // The connection keeps the book, so `shutdown` reaches the locks of its deliveries.
+        None if description.advisory() => (
+            Holding::Advisory(LockBook::leak::<Row>(shared, queue)),
+            None,
+        ),
+        None => (Holding::Transaction, None),
     };
+    // The subscription's own handle on the pool, which each delivery copies for the handler's
+    // context instead of counting a reference.
+    let pool: &'static Pool<DB> = Box::leak(Box::new(shared.pool.clone()));
+    // A transactional delivery's transaction waits in the book while its handler does not hold it;
+    // in the advisory lock form the lock book keeps the session that holds it.
+    let lending = (Mode::TRANSACTIONAL && !description.advisory()).then(TxBook::leak);
     Ok(InboxSubscriber::new(
         Arc::clone(shared),
         queue,
         holding,
         registration,
         keeper,
+        pool,
+        lending,
     ))
 }
 
-/// Whether the rows a lease subscription to `description` hands out carry the attempt its claim
-/// counted, so that a delivery reports one less.
+/// Where a handler's writes start in the claim's transaction, for a subscription in `Mode` through
+/// the dialect `form` shows: the row lock form's savepoint in transactional mode. `None` in the
+/// plain mode, and in the lease and advisory lock forms, whose deliveries open transactions of
+/// their own after the claim, so a rollback discards the handler's writes alone.
+fn savepoint_of<Mode: InboxMode>(form: &FormDialect) -> Option<Savepoint> {
+    match form {
+        FormDialect::RowLock(dialect) if Mode::TRANSACTIONAL => Some(Savepoint {
+            set: dialect.savepoint(),
+            rollback_to: dialect.rollback_to_savepoint(),
+        }),
+        FormDialect::RowLock(_) | FormDialect::Lease(_) | FormDialect::Advisory(_) => None,
+    }
+}
+
+/// Why a subscription in `Mode` to the table `description` reads cannot run in transactional mode
+/// at the table's isolation level on the dialect `form` shows, if it cannot.
 ///
-/// A claim that stamps its rows reads them before the stamps count them. A claim that writes the
-/// lease itself counts and commits first: the service's own fetch after the crate's claim of ids
-/// then reads counted rows, and whole rows come back counted where the dialect says so. A claim by
-/// role reads the attempt as it was before the count.
+/// A transactional lease delivery acknowledges inside its handler's transaction, by the lease the
+/// broker last extended. A Postgres transaction at REPEATABLE READ or SERIALIZABLE reads every row
+/// as its first statement found it, so it cannot see an extension committed later, and the
+/// acknowledgement of a handler that outlived half its lease would find no row: a lease it lost
+/// on paper, whose writes it would roll back.
+// Why a startup refusal: the dialect is known by its name, and the backend behind an `AnyPool` only
+// once the broker connected. MySQL and MariaDB read the latest row in an update at every level, so
+// they keep the acknowledgement at theirs.
+fn lease_unseen_at<Mode: InboxMode>(
+    form: &FormDialect,
+    description: &Description,
+) -> Option<String> {
+    let Opening::Isolation(level @ (Isolation::RepeatableRead | Isolation::Serializable)) =
+        description.spec.opening()
+    else {
+        return None;
+    };
+    if !Mode::TRANSACTIONAL || !description.leased() || form.dialect().name() != "postgres" {
+        return None;
+    }
+    Some(format!(
+        "transactional mode acknowledges a lease delivery by the lease the broker last extended, \
+         and a Postgres transaction at `isolation = {}` reads rows as its first statement found \
+         them, so a handler that outlives half its lease would lose its writes: declare \
+         `isolation = read_committed` or no level, or mount the handler without \
+         `.transactional()`",
+        level.attribute(),
+    ))
+}
+
+/// Whether the rows a subscription to `description` hands out carry the attempt its claim or its
+/// take counted, so that a delivery reports one less.
+///
+/// A lease claim that stamps its rows reads them before the stamps count them. A lease claim that
+/// writes the lease itself counts and commits first: the service's own fetch after the crate's
+/// claim of ids then reads counted rows, and whole rows come back counted where the dialect says
+/// so. A claim by role reads the attempt as it was before the count. The take of the advisory lock
+/// form reads the columns it names as they were before its count; `*` names none, and the
+/// service's own fetch reads the row after the take committed its count.
 fn counted_attempt(form: &FormDialect, description: &Description, prepared: &Prepared) -> bool {
+    if description.advisory() {
+        let counted = match description.claim {
+            ClaimShape::Rows => description.spec.selects_all(),
+            ClaimShape::Ids => true,
+            ClaimShape::Roles => false,
+        };
+        return counted && description.spec.column(Role::Attempt).is_some();
+    }
     let Some(lease) = form.lease().filter(|_| description.leased()) else {
         return false;
     };
@@ -741,109 +902,6 @@ fn counted_attempt(form: &FormDialect, description: &Description, prepared: &Pre
         ClaimShape::Ids => true,
         ClaimShape::Roles => false,
     }
-}
-
-/// Why the startup check failed: no connection, a version the server did not report, a server
-/// the dialect refuses, or a statement the server refused.
-enum Unchecked {
-    Acquire(sqlx::Error),
-    Version(&'static str, sqlx::Error),
-    Server(StatementError),
-    Statement(&'static str, sqlx::Error),
-}
-
-impl Unchecked {
-    /// The error of the subscription `name` to `table`, read as `row`.
-    fn named(self, name: &str, table: &str, row: &'static str) -> SqlxBrokerError {
-        let (subscription, table) = (name.to_owned(), table.to_owned());
-        match self {
-            Self::Acquire(source) => SqlxBrokerError::Sqlx {
-                subscription,
-                table,
-                row,
-                statement: "acquire",
-                source: Box::new(source),
-            },
-            Self::Version(statement, source) => SqlxBrokerError::Sqlx {
-                subscription,
-                table,
-                row,
-                statement,
-                source: Box::new(source),
-            },
-            Self::Server(StatementError::ServerTooOld {
-                server, required, ..
-            }) => SqlxBrokerError::ServerTooOld {
-                subscription,
-                table,
-                row,
-                server,
-                required,
-            },
-            Self::Server(source) => SqlxBrokerError::Dialect {
-                subscription,
-                table,
-                row,
-                source,
-            },
-            Self::Statement(statement, source) => SqlxBrokerError::Schema {
-                subscription,
-                table,
-                row,
-                statement,
-                source: Box::new(source),
-            },
-        }
-    }
-}
-
-/// The startup check: on one connection of the pool, the server's version where the dialect `form`
-/// shows asks for it, then each of `prepared`'s statements prepared, off a paused clock where the
-/// connection runs in process.
-async fn check<DB: QueueDatabase>(
-    shared: &Arc<Shared<DB>>,
-    form: &FormDialect,
-    spec: &TableSpec<'static>,
-    prepared: &Prepared,
-) -> Result<(), Unchecked> {
-    #[cfg(feature = "testing")]
-    if shared.harness.in_process() {
-        let shared = Arc::clone(shared);
-        let form = form.clone();
-        let spec = *spec;
-        let statements: Vec<Stmt> = prepared.statements().collect();
-        return off_clock(async move {
-            verify(&shared.pool, form.dialect(), &spec, statements.into_iter()).await
-        })
-        .await
-        .unwrap_or_else(|| Err(Unchecked::Acquire(cancelled())));
-    }
-    verify(&shared.pool, form.dialect(), spec, prepared.statements()).await
-}
-
-/// Checks the server's version against `dialect`'s floor for `spec`, where the dialect has one,
-/// then prepares each of `statements`, on one connection of `pool`.
-async fn verify<DB: QueueDatabase>(
-    pool: &Pool<DB>,
-    dialect: &dyn Dialect,
-    spec: &TableSpec<'_>,
-    statements: impl Iterator<Item = Stmt>,
-) -> Result<(), Unchecked> {
-    let mut conn = pool.acquire().await.map_err(Unchecked::Acquire)?;
-    if let Some(query) = dialect.server_version() {
-        let version = DB::fetch_text(&mut conn, query)
-            .await
-            .map_err(|source| Unchecked::Version(query, source))?;
-        dialect
-            .check_server(spec, &version)
-            .map_err(Unchecked::Server)?;
-    }
-    for statement in statements {
-        DB::prepare(&mut conn, statement.sql)
-            .await
-            .map_err(|source| Unchecked::Statement(statement.sql, source))?;
-    }
-    Ok(())
 }
 
 /// A queue's place in its connection's register of open subscriptions; dropping it frees the

@@ -61,6 +61,9 @@ pub enum Param {
     /// The expiry the delivery's claim or its last extension wrote: the ownership token that
     /// settlement and extension match.
     Held,
+    /// The lock key of the row, as text: what the advisory claim selected as `__lock`, which the
+    /// lock and the unlock name.
+    Key,
     /// The value of the column at this position of [`TableSpec::columns`](crate::TableSpec::columns),
     /// for an insert.
     Column(usize),
@@ -273,6 +276,29 @@ impl Display for NameLimit {
 /// );
 /// # }
 /// ```
+///
+/// A dialect of the service's own that builds no claim for FIFO groups refuses a table with them:
+///
+/// ```
+/// use ruststream_sqlx_dialect::{Column, Form, Param, Statement, StatementError, TableSpec};
+///
+/// // The row lock claim of a SQL Server dialect the service writes itself.
+/// fn lock_claim(spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///     if spec.is_fifo() {
+///         return Err(StatementError::UnsupportedFifo { dialect: "mssql" });
+///     }
+///     Ok(Statement::new(
+///         "SELECT TOP (@p1) [id], [payload] FROM [ledger] WITH (UPDLOCK, READPAST) ORDER BY [id]",
+///         [Param::Limit],
+///     ))
+/// }
+///
+/// const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+///     .fifo_group(Column::new("account"));
+///
+/// let refused = lock_claim(&LEDGER).map_err(|refused| refused.to_string());
+/// assert_eq!(refused, Err("the mssql dialect has no claim for FIFO groups".to_owned()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum StatementError {
@@ -296,7 +322,8 @@ pub enum StatementError {
         form: &'static str,
     },
     /// The statement belongs to one form, and the table takes rows in another: the row lock
-    /// claim asked for a lease table, or a lease statement for a table without a lease.
+    /// claim asked for a lease table, a lease statement for a table without a lease, or an
+    /// advisory statement for a table without a lock key.
     #[error("the {statement} statement does not serve a table in the {form} form")]
     FormMismatch {
         /// The statement being built.
@@ -304,9 +331,21 @@ pub enum StatementError {
         /// The name of the table's form.
         form: &'static str,
     },
-    /// The dialect has no claim that keeps a group in order.
+    /// The dialect has no claim that keeps a group in order. A dialect of the service's own
+    /// returns it from a claim of a table with FIFO groups when it builds no claim for them.
     #[error("the {dialect} dialect has no claim for FIFO groups")]
     UnsupportedFifo {
+        /// The dialect's name.
+        dialect: &'static str,
+    },
+    /// The table takes its rows by advisory lock and keeps its groups in order. In that form a
+    /// lock key on the group's column keeps a group in order, so the advisory claim and the take
+    /// refuse FIFO groups.
+    #[error(
+        "FIFO groups do not combine with the advisory lock form in the {dialect} dialect: drop \
+         `fifo` and put the group's column into the lock key"
+    )]
+    AdvisoryFifo {
         /// The dialect's name.
         dialect: &'static str,
     },
@@ -363,6 +402,27 @@ pub enum StatementError {
          cannot declare `locked_until`"
     )]
     LeaseOnDatabaseClock {
+        /// The dialect's name.
+        dialect: &'static str,
+    },
+    /// The dialect opens no transaction at the table's isolation level or mode, as
+    /// [`Dialect::begin`](crate::Dialect::begin) found.
+    #[error("the {dialect} dialect opens no transaction at {opening}")]
+    UnsupportedOpening {
+        /// The dialect's name.
+        dialect: &'static str,
+        /// The opening, as [`Opening::name`](crate::Opening::name) names it.
+        opening: &'static str,
+    },
+    /// The table keeps its groups in order, takes its rows by row lock and opens its claims at
+    /// SERIALIZABLE, a level at which the dialect's [`fifo_guard`](crate::Dialect::fifo_guard)
+    /// would wait for the group's row in work instead of answering at once.
+    #[error(
+        "the {dialect} dialect claims FIFO groups below SERIALIZABLE: InnoDB turns every read of a \
+         SERIALIZABLE transaction into a locking read, so a claim would wait for the group's row in \
+         work; declare `isolation = repeatable_read` or a lower level"
+    )]
+    FifoAtSerializable {
         /// The dialect's name.
         dialect: &'static str,
     },
@@ -449,6 +509,20 @@ mod tests {
             }
             .to_string(),
             "the extend statement does not serve a table in the row lock form"
+        );
+        assert_eq!(
+            StatementError::UnsupportedOpening {
+                dialect: "postgres",
+                opening: "isolation `read_uncommitted`",
+            }
+            .to_string(),
+            "the postgres dialect opens no transaction at isolation `read_uncommitted`"
+        );
+        assert_eq!(
+            StatementError::FifoAtSerializable { dialect: "mysql" }.to_string(),
+            "the mysql dialect claims FIFO groups below SERIALIZABLE: InnoDB turns every read of a \
+             SERIALIZABLE transaction into a locking read, so a claim would wait for the group's \
+             row in work; declare `isolation = repeatable_read` or a lower level"
         );
     }
 }

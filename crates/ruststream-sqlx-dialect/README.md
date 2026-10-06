@@ -9,9 +9,9 @@ procedural macro can run it at compile time.
 
 A `TableSpec` describes a queue table, and a `Dialect` turns it into the statement each queue event
 runs. Three dialects are built in, each behind its feature: Postgres (`postgres`) and MySQL with
-MariaDB (`mysql`) build the row lock and lease forms, and SQLite (`sqlite`) builds the lease form.
-A database without a built-in dialect is served by a type of the service's own that implements
-`Dialect`.
+MariaDB (`mysql`) build the row lock, lease and advisory lock forms, and SQLite (`sqlite`) builds
+the lease and advisory lock forms. A database without a built-in dialect is served by a type of
+the service's own that implements `Dialect` and the trait of each form it builds.
 
 ## License
 

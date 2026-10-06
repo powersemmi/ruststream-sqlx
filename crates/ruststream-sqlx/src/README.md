@@ -23,6 +23,8 @@ Where things are:
 - [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
 - [`Repository`] and [`Routed`]: publishing into tables.
 - [`keys`]: what a handler reads off a delivery.
+- [`InboxSettings::transactional`] and [`Tx`]: transactional mode, where a handler writes through
+  its delivery's transaction.
 - [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
   implements.
 
@@ -121,7 +123,7 @@ What a handler answers decides the row's fate:
 `#[inbox(clock = DatabaseClock)]` reads the database's clock, and a service's own [`Clock`] fits
 there too. Hosts that bind "now" keep their clocks in step.
 
-# Row locks or leases
+# Row locks, leases or advisory locks
 
 ```no_run
 # #[cfg(all(feature = "postgres", feature = "chrono"))]
@@ -171,24 +173,35 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-A table takes its rows in one of two forms, and its struct decides which.
+A table takes its rows in one of three forms, and its struct decides which.
 
-Without `locked_until` a claim takes its rows by row lock. It locks each row with
-`FOR UPDATE SKIP LOCKED` in a transaction that stays open while the handler runs, and the
+Without `locked_until` or `advisory_lock` a claim takes its rows by row lock. It locks each row
+with `FOR UPDATE SKIP LOCKED` in a transaction that stays open while the handler runs, and the
 settlement's statement commits that transaction. A row and its outcome change together, and the
 rows of a crashed process return at once, when the database rolls its transactions back. The
 price is a connection of the pool per message in work, held for the whole handler.
 
 A `#[field(locked_until)]` field selects the lease form ([`LeaseRow`]). The claim writes a lease
 into each row and commits at once, so the handler runs with no transaction open and no
-connection held. Declare it for handlers that run long, for a pool that cannot spare a connection
-per message in work, and on SQLite, which has no row locks.
+connection held. Declare it for handlers that run long and for a pool that cannot spare a
+connection per message in work.
+
+`advisory_lock = ".."` in `#[inbox(..)]` selects the advisory lock form. A lock on each row's
+key holds the row. The connection that holds the delivery keeps that lock, and no transaction
+stays open. Rows that share a key go into work one at a time. The locks of a crashed process end
+with its connections, and its rows return. The price is a connection of the pool per message in
+work, as in the row lock form.
+
+SQLite has no row locks, so a SQLite table takes the lease or the advisory lock form.
 
 A publish takes a connection of its own for its insert. In the row lock form a subscription with
 `workers(n)` holds up to n + 1 connections, and handlers that publish need room for their inserts
 on top: a pool without that room makes them wait for its `acquire_timeout`. In the lease form a
 claim and a settlement each take a connection only for their statements, and each subscription
-takes one each half lease to extend the leases in work.
+takes one each half lease to extend the leases in work. In the advisory lock form each delivery
+in work holds a connection of its own until it settles, in a batch too. In
+[transactional mode](#transactional-mode) each delivery in work holds a connection for the
+transaction its handler writes through, in every form.
 
 ## The lease form
 
@@ -215,6 +228,483 @@ takes one each half lease to extend the leases in work.
   wrote: a struct with `locked_until` on `clock = DatabaseClock` does not compile.
 - After the broker shuts down, a delivery in work keeps its lease and settles as before; the lease
   is no longer extended.
+
+## The advisory lock form
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::prelude::*;
+use serde::Deserialize;
+use sqlx::PgPool;
+
+// jobs: job_id BIGSERIAL PRIMARY KEY, attempt SMALLINT NOT NULL DEFAULT 1,
+// payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "jobs", advisory_lock = "jobs-{job_id}")]
+pub struct Transcode {
+    #[field(id, generated)]
+    job_id: i64,
+    #[field(attempt, generated)]
+    attempt: i16,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Video {
+    path: String,
+}
+
+# async fn encode(video: &Video) -> bool { !video.path.is_empty() }
+// A video takes minutes to encode. The delivery's connection keeps the job's lock while the
+// handler runs, with no transaction open. If the process dies, the database ends that session,
+// and the job returns.
+#[subscriber(InboxQueue::<Transcode>::new("videos"))]
+async fn transcode(video: &Video) -> HandlerOutcome {
+    if encode(video).await {
+        return HandlerOutcome::ack();
+    }
+    HandlerOutcome::retry()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(transcode);
+    })
+}
+# }
+# fn main() {}
+```
+
+`advisory_lock = "jobs-{job_id}"` names each row's lock key. A placeholder names a field, the key
+reads its column, and the database renders the key as text. Rows whose keys match go into work
+one at a time. A key on the row's id holds each row alone. A key on another column, as in
+`advisory_lock = "accounts-{account}"`, keeps the rows of an account in work one at a time. A key
+belongs to the database, not to its table. Two tables whose keys match wait for each other, and a
+key that starts with its table's name keeps them apart.
+
+A claim selects candidates: as many due rows of the queue as it may take, in claim order, each
+with its key. It locks each candidate's key on a connection of its own, without waiting, and
+passes over a key held elsewhere. Then it takes the row while the row is still claimable: the
+take counts the attempt and reads the row. A row that another holder settled between the select
+and the lock is passed over, and its lock released. The take commits the count, so a crash spends
+an attempt, as in the lease form. A delivery reports the attempt as it stood before its claim.
+
+A settlement runs its statement on the delivery's connection, where it commits on its own. Then
+the lock is released, and the connection goes back to the pool. `retry()` runs no statement: the
+claim counted the attempt, and the release returns the row. A settlement whose statement fails
+still releases the lock, and the row returns as it was. A release that the database does not
+confirm closes the connection instead, which ends the session and its locks.
+
+A delivery dropped unsettled releases its lock and closes its connection, in a task on the
+runtime the broker connected on, and its row returns. One timeout of five seconds bounds the
+release and the close. Past it the connection drops, and the server ends the session and its lock
+all the same.
+
+`shutdown` releases the lock of every delivery in work. Each connection releases its key and goes
+back to the pool, or closes where the database does not confirm the release. `shutdown` waits for
+each settlement in flight and each connection still closing, and returns once the broker holds no
+lock. A delivery whose lock it released settles no more: its settlement fails with
+[`SqlxBrokerError::Closed`], and its row is back in the queue. The [`ClosedSqlxBroker`] it
+returns counts the two outcomes. [`locks_released`](ClosedSqlxBroker::locks_released) counts the
+locks released with their connections back in the pool, and
+[`connections_closed`](ClosedSqlxBroker::connections_closed) the connections that held a lock and
+closed instead. In a service the runtime drains the handlers before it shuts the broker down. A
+handler aborted at the drain timeout drops its delivery, and `shutdown` waits for that connection
+to close.
+
+A delivery holds a connection of its own because its lock lives in that connection's session: a
+delivery dropped unsettled closes its own connection and leaves the other rows alone. A
+subscription with `workers(n)` holds up to n connections for its deliveries, and a batch of n
+rows holds n. A batch takes the connections the pool gives at once: idle ones first, then new
+ones while the pool has room. It ends where the pool is full, so a batch larger than the pool
+shrinks instead of waiting. Handlers that publish need room for their inserts on top.
+
+Each database keeps the locks in its own way, and keeps the locks of two databases apart:
+
+- Postgres locks a 64-bit hash of the key (`hashtextextended`, Postgres 11 or later), and a claim
+  leaves out the keys other sessions hold. Two keys with one hash wait for each other: a delay,
+  never a double delivery. A lock lives in the database session that took it, so the form needs a
+  direct connection or `PgBouncer` in session pooling. In transaction pooling the session that took
+  a lock serves other clients between statements, and the lock goes with it.
+- MySQL and MariaDB lock a name with `GET_LOCK`: the table's database in lower case, a dot and the
+  key, as in `app.jobs-7`. A name longer than the 64 characters the server takes is locked by its
+  SHA-256. A claim leaves out the names in use.
+- SQLite has no locks that a session holds, so the process keeps the keys in work, by database
+  and key. Two keys with one hash wait for each other here too. A claim's select cannot see the
+  keys in work: it reads the first due rows alone and takes nothing while they are in work. A
+  handler of single messages therefore has one delivery in work at a time, and with `workers(n)`
+  each next row waits up to a poll interval. The registry serves one process per database file.
+  Two processes on one file do not see each other's keys, and a row may be delivered twice.
+
+### A lock of the service's own
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::prelude::*;
+use ruststream_sqlx::{Lock, Unlock};
+use serde::Deserialize;
+use sqlx::{PgConnection, PgPool, Postgres};
+
+// payouts: id BIGSERIAL PRIMARY KEY, account_id BIGINT NOT NULL, payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "payouts", advisory_lock = "{account_id}", custom(lock, unlock))]
+pub struct Payout {
+    #[field(id, generated)]
+    id: i64,
+    account_id: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+// The billing system holds `pg_advisory_lock(account_id)` while it changes an account. The queue
+// takes the same lock, so a payout never runs beside a billing run of its account.
+impl Lock<Postgres> for Payout {
+    async fn lock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT pg_try_advisory_lock($1::bigint)")
+            .bind(key)
+            .fetch_one(conn)
+            .await
+    }
+}
+
+impl Unlock<Postgres> for Payout {
+    async fn unlock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar("SELECT pg_advisory_unlock($1::bigint)")
+            .bind(key)
+            .fetch_one(conn)
+            .await
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Transfer {
+    cents: i64,
+}
+
+# async fn transfer_to_bank(transfer: &Transfer) { let _ = transfer.cents; }
+#[subscriber(InboxQueue::<Payout>::new("payouts"))]
+async fn pay(transfer: &Transfer) -> HandlerOutcome {
+    transfer_to_bank(transfer).await;
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(pay);
+    })
+}
+# }
+# fn main() {}
+```
+
+`custom(lock, unlock)` in `#[inbox(..)]` hands the lock and the release of each key to the
+service: the struct implements [`Lock`] and [`Unlock`] for its database. The two are listed
+together, and only beside `advisory_lock`. The dialect still selects the candidates and takes each
+row. The lock tries without waiting and answers whether it took the key. The release answers
+whether the session held the key, and one that answers `false` or fails closes the connection.
+The process keeps no registry of keys for such a table, on SQLite too. The dialect's select leaves
+out only the keys its own locks hold, so a claim reads the first due rows alone and takes nothing
+while their keys are held. A handler of single messages therefore has one delivery in work at a
+time, and with `workers(n)` each next row waits up to a poll interval.
+
+A database the crate builds no dialect for takes the form through a dialect of the service's own
+that implements [`Advisory`](dialect::Advisory): the claim of candidates, the lock, the release
+and the take. On SQL Server its lock runs `sp_getapplock` with the session as the owner and no
+wait, and its release runs `sp_releaseapplock`. Each of the two answers one 64-bit integer,
+nonzero where it took or released the lock.
+
+# Transactional mode
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use std::error::Error;
+
+use ruststream_sqlx::prelude::*;
+use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, PgPool, Postgres};
+
+// signup_jobs: id BIGSERIAL PRIMARY KEY, attempt SMALLINT NOT NULL DEFAULT 1,
+// payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "signup_jobs")]
+pub struct OpenAccount {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    attempt: i16,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+// welcome_jobs, the mailer's queue: id BIGSERIAL PRIMARY KEY, payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "welcome_jobs")]
+pub struct SendWelcome {
+    #[field(id, generated)]
+    id: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Signup {
+    email: String,
+}
+
+#[derive(Serialize)]
+pub struct Welcome<'a> {
+    to: &'a str,
+}
+
+// The account and its welcome email, written on the connection of the delivery's transaction.
+async fn open(
+    conn: &mut PgConnection,
+    signup: &Signup,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    sqlx::query("INSERT INTO accounts (email) VALUES ($1)")
+        .bind(&signup.email)
+        .execute(&mut *conn)
+        .await?;
+    let welcome = SendWelcome {
+        id: 0,
+        payload: serde_json::to_vec(&Welcome { to: &signup.email })?,
+    };
+    welcome.insert(conn).await?;
+    Ok(())
+}
+
+#[subscriber(InboxQueue::<OpenAccount>::new("signups"))]
+async fn open_account(
+    signup: &Signup,
+    Ctx(mut tx): Ctx<keys::Tx<Postgres>>,
+    Ctx(pool): Ctx<keys::Pool<Postgres>>,
+    Ctx(attempt): Ctx<keys::Attempt>,
+) -> HandlerOutcome {
+    if let Err(error) = open(&mut *tx, signup).await {
+        // Through the pool: the note stays when the retry rolls the transaction back.
+        let _ = sqlx::query("INSERT INTO signup_errors (email, error) VALUES ($1, $2)")
+            .bind(&signup.email)
+            .bind(format!("attempt {}: {error}", attempt.unwrap_or(1)))
+            .execute(&pool)
+            .await;
+        return HandlerOutcome::retry();
+    }
+    // The commit keeps the account and its welcome email, and finishes the signup.
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(open_account.transactional());
+    })
+}
+# }
+# fn main() {}
+```
+
+`.transactional()` at the mount site switches an [`InboxQueue`] subscription to transactional
+mode, where the handler writes through its delivery's transaction. The handler takes that
+transaction as its first `Ctx` parameter, `Ctx(mut tx): Ctx<keys::Tx<Postgres>>`, and runs its
+statements through `&mut *tx`. A handler that takes `keys::Tx` on a subscription without the step
+does not compile, and the error names the step.
+
+Acknowledgement commits the handler's writes together with the row's settlement. Every other
+outcome rolls them back first, then settles the row as it would without the step. A handler that
+panics while it holds `tx` commits none of its writes, even where its panic policy acknowledges
+the delivery. A delivery dropped unsettled closes its connection, and the server rolls its
+transaction back.
+
+A task the handler writes through `tx` into a queue table, with [`Insert`] or its own SQL, commits
+with the acknowledgement too. A write through the pool that `Ctx<keys::Pool<DB>>` gives commits on
+its own, whatever the outcome. So does a publish through the broker.
+
+A handler's first `Ctx` decides which of the inbox's keys compile after it: the other two after
+`keys::Tx`, only `keys::Attempt` after `keys::Pool`, none after `keys::Attempt`. The order
+`keys::Tx`, `keys::Pool`, `keys::Attempt` fits every handler, with the keys it does not need left
+out.
+
+What the transaction is depends on the form:
+
+- In the row lock form it is the claim's transaction. The subscription sets a savepoint right
+  after each claim, one more statement per delivery. A settlement other than acknowledgement rolls
+  back to it, so a retry discards the handler's writes and still counts the attempt.
+- In the lease form the crate opens a transaction for each delivery once its claim has committed.
+  Acknowledgement runs in it and takes effect only while the row still holds the delivery's lease.
+  A lost lease rolls the whole transaction back, and the settlement returns
+  [`SqlxBrokerError::LeaseLost`].
+- In the advisory lock form the crate opens the transaction on the connection that holds the row's
+  key, after the take. The settlement ends the transaction before it releases the lock.
+
+Each of these transactions opens at the table's isolation level or SQLite mode
+([Isolation and mode](#isolation-and-mode)). On SQLite a delivery's transaction takes the
+database's write lock at its first write, or at its start under `mode = immediate` or
+`exclusive`, and holds it until the delivery settles. It keeps every other writer of the database
+out meanwhile, claims included.
+
+Each delivery in work holds one connection of the pool for its transaction, in every form. A
+handler that takes a second connection, through `keys::Pool` or a publish, needs a pool larger
+than its `workers(n)`: a pool without that room makes it wait for the pool's `acquire_timeout`.
+Transactional mode serves single deliveries: a batch handler mounted with `.transactional()` does
+not compile.
+
+The transaction goes back to the delivery when the handler's `Tx` drops. A settlement that finds
+it still out, in a task the handler moved it into, returns [`SqlxBrokerError::TransactionHeld`],
+and the transaction rolls back when that `Tx` drops.
+
+On MySQL and MariaDB the settlement after a handler that cut a statement through `tx` short, as a
+`select!` around a query does, can read that statement's reply as its own, a bug of sqlx-mysql
+0.9.0.
+
+# Isolation and mode
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::prelude::*;
+use serde::Deserialize;
+use sqlx::PgPool;
+
+// payout_jobs: id BIGSERIAL PRIMARY KEY, payload BYTEA NOT NULL
+// The database's transactions default to SERIALIZABLE; the claims of this table open at
+// READ COMMITTED.
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "payout_jobs", isolation = read_committed)]
+pub struct SendPayout {
+    #[field(id, generated)]
+    id: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Payout {
+    account: String,
+}
+
+# async fn transfer(payout: &Payout) { let _ = &payout.account; }
+#[subscriber(InboxQueue::<SendPayout>::new("payouts"))]
+async fn pay(payout: &Payout) -> HandlerOutcome {
+    transfer(payout).await;
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(pay);
+    })
+}
+# }
+# fn main() {}
+```
+
+`isolation = <level>` in `#[inbox(..)]` declares an isolation level: `read_uncommitted`,
+`read_committed`, `repeatable_read` or `serializable`. A SQLite table declares a mode instead, as
+in `#[inbox(mode = immediate)]`: `deferred`, `immediate` or `exclusive`. SQLite runs every
+transaction serializable. Its mode decides when a transaction takes the write lock
+([`Mode`](dialect::Mode)).
+
+The declaration governs the transactions the crate opens for a delivery's work. In the row lock
+form that is the claim's transaction: it holds the rows while their handler runs, and their
+settlement commits it. In [transactional mode](#transactional-mode) it is also the transaction the
+handler writes through, in every form. A table that declares neither opens them with a plain
+`BEGIN` on Postgres and SQLite, at the database's default, and at READ COMMITTED on MySQL and
+MariaDB.
+
+Each database takes the levels it keeps: Postgres `read_committed`, `repeatable_read` and
+`serializable`; MySQL and MariaDB all four; SQLite the three modes. Postgres runs READ UNCOMMITTED
+as READ COMMITTED, so its dialect does not open it.
+
+A subscription to a table at a level or mode its broker's dialect does not open does not compile,
+and neither does a route into that table. The error names the dialect and the level, and lists
+what each database opens. An `AnyPool` names its database only when the broker connects, so there
+such a subscription stops when it starts, with [`SqlxBrokerError::Dialect`]. A dialect of the
+service's own opens a level by implementing [`Opens`](dialect::Opens) for it, and its
+[`Dialect::begin`](dialect::Dialect::begin) returns the statement that opens it.
+
+On Postgres a row lock table at `repeatable_read` or `serializable` fails claims with
+serialization errors when claims and settlements of its rows run at once. `read_committed` is the
+practical level for the row lock form there.
+
+On MySQL and MariaDB a row lock claim at `repeatable_read` or `serializable` keeps a lock on every
+row it reads until its settlement. Without an index on the group's column it reads rows of other
+groups as well, and a claim held for a handler keeps those rows from their own claims. An index on
+that column lets a claim read its own group alone.
+
+# FIFO groups
+
+```no_run
+# #[cfg(all(feature = "postgres", feature = "chrono"))]
+# mod demo {
+use chrono::{DateTime, Utc};
+use ruststream_sqlx::prelude::*;
+use serde::Deserialize;
+use sqlx::PgPool;
+
+// sync_jobs: id BIGSERIAL PRIMARY KEY, target TEXT NOT NULL,
+// retry_after TIMESTAMPTZ NOT NULL DEFAULT now(), payload BYTEA NOT NULL
+// Each group holds the changes bound for one system.
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "sync_jobs")]
+pub struct SyncChange {
+    #[field(id, generated)]
+    id: i64,
+    #[field(group, fifo = true)]
+    target: String,
+    #[field(retry_after, generated)]
+    retry_after: DateTime<Utc>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub struct Change {
+    record: String,
+}
+
+# async fn push(change: &Change) -> bool { !change.record.is_empty() }
+// The CRM receives its changes one at a time, in the order they were queued.
+#[subscriber(InboxQueue::<SyncChange>::new("crm"))]
+async fn sync(change: &Change) -> HandlerOutcome {
+    if push(change).await {
+        return HandlerOutcome::ack();
+    }
+    // At once, so the change keeps its place at the head of the group.
+    HandlerOutcome::retry()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+        b.include(sync);
+    })
+}
+# }
+# fn main() {}
+```
+
+`#[field(group, fifo = true)]` keeps each group of the table in order. A group has at most one
+row in work at a time, however many brokers read it. Its rows go out in claim order: a smaller
+`priority` first, then an earlier `retry_after`, then the smaller id, each where the table has the
+column. The group's first unfinished row in that order is its head. A claim takes the head alone.
+The rows behind the head wait while it is in work or not yet due.
+
+`retry()` keeps the row at the head. `retry_after(d)` gives the row a later `retry_after`, and it
+moves behind the rows that come due before it. On a table with `priority` it moves only among the
+rows of its own priority. A head that keeps failing with `retry()` holds its group back.
+`max_attempts(n)` with `dead_letter(..)` moves such a row out of the group after n attempts. In
+the lease form a crash with a row in work holds its group until that row's lease runs out.
+
+`workers(n)` gives no parallelism inside a group, so one worker serves a FIFO subscription. A
+batch of a FIFO group holds one row, its head. Groups run side by side, each through a
+subscription of its own.
+
+FIFO groups serve the row lock and lease forms. In the advisory lock form a key on the group's
+field keeps one row of the group in work, as `advisory_lock = "sync_jobs-{target}"` would here.
+`fifo = true` beside `advisory_lock` does not compile, and the error says to put the group's field
+into the key.
 
 # Databases
 
@@ -270,24 +760,29 @@ pub fn app(pool: SqlitePool) -> RustStream {
 A built-in dialect builds a subscription's statements once, when it opens; the derive builds the
 insert of every enabled dialect at compile time. A database whose sqlx driver lives outside sqlx
 is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a type that
-implements [`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock) and
-[`Lease`](dialect::Lease) for the forms it serves, and [`ByName`] for subscriptions by name.
+implements [`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock),
+[`Lease`](dialect::Lease) and [`Advisory`](dialect::Advisory) for the forms it serves, and
+[`ByName`] for subscriptions by name.
 
 ## Postgres
 
-`postgres` serves both forms. A lease claim is one statement: it locks the claimable rows with
+`postgres` serves every form. A lease claim is one statement: it locks the claimable rows with
 `SKIP LOCKED`, writes their lease and returns them. A claim of the service's own may leave the
 rows to the crate's fetch, which reads them by a list of ids. A table on the database's clock
-reads `statement_timestamp()`.
+reads `statement_timestamp()`. The advisory lock form and the claims of FIFO groups lock 64-bit
+hashes made by `hashtextextended`, which Postgres 11 added. An older server refuses their
+statements, so their subscriptions stop when they open.
 
 ## MySQL and MariaDB
 
-`mysql` serves MySQL 8.0.1 and MariaDB 10.6 or later, in both forms. Claims skip locked rows in
-both forms, which those versions added: a subscription reads the server's version when it opens,
-and an older server stops it with [`SqlxBrokerError::ServerTooOld`]. A claim's transaction runs
-at READ COMMITTED, so a claim held for a handler locks no gaps between rows and holds back no
-insert into its table. A server whose binary log records statements
-(`binlog_format = STATEMENT`) refuses writes at that level; the row and mixed formats accept them.
+`mysql` serves MySQL 8.0.1 and MariaDB 10.6 or later, in every form. Claims skip locked rows in
+the row lock and lease forms, which those versions added, and an advisory table shares their
+floor: a subscription reads the server's version when it opens, and an older server stops it with
+[`SqlxBrokerError::ServerTooOld`]. A claim's transaction runs at READ COMMITTED unless a row lock
+table declares another level ([Isolation and mode](#isolation-and-mode)). At READ COMMITTED a
+claim held for a handler locks no gaps between rows and holds back no insert into its table. A
+server whose binary log records statements (`binlog_format = STATEMENT`) refuses writes at that
+level; the row and mixed formats accept them.
 
 A lease claim selects its rows, stamps each one with its lease and commits. The expiry is a whole
 second, so a `DATETIME` column without fractions holds the token exactly. A dead letter into a
@@ -295,14 +790,25 @@ table is two statements in one transaction. A claim of the service's own comes w
 of its own, because the crate reads rows by a list of ids on Postgres alone; a subscription
 without one stops at startup.
 
+Index a table's claim order: `(group, priority, retry_after, id)`, for the columns the table has.
+A row lock or lease claim locks every row of its group that it reads before sorting them, so
+without that index a claim held for a handler keeps the rest of its group from other claims. In a
+table with FIFO groups a claim first locks the unfinished rows of its group until its transaction
+ends, which in the row lock form is when the delivery settles. The same index keeps that read to
+the group's own rows. A row lock table with FIFO groups that declares `serializable` stops its
+subscription when it opens, with [`SqlxBrokerError::Dialect`]: at that level `InnoDB` locks every
+row a read touches, and a claim would wait for the group's row in work.
+
 ## SQLite
 
-`sqlite` serves the lease form. SQLite locks the whole database for a writer, so no claim can hold
-rows for a handler: its dialect implements no [`RowLock`](dialect::RowLock), and a subscription
-to a table without `locked_until` does not compile. A claim is one `UPDATE .. RETURNING` that
-leases its rows, and one writer at a time keeps two claims apart. The rows of one claim come in
-no particular order. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE`
-and comes with a [`Fetch`] of its own.
+`sqlite` serves the lease and advisory lock forms. SQLite locks the whole database for a writer,
+so no claim can hold rows for a handler: its dialect implements no
+[`RowLock`](dialect::RowLock), and a subscription to a table without `locked_until` or
+`advisory_lock` does not compile. A lease claim is one `UPDATE .. RETURNING` that leases its rows,
+and one writer at a time keeps two claims apart. The rows of one lease claim come in no
+particular order. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE` and
+comes with a [`Fetch`] of its own. The advisory lock form keeps its locks in the process
+([The advisory lock form](#the-advisory-lock-form)).
 
 SQLite keeps times as text and compares them as text. `chrono` times sort exactly. `time` values
 sort right only across seconds, so with them a lease may end up to a second late, and a delayed
@@ -315,8 +821,9 @@ describes the server by its protocol alone, with no host.
 reaches when it connects, among the dialects whose features are on; another backend stops
 `connect` with [`SqlxBrokerError::Backend`]. A row holds the types `sqlx::Any` carries: integers,
 text and bytes, with no time and no JSON. An `AnyPool` therefore serves the row lock form on its
-Postgres and MySQL backends, without `retry_after`, `processed_at` or `headers`. A lease table
-is out of its reach, and on a SQLite backend a row lock table stops its subscription at startup.
+Postgres and MySQL backends and the advisory lock form on all three, without `retry_after`,
+`processed_at` or `headers`. A lease table is out of its reach, and on a SQLite backend a row
+lock table stops its subscription at startup.
 
 ## A dialect of the service's own
 
@@ -431,12 +938,16 @@ own, for a database whose sqlx driver lives outside sqlx, or to write a statemen
 The dialect is the broker's second type parameter, and each thing its tables can do is a trait it
 implements:
 
-- [`Dialect`](dialect::Dialect): names, placeholders, and the statements every form runs to
-  settle a row, move a dead letter, fetch rows and insert one;
-- [`RowLock`](dialect::RowLock): the row lock form, its claim and the statement that opens the
-  claim's transaction;
+- [`Dialect`](dialect::Dialect): names, placeholders, the statement that opens a transaction at a
+  table's level, the savepoint a [transactional](#transactional-mode) handler's writes start
+  after, and the statements every form runs to settle a row, move a dead letter, fetch rows and
+  insert one;
+- [`RowLock`](dialect::RowLock): the row lock form and its claim;
 - [`Lease`](dialect::Lease): the lease form, its claim, the extension of a lease in work and the
   stamp of a row a claim only selected;
+- [`Advisory`](dialect::Advisory): the advisory lock form, its claim of candidates with their
+  keys, the lock and the release of a key, and the take of a row whose key the session holds;
+- [`Opens<Level>`](dialect::Opens): an isolation level or SQLite mode a table may declare;
 - [`ByName<DB>`](ByName): subscriptions by name, the JSON headers and the times their rows hold.
 
 A table in a form whose trait the dialect lacks does not compile, and neither does a by-name
@@ -578,6 +1089,10 @@ schema is fixed.
 
 In the lease form each delivery settles on its own, on a connection it takes for the settlement.
 
+In the advisory lock form each delivery of a batch holds a connection of its own and settles on
+it, on its own. A batch holds one row per key, and it ends where the pool has no connection to
+spare.
+
 # Routes and by-name subscriptions
 
 ```no_run
@@ -662,7 +1177,7 @@ allocation per publish on its route. A name no route leads anywhere fails the pu
 A by-name subscription takes the broker's poll interval and lease. Where the route's row leaves
 every event to the crate and holds column types the crate reads itself, listed on
 [`NamedSubscriber`], the subscription reads the rows by those columns: no box and no dynamic call
-per message, in either form, as through an [`InboxQueue`]. Any other row runs its own code, at one
+per message, in every form, as through an [`InboxQueue`]. Any other row runs its own code, at one
 boxed delivery and one boxed settlement future per message. By-name subscriptions run on a
 dialect that implements [`ByName`] for its database, as every built-in dialect does, and refuse
 `max_attempts(..)` and `dead_letter(..)` at startup: an [`InboxQueue`] takes those.

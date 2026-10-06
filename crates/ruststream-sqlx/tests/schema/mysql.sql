@@ -21,10 +21,29 @@ CREATE TABLE email_jobs (
 -- Where spent emails go when a registration dead-letters them into a table.
 CREATE TABLE email_jobs_dead LIKE email_jobs;
 
--- One queue per table: no group, no time, rows deleted when finished.
+-- A ledger whose accounts keep their order: a FIFO group per account, claimed by priority, then
+-- by `retry_after`.
+CREATE TABLE ledger (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    account      VARCHAR(255) NOT NULL,
+    priority     SMALLINT NOT NULL DEFAULT 0,
+    retry_after  DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    processed_at DATETIME(6),
+    locked_until DATETIME,
+    payload      LONGBLOB NOT NULL
+);
+
+-- A locking read whose order no index serves locks every row it reads, so without this index two
+-- claims of one group would wait on each other whether the group keeps its order or not.
+CREATE INDEX ledger_order ON ledger (account, priority, retry_after, id);
+
+-- One queue per table: no group, no time, rows deleted when finished. A job may name its tenant,
+-- which an advisory lock key reads where the jobs of one tenant go one at a time.
 CREATE TABLE plain_jobs (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,
     attempt      SMALLINT NOT NULL DEFAULT 1,
+    tenant       VARCHAR(64) NOT NULL DEFAULT '',
     locked_until DATETIME,
     payload      LONGBLOB NOT NULL
 );
@@ -154,3 +173,10 @@ CREATE TABLE unreadable_jobs (
 
 -- Where spent jobs of `unreadable_jobs` go.
 CREATE TABLE unreadable_jobs_dead LIKE unreadable_jobs;
+
+-- What a handler writes beside its job, in the delivery's transaction or through the pool: one
+-- row per write, its note naming the write.
+CREATE TABLE audit (
+    job_id BIGINT,
+    note   TEXT
+);

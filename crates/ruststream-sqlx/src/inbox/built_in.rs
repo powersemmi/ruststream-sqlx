@@ -12,14 +12,23 @@ use ruststream_sqlx_dialect as dialect;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
 use ruststream_sqlx_dialect::RowLock;
 use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Lease, Statement, StatementError, TableName, TableSpec,
+    Advisory, ClaimShape, Dialect, Lease, Opening, Statement, StatementError, TableName, TableSpec,
 };
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlite",
+    feature = "any"
+))]
+use ruststream_sqlx_dialect::{Opens, level};
 #[cfg(feature = "any")]
 use sqlx::Any;
 #[cfg(feature = "mysql")]
 use sqlx::MySql;
 #[cfg(feature = "postgres")]
 use sqlx::Postgres;
+#[cfg(feature = "sqlite")]
+use sqlx::Sqlite;
 
 use super::database::BuiltInDialect;
 #[cfg(all(feature = "any", feature = "mysql"))]
@@ -39,11 +48,18 @@ use super::database::SQLITE_BACKEND;
 /// features are on, picked when the broker connects.
 ///
 /// It serves the forms its database serves, through the traits of the dialect module: every
-/// `BuiltIn` implements [`Lease`], and `BuiltIn<Postgres>`, `BuiltIn<MySql>` and `BuiltIn<Any>`
-/// implement [`RowLock`]. A SQLite table in the row lock form therefore does not compile. An
-/// `AnyPool` names its database only when the broker connects, so on a SQLite backend the
-/// subscription to a row lock table stops when it starts, with
+/// `BuiltIn` implements [`Lease`] and [`Advisory`], and `BuiltIn<Postgres>`, `BuiltIn<MySql>` and
+/// `BuiltIn<Any>` implement [`RowLock`]. A SQLite table in the row lock form therefore does not
+/// compile. An `AnyPool` names its database only when the broker connects, so on a SQLite backend
+/// the subscription to a row lock table stops when it starts, with
 /// [`StatementError::UnsupportedForm`].
+///
+/// It opens transactions at the isolation levels and SQLite modes its database keeps, one
+/// [`Opens`](crate::dialect::Opens) per level: `BuiltIn<Postgres>` READ COMMITTED, REPEATABLE
+/// READ and SERIALIZABLE, `BuiltIn<MySql>` those and READ UNCOMMITTED, `BuiltIn<Sqlite>` the three
+/// modes. A table that names another does not compile. `BuiltIn<Any>` takes all seven, and the
+/// picked backend's dialect refuses the ones its database lacks when the subscription starts,
+/// with [`StatementError::UnsupportedOpening`].
 ///
 /// [`SqlxBroker::new`]: crate::SqlxBroker::new
 ///
@@ -148,6 +164,22 @@ impl<DB: BuiltInDialect> Dialect for BuiltIn<DB> {
     fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
         self.0.check_server(spec, version)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        self.0.begin(opening)
+    }
+
+    fn savepoint(&self) -> &'static str {
+        self.0.savepoint()
+    }
+
+    fn rollback_to_savepoint(&self) -> &'static str {
+        self.0.rollback_to_savepoint()
+    }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.0.fifo_guard(spec)
+    }
 }
 
 impl<DB: BuiltInDialect> Lease for BuiltIn<DB> {
@@ -180,6 +212,28 @@ impl<DB: BuiltInDialect> Lease for BuiltIn<DB> {
     }
 }
 
+impl<DB: BuiltInDialect> Advisory for BuiltIn<DB> {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.0.advisory_claim(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        self.0.lock()
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        self.0.unlock()
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.0.take(spec, shape)
+    }
+}
+
 #[cfg(feature = "postgres")]
 impl RowLock for BuiltIn<Postgres> {
     fn lock_claim(
@@ -188,10 +242,6 @@ impl RowLock for BuiltIn<Postgres> {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         self.0.lock_claim(spec, shape)
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.0.begin_lock_claim()
     }
 }
 
@@ -204,10 +254,6 @@ impl RowLock for BuiltIn<MySql> {
     ) -> Result<Statement, StatementError> {
         self.0.lock_claim(spec, shape)
     }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.0.begin_lock_claim()
-    }
 }
 
 #[cfg(feature = "any")]
@@ -219,11 +265,61 @@ impl RowLock for BuiltIn<Any> {
     ) -> Result<Statement, StatementError> {
         self.0.lock_claim(spec, shape)
     }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.0.begin_lock_claim()
-    }
 }
+
+#[cfg(feature = "postgres")]
+impl Opens<level::ReadCommitted> for BuiltIn<Postgres> {}
+
+#[cfg(feature = "postgres")]
+impl Opens<level::RepeatableRead> for BuiltIn<Postgres> {}
+
+#[cfg(feature = "postgres")]
+impl Opens<level::Serializable> for BuiltIn<Postgres> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::ReadUncommitted> for BuiltIn<MySql> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::ReadCommitted> for BuiltIn<MySql> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::RepeatableRead> for BuiltIn<MySql> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::Serializable> for BuiltIn<MySql> {}
+
+#[cfg(feature = "sqlite")]
+impl Opens<level::Deferred> for BuiltIn<Sqlite> {}
+
+#[cfg(feature = "sqlite")]
+impl Opens<level::Immediate> for BuiltIn<Sqlite> {}
+
+#[cfg(feature = "sqlite")]
+impl Opens<level::Exclusive> for BuiltIn<Sqlite> {}
+
+// Why every level and mode compiles on `Any`: an `AnyPool` names its database only when the
+// broker connects, so the type cannot say which of them the database opens. The picked backend's
+// dialect refuses the ones it lacks when the subscription to such a table starts.
+#[cfg(feature = "any")]
+impl Opens<level::ReadUncommitted> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::ReadCommitted> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::RepeatableRead> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Serializable> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Deferred> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Immediate> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Exclusive> for BuiltIn<Any> {}
 
 /// The built-in dialect an `AnyPool`'s backend takes, picked when the broker connects.
 /// Machinery: `BuiltIn<Any>` builds its statements with it.
@@ -235,6 +331,8 @@ pub struct AnyDialect {
     lease: &'static dyn Lease,
     /// Its row lock form, where its database locks rows.
     row_lock: Option<&'static dyn RowLock>,
+    /// Its advisory lock form.
+    advisory: &'static dyn Advisory,
 }
 
 #[cfg(feature = "any")]
@@ -248,6 +346,7 @@ impl AnyDialect {
                 Self {
                     lease: &dialect::Postgres,
                     row_lock: Some(&dialect::Postgres),
+                    advisory: &dialect::Postgres,
                 },
             ),
             #[cfg(feature = "mysql")]
@@ -256,6 +355,7 @@ impl AnyDialect {
                 Self {
                     lease: &dialect::MySql,
                     row_lock: Some(&dialect::MySql),
+                    advisory: &dialect::MySql,
                 },
             ),
             #[cfg(feature = "sqlite")]
@@ -264,6 +364,7 @@ impl AnyDialect {
                 Self {
                     lease: &dialect::Sqlite,
                     row_lock: None,
+                    advisory: &dialect::Sqlite,
                 },
             ),
         ];
@@ -336,6 +437,22 @@ impl Dialect for AnyDialect {
     fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
         self.base().check_server(spec, version)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        self.base().begin(opening)
+    }
+
+    fn savepoint(&self) -> &'static str {
+        self.base().savepoint()
+    }
+
+    fn rollback_to_savepoint(&self) -> &'static str {
+        self.base().rollback_to_savepoint()
+    }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.base().fifo_guard(spec)
+    }
 }
 
 #[cfg(feature = "any")]
@@ -369,6 +486,29 @@ impl Lease for AnyDialect {
     }
 }
 
+#[cfg(feature = "any")]
+impl Advisory for AnyDialect {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.advisory.advisory_claim(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        self.advisory.lock()
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        self.advisory.unlock()
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.advisory.take(spec, shape)
+    }
+}
+
 // Why a startup refusal: an `AnyPool` names its database only when the broker connects, so the
 // type cannot say whether the database locks rows. A SQLite backend refuses the row lock claim
 // when the subscription to such a table starts.
@@ -388,10 +528,6 @@ impl RowLock for AnyDialect {
             },
             |dialect| dialect.lock_claim(spec, shape),
         )
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.row_lock.and_then(RowLock::begin_lock_claim)
     }
 }
 

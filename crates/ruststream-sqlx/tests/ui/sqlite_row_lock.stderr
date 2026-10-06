@@ -42,11 +42,11 @@ help: the following other types implement trait `ruststream_sqlx::ruststream_sql
    | impl RowLock for BuiltIn<Any> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<sqlx::Any>`
    = note: required for `ruststream_sqlx::__private::RowLockForm` to implement `ruststream_sqlx::__private::FormOn<BuiltIn<sqlx::Sqlite>>`
-note: required by a bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
+note: required by a bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
   --> src/inbox/queue.rs
    |
    |     Row::Form: FormOn<D>,
-   |                ^^^^^^^^^ required by this bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
+   |                ^^^^^^^^^ required by this bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
 
 error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect builds no row lock claim, so a table on it cannot take its rows by row lock
   --> tests/ui/sqlite_row_lock.rs:14:68
@@ -69,8 +69,8 @@ help: the following other types implement trait `ruststream_sqlx::ruststream_sql
    | impl RowLock for BuiltIn<Any> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<sqlx::Any>`
    = note: required for `ruststream_sqlx::__private::RowLockForm` to implement `ruststream_sqlx::__private::FormOn<BuiltIn<sqlx::Sqlite>>`
-note: required by a bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
+note: required by a bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
   --> src/inbox/queue.rs
    |
    |     Row::Form: FormOn<D>,
-   |                ^^^^^^^^^ required by this bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
+   |                ^^^^^^^^^ required by this bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`

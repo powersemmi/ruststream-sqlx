@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Lease, RowLock, Statement, StatementError, TableSpec,
+    Advisory, ClaimShape, Dialect, Lease, RowLock, Statement, StatementError, TableSpec,
 };
 
 /// A form of claiming rows that the dialect `D` serves. Machinery: a subscription requires it of
@@ -43,11 +43,9 @@ impl<D: Lease + 'static> FormOn<D> for LeaseForm {
     }
 }
 
-// Why the advisory form compiles on every dialect: no trait of the dialect crate builds its
-// statements, so its subscription refuses it when it starts, naming the dialect and the form.
-impl<D: Dialect + 'static> FormOn<D> for AdvisoryForm {
+impl<D: Advisory + 'static> FormOn<D> for AdvisoryForm {
     fn erase(dialect: &Arc<D>) -> FormDialect {
-        FormDialect::Unbuilt(Arc::clone(dialect) as Arc<dyn Dialect>)
+        FormDialect::Advisory(Arc::clone(dialect) as Arc<dyn Advisory>)
     }
 }
 
@@ -60,8 +58,8 @@ pub enum FormDialect {
     RowLock(Arc<dyn RowLock>),
     /// A dialect with the lease form.
     Lease(Arc<dyn Lease>),
-    /// A dialect whose traits build no statements of the table's form.
-    Unbuilt(Arc<dyn Dialect>),
+    /// A dialect with the advisory lock form.
+    Advisory(Arc<dyn Advisory>),
 }
 
 impl FormDialect {
@@ -70,7 +68,7 @@ impl FormDialect {
         match self {
             Self::RowLock(dialect) => dialect.as_ref(),
             Self::Lease(dialect) => dialect.as_ref(),
-            Self::Unbuilt(dialect) => dialect.as_ref(),
+            Self::Advisory(dialect) => dialect.as_ref(),
         }
     }
 
@@ -78,15 +76,24 @@ impl FormDialect {
     pub(crate) fn lease(&self) -> Option<&dyn Lease> {
         match self {
             Self::Lease(dialect) => Some(dialect.as_ref()),
-            Self::RowLock(_) | Self::Unbuilt(_) => None,
+            Self::RowLock(_) | Self::Advisory(_) => None,
         }
     }
 
-    /// The claim of `spec` in `shape`, built by the trait of the table's form.
+    /// The dialect's advisory lock form, where the table takes rows by advisory lock.
+    pub(crate) fn advisory(&self) -> Option<&dyn Advisory> {
+        match self {
+            Self::Advisory(dialect) => Some(dialect.as_ref()),
+            Self::RowLock(_) | Self::Lease(_) => None,
+        }
+    }
+
+    /// The claim of `spec` in `shape`, built by the trait of the table's form: in the advisory
+    /// lock form, the candidates with their keys, whatever the shape.
     ///
     /// # Errors
     ///
-    /// The dialect's refusal; [`StatementError::UnsupportedForm`] for a form no trait builds.
+    /// The dialect's refusal.
     pub(crate) fn claim(
         &self,
         spec: &TableSpec<'_>,
@@ -95,20 +102,31 @@ impl FormDialect {
         match self {
             Self::RowLock(dialect) => dialect.lock_claim(spec, shape),
             Self::Lease(dialect) => dialect.lease_claim(spec, shape),
-            Self::Unbuilt(dialect) => Err(StatementError::UnsupportedForm {
-                dialect: dialect.name(),
-                form: spec.form().name(),
-            }),
+            Self::Advisory(dialect) => dialect.advisory_claim(spec),
         }
     }
 
-    /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
-    /// names one for the table's form.
-    pub(crate) fn begin_claim(&self) -> Option<&'static str> {
-        match self {
-            Self::RowLock(dialect) => dialect.begin_lock_claim(),
+    /// The statement that opens a claim's transaction of `spec`'s table in place of `BEGIN`,
+    /// where the dialect names one: the row lock claim's opens at the table's opening, the lease
+    /// claim's as the lease form opens it. The advisory claim selects its candidates outside any
+    /// transaction of the crate's.
+    ///
+    /// The dialect answers for the table's opening in every form, so a table at a level or in a
+    /// mode its dialect does not open stops its subscription when it starts. Under `BuiltIn<Any>`
+    /// that is the first moment the database is known.
+    ///
+    /// # Errors
+    ///
+    /// The dialect's refusal of the table's opening.
+    pub(crate) fn begin_claim(
+        &self,
+        spec: &TableSpec<'_>,
+    ) -> Result<Option<&'static str>, StatementError> {
+        let opening = self.dialect().begin(spec.opening())?;
+        Ok(match self {
+            Self::RowLock(_) => opening,
             Self::Lease(dialect) => dialect.begin_lease_claim(),
-            Self::Unbuilt(_) => None,
-        }
+            Self::Advisory(_) => None,
+        })
     }
 }

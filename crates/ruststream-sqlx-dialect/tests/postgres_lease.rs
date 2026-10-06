@@ -223,3 +223,59 @@ fn the_new_errors_name_what_to_do() {
          declare `locked_until`"
     );
 }
+
+/// A ledger whose accounts keep their order, in the lease form.
+const LEASED_LEDGER: TableSpec<'static> = TableSpec::new(
+    "ledger",
+    Column::new("id"),
+    Form::Lease(Column::new("locked_until")),
+)
+.fifo_group(Column::new("account"))
+.retry_after(Column::new("retry_after"))
+.attempt(Column::new("attempt"))
+.processed_at(Column::new("processed_at"))
+.payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_lease_claim_stamps_the_head_alone() -> Result<(), Box<dyn Error>> {
+    // Nothing while a row of the group holds a lease: a row that entered ahead of the head in work
+    // waits for it.
+    let claim = Postgres.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
+    assert_eq!(
+        claim.sql(),
+        r#"WITH __claimed AS (SELECT "id", "account", "retry_after", "attempt", "locked_until", "processed_at", "payload" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 AND ("locked_until" IS NULL OR "locked_until" <= $3) AND NOT EXISTS (SELECT 1 FROM "ledger" AS __work WHERE __work."account" = $4 AND __work."locked_until" > $5) FOR UPDATE SKIP LOCKED), __stamped AS (UPDATE "ledger" AS __row SET "locked_until" = $6, "attempt" = __row."attempt" + 1 FROM __claimed WHERE __row."id" = __claimed."id") SELECT * FROM __claimed ORDER BY "retry_after", "id""#,
+    );
+    assert_eq!(
+        claim.params(),
+        [
+            Param::Group,
+            Param::Now,
+            Param::LeaseNow,
+            Param::Group,
+            Param::LeaseNow,
+            Param::Lease
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_fifo_lease_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
+    // The guard holds the group for the claim's transaction; the lease holds it after the commit.
+    let guard = Postgres
+        .fifo_guard(&LEASED_LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        guard.sql(),
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('ledger:' || $1, 0))::int::bigint",
+    );
+    assert_eq!(guard.params(), [Param::Group]);
+    assert_eq!(Postgres.fifo_guard(&LEASED)?, None);
+    assert_eq!(
+        Postgres.fifo_guard(&LEASED_LEDGER.database_clock()),
+        Err(StatementError::LeaseOnDatabaseClock {
+            dialect: "postgres"
+        })
+    );
+    Ok(())
+}

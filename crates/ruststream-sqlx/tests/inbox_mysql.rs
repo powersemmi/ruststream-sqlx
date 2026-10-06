@@ -24,7 +24,8 @@ use ruststream::{
     Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::dialect::{
-    self, ClaimShape, Dialect, Lease, RowLock, Statement, StatementError, TableName, TableSpec,
+    self, ClaimShape, Dialect, Lease, Opening, RowLock, Statement, StatementError, TableName,
+    TableSpec,
 };
 use ruststream_sqlx::{
     Claim, ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, InboxRow, SqlxBroker, SqlxBrokerError,
@@ -74,6 +75,8 @@ enum Doctored {
     /// Moves a dead letter with a delete that finds no row, as one does after another claim took
     /// the row between the copy and the delete.
     Missing,
+    /// Opens no transaction at the table's opening.
+    Unopened,
 }
 
 impl Dialect for Doctored {
@@ -135,7 +138,9 @@ impl Dialect for Doctored {
     fn server_version(&self) -> Option<&'static str> {
         match self {
             Self::Unanswered => Some(UNANSWERED),
-            Self::Floor | Self::Refusing | Self::Missing => dialect::MySql.server_version(),
+            Self::Floor | Self::Refusing | Self::Missing | Self::Unopened => {
+                dialect::MySql.server_version()
+            }
         }
     }
 
@@ -150,7 +155,21 @@ impl Dialect for Doctored {
                 dialect: self.name(),
                 form: spec.form().name(),
             }),
-            Self::Unanswered | Self::Missing => dialect::MySql.check_server(spec, version),
+            Self::Unanswered | Self::Missing | Self::Unopened => {
+                dialect::MySql.check_server(spec, version)
+            }
+        }
+    }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        match self {
+            Self::Unopened => Err(StatementError::UnsupportedOpening {
+                dialect: self.name(),
+                opening: opening.name(),
+            }),
+            Self::Floor | Self::Unanswered | Self::Refusing | Self::Missing => {
+                dialect::MySql.begin(opening)
+            }
         }
     }
 }
@@ -162,10 +181,6 @@ impl RowLock for Doctored {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         dialect::MySql.lock_claim(spec, shape)
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        dialect::MySql.begin_lock_claim()
     }
 }
 
@@ -332,6 +347,25 @@ live::mysql_stands! {
                 source: StatementError::UnsupportedForm { dialect: "doctored", .. },
                 ..
             } if subscription == "plain"),
+            "{refused:?}"
+        );
+        db.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_opening_the_dialect_refuses_stops_the_subscription() {
+        let Some(db) = database().await else { return };
+        let refused = refusal(db.pool.clone(), Doctored::Unopened).await;
+        assert!(
+            matches!(&refused, SqlxBrokerError::Dialect {
+                subscription,
+                table,
+                source: StatementError::UnsupportedOpening {
+                    dialect: "doctored",
+                    opening: "the database's default",
+                },
+                ..
+            } if subscription == "plain" && table == "plain_jobs"),
             "{refused:?}"
         );
         db.finish().await;
