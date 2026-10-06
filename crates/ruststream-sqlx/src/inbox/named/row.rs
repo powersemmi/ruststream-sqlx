@@ -18,7 +18,8 @@ use super::by_name::ByName;
 use super::database::RoleColumns;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{
-    self, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape, Values,
+    self, Candidates, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape,
+    Values,
 };
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::kinds::{ClockKind, TimeKind};
@@ -628,6 +629,14 @@ where
         key: &'a str,
     ) -> impl Future<Output = Result<bool, Error>> + Send + 'a {
         engine::unlock::<DB, Self>(conn, cx, key)
+    }
+
+    fn candidates<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Claiming,
+        out: &'a mut Candidates<NamedId>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
+        engine::candidates::<DB, Self>(conn, cx, out)
     }
 
     async fn take<'a>(

@@ -26,7 +26,7 @@ mod advisory;
 mod claim;
 mod settle;
 
-pub use advisory::{Candidates, lock, match_taken, take, take_id, unlock};
+pub use advisory::{Candidates, candidates, lock, match_taken, take, take_id, unlock};
 pub use claim::{claim_ids, claim_rows, fetch_by_ids, match_claimed, match_rows};
 pub(crate) use claim::{stamp, take_group};
 pub use settle::{ack, dead_letter, discard, extend, retry, retry_after};
@@ -170,6 +170,14 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
         id: &'a Self::Id,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> impl Future<Output = Result<bool, Error>> + Send + 'a;
+
+    /// Selects the candidates of an advisory claim into `out`: up to `cx.limit` claimable rows in
+    /// claim order, each id with its lock key, written over the last claim's.
+    fn candidates<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Claiming,
+        out: &'a mut Candidates<Self::Id>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 }
 
 /// Which events a row's service implements itself.

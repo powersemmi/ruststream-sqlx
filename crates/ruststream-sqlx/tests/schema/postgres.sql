@@ -32,10 +32,12 @@ CREATE TABLE ledger (
     payload      BYTEA NOT NULL
 );
 
--- One queue per table: no group, no time, rows deleted when finished.
+-- One queue per table: no group, no time, rows deleted when finished. A job may name its tenant,
+-- which an advisory lock key reads where the jobs of one tenant go one at a time.
 CREATE TABLE plain_jobs (
     id           BIGSERIAL PRIMARY KEY,
     attempt      SMALLINT NOT NULL DEFAULT 1,
+    tenant       TEXT NOT NULL DEFAULT '',
     locked_until TIMESTAMPTZ,
     payload      BYTEA NOT NULL
 );

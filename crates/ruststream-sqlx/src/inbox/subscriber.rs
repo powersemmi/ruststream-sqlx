@@ -11,13 +11,15 @@ use sqlx::Pool;
 use tokio_util::sync::DropGuard;
 
 use super::PayloadRow;
+use super::advisory::{LockBook, LockHold};
 use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::delivery::{BatchTx, InboxDelivery};
-use super::engine::{self, Claimed, Claiming, Events, Leasing, Now};
+use super::engine::{self, Candidates, Claimed, Claiming, Events, Leasing, Now, Settling};
 use super::error::SqlxBrokerError;
 use super::lease::LeaseBook;
 use super::queue::{Queue, Registration};
+use super::session::Session;
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
 use super::tx::Tx;
@@ -44,6 +46,16 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// or alone, takes a connection only while it settles, and its settlement takes effect on its own.
 /// A task on the runtime the broker connected on extends the lease of every delivery in work each
 /// half lease, on one connection, until the subscriber drops or the broker shuts down.
+///
+/// In the advisory lock form each message in work holds a connection of its own, in a batch too,
+/// and its session holds the lock on the row's key: no transaction stays open while the handler
+/// works. A claim selects candidates, locks each key on a session and takes the row while it is
+/// still claimable; a batch takes as many connections as the pool spares at once, so a batch larger
+/// than the pool shrinks instead of waiting. A settlement runs its statement on the session, then
+/// releases the lock and returns the connection to the pool. A delivery dropped unsettled closes its
+/// connection on the runtime the broker connected on, after releasing the lock, and its row returns
+/// at once. SQLite keeps no such locks: the process keeps the keys in work instead, so one process
+/// serves a database file.
 ///
 /// A table whose groups keep their order (`#[field(group, fifo = true)]`) has one row of a group
 /// in work at a time. A claim takes the group's head, its first unfinished row in claim order, and
@@ -83,8 +95,8 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>> {
     shared: Arc<Shared<DB>>,
     queue: &'static Queue,
     holding: Holding<DB, Row>,
-    /// The claim's rows, reused from claim to claim.
-    rows: Vec<Claimed<Row>>,
+    /// What the last claim took, its storage reused from claim to claim.
+    claimed: ClaimBuffers<DB, Row>,
     /// What the next claim waits for first.
     wait: Option<Duration>,
     _registration: Registration<DB>,
@@ -99,6 +111,9 @@ pub(crate) enum Holding<DB: QueueDatabase, Row: Events<DB>> {
     /// By the lease the claim wrote and committed, each delivery's kept in the subscription's
     /// book: the lease form.
     Leases(&'static LeaseBook<DB, Row>),
+    /// By the lock on each row's key, held by the session of its delivery, which the
+    /// subscription's book keeps: the advisory lock form.
+    Advisory(&'static LockBook<DB>),
 }
 
 impl<DB: QueueDatabase, Row: Events<DB>> Clone for Holding<DB, Row> {
@@ -115,6 +130,58 @@ pub(crate) enum Taken<DB: QueueDatabase, Row: Events<DB>> {
     Locked(Tx<DB>),
     /// The lease the claim wrote and committed, and the book its deliveries enter.
     Leased(&'static LeaseBook<DB, Row>, Row::Token),
+    /// Each row's place in the book, whose session holds the row's lock, next to the row.
+    Advised,
+}
+
+/// What a claim took, kept by the subscriber from claim to claim so their storage is reused.
+pub(crate) struct ClaimBuffers<DB: QueueDatabase, Row: Events<DB>> {
+    /// The claim's rows, oldest first.
+    rows: Vec<Claimed<Row>>,
+    /// What only the advisory lock form keeps, made at its first claim: a subscription in another
+    /// form carries the pointer alone.
+    advised: Option<Box<Advised<DB, Row>>>,
+}
+
+/// What an advisory claim keeps beside its rows.
+struct Advised<DB: QueueDatabase, Row: Events<DB>> {
+    /// The place of each row in the subscription's book, beside the row.
+    holds: Vec<LockHold<DB>>,
+    /// The candidates of the last claim, whose keys' buffers the next one writes over.
+    candidates: Candidates<Row::Id>,
+    /// The candidates the last claim took, by their place among the candidates.
+    taken: Vec<usize>,
+}
+
+impl<DB: QueueDatabase, Row: Events<DB>> Default for ClaimBuffers<DB, Row> {
+    fn default() -> Self {
+        Self {
+            rows: Vec::new(),
+            advised: None,
+        }
+    }
+}
+
+impl<DB: QueueDatabase, Row: Events<DB>> Default for Advised<DB, Row> {
+    fn default() -> Self {
+        Self {
+            holds: Vec::new(),
+            candidates: Candidates::default(),
+            taken: Vec::new(),
+        }
+    }
+}
+
+impl<DB: QueueDatabase, Row: Events<DB>> ClaimBuffers<DB, Row> {
+    /// Empties them for the next claim. A hold left from a claim that failed midway drops here,
+    /// which ends its session.
+    fn clear(&mut self) {
+        self.rows.clear();
+        if let Some(advised) = self.advised.as_deref_mut() {
+            advised.holds.clear();
+            advised.taken.clear();
+        }
+    }
 }
 
 impl<DB: QueueDatabase, Row: Events<DB>> fmt::Debug for InboxSubscriber<DB, Row> {
@@ -128,7 +195,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> fmt::Debug for InboxSubscriber<DB, Row>
 }
 
 impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         shared: Arc<Shared<DB>>,
         queue: &'static Queue,
         holding: Holding<DB, Row>,
@@ -139,7 +206,7 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
             shared,
             queue,
             holding,
-            rows: Vec::new(),
+            claimed: ClaimBuffers::default(),
             wait: None,
             _registration: registration,
             _keeper: keeper,
@@ -204,11 +271,11 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
             self.holding,
             limit,
             Now::default(),
-            &mut self.rows,
+            &mut self.claimed,
         )
         .await
         .map_err(|(statement, source)| self.failed(statement, source))?;
-        Ok((taken, self.rows.len()))
+        Ok((taken, self.claimed.rows.len()))
     }
 
     /// Ends the transaction of a claim that took no row; a claim by lease committed already.
@@ -236,22 +303,33 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         let queue = self.queue;
         let holding = self.holding;
         let now = self.shared.harness.now();
-        let mut rows = std::mem::take(&mut self.rows);
-        let (claimed, rows) = off_clock(async move {
-            let claimed = claim_rows(&pool, queue, holding, limit, now, &mut rows).await;
-            (claimed, rows)
+        let mut buffers = std::mem::take(&mut self.claimed);
+        let (claimed, buffers) = off_clock(async move {
+            let claimed = claim_rows(&pool, queue, holding, limit, now, &mut buffers).await;
+            (claimed, buffers)
         })
         .await
-        .unwrap_or_else(|| (Err(("BEGIN", cancelled())), Vec::new()));
-        self.rows = rows;
+        .unwrap_or_else(|| (Err(("BEGIN", cancelled())), ClaimBuffers::default()));
+        self.claimed = buffers;
         let taken = claimed.map_err(|(statement, source)| self.failed(statement, source))?;
-        self.shared.harness.claimed(queue.name, self.rows.len());
-        Ok((taken, self.rows.len()))
+        self.shared
+            .harness
+            .claimed(queue.name, self.claimed.rows.len());
+        Ok((taken, self.claimed.rows.len()))
     }
 
     /// The deliveries of the last claim, oldest first.
     pub(crate) fn take_rows(&mut self) -> impl Iterator<Item = Claimed<Row>> + '_ {
-        self.rows.drain(..)
+        self.claimed.rows.drain(..)
+    }
+
+    /// The deliveries of the last advisory claim, oldest first, each with its place in the book.
+    fn take_advised(&mut self) -> impl Iterator<Item = (Claimed<Row>, LockHold<DB>)> + '_ {
+        let ClaimBuffers { rows, advised } = &mut self.claimed;
+        let holds = advised
+            .as_deref_mut()
+            .map(|advised| advised.holds.drain(..));
+        rows.drain(..).zip(holds.into_iter().flatten())
     }
 
     pub(crate) const fn queue(&self) -> &'static Queue {
@@ -264,10 +342,15 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
             Err(error) => return Some(Err(error)),
         };
         let queue = self.queue;
-        let claimed = self.rows.pop()?;
         let delivery = match taken {
-            Taken::Locked(tx) => InboxDelivery::own(claimed, tx, queue),
-            Taken::Leased(book, lease) => InboxDelivery::leased(claimed, book, lease, queue),
+            Taken::Locked(tx) => InboxDelivery::own(self.claimed.rows.pop()?, tx, queue),
+            Taken::Leased(book, lease) => {
+                InboxDelivery::leased(self.claimed.rows.pop()?, book, lease, queue)
+            }
+            Taken::Advised => {
+                let (claimed, hold) = self.take_advised().next()?;
+                InboxDelivery::advised(claimed, hold, queue)
+            }
         };
         #[cfg(feature = "testing")]
         let delivery = delivery.on(&self.shared);
@@ -288,8 +371,9 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
 /// A statement that failed, and why.
 type Failed = (&'static str, sqlx::Error);
 
-/// Claims up to `limit` rows of `queue` into `rows`, holding them as `holding` says: in a
-/// transaction of `pool` it returns open, or by a lease it commits.
+/// Claims up to `limit` rows of `queue` into `claimed`, holding them as `holding` says: in a
+/// transaction of `pool` it returns open, by a lease it commits, or by the lock on each row's key,
+/// held by a session of its own.
 ///
 /// The claim of a table whose groups keep their order takes the group first, in the claim's
 /// transaction, and takes nothing while another transaction holds it.
@@ -299,7 +383,7 @@ async fn claim_rows<DB, Row>(
     holding: Holding<DB, Row>,
     limit: usize,
     now: Now,
-    rows: &mut Vec<Claimed<Row>>,
+    claimed: &mut ClaimBuffers<DB, Row>,
 ) -> Result<Taken<DB, Row>, Failed>
 where
     DB: QueueDatabase,
@@ -314,7 +398,8 @@ where
         let statement = queue.prepared.claim.map_or("claim", |claim| claim.sql);
         (statement, source)
     };
-    rows.clear();
+    claimed.clear();
+    let rows = &mut claimed.rows;
     let book = match holding {
         Holding::Transaction => {
             let mut tx = begin(pool, queue).await?;
@@ -340,6 +425,12 @@ where
             };
         }
         Holding::Leases(book) => book,
+        Holding::Advisory(book) => {
+            let ClaimBuffers { rows, advised } = claimed;
+            let advised = advised.get_or_insert_with(Box::default);
+            claim_advised::<DB, Row>(pool, book, &cx, limit, rows, advised).await?;
+            return Ok(Taken::Advised);
+        }
     };
     // The lease is read once the connection is in hand, so a wait for the pool does not shorten
     // it. The claim reads "now" there once: the rows it finds due, the leases it finds ended and
@@ -388,6 +479,176 @@ where
         .await
         .map_err(claim_failed)?;
     Ok(Taken::Leased(book, lease.expiry))
+}
+
+/// Claims up to `limit` rows of an advisory subscription: each candidate's key locked on a session
+/// of its own, and its row taken while it is still claimable. The rows go into `rows`, and each
+/// row's place in `book` beside it into `advised`.
+///
+/// The first session waits for the pool; each next one is an idle connection the pool spares at
+/// once, and the claim ends where the pool spares none. A key this claim took already is passed
+/// over, and so is a key another session holds. A session left over holds nothing and goes back to
+/// the pool. A claim that fails or is dropped midway leaves no lock: what it took drops, so each
+/// session ends, one that may hold a lock closed, and each row returns.
+async fn claim_advised<DB, Row>(
+    pool: &Pool<DB>,
+    book: &'static LockBook<DB>,
+    cx: &Claiming,
+    limit: usize,
+    rows: &mut Vec<Claimed<Row>>,
+    advised: &mut Advised<DB, Row>,
+) -> Result<(), Failed>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let prepared = &cx.queue.prepared;
+    let named = |statement: Option<engine::Stmt>, event: &'static str| {
+        move |source| -> Failed { (statement.map_or(event, |statement| statement.sql), source) }
+    };
+    let settling = Settling {
+        queue: cx.queue,
+        now: cx.now,
+    };
+    let Advised {
+        holds,
+        candidates,
+        taken,
+    } = advised;
+    let mut taking = Taking {
+        rows,
+        holds,
+        done: false,
+    };
+    let mut session = Session::acquire(pool, book.closing())
+        .await
+        .map_err(|source| ("acquire", source))?;
+    Row::candidates(session.conn(), cx, candidates)
+        .await
+        .map_err(named(prepared.claim, "claim"))?;
+    let mut spare = Some(session);
+    for index in 0..candidates.len() {
+        let Some((id, key)) = candidates.get(index) else {
+            continue;
+        };
+        let held_already = taken.iter().any(|&earlier| {
+            candidates
+                .get(earlier)
+                .is_some_and(|(_, other)| other == key)
+        });
+        if held_already {
+            continue;
+        }
+        let Some(session) = spare.as_mut() else {
+            break;
+        };
+        if book.process() {
+            if !session.take_in_process(key) {
+                continue;
+            }
+        } else {
+            // Marked before the statement leaves: a lock statement dropped midway may have taken
+            // the lock, and a session that may hold one closes instead of going back to the pool.
+            session.set_locked(true);
+            if !Row::lock(session.conn(), cx, key)
+                .await
+                .map_err(named(prepared.lock, "lock"))?
+            {
+                session.set_locked(false);
+                continue;
+            }
+        }
+        let before = taking.rows.len();
+        let found = Row::take(session.conn(), cx, id, taking.rows)
+            .await
+            .map_err(named(prepared.take, "take"))?;
+        if !found {
+            // Another holder settled the row between the select and the lock: its key goes, and
+            // the session tries the next candidate.
+            if !free_key::<DB, Row>(session, book, &settling, key).await? {
+                // The database did not confirm the release: the session closes, and the claim
+                // goes on with another one.
+                spare = Session::try_acquire(pool, book.closing());
+            }
+            continue;
+        }
+        let read = taking.rows.len() - before;
+        if read != 1 {
+            return Err((
+                prepared.take.map_or("take", |take| take.sql),
+                sqlx::Error::Protocol(format!("the take of one candidate read {read} rows")),
+            ));
+        }
+        let Some(session) = spare.take() else {
+            break;
+        };
+        taking.holds.push(book.enter(key, session));
+        taken.push(index);
+        if taking.holds.len() >= limit {
+            break;
+        }
+        spare = Session::try_acquire(pool, book.closing());
+    }
+    // A session left over holds nothing, and goes back to the pool.
+    drop(spare);
+    taking.done = true;
+    Ok(())
+}
+
+/// The rows and the holds of an advisory claim in progress. Dropped before the claim is done, by
+/// an error or a cancellation, it drops what the claim took.
+struct Taking<'a, DB: QueueDatabase, Row: Events<DB>> {
+    rows: &'a mut Vec<Claimed<Row>>,
+    holds: &'a mut Vec<LockHold<DB>>,
+    done: bool,
+}
+
+impl<DB: QueueDatabase, Row: Events<DB>> Drop for Taking<'_, DB, Row> {
+    fn drop(&mut self) {
+        if !self.done {
+            self.holds.clear();
+            self.rows.clear();
+        }
+    }
+}
+
+/// Frees `key`, which `session` took for a candidate the take found gone: from the process, or
+/// with the row's unlock. `false` when the database did not confirm the release, and the session
+/// then ends closed.
+async fn free_key<DB, Row>(
+    session: &mut Session<DB>,
+    book: &LockBook<DB>,
+    cx: &Settling,
+    key: &str,
+) -> Result<bool, Failed>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    if book.process() {
+        session.free_in_process();
+        return Ok(true);
+    }
+    let unlocked = Row::unlock(session.conn(), cx, key)
+        .await
+        .map_err(|source| {
+            let unlock = cx.queue.prepared.unlock;
+            (unlock.map_or("unlock", |unlock| unlock.sql), source)
+        })?;
+    if unlocked {
+        session.set_locked(false);
+    } else {
+        tracing::warn!(
+            target: "ruststream_sqlx",
+            subscription = cx.queue.name,
+            table = cx.queue.table,
+            row = cx.queue.row,
+            key,
+            "the unlock of a candidate's key found the session not holding it; the session \
+             closes",
+        );
+    }
+    Ok(unlocked)
 }
 
 /// Takes the group of `cx` for the claim's transaction on `conn`, where its table keeps its groups
@@ -501,6 +762,11 @@ where
                 Taken::Leased(book, lease) => subscriber
                     .take_rows()
                     .map(|claimed| on(InboxDelivery::leased(claimed, book, lease, queue)))
+                    .collect(),
+                // Each delivery of an advisory batch holds its own session and settles on its own.
+                Taken::Advised => subscriber
+                    .take_advised()
+                    .map(|(claimed, hold)| on(InboxDelivery::advised(claimed, hold, queue)))
                     .collect(),
             };
             Some((Ok(deliveries), subscriber))

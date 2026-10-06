@@ -1,5 +1,6 @@
 //! The inbox: task queues in tables a service describes with its own structs.
 
+mod advisory;
 mod broker;
 mod built_in;
 mod columns;
@@ -15,6 +16,7 @@ mod lease;
 pub(crate) mod named;
 mod publish;
 pub(crate) mod queue;
+mod session;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;

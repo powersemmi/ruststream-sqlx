@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::future::{Future, ready};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -30,12 +30,14 @@ use sqlx::{Database, Pool};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
+use super::advisory::LockBook;
 use super::built_in::BuiltIn;
 use super::database::{BuiltInDialect, QueueDatabase};
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
 use super::publish::Routes;
+use super::session::Closing;
 use super::{FormDialect, FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
@@ -418,6 +420,12 @@ pub(crate) struct Shared<DB: Database> {
     pub(crate) stopping: CancellationToken,
     /// The queues this connection reads, by table and group; a table without groups is one queue.
     pub(crate) queues: Mutex<Vec<(&'static str, Option<String>)>>,
+    /// The books of the connection's advisory subscriptions, each with the deliveries in work and
+    /// the sessions that hold their locks.
+    pub(crate) locks: Mutex<Vec<&'static LockBook<DB>>>,
+    /// The sessions of the connection being closed after they ended holding a lock or a
+    /// transaction: `shutdown` waits until none is.
+    pub(crate) closing: &'static Closing,
     /// The test harness's books of this connection.
     #[cfg(feature = "testing")]
     pub(crate) harness: super::testing::Harness,
@@ -435,7 +443,8 @@ impl<DB: Database> Shared<DB> {
 /// It hands out publishers and opens subscriptions; [`shutdown`](ConnectedBroker::shutdown) stops
 /// its claim loops and the extension of its leases, and refuses every handle it handed out. A
 /// delivery in work keeps its lease after `shutdown` and settles as before; its lease is no
-/// longer extended.
+/// longer extended. In the advisory lock form `shutdown` returns once the connections of
+/// deliveries dropped unsettled have closed, so none of their locks outlives it.
 ///
 /// # Examples
 ///
@@ -475,10 +484,12 @@ impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
                 routes: broker.routes.resolve(|form_of| form_of(&dialect)),
                 poll_interval: broker.poll_interval,
                 lease: broker.lease,
+                closing: Closing::leak(runtime.clone()),
                 runtime,
                 closed: AtomicBool::new(false),
                 stopping: CancellationToken::new(),
                 queues: Mutex::new(Vec::new()),
+                locks: Mutex::new(Vec::new()),
                 #[cfg(feature = "testing")]
                 harness: super::testing::Harness::default(),
             }),
@@ -493,13 +504,18 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
 
     /// Stops the claim loops and the extension of every lease, and refuses every handle handed
     /// out before. A delivery in work settles as before; its lease runs out unless it settles
-    /// first.
+    /// first. It returns once the sessions of advisory deliveries dropped unsettled have closed.
     fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
         // Why a flag rather than a type: the pool is the service's and stays open, so a
         // publisher handed out before shutdown would otherwise keep writing.
         self.shared.closed.store(true, Ordering::Release);
         self.shared.stopping.cancel();
-        ready(Ok(ClosedSqlxBroker { _private: () }))
+        let closing = self.shared.closing;
+        async move {
+            // A session closing after its delivery dropped unsettled may still hold its lock.
+            closing.settled().await;
+            Ok(ClosedSqlxBroker { _private: () })
+        }
     }
 }
 

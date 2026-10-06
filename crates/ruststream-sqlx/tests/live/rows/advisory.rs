@@ -97,6 +97,42 @@ where
     }
 }
 
+/// The tenant every keyed job belongs to.
+pub(crate) const TENANT: &str = "acme";
+
+/// The plain queue locked by tenant: every job of one tenant shares one lock key, so the jobs of
+/// a tenant go into work one at a time.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "plain_jobs", advisory_lock = "plain-{tenant}")]
+pub(crate) struct Keyed {
+    #[field(id, generated)]
+    pub(crate) id: i64,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    pub(crate) tenant: String,
+    #[field(payload)]
+    pub(crate) payload: Vec<u8>,
+}
+
+impl<DB> Publish<DB> for Keyed
+where
+    DB: QueueDatabase,
+    Self: Insert<DB::Connection>,
+{
+    async fn publish(
+        conn: &mut DB::Connection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), Error> {
+        let job = Self {
+            id: 0,
+            attempt: 1,
+            tenant: TENANT.to_owned(),
+            payload: message.payload().to_vec(),
+        };
+        job.insert(conn).await
+    }
+}
+
 /// The plain queue read by a fetch of the service's own: the crate takes each id, the
 /// service's fetch reads its row.
 #[derive(Debug, Inbox, FromRow)]

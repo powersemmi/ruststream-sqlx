@@ -44,10 +44,12 @@ CREATE TABLE ledger (
     payload      BLOB NOT NULL
 );
 
--- One queue per table: no group, no time, rows deleted when finished.
+-- One queue per table: no group, no time, rows deleted when finished. A job may name its tenant,
+-- which an advisory lock key reads where the jobs of one tenant go one at a time.
 CREATE TABLE plain_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     attempt      INTEGER NOT NULL DEFAULT 1,
+    tenant       TEXT NOT NULL DEFAULT '',
     locked_until TEXT,
     payload      BLOB NOT NULL
 );
@@ -55,6 +57,7 @@ CREATE TABLE plain_jobs (
 CREATE TABLE plain_jobs_dead (
     id           INTEGER PRIMARY KEY,
     attempt      INTEGER NOT NULL DEFAULT 1,
+    tenant       TEXT NOT NULL DEFAULT '',
     locked_until TEXT,
     payload      BLOB NOT NULL
 );

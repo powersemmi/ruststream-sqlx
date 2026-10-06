@@ -18,6 +18,7 @@ use ruststream_sqlx_dialect::{
 use serde::Serialize;
 use sqlx::{Database, Pool};
 
+use super::advisory::LockBook;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
 use super::engine::{Events, IdAt, Prepared, Shape, Stmt, intern, intern_name};
@@ -754,6 +755,11 @@ where
             drop(shared.runtime.spawn(lease::keep(book, stop.clone())));
             (Holding::Leases(book), Some(stop.drop_guard()))
         }
+        // The connection keeps the book, so `shutdown` reaches the locks of its deliveries.
+        None if description.advisory() => (
+            Holding::Advisory(LockBook::leak::<Row>(shared, queue)),
+            None,
+        ),
         None => (Holding::Transaction, None),
     };
     Ok(InboxSubscriber::new(

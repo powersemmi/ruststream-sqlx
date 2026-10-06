@@ -661,6 +661,16 @@ pub(crate) fn events(
             > + ::core::marker::Send + '__a {
                 #take
             }
+
+            fn candidates<'__a>(
+                conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
+                cx: &'__a #p::Claiming,
+                out: &'__a mut #p::Candidates<<Self as #p::QueueRow>::Id>,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<(), #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
+                #p::candidates::<__DB, Self>(conn, cx, out)
+            }
         }
     }
 }

@@ -33,8 +33,8 @@ pub mod __private {
     pub use crate::inbox::AnyDialect;
     pub use crate::inbox::engine::{
         Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled,
-        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
-        dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, lock,
+        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, candidates, claim_ids,
+        claim_rows, dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, lock,
         match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry, retry_after,
         take, take_id, unlock,
     };

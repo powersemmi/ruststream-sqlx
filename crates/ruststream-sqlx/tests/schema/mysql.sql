@@ -38,10 +38,12 @@ CREATE TABLE ledger (
 -- claims of one group would wait on each other whether the group keeps its order or not.
 CREATE INDEX ledger_order ON ledger (account, priority, retry_after, id);
 
--- One queue per table: no group, no time, rows deleted when finished.
+-- One queue per table: no group, no time, rows deleted when finished. A job may name its tenant,
+-- which an advisory lock key reads where the jobs of one tenant go one at a time.
 CREATE TABLE plain_jobs (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,
     attempt      SMALLINT NOT NULL DEFAULT 1,
+    tenant       VARCHAR(64) NOT NULL DEFAULT '',
     locked_until DATETIME,
     payload      LONGBLOB NOT NULL
 );

@@ -62,6 +62,16 @@ impl<Id> Candidates<Id> {
         self.len == 0
     }
 
+    /// The candidate at `index` in claim order, its id with its lock key.
+    #[must_use]
+    pub fn get(&self, index: usize) -> Option<(&Id, &str)> {
+        if index >= self.len {
+            return None;
+        }
+        let (id, key) = self.entries.get(index)?;
+        Some((id.as_ref()?, key.as_str()))
+    }
+
     /// The candidates in claim order, each id with its lock key.
     pub fn iter(&self) -> impl Iterator<Item = (&Id, &str)> {
         self.entries[..self.len]
@@ -70,17 +80,13 @@ impl<Id> Candidates<Id> {
     }
 }
 
-/// The candidates of an advisory claim: up to `cx.limit` claimable rows in claim order, each id
-/// with its lock key, written over the last claim's.
+/// The default candidates of an advisory claim: up to `cx.limit` claimable rows in claim order,
+/// each id with its lock key, written over the last claim's.
 ///
 /// # Errors
 ///
 /// The database's error.
-#[expect(
-    dead_code,
-    reason = "the subscriber's claim in the advisory lock form runs it"
-)]
-pub(crate) async fn candidates<DB, Row>(
+pub async fn candidates<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     out: &mut Candidates<Row::Id>,
