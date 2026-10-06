@@ -1,42 +1,12 @@
-//! The row's contract with the broker beyond its description: `PayloadRow` and the hidden
-//! `Events<DB>`, one implementation for every database the field types allow.
+//! The row's contract with the broker beyond its description: the hidden `Events<DB>`, one
+//! implementation for every database the field types allow.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote, quote_spanned};
+use quote::{format_ident, quote};
 use ruststream_sqlx_dialect::Role;
-use syn::spanned::Spanned;
 use syn::{DeriveInput, Generics, Path, Type, WherePredicate, parse_quote};
 
-use crate::parse::{Field, Inbox};
-
-/// The field that plays `role`, if one does.
-fn playing<'i, 'a>(inbox: &'i Inbox<'a>, role: Role) -> Option<&'i Field<'a>> {
-    inbox
-        .columns()
-        .find(|(_, column)| column.role == Some(role))
-        .map(|(field, _)| field)
-}
-
-/// `PayloadRow`, for a struct with a payload field.
-pub(crate) fn payload_row(
-    input: &DeriveInput,
-    generics: &Generics,
-    inbox: &Inbox<'_>,
-) -> Option<TokenStream2> {
-    let field = playing(inbox, Role::Payload)?;
-    let ident = field.ident;
-    let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
-    let bytes =
-        quote_spanned!(field.ty.span()=> ::core::convert::AsRef::<[u8]>::as_ref(&self.#ident));
-    Some(quote! {
-        impl #impl_generics ::ruststream_sqlx::PayloadRow for #name #ty_generics #where_clause {
-            fn payload(&self) -> &[u8] {
-                #bytes
-            }
-        }
-    })
-}
+use crate::parse::{Field, Inbox, playing};
 
 /// The bounds and the binder arms one time role adds.
 struct TimeRole {

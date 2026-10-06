@@ -1,10 +1,13 @@
-//! The advisory lock key: literal text with fields named between braces, `"jobs-{job_id}"`.
+//! The advisory lock key: a template of literal text with fields named between braces,
+//! `"jobs-{job_id}"`, and the key it names, each field resolved to the column it reads.
 
 use syn::LitStr;
 
+use crate::parse::Inbox;
+
 /// One piece of a key template.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Piece {
+enum Piece {
     /// Text copied into the key.
     Literal(String),
     /// The value of the named field.
@@ -12,7 +15,7 @@ pub(crate) enum Piece {
 }
 
 /// Splits the template into literal text and field names.
-pub(crate) fn parse(template: &LitStr) -> syn::Result<Vec<Piece>> {
+fn parse(template: &LitStr) -> syn::Result<Vec<Piece>> {
     let text = template.value();
     let mut pieces = Vec::new();
     let mut rest = text.as_str();
@@ -47,6 +50,41 @@ pub(crate) fn parse(template: &LitStr) -> syn::Result<Vec<Piece>> {
         pieces.push(Piece::Literal(rest.to_owned()));
     }
     Ok(pieces)
+}
+
+/// One part of the advisory lock key, with every field already turned into its column.
+pub(crate) enum KeyItem {
+    Literal(String),
+    Column(String),
+}
+
+/// The lock key the template names, with each field resolved to the column it reads.
+pub(crate) fn advisory_key(inbox: &Inbox<'_>) -> syn::Result<Option<Vec<KeyItem>>> {
+    let Some(template) = &inbox.table.advisory_lock else {
+        return Ok(None);
+    };
+    let mut key = Vec::new();
+    for piece in parse(template)? {
+        match piece {
+            Piece::Literal(text) => key.push(KeyItem::Literal(text)),
+            Piece::Field(name) => {
+                let Some(field) = inbox.field_named(&name) else {
+                    return Err(syn::Error::new(
+                        template.span(),
+                        format!("the lock key names `{name}`, which is not a field of the struct"),
+                    ));
+                };
+                let Some(column) = field.column() else {
+                    return Err(syn::Error::new(
+                        template.span(),
+                        format!("the lock key names `{name}`, a field without a column"),
+                    ));
+                };
+                key.push(KeyItem::Column(column.name.clone()));
+            }
+        }
+    }
+    Ok(Some(key))
 }
 
 #[cfg(test)]
