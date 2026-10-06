@@ -139,7 +139,7 @@ fn values(event: Event, id: &i64) -> Values<'_, Postgres, SendEmail> {
         destination: "emails.dead",
         now: Now::default(),
         lease: None,
-        lease_now: None,
+        leasing: None,
         held: None,
     }
 }
@@ -254,7 +254,7 @@ static JOBS: LazyLock<Queue> = LazyLock::new(|| Queue {
 #[test]
 fn a_lease_ends_on_a_whole_second_a_lease_later() -> Result<(), sqlx::Error> {
     let before = Utc::now();
-    let lease = <Leased as Events<Postgres>>::lease(&JOBS, &mut Now::default())?;
+    let lease = <Leased as Events<Postgres>>::lease(&JOBS, Now::default())?;
     assert_eq!(
         lease.expiry.timestamp_subsec_nanos(),
         0,
@@ -262,26 +262,29 @@ fn a_lease_ends_on_a_whole_second_a_lease_later() -> Result<(), sqlx::Error> {
     );
     assert!(lease.expiry >= before + TimeDelta::seconds(30));
     assert!(lease.expiry <= Utc::now() + TimeDelta::seconds(31));
+    // The claim's every time starts from the instant it read.
+    assert_eq!(lease.now, DateTime::<Utc>::from(lease.at));
     assert_eq!(
         lease.expiry,
-        lease.now.after(Duration::from_secs(30)).rounded_up(),
-        "the expiry starts from the instant the claim finds leases ended by"
+        lease.now.after(Duration::from_secs(30)).rounded_up()
     );
-    // A table in another form takes no lease, and its token is nothing.
-    <SendEmail as Events<Postgres>>::lease(&EMAILS, &mut Now::default())?;
-    // A queue that holds no lease cannot tell a lease row's expiry.
-    let refused = <Leased as Events<Postgres>>::lease(&EMAILS, &mut Now::default());
-    assert!(
-        matches!(refused, Err(sqlx::Error::Configuration(_))),
-        "{refused:?}"
-    );
+    // A table in another form takes no lease, and neither does a queue that holds none.
+    for refused in [
+        <SendEmail as Events<Postgres>>::lease(&EMAILS, Now::default()).map(|_| ()),
+        <Leased as Events<Postgres>>::lease(&EMAILS, Now::default()).map(|_| ()),
+    ] {
+        assert!(
+            matches!(refused, Err(sqlx::Error::Configuration(_))),
+            "{refused:?}"
+        );
+    }
     Ok(())
 }
 
 #[test]
 fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sqlx::Error> {
     let id = 7;
-    let lease = <Leased as Events<Postgres>>::lease(&JOBS, &mut Now::default())?;
+    let lease = <Leased as Events<Postgres>>::lease(&JOBS, Now::default())?;
     let extension = Values {
         event: Event::Extend,
         queue: &JOBS,
@@ -292,7 +295,7 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
         destination: "",
         now: Now::default(),
         lease: Some(lease.expiry),
-        lease_now: Some(lease.now),
+        leasing: Some(&lease),
         held: Some(lease.expiry),
     };
     let mut extend = PgArguments::default();
@@ -317,7 +320,7 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
     )?);
     let settlement = Values {
         lease: None,
-        lease_now: None,
+        leasing: None,
         ..claim
     };
     for param in [Param::Lease, Param::LeaseNow] {

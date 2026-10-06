@@ -211,14 +211,11 @@ pub(crate) fn events(
         let time = &role.time;
         quote! {
             (#p::Param::Now, #p::Event::Claim) => {
-                #p::put::<__DB, _>(arguments, #p::now::<#clock, #time>(values.now, values.event)?)?;
+                #p::put::<__DB, _>(arguments, #p::now::<#clock, #time, __DB, Self>(values)?)?;
                 true
             }
             (#p::Param::RetryAfter, #p::Event::RetryAfter) => {
-                #p::put::<__DB, _>(
-                    arguments,
-                    #p::later::<#clock, #time>(values.now, values.delay, values.event)?,
-                )?;
+                #p::put::<__DB, _>(arguments, #p::later::<#clock, #time, __DB, Self>(values)?)?;
                 true
             }
         }
@@ -227,15 +224,15 @@ pub(crate) fn events(
         let time = &role.time;
         quote! {
             (#p::Param::Now, #p::Event::Ack | #p::Event::Discard) => {
-                #p::put::<__DB, _>(arguments, #p::now::<#clock, #time>(values.now, values.event)?)?;
+                #p::put::<__DB, _>(arguments, #p::now::<#clock, #time, __DB, Self>(values)?)?;
                 true
             }
         }
     });
 
     // The lease form: the expiry a claim writes and a settlement matches is the token, in the
-    // type the `locked_until` field holds. The claim reads "now" once, with the expiry, and binds
-    // that instant wherever its statements find a lease ended.
+    // type the `locked_until` field holds. A claim reads "now" once, takes its lease from that
+    // instant and binds it wherever its statements compare a time.
     let leased = playing(inbox, Role::LockedUntil).is_some();
     let lease = quote!(<Self as #r::LeaseRow>::Lease);
     let (token, leasing, lease_arms) = if leased {
@@ -246,9 +243,9 @@ pub(crate) fn events(
             lease.clone(),
             quote!(#p::lease::<#clock, #lease>(queue, now)),
             Some(quote! {
-                (#p::Param::LeaseNow, _) => match values.lease_now {
-                    ::core::option::Option::Some(now) => {
-                        #p::put::<__DB, _>(arguments, now)?;
+                (#p::Param::LeaseNow, _) => match values.leasing {
+                    ::core::option::Option::Some(leasing) => {
+                        #p::put::<__DB, _>(arguments, leasing.now)?;
                         true
                     }
                     ::core::option::Option::None => false,
@@ -274,10 +271,7 @@ pub(crate) fn events(
             quote!(()),
             quote!({
                 let _ = (queue, now);
-                ::core::result::Result::Ok(#p::Leasing {
-                    now: (),
-                    expiry: (),
-                })
+                #p::no_lease()
             }),
             None,
         )
@@ -526,7 +520,7 @@ pub(crate) fn events(
 
             fn lease(
                 queue: &'static #p::Queue,
-                now: &mut #p::Now,
+                now: #p::Now,
             ) -> ::core::result::Result<
                 #p::Leasing<<Self as #p::Events<__DB>>::Token>,
                 #p::sqlx::Error,

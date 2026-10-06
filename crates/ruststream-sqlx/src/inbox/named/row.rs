@@ -330,10 +330,8 @@ fn bind_at<DB: NamedDatabase, Time: QueueTime>(
     delay: Option<Duration>,
     named: fn(Time) -> NamedTime,
 ) -> Result<bool, Error> {
-    let at = match delay {
-        Some(delay) => engine::later::<SystemClock, Time>(values.now, delay, values.event)?,
-        None => engine::now::<SystemClock, Time>(values.now, values.event)?,
-    };
+    let now = engine::now::<SystemClock, Time, DB, NamedRow>(values)?;
+    let at = delay.map_or(now, |delay| now.after(delay));
     DB::bind_time(arguments, named(at))?;
     Ok(true)
 }
@@ -437,7 +435,9 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
                 Some(values.delay),
             )?,
             #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::LeaseNow, _) => bind_lease::<DB>(arguments, values.lease_now)?,
+            (Param::LeaseNow, _) => {
+                bind_lease::<DB>(arguments, values.leasing.map(|leasing| leasing.now))?
+            }
             #[cfg(any(feature = "chrono", feature = "time"))]
             (Param::Lease, _) => bind_lease::<DB>(arguments, values.lease)?,
             #[cfg(any(feature = "chrono", feature = "time"))]
@@ -446,7 +446,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         })
     }
 
-    fn lease(queue: &'static Queue, now: &mut Now) -> Result<Leasing<NamedTime>, Error> {
+    fn lease(queue: &'static Queue, now: Now) -> Result<Leasing<NamedTime>, Error> {
         #[cfg(any(feature = "chrono", feature = "time"))]
         if let Some(Kinds {
             locked_until: Some(kind),
@@ -727,7 +727,7 @@ mod tests {
     mod on_postgres {
         use std::time::Duration;
 
-        use chrono::{TimeDelta, Utc};
+        use chrono::{DateTime, TimeDelta, Utc};
         use ruststream::HeaderMap;
         use ruststream_sqlx_dialect::{Column, Form, Param, TableSpec};
         use sqlx::postgres::PgArguments;
@@ -790,15 +790,16 @@ mod tests {
             bind_leased(param, event, queue, id, None)
         }
 
-        /// Binds `param` for `event` where the statement writes and matches `lease`, and finds a
-        /// lease ended by it.
+        /// Binds `param` for `event` where the statement takes `leasing`, and writes and matches
+        /// its expiry.
         fn bind_leased(
             param: Param,
             event: Event,
             queue: &'static Queue,
             id: Option<&NamedId>,
-            lease: Option<NamedTime>,
+            leasing: Option<&Leasing<NamedTime>>,
         ) -> Result<(bool, usize), sqlx::Error> {
+            let lease = leasing.map(|leasing| leasing.expiry);
             let values = Values {
                 event,
                 queue,
@@ -809,7 +810,7 @@ mod tests {
                 destination: "emails.dead",
                 now: Now::default(),
                 lease,
-                lease_now: lease,
+                leasing,
                 held: lease,
             };
             let mut arguments = PgArguments::default();
@@ -824,20 +825,24 @@ mod tests {
                 ..KINDS
             }));
             let before = Utc::now();
-            let lease = <NamedRow as Events<Postgres>>::lease(queue, &mut Now::default())?;
+            let lease = <NamedRow as Events<Postgres>>::lease(queue, Now::default())?;
             assert!(
                 matches!(
                     lease,
-                    Leasing { now: NamedTime::Chrono(now), expiry: NamedTime::Chrono(at) }
-                        if at.timestamp_subsec_nanos() == 0
-                            && at >= before + TimeDelta::seconds(30)
-                            && at == now.after(Duration::from_secs(30)).rounded_up()
+                    Leasing {
+                        at,
+                        now: NamedTime::Chrono(now),
+                        expiry: NamedTime::Chrono(expiry),
+                    } if now == DateTime::<Utc>::from(at)
+                        && expiry.timestamp_subsec_nanos() == 0
+                        && expiry >= before + TimeDelta::seconds(30)
+                        && expiry == now.after(Duration::from_secs(30)).rounded_up()
                 ),
                 "a whole second, a lease from the claim's now: {lease:?}"
             );
             for param in [Param::Lease, Param::Held, Param::LeaseNow] {
                 assert_eq!(
-                    bind_leased(param, Event::Extend, queue, None, Some(lease.expiry))?,
+                    bind_leased(param, Event::Extend, queue, None, Some(&lease))?,
                     (true, 1),
                     "{param:?}"
                 );
@@ -849,7 +854,7 @@ mod tests {
             );
             // A queue whose kinds name no lease cannot tell one.
             let refused =
-                <NamedRow as Events<Postgres>>::lease(leased(Some(KINDS)), &mut Now::default());
+                <NamedRow as Events<Postgres>>::lease(leased(Some(KINDS)), Now::default());
             assert!(
                 matches!(refused, Err(sqlx::Error::Configuration(_))),
                 "{refused:?}"

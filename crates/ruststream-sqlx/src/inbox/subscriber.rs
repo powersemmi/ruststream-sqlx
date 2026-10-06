@@ -294,7 +294,7 @@ where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    let mut cx = Claiming {
+    let cx = Claiming {
         queue,
         limit: i64::try_from(limit).unwrap_or(i64::MAX),
         now,
@@ -327,7 +327,7 @@ where
         // rows hold their leases, not the transaction.
         let mut tx = begin(pool, queue).await?;
         let claimed = async {
-            let lease = Row::lease(queue, &mut cx.now).map_err(claim_failed)?;
+            let lease = Row::lease(queue, now).map_err(claim_failed)?;
             Row::claim(&mut tx, &cx, Some(&lease), rows)
                 .await
                 .map_err(claim_failed)?;
@@ -347,7 +347,7 @@ where
     }
     // The claim writes the lease itself, in one statement that commits on its own.
     let mut conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
-    let lease = Row::lease(queue, &mut cx.now).map_err(claim_failed)?;
+    let lease = Row::lease(queue, now).map_err(claim_failed)?;
     Row::claim(&mut conn, &cx, Some(&lease), rows)
         .await
         .map_err(claim_failed)?;
