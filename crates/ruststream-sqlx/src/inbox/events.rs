@@ -92,12 +92,14 @@ pub trait Claim<DB: Database>: InboxRow {
     ) -> impl Future<Output = Result<Vec<Self::Id>, Error>> + Send;
 }
 
-/// Reads the rows of claimed ids, inside the claim's transaction.
+/// Reads the rows of claimed ids, on the claim's connection.
 ///
 /// The derive builds it for a flat table; a service lists `fetch` in `custom(..)` to assemble
 /// messages itself, from other tables. Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row is delivered with no payload, which fails to decode, and the log names
-/// the id.
+/// the id. It runs inside the claim's transaction, or right after a lease claim that leased the
+/// rows and committed in one statement, as on Postgres and SQLite. Either way a delivery reports
+/// the attempt its row held before the claim.
 ///
 /// # Examples
 ///

@@ -461,7 +461,7 @@ pub struct Queue {
     /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
     /// names one.
     pub begin_claim: Option<&'static str>,
-    /// Whether the rows the claim returns carry the attempt it counted, so a delivery reports one
+    /// Whether the rows a claim hands out carry the attempt it counted, so a delivery reports one
     /// less.
     pub counted_attempt: bool,
     /// How long the claim loop waits after a claim that found the queue short.
@@ -637,7 +637,7 @@ where
         kinds: description.kinds,
         prepared,
         begin_claim: shared.dialect.get().begin_claim(),
-        counted_attempt: counted_attempt(shared.dialect.get(), description),
+        counted_attempt: counted_attempt(shared.dialect.get(), description, &prepared),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
             .leased()
@@ -668,13 +668,22 @@ where
     ))
 }
 
-/// Whether the rows the crate's lease claim of `description` returns carry the attempt the claim
-/// counted: whole rows, where the dialect says so. Ids and rows read by role carry none of it.
-fn counted_attempt(dialect: &dyn Dialect, description: &Description) -> bool {
-    description.leased()
-        && !description.shape.custom_claim
-        && description.claim == ClaimShape::Rows
-        && dialect.claim_counts_attempt(&description.spec)
+/// Whether the rows a lease subscription to `description` hands out carry the attempt its claim
+/// counted, so that a delivery reports one less.
+///
+/// A claim that stamps its rows reads them before the stamps count them. A claim that writes the
+/// lease itself counts and commits first: the service's own fetch after the crate's claim of ids
+/// then reads counted rows, and whole rows come back counted where the dialect says so. A claim by
+/// role reads the attempt as it was before the count.
+fn counted_attempt(dialect: &dyn Dialect, description: &Description, prepared: &Prepared) -> bool {
+    if !description.leased() || prepared.stamps {
+        return false;
+    }
+    match description.claim {
+        ClaimShape::Rows => dialect.claim_counts_attempt(&description.spec),
+        ClaimShape::Ids => true,
+        ClaimShape::Roles => false,
+    }
 }
 
 /// Why the startup check failed: no connection, a version the server did not report, a server

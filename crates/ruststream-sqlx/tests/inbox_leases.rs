@@ -1,6 +1,7 @@
 //! The lease form against the stands: a lease that runs out passes the row on, and its late holder
 //! cannot settle; a lease in work is extended while its handler runs, and a delivery dropped
-//! unsettled releases its row at once; the service's own events run only while the lease holds.
+//! unsettled releases its row at once; a delivery reads the attempt before its claim's count,
+//! whoever fetches the row; the service's own events run only while the lease holds.
 
 #![cfg(all(
     feature = "inbox",
@@ -14,14 +15,28 @@ mod live;
 use std::pin::pin;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use ruststream::prelude::*;
-use ruststream::testing::{InProcess, TestApp};
+use ruststream::testing::{InProcess, Outcome, TestApp};
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber,
+    SubscriptionSource,
 };
-use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
+use ruststream_sqlx::keys::Attempt;
+use ruststream_sqlx::{
+    Fetch, Inbox, InboxQueue, Insert, Publish, QueueDatabase, SqlxBroker, SqlxBrokerError,
+};
 use serde::{Deserialize, Serialize};
+#[cfg(any(feature = "mysql", feature = "sqlite"))]
+use sqlx::AssertSqlSafe;
+use sqlx::FromRow;
+#[cfg(feature = "mysql")]
+use sqlx::{MySql, MySqlConnection};
+#[cfg(feature = "postgres")]
+use sqlx::{PgConnection, Postgres};
+#[cfg(feature = "sqlite")]
+use sqlx::{Sqlite, SqliteConnection};
 
 const LEASE: Duration = Duration::from_secs(2);
 
@@ -38,6 +53,87 @@ fn lost(error: &AckError) -> bool {
         source.downcast_ref::<SqlxBrokerError>(),
         Some(SqlxBrokerError::LeaseLost { .. })
     )
+}
+
+/// A plain job whose service reads the rows itself: the crate claims and leases the ids, and the
+/// service's fetch, written per database, reads their rows.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "plain_jobs", custom(fetch))]
+struct FetchedPlain {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    attempt: i16,
+    #[field(locked_until)]
+    locked_until: Option<DateTime<Utc>>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+impl<DB> Publish<DB> for FetchedPlain
+where
+    DB: QueueDatabase,
+    Self: Insert<DB::Connection>,
+{
+    async fn publish(
+        conn: &mut DB::Connection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), sqlx::Error> {
+        let job = Self {
+            id: 0,
+            attempt: 1,
+            locked_until: None,
+            payload: message.payload().to_vec(),
+        };
+        job.insert(conn).await
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl Fetch<Postgres> for FetchedPlain {
+    async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT id, attempt, locked_until, payload FROM plain_jobs WHERE id = ANY($1)",
+        )
+        .bind(ids)
+        .fetch_all(conn)
+        .await
+    }
+}
+
+/// The select of MySQL and SQLite, which bind no list as one parameter: one placeholder per id.
+#[cfg(any(feature = "mysql", feature = "sqlite"))]
+fn listed(ids: &[i64]) -> AssertSqlSafe<String> {
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    AssertSqlSafe(format!(
+        "SELECT id, attempt, locked_until, payload FROM plain_jobs WHERE id IN ({placeholders})"
+    ))
+}
+
+#[cfg(feature = "mysql")]
+impl Fetch<MySql> for FetchedPlain {
+    async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
+        // MySQL refuses an empty `IN ()`, and an empty queue claims no ids.
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut select = sqlx::query_as(listed(ids));
+        for id in ids {
+            select = select.bind(id);
+        }
+        select.fetch_all(conn).await
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl Fetch<Sqlite> for FetchedPlain {
+    async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
+        let mut select = sqlx::query_as(listed(ids));
+        for id in ids {
+            select = select.bind(id);
+        }
+        select.fetch_all(conn).await
+    }
 }
 
 live::stands! {
@@ -251,6 +347,52 @@ live::stands! {
         tokio::time::resume();
         drop(subscriber);
         connected.shutdown().await.expect("stops");
+        db.finish().await;
+    }
+
+    #[subscriber(InboxQueue::<FetchedPlain>::new("plain"))]
+    async fn retried(_task: &Task, Ctx(attempt): Ctx<Attempt>) -> HandlerOutcome {
+        match attempt {
+            // The first delivery reads what the insert wrote, the second one more; any other
+            // reading acknowledges, which the outcomes would show.
+            Some(1 | 2) => HandlerOutcome::retry(),
+            _ => HandlerOutcome::ack(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_services_own_fetch_reads_the_attempt_before_the_claims_count() {
+        let Some(db) = database().await else { return };
+        let broker = SqlxBroker::new(db.pool.clone())
+            .poll_interval(Duration::from_millis(20))
+            .route::<FetchedPlain>("plain");
+        let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
+            b.include(retried).max_attempts(nonzero!(2u32));
+        });
+        let tb = TestApp::start_live(app).await.expect("the app starts");
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&Task { n: 1 })
+            .to("plain")
+            .publish()
+            .await
+            .expect("the publish settles");
+        tb.advance(Duration::from_millis(500))
+            .await
+            .expect("the retries settle");
+        // Two deliveries, read as attempts 1 and 2: the second retry spent the row's attempts.
+        let outcomes = tb
+            .broker::<SqlxBroker<Db>>()
+            .subscriber("plain")
+            .assert_called(2)
+            .outcomes();
+        assert_eq!(outcomes, [Outcome::Nack, Outcome::Nack]);
+        assert_eq!(
+            db.count("plain_jobs").await,
+            0,
+            "the cap finished the row after its second delivery"
+        );
+        tb.shutdown().await.expect("the app stops");
+        let _ = |row: FetchedPlain| (row.id, row.attempt, row.locked_until, row.payload);
         db.finish().await;
     }
 }

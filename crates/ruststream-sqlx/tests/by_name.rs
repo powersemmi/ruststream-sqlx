@@ -13,8 +13,9 @@ mod live;
 use std::time::Duration;
 
 use ruststream::prelude::*;
-use ruststream::testing::TestApp;
+use ruststream::testing::{Outcome, TestApp};
 use ruststream_sqlx::SqlxBroker;
+use ruststream_sqlx::keys::Attempt;
 use serde::{Deserialize, Serialize};
 use sqlx::Pool;
 
@@ -68,6 +69,43 @@ live::matrix! {
         db.finish().await;
     }
 
+    #[subscriber("emails")]
+    async fn retry_once(_email: &Email, Ctx(attempt): Ctx<Attempt>) -> HandlerOutcome {
+        if attempt < Some(2) {
+            HandlerOutcome::retry()
+        } else {
+            HandlerOutcome::ack()
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_by_name_delivery_reads_the_attempt_its_row_held_before_the_claim() {
+        let Some(db) = database().await else { return };
+        let app =
+            RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
+                b.include(retry_once);
+            });
+        let tb = TestApp::start_live(app).await.expect("the app starts");
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&email())
+            .to("emails")
+            .publish()
+            .await
+            .expect("the publish settles");
+        tb.advance(Duration::from_millis(500))
+            .await
+            .expect("the retry settles");
+        // The first delivery read 1, so it retried; the second read 2 and acknowledged.
+        let outcomes = tb
+            .broker::<SqlxBroker<Db>>()
+            .subscriber("emails")
+            .assert_called(2)
+            .outcomes();
+        assert_eq!(outcomes, [Outcome::Nack, Outcome::Ack]);
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
     #[subscriber("orders")]
     async fn bill(_email: &Email) -> HandlerOutcome {
         HandlerOutcome::ack()
@@ -112,8 +150,6 @@ live::matrix! {
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 mod other_column_types {
     use ruststream::OutgoingMessage;
-    use ruststream::testing::Outcome;
-    use ruststream_sqlx::keys::Attempt;
     use ruststream_sqlx::{Inbox, Insert, Publish, QueueDatabase};
     use sqlx::{Error, FromRow};
 
