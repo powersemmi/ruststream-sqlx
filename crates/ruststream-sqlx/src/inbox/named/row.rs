@@ -27,7 +27,7 @@ use crate::inbox::form::advisory::events::{self as advisory, Candidates};
 use crate::inbox::queue::Queue;
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::time::{QueueTime, SystemClock};
-use crate::inbox::{PayloadRow, QueueRow};
+use crate::inbox::{PayloadLane, PayloadRow, QueueRow};
 
 /// A claimed row of a by-name subscription, read by the role aliases of `ClaimShape::Roles`, its
 /// headers and times read and bound by the dialect `D`. Machinery: a by-name subscription
@@ -325,6 +325,7 @@ where
 
 impl<D: 'static> QueueRow for NamedRow<D> {
     type Id = NamedId;
+    type Lane = PayloadLane;
 }
 
 impl<D: 'static> PayloadRow for NamedRow<D> {

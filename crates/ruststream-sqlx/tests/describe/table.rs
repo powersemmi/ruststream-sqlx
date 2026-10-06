@@ -2,10 +2,13 @@
 
 #![cfg(feature = "inbox")]
 
+use std::any::TypeId;
 use std::time::SystemTime;
 
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
+use ruststream::runtime::{Input, SoloCarried};
+use ruststream_sqlx::__private::{PayloadLane, QueueRow, RowLane};
 use ruststream_sqlx::dialect::{Column, Form, KeyPart, Role, TableSpec};
 use ruststream_sqlx::{Inbox, InboxRow};
 
@@ -56,6 +59,96 @@ fn a_flat_struct_describes_its_table() {
 }
 
 #[test]
+fn a_struct_with_a_payload_field_hands_its_handler_the_payload() {
+    assert_eq!(
+        TypeId::of::<<SendEmail as QueueRow>::Lane>(),
+        TypeId::of::<PayloadLane>()
+    );
+}
+
+/// Row mode: a struct without a payload field, whose handler takes the row itself.
+#[derive(Inbox, Clone)]
+#[inbox(table = "mail_jobs")]
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
+)]
+struct Mail {
+    #[field(id, generated)]
+    job_id: i64,
+    #[field(group)]
+    name: String,
+    #[field(attempt, generated)]
+    attempt: i16,
+    recipient: String,
+    subject: Option<String>,
+}
+
+/// Compiles where `Row` rides the core's carried lane: a handler of `&Row` reads the row its
+/// delivery lends, with no codec in between.
+const fn carried<Row: Input<Axis = SoloCarried<Row>>>() {}
+
+#[test]
+fn a_struct_without_a_payload_field_hands_its_handler_the_row() {
+    assert_eq!(
+        Mail::SPEC,
+        TableSpec::new(
+            "mail_jobs",
+            Column::new("job_id").generated(),
+            Form::RowLock
+        )
+        .group(Column::new("name"))
+        .attempt(Column::new("attempt").generated())
+        .data(&[Column::new("recipient"), Column::new("subject")])
+    );
+    assert_eq!(
+        TypeId::of::<<Mail as QueueRow>::Lane>(),
+        TypeId::of::<RowLane>()
+    );
+    carried::<Mail>();
+}
+
+/// Row mode over a generic struct: the carried lane's impl keeps the struct's parameters and
+/// their bounds.
+#[derive(Inbox, Clone)]
+#[inbox(table = "jobs")]
+#[cfg_attr(
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
+    expect(
+        dead_code,
+        reason = "a queue row is read by the broker, never by this test"
+    )
+)]
+struct Job<Body: Clone + Send + Sync + 'static> {
+    #[field(id)]
+    id: i64,
+    #[sqlx(json)]
+    attachments: Vec<Body>,
+}
+
+/// A body that is `Clone` and nothing more: a row of it rides the carried lane only if the derive
+/// asks nothing else of the struct.
+#[derive(Clone)]
+struct Attachment;
+
+#[test]
+fn a_generic_struct_without_a_payload_field_hands_its_handler_the_row() {
+    assert_eq!(
+        Job::<Attachment>::SPEC,
+        TableSpec::new("jobs", Column::new("id"), Form::RowLock)
+            .data(&[Column::new("attachments")])
+    );
+    assert_eq!(
+        TypeId::of::<<Job<Attachment> as QueueRow>::Lane>(),
+        TypeId::of::<RowLane>()
+    );
+    carried::<Job<Attachment>>();
+}
+
+#[test]
 fn the_id_type_is_the_id_fields_type() {
     fn id_of<Row: InboxRow<Id = i64>>() -> &'static str {
         Row::SPEC.table()
@@ -66,7 +159,7 @@ fn the_id_type_is_the_id_fields_type() {
 /// sqlx's naming rules: `rename` is taken as written, `rename_all` recases the rest, a raw
 /// identifier loses its `r#`, and skipped fields read no column. A column of the data may be
 /// filled in by the database.
-#[derive(Inbox)]
+#[derive(Inbox, Clone)]
 #[inbox(table = "Email Jobs")]
 #[sqlx(rename_all = "camelCase")]
 #[expect(
@@ -103,7 +196,7 @@ fn column_names_follow_sqlx() {
 }
 
 /// The roles the other structs leave out: the partition key and the headers.
-#[derive(Inbox)]
+#[derive(Inbox, Clone)]
 #[inbox(table = "orders")]
 struct Keyed {
     #[field(id)]
@@ -126,7 +219,7 @@ fn the_partition_key_and_the_headers_reach_their_slots() {
 
 // A lease is written in a time type the crate computes in, which a time feature brings.
 #[cfg(feature = "chrono")]
-#[derive(Inbox)]
+#[derive(Inbox, Clone)]
 #[inbox(table = "jobs")]
 #[cfg_attr(
     not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
@@ -151,7 +244,7 @@ fn a_locked_until_field_selects_the_lease_form() {
     );
 }
 
-#[derive(Inbox)]
+#[derive(Inbox, Clone)]
 #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}-{type}")]
 #[cfg_attr(
     not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
@@ -179,7 +272,7 @@ fn an_advisory_key_reads_the_columns_of_the_named_fields() {
     assert_eq!(Advisory::SPEC.form(), Form::Advisory(KEY));
 }
 
-#[derive(Inbox)]
+#[derive(Inbox, Clone)]
 #[inbox(table = "ledger")]
 #[cfg_attr(
     not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
@@ -210,7 +303,7 @@ fn a_fifo_group_marks_the_table() {
 }
 
 /// The columns a flattened struct reads stay with that struct.
-#[derive(Inbox)]
+#[derive(Inbox, Clone)]
 #[inbox(table = "jobs")]
 #[expect(
     dead_code,
@@ -223,6 +316,7 @@ struct Flattening {
     envelope: Envelope,
 }
 
+#[derive(Clone)]
 #[expect(
     dead_code,
     reason = "a queue row is read by the broker, never by this test"

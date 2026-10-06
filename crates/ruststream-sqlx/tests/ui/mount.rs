@@ -8,7 +8,7 @@ fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Postgres>>>>(sourc
 }
 
 /// No payload field: payload mode has no message to hand a handler.
-#[derive(Inbox, sqlx::FromRow)]
+#[derive(Inbox, sqlx::FromRow, Clone)]
 #[inbox(table = "jobs")]
 struct NoPayload {
     #[field(id)]

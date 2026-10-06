@@ -7,9 +7,10 @@ use quote::{format_ident, quote};
 use ruststream_sqlx_dialect::{Opening, Role};
 use syn::{DeriveInput, Generics, parse_quote};
 
+use crate::mode::Mode;
 use crate::parse::{self, ColumnField, Field, Inbox};
 use crate::template::{self, KeyItem};
-use crate::{check, events, insert, mode};
+use crate::{check, events, insert};
 
 mod lease;
 
@@ -20,11 +21,12 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let id = check::check(input, &inbox)?;
     let key = template::advisory_key(&inbox)?;
     let generics = bounded_generics(input, id.0.ty);
-    let row = generate(input, &generics, &inbox, id, key.as_deref());
-    let payload = mode::payload_row(input, &generics, &inbox);
+    let mode = Mode::of(&inbox);
+    let row = generate(input, &generics, &inbox, id, key.as_deref(), &mode);
+    let lane = mode.impls(input, &generics);
     let contract = events::events(input, &generics, &inbox, id.0);
     let insert = insert::insert(input, &generics, &inbox)?;
-    Ok(quote!(#row #payload #contract #insert))
+    Ok(quote!(#row #lane #contract #insert))
 }
 
 fn generate(
@@ -33,6 +35,7 @@ fn generate(
     inbox: &Inbox<'_>,
     (id_field, id_column): (&Field<'_>, &ColumnField),
     key: Option<&[KeyItem]>,
+    mode: &Mode<'_, '_>,
 ) -> TokenStream2 {
     let dialect = quote!(::ruststream_sqlx::dialect);
     let column = |column: &ColumnField| {
@@ -119,11 +122,13 @@ fn generate(
         }),
         None => spec,
     };
+    let lane = mode.lane();
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     quote! {
         #[automatically_derived]
         impl #impl_generics ::ruststream_sqlx::__private::QueueRow for #name #ty_generics #where_clause {
             type Id = #id_type;
+            type Lane = #lane;
         }
 
         #[automatically_derived]

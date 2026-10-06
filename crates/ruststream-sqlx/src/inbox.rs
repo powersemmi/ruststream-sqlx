@@ -93,14 +93,58 @@ pub trait InboxRow: QueueRow {
     type Opening;
 }
 
-/// A row a subscription delivers, and the type of its id. Machinery: `#[derive(Inbox)]`
-/// implements it beside [`InboxRow`], and the row of a by-name subscription implements it without
-/// a table description of its own.
+/// A row a subscription delivers, the type of its id, and how its message reaches a handler.
+/// Machinery: `#[derive(Inbox)]` implements it beside [`InboxRow`], and the row of a by-name
+/// subscription implements it without a table description of its own.
 #[doc(hidden)]
 pub trait QueueRow: Sized + Send + Sync + 'static {
     /// The type of the field that plays `id`; logs name a row by it, and a lease subscription
     /// keeps a copy of each id in work to extend its lease.
     type Id: Clone + Debug + Send + Sync + 'static;
+
+    /// How a delivery hands the row's message to its handler: [`PayloadLane`] for a struct with a
+    /// `#[field(payload)]` field, [`RowLane`] for one without.
+    type Lane: Lane<Self>;
+}
+
+/// How a delivery hands a row's message to its handler. Machinery; the crate's two lanes are the
+/// only ones.
+#[doc(hidden)]
+pub trait Lane<Row>: Send + Sync + 'static {
+    /// Whether the handler takes the row itself.
+    const ROWS: bool;
+
+    /// The bytes a delivery lends as its payload: the payload column in payload mode, none in row
+    /// mode.
+    fn payload(row: &Row) -> &[u8];
+}
+
+/// Payload mode: the handler takes the payload decoded by a codec.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum PayloadLane {}
+
+/// Row mode: the handler takes the row itself, `&Row`, or a batch of them, `&[Row]`.
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum RowLane {}
+
+impl<Row: PayloadRow> Lane<Row> for PayloadLane {
+    const ROWS: bool = false;
+
+    fn payload(row: &Row) -> &[u8] {
+        row.payload()
+    }
+}
+
+// No `Clone` here: the carried lane asks it of the row where the derive writes `Input`, and one
+// check gives one error.
+impl<Row: QueueRow> Lane<Row> for RowLane {
+    const ROWS: bool = true;
+
+    fn payload(_row: &Row) -> &[u8] {
+        &[]
+    }
 }
 
 /// A queue row that carries its message as bytes: payload mode.

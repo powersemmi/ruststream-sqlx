@@ -41,6 +41,7 @@ pub use inbox::keys;
 #[doc(hidden)]
 pub mod __private {
     pub use ruststream::HeaderMap;
+    pub use ruststream::runtime::{Input, SoloCarried};
     pub use ruststream_sqlx_dialect::Param;
     pub use sqlx;
 
@@ -59,8 +60,8 @@ pub mod __private {
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{
-        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, LeaseForm, OnConnection,
-        QueueDatabase, QueueRow, RowLockForm, no_insert,
+        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, Lane, LeaseForm, OnConnection,
+        PayloadLane, QueueDatabase, QueueRow, RowLane, RowLockForm, no_insert,
     };
 }
 
@@ -170,8 +171,14 @@ pub mod __private {
 ///
 /// `generated`, alone or beside a role, marks a column the database fills in.
 ///
+/// A struct with a `payload` field is in payload mode: its handler takes the payload, decoded by a
+/// codec. A struct without one is in row mode: its handler takes the struct itself, as the driver
+/// read it. A struct in row mode derives `Clone`, because the test harness keeps a copy of each
+/// value. It does not derive `Deserialize`: a type that deserializes rides the codec.
+///
 /// A generic struct keeps its parameters: the impl requires `Send + Sync + 'static` of the struct
-/// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type.
+/// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type. In row mode a handler
+/// takes it where its parameters make it `Clone`.
 ///
 /// # Column names
 ///
@@ -193,5 +200,37 @@ pub mod __private {
 /// without `locked_until`, `lock` or `unlock` in `custom(..)` without `advisory_lock` or without
 /// each other, `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in
 /// `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
+///
+/// A struct in row mode without `Clone` does not compile. The error points at its name and
+/// suggests the derive:
+///
+/// ```compile_fail,E0277
+/// use ruststream_sqlx::Inbox;
+///
+/// #[derive(Inbox)]
+/// #[inbox(table = "email_jobs")]
+/// struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     to: String,
+/// }
+/// ```
+///
+/// A struct in row mode that derives `Deserialize` does not compile either. Such a type rides the
+/// codec, and rustc reports conflicting implementations of
+/// [`Input`](ruststream::runtime::Input):
+///
+/// ```compile_fail,E0119
+/// use ruststream_sqlx::Inbox;
+/// use serde::Deserialize;
+///
+/// #[derive(Inbox, Clone, Deserialize)]
+/// #[inbox(table = "email_jobs")]
+/// struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     to: String,
+/// }
+/// ```
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;
