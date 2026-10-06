@@ -151,3 +151,9 @@ CREATE TABLE unreadable_jobs (
 
 -- Where spent jobs of `unreadable_jobs` go.
 CREATE TABLE unreadable_jobs_dead (LIKE unreadable_jobs INCLUDING DEFAULTS);
+
+-- The isolation level each claim of a test's subscription ran at, written from inside the claim's
+-- transaction.
+CREATE TABLE seen_isolation (
+    level TEXT NOT NULL
+);

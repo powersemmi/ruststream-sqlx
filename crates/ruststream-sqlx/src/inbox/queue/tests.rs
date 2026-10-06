@@ -303,15 +303,21 @@ mod built {
     }
 
     #[test]
-    fn a_row_lock_claim_at_an_opening_its_dialect_lacks_is_refused() {
-        let uncommitted = super::JOBS.isolation(Isolation::ReadUncommitted);
-        assert_eq!(
-            form_of(RESHAPED, &uncommitted).begin_claim(&uncommitted),
-            Err(StatementError::UnsupportedOpening {
-                dialect: "reshaped",
-                opening: "isolation `read_uncommitted`",
-            })
-        );
+    fn a_table_at_an_opening_its_dialect_lacks_is_refused_whatever_its_form() {
+        // The lease claim does not open at the table's opening, and still the subscription stops
+        // when it starts: a level the dialect lacks is no level its transactions run at.
+        for spec in [super::JOBS, LEASED] {
+            let uncommitted = spec.isolation(Isolation::ReadUncommitted);
+            assert_eq!(
+                form_of(RESHAPED, &uncommitted).begin_claim(&uncommitted),
+                Err(StatementError::UnsupportedOpening {
+                    dialect: "reshaped",
+                    opening: "isolation `read_uncommitted`",
+                }),
+                "{}",
+                spec.form().name()
+            );
+        }
     }
 
     #[test]
@@ -441,6 +447,121 @@ mod built {
         };
         let locked = prepared(selecting, &super::JOBS, Shape::default(), &none)?;
         assert!(locked.extend.is_none() && !locked.stamps && locked.stamp.is_none());
+        Ok(())
+    }
+}
+
+/// What a subscription to a table opens its claims with on MySQL and MariaDB, through the built-in
+/// dialect the broker builds its statements with. The servers do not tell a transaction its own
+/// level reliably, so the begin statement is what pins it.
+#[cfg(feature = "mysql")]
+mod on_mysql {
+    use std::sync::Arc;
+
+    use ruststream_sqlx_dialect::{
+        Column, Form, Isolation, Mode, MySql, StatementError, TableSpec,
+    };
+
+    use crate::inbox::BuiltIn;
+    use crate::inbox::form::{FormOn, LeaseForm, RowLockForm};
+
+    const LEASED: TableSpec<'static> = TableSpec::new(
+        "jobs",
+        Column::new("job_id"),
+        Form::Lease(Column::new("locked_until")),
+    )
+    .payload(Column::new("body"));
+
+    fn built_in() -> Arc<BuiltIn<sqlx::MySql>> {
+        Arc::new(BuiltIn::new(MySql))
+    }
+
+    #[test]
+    fn a_row_lock_claim_opens_at_the_tables_isolation() -> Result<(), StatementError> {
+        let form = <RowLockForm as FormOn<BuiltIn<sqlx::MySql>>>::erase(&built_in());
+        let cases = [
+            (
+                super::JOBS,
+                "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION",
+            ),
+            (
+                super::JOBS.isolation(Isolation::RepeatableRead),
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION",
+            ),
+            (
+                super::JOBS.isolation(Isolation::Serializable),
+                "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; START TRANSACTION",
+            ),
+        ];
+        for (spec, begin) in cases {
+            assert_eq!(
+                form.begin_claim(&spec)?,
+                Some(begin),
+                "{:?}",
+                spec.opening()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_lease_claim_keeps_read_committed_and_still_refuses_a_mode() -> Result<(), StatementError> {
+        let form = <LeaseForm as FormOn<BuiltIn<sqlx::MySql>>>::erase(&built_in());
+        let serializable = LEASED.isolation(Isolation::Serializable);
+        assert_eq!(
+            form.begin_claim(&serializable)?,
+            Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION")
+        );
+        let immediate = LEASED.mode(Mode::Immediate);
+        assert_eq!(
+            form.begin_claim(&immediate),
+            Err(StatementError::UnsupportedOpening {
+                dialect: "mysql",
+                opening: "mode `immediate`",
+            })
+        );
+        Ok(())
+    }
+}
+
+/// What an `AnyPool` refuses when a subscription starts: its database is known only then, so a
+/// table may name a level the picked backend lacks.
+#[cfg(all(feature = "any", feature = "sqlite"))]
+mod on_any {
+    use std::sync::Arc;
+
+    use ruststream_sqlx_dialect::{Column, Form, Isolation, Mode, StatementError, TableSpec};
+    use sqlx::Any;
+
+    use crate::inbox::database::SQLITE_BACKEND;
+    use crate::inbox::form::{FormOn, LeaseForm};
+    use crate::inbox::{AnyDialect, BuiltIn};
+
+    const LEASED: TableSpec<'static> = TableSpec::new(
+        "jobs",
+        Column::new("job_id"),
+        Form::Lease(Column::new("locked_until")),
+    )
+    .payload(Column::new("body"));
+
+    #[test]
+    fn a_sqlite_backend_refuses_an_isolation_level_whatever_the_form() -> Result<(), StatementError>
+    {
+        let picked = AnyDialect::of(SQLITE_BACKEND).expect("the sqlite feature is on");
+        let form = <LeaseForm as FormOn<BuiltIn<Any>>>::erase(&Arc::new(BuiltIn::new(picked)));
+        let serializable = LEASED.isolation(Isolation::Serializable);
+        assert_eq!(
+            form.begin_claim(&serializable),
+            Err(StatementError::UnsupportedOpening {
+                dialect: "sqlite",
+                opening: "isolation `serializable`",
+            })
+        );
+        // A mode it opens passes, and the lease claim opens as the lease form opens it.
+        assert_eq!(
+            form.begin_claim(&LEASED.mode(Mode::Exclusive))?,
+            Some("BEGIN IMMEDIATE")
+        );
         Ok(())
     }
 }

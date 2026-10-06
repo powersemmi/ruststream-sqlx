@@ -14,12 +14,21 @@ use ruststream_sqlx_dialect::RowLock;
 use ruststream_sqlx_dialect::{
     ClaimShape, Dialect, Lease, Opening, Statement, StatementError, TableName, TableSpec,
 };
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlite",
+    feature = "any"
+))]
+use ruststream_sqlx_dialect::{Opens, level};
 #[cfg(feature = "any")]
 use sqlx::Any;
 #[cfg(feature = "mysql")]
 use sqlx::MySql;
 #[cfg(feature = "postgres")]
 use sqlx::Postgres;
+#[cfg(feature = "sqlite")]
+use sqlx::Sqlite;
 
 use super::database::BuiltInDialect;
 #[cfg(all(feature = "any", feature = "mysql"))]
@@ -44,6 +53,13 @@ use super::database::SQLITE_BACKEND;
 /// `AnyPool` names its database only when the broker connects, so on a SQLite backend the
 /// subscription to a row lock table stops when it starts, with
 /// [`StatementError::UnsupportedForm`].
+///
+/// It opens transactions at the isolation levels and SQLite modes its database keeps, one
+/// [`Opens`](crate::dialect::Opens) per level: `BuiltIn<Postgres>` READ COMMITTED, REPEATABLE
+/// READ and SERIALIZABLE, `BuiltIn<MySql>` those and READ UNCOMMITTED, `BuiltIn<Sqlite>` the three
+/// modes. A table that names another does not compile. `BuiltIn<Any>` takes all seven, and the
+/// picked backend's dialect refuses the ones its database lacks when the subscription starts,
+/// with [`StatementError::UnsupportedOpening`].
 ///
 /// [`SqlxBroker::new`]: crate::SqlxBroker::new
 ///
@@ -224,6 +240,60 @@ impl RowLock for BuiltIn<Any> {
         self.0.lock_claim(spec, shape)
     }
 }
+
+#[cfg(feature = "postgres")]
+impl Opens<level::ReadCommitted> for BuiltIn<Postgres> {}
+
+#[cfg(feature = "postgres")]
+impl Opens<level::RepeatableRead> for BuiltIn<Postgres> {}
+
+#[cfg(feature = "postgres")]
+impl Opens<level::Serializable> for BuiltIn<Postgres> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::ReadUncommitted> for BuiltIn<MySql> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::ReadCommitted> for BuiltIn<MySql> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::RepeatableRead> for BuiltIn<MySql> {}
+
+#[cfg(feature = "mysql")]
+impl Opens<level::Serializable> for BuiltIn<MySql> {}
+
+#[cfg(feature = "sqlite")]
+impl Opens<level::Deferred> for BuiltIn<Sqlite> {}
+
+#[cfg(feature = "sqlite")]
+impl Opens<level::Immediate> for BuiltIn<Sqlite> {}
+
+#[cfg(feature = "sqlite")]
+impl Opens<level::Exclusive> for BuiltIn<Sqlite> {}
+
+// Why every level and mode compiles on `Any`: an `AnyPool` names its database only when the
+// broker connects, so the type cannot say which of them the database opens. The picked backend's
+// dialect refuses the ones it lacks when the subscription to such a table starts.
+#[cfg(feature = "any")]
+impl Opens<level::ReadUncommitted> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::ReadCommitted> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::RepeatableRead> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Serializable> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Deferred> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Immediate> for BuiltIn<Any> {}
+
+#[cfg(feature = "any")]
+impl Opens<level::Exclusive> for BuiltIn<Any> {}
 
 /// The built-in dialect an `AnyPool`'s backend takes, picked when the broker connects.
 /// Machinery: `BuiltIn<Any>` builds its statements with it.

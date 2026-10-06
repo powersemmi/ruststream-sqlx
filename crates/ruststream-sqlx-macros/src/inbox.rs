@@ -1,8 +1,9 @@
 //! The `QueueRow` and `InboxRow` impls `#[derive(Inbox)]` generates.
 
+use heck::ToUpperCamelCase;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, quote_spanned};
-use ruststream_sqlx_dialect::Role;
+use ruststream_sqlx_dialect::{Opening, Role};
 use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::{DeriveInput, Generics, parse_quote};
@@ -230,10 +231,11 @@ fn generate(
         .as_ref()
         .map(|schema| quote!(.within(#schema)));
     let selecting_all = inbox.flattens().then(|| quote!(.selecting_all()));
+    let (opening, opening_type) = opening(inbox.table.opening);
 
     let name = &input.ident;
     let id_type = id_field.ty;
-    let spec = quote!(#dialect::TableSpec::new(#table, #id, #form) #within #(#slots)* #data #selecting_all);
+    let spec = quote!(#dialect::TableSpec::new(#table, #id, #form) #within #(#slots)* #data #selecting_all #opening);
     let LeaseParts {
         row: lease_row,
         item_check,
@@ -262,11 +264,39 @@ fn generate(
         impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
             const SPEC: #dialect::TableSpec<'static> = #spec;
             type Form = #form_type;
+            type Opening = #opening_type;
         }
 
         #lease_row
 
         #item_check
+    }
+}
+
+/// What the table's transactions open at, twice: as the description's builder step, and as the
+/// type a subscription requires its dialect to open (`Opens`). A table that names neither a level
+/// nor a mode opens at its database's default, which every dialect opens, as `()`.
+fn opening(opening: Opening) -> (Option<TokenStream2>, TokenStream2) {
+    let dialect = quote!(::ruststream_sqlx::dialect);
+    // A variant of `Isolation` or `Mode` and its type in `level` share one name: the word the
+    // attribute takes, in upper camel case.
+    let named = |word: &str| format_ident!("{}", word.to_upper_camel_case());
+    match opening {
+        Opening::Isolation(level) => {
+            let name = named(level.attribute());
+            (
+                Some(quote!(.isolation(#dialect::Isolation::#name))),
+                quote!(#dialect::level::#name),
+            )
+        }
+        Opening::Mode(mode) => {
+            let name = named(mode.attribute());
+            (
+                Some(quote!(.mode(#dialect::Mode::#name))),
+                quote!(#dialect::level::#name),
+            )
+        }
+        _ => (None, quote!(())),
     }
 }
 
@@ -356,6 +386,7 @@ fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Generics {
 
 #[cfg(test)]
 mod tests {
+    use quote::format_ident;
     use syn::{DeriveInput, parse_quote};
 
     use super::expand;
@@ -365,6 +396,61 @@ mod tests {
             |error| error.into_iter().map(|error| error.to_string()).collect(),
             |_| Vec::new(),
         )
+    }
+
+    #[test]
+    fn a_declared_opening_reaches_the_description_and_the_type() -> syn::Result<()> {
+        let cases = [
+            (
+                "isolation",
+                "read_uncommitted",
+                "Isolation",
+                "ReadUncommitted",
+            ),
+            ("isolation", "read_committed", "Isolation", "ReadCommitted"),
+            (
+                "isolation",
+                "repeatable_read",
+                "Isolation",
+                "RepeatableRead",
+            ),
+            ("isolation", "serializable", "Isolation", "Serializable"),
+            ("mode", "deferred", "Mode", "Deferred"),
+            ("mode", "immediate", "Mode", "Immediate"),
+            ("mode", "exclusive", "Mode", "Exclusive"),
+        ];
+        for (key, word, kind, name) in cases {
+            let (key, word) = (format_ident!("{key}"), format_ident!("{word}"));
+            let input: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", #key = #word)]
+                struct Job { #[field(id)] id: i64 }
+            };
+            let impls = expand(&input)?.to_string();
+            assert!(
+                impls.contains(&format!(
+                    ". {key} (:: ruststream_sqlx :: dialect :: {kind} :: {name})"
+                )),
+                "{key} = {word}: {impls}"
+            );
+            assert!(
+                impls.contains(&format!(
+                    "type Opening = :: ruststream_sqlx :: dialect :: level :: {name} ;"
+                )),
+                "{key} = {word}: {impls}"
+            );
+        }
+        // A table that names neither opens at its database's default, which every dialect opens.
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let impls = expand(&input)?.to_string();
+        assert!(impls.contains("type Opening = () ;"), "{impls}");
+        assert!(
+            !impls.contains(". isolation (") && !impls.contains(". mode ("),
+            "{impls}"
+        );
+        Ok(())
     }
 
     #[test]

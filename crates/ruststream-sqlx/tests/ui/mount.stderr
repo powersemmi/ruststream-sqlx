@@ -45,7 +45,7 @@ help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionall
    | / impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
    | | where
    | |     DB: QueueDatabase,
-   | |     D: Dialect + 'static,
+   | |     D: Dialect + Opens<Row::Opening> + 'static,
    | |     Row: InboxRow + Events<DB> + PayloadRow,
    | |                     ---------- unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
    | |     Row::Form: FormOn<D>,

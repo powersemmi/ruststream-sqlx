@@ -11,7 +11,9 @@ use std::time::Duration;
 #[cfg(feature = "asyncapi")]
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
-use ruststream_sqlx_dialect::{ClaimShape, Dialect, Role, StatementError, TableName, TableSpec};
+use ruststream_sqlx_dialect::{
+    ClaimShape, Dialect, Opens, Role, StatementError, TableName, TableSpec,
+};
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
 use sqlx::{Database, Pool};
@@ -35,7 +37,9 @@ use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 /// the name is its address. By default rows are claimed with `FOR UPDATE SKIP LOCKED` in a
 /// transaction held for the whole handler: acknowledgement is the delete (or the `processed_at`
 /// mark) and the commit, a retry counts the attempt and commits, and after a crash the database
-/// rolls back and the row returns at once.
+/// rolls back and the row returns at once. That transaction opens at the table's `isolation`
+/// where the struct declares one, and a subscription to a table at a level the broker's dialect
+/// does not open ([`Opens`](crate::dialect::Opens)) does not compile.
 ///
 /// A table with a `#[field(locked_until)]` field is claimed by lease instead: the claim writes the
 /// lease's expiry into the row, counts the attempt and commits at once, so the handler runs
@@ -257,7 +261,7 @@ impl<Row> fmt::Debug for InboxQueue<Row> {
 impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
 where
     DB: QueueDatabase,
-    D: Dialect + 'static,
+    D: Dialect + Opens<Row::Opening> + 'static,
     Row: InboxRow + Events<DB> + PayloadRow,
     Row::Form: FormOn<D>,
 {

@@ -15,7 +15,7 @@ use ruststream::{Broker, ConnectedBroker};
     feature = "any"
 ))]
 use ruststream::{DescribeServer, ServerSpec};
-use ruststream_sqlx_dialect::Dialect;
+use ruststream_sqlx_dialect::{Dialect, Opens};
 #[cfg(feature = "any")]
 use sqlx::Any;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
@@ -219,8 +219,9 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// The dialect's type is the broker's second type parameter, so what a subscription asks of
     /// it is checked where the subscription mounts: a table in the row lock form needs the
     /// dialect to implement [`RowLock`](crate::dialect::RowLock), a lease table
-    /// [`Lease`](crate::dialect::Lease). The dialect runs while subscriptions start; messages
-    /// travel through the statements it built.
+    /// [`Lease`](crate::dialect::Lease), and a table that names an isolation level or a SQLite
+    /// mode [`Opens`] for it. The dialect runs while subscriptions start; messages travel through
+    /// the statements it built.
     ///
     /// # Examples
     ///
@@ -262,6 +263,10 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// wins over a prefix, and a longer prefix over a shorter one. Routing a name twice leads it
     /// to the last row type. The broker's default publisher is this route table: a reply or an
     /// `Out` slot without a policy of its own publishes through it.
+    ///
+    /// A route asks of the broker's dialect what an [`InboxQueue`](crate::InboxQueue) of the row
+    /// asks: the table's form, and the isolation level or SQLite mode the struct declares. A
+    /// by-name subscription names no row type, so the route is where its table is checked.
     ///
     /// # Examples
     ///
@@ -309,6 +314,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     where
         Row: Publish<DB> + Events<DB> + PayloadRow,
         Row::Form: FormOn<D>,
+        D: Opens<Row::Opening>,
     {
         self.routes
             .add::<Row>(name.into(), <Row::Form as FormOn<D>>::erase);

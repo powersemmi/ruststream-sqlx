@@ -106,6 +106,10 @@ impl FormDialect {
     /// where the dialect names one: the row lock claim's opens at the table's opening, the lease
     /// claim's as the lease form opens it.
     ///
+    /// The dialect answers for the table's opening in every form, so a table at a level or in a
+    /// mode its dialect does not open stops its subscription when it starts. Under `BuiltIn<Any>`
+    /// that is the first moment the database is known.
+    ///
     /// # Errors
     ///
     /// The dialect's refusal of the table's opening.
@@ -113,10 +117,11 @@ impl FormDialect {
         &self,
         spec: &TableSpec<'_>,
     ) -> Result<Option<&'static str>, StatementError> {
-        match self {
-            Self::RowLock(dialect) => dialect.begin(spec.opening()),
-            Self::Lease(dialect) => Ok(dialect.begin_lease_claim()),
-            Self::Unbuilt(_) => Ok(None),
-        }
+        let opening = self.dialect().begin(spec.opening())?;
+        Ok(match self {
+            Self::RowLock(_) => opening,
+            Self::Lease(dialect) => dialect.begin_lease_claim(),
+            Self::Unbuilt(_) => None,
+        })
     }
 }

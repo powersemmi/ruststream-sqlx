@@ -85,6 +85,13 @@ pub trait InboxRow: QueueRow {
     /// to serve it ([`FormOn`]). Machinery; the derive sets it.
     #[doc(hidden)]
     type Form;
+
+    /// What the table's transactions open at, as a type: a [`level`](crate::dialect::level)
+    /// marker for the isolation level or SQLite mode the struct declares, `()` where it declares
+    /// neither. A subscription requires its dialect to open it
+    /// ([`Opens`](crate::dialect::Opens)). Machinery; the derive sets it.
+    #[doc(hidden)]
+    type Opening;
 }
 
 /// A row a subscription delivers, and the type of its id. Machinery: `#[derive(Inbox)]`
