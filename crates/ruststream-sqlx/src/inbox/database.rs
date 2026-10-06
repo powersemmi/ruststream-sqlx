@@ -5,7 +5,7 @@ use std::future::Future;
 use futures::TryStreamExt;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ruststream_sqlx_dialect as dialect;
-use ruststream_sqlx_dialect::Lease;
+use ruststream_sqlx_dialect::{Advisory, Lease};
 use sqlx::Row as _;
 use sqlx::any::AnyQueryResult;
 #[cfg(feature = "any")]
@@ -23,7 +23,7 @@ use sqlx::{Sqlite, SqliteConnection};
 #[cfg(feature = "any")]
 use super::built_in::AnyDialect;
 use super::built_in::BuiltIn;
-use super::engine::{Claimed, Events, IdAt};
+use super::engine::{Candidates, Claimed, Events, IdAt};
 use super::queue::Queue;
 
 /// A sqlx database the inbox runs on: one that binds and reads the values the queue's own
@@ -110,9 +110,31 @@ pub trait QueueDatabase: Database {
     ) -> impl Future<Output = Result<String, Error>> + Send + 'c;
 
     /// Runs a statement whose one row starts with a 64-bit integer, such as the guard a FIFO
-    /// claim takes its group with, and returns whether the integer is nonzero. Machinery.
+    /// claim takes its group with, or the lock and the unlock of the advisory lock form, and
+    /// returns whether the integer is nonzero. Machinery.
     #[doc(hidden)]
     fn fetch_flag<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'c;
+
+    /// Runs the advisory claim of candidates into `out`: the id in the first column, the lock key
+    /// as text in the second, copied into the buffers `out` keeps. Machinery.
+    #[doc(hidden)]
+    fn fetch_candidates<'c, Id>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+        out: &'c mut Candidates<Id>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c
+    where
+        Id: for<'r> Decode<'r, Self> + Type<Self> + Send + 'c;
+
+    /// Runs a statement and says whether it returned a row, such as the take of a candidate the
+    /// service's own fetch reads. Machinery.
+    #[doc(hidden)]
+    fn fetch_found<'c>(
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
@@ -125,6 +147,7 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
+    for<'r> &'r str: Decode<'r, DB>,
     for<'a> i64: Encode<'a, DB> + Decode<'a, DB> + Type<DB>,
     for<'r> String: Decode<'r, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
@@ -226,6 +249,38 @@ where
             .await?;
         Ok(flag != 0)
     }
+
+    async fn fetch_candidates<'c, Id>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+        out: &'c mut Candidates<Id>,
+    ) -> Result<(), Error>
+    where
+        Id: for<'r> Decode<'r, Self> + Type<Self> + Send + 'c,
+    {
+        let mut rows = sqlx::query_with::<Self, _>(sql, arguments).fetch(conn);
+        while let Some(row) = rows.try_next().await? {
+            // The key is read where the row holds it, and copied once, into a kept buffer.
+            let key = row.try_get::<&str, _>(1_usize)?;
+            out.push(row.try_get::<Id, _>(0_usize)?, key);
+        }
+        Ok(())
+    }
+
+    async fn fetch_found(
+        conn: &mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> Result<bool, Error> {
+        // Every row is read, so the statement has run to its end when the answer comes.
+        let mut rows = sqlx::query_with::<Self, _>(sql, arguments).fetch(conn);
+        let mut found = false;
+        while rows.try_next().await?.is_some() {
+            found = true;
+        }
+        Ok(found)
+    }
 }
 
 /// A database whose dialect is built into this crate, so `SqlxBroker::new` needs no dialect of
@@ -264,7 +319,7 @@ pub trait BuiltInDialect: QueueDatabase {
     /// The dialect of the crate's `dialect` module that builds the database's statements.
     /// Machinery; [`BuiltIn`] holds it.
     #[doc(hidden)]
-    type Picked: Lease + Copy + 'static;
+    type Picked: Lease + Advisory + Copy + 'static;
 
     /// The dialect that builds the statements of the database `conn` reaches, or `None` when no
     /// built-in dialect serves it: an `AnyPool`'s backend whose feature is off.

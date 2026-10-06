@@ -827,3 +827,7 @@ pub(crate) mod lease {
         }
     }
 }
+
+/// The rows of the advisory lock form: a claim locks each row's key in the delivery's session and
+/// takes the row, counting its attempt, and a settlement releases the lock.
+pub(crate) mod advisory;

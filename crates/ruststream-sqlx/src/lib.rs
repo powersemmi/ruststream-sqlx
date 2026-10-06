@@ -32,10 +32,11 @@ pub mod __private {
     #[cfg(feature = "any")]
     pub use crate::inbox::AnyDialect;
     pub use crate::inbox::engine::{
-        Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled, Settling, Shape,
-        Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows, dead_letter, discard,
-        extend, fetch_by_ids, first_header, later, lease, match_claimed, match_rows, micros,
-        no_lease, now, put, retry, retry_after,
+        Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled,
+        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
+        dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, lock,
+        match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry, retry_after,
+        take, take_id, unlock,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
@@ -89,8 +90,9 @@ pub mod __private {
 /// from the fields named between braces. A placeholder names a field as written in Rust, without
 /// `r#` (`{type}` for `r#type`), and the key reads that field's column. In that form a group
 /// keeps its order through the key, as in `advisory_lock = "jobs-{name}"`, so `fifo = true` does
-/// not apply there. The built-in dialects build the row lock and lease forms, and refuse a table
-/// in the advisory lock form when its subscription starts.
+/// not apply there. The form selects its candidates with their keys itself, so `custom(..)` does
+/// not take `claim` beside it. Every built-in dialect builds the lease and advisory lock forms;
+/// Postgres and MySQL build the row lock form too.
 ///
 /// # Isolation and mode
 ///
@@ -165,9 +167,9 @@ pub mod __private {
 ///
 /// A struct that cannot drive a queue does not compile, and the error points at the field or
 /// the name that causes it: no `id`, a role played twice, a column named twice, a role or
-/// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until` or
-/// `fifo = true` beside `advisory_lock`, `extend` in `custom(..)` without `locked_until`,
-/// `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in `table` or
-/// `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
+/// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until`,
+/// `fifo = true` or `claim` in `custom(..)` beside `advisory_lock`, `extend` in `custom(..)`
+/// without `locked_until`, `locked_until` on `clock = DatabaseClock`, a lock key naming no field,
+/// a dot in `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;

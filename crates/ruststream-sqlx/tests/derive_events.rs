@@ -140,6 +140,7 @@ fn values(event: Event, id: &i64) -> Values<'_, Postgres, SendEmail> {
         lease: None,
         leasing: None,
         held: None,
+        key: None,
     }
 }
 
@@ -175,6 +176,29 @@ fn binding_follows_the_meaning_of_each_parameter() -> Result<(), sqlx::Error> {
     assert!(!bind(Param::Destination, &mut dead, Event::Ack)?);
     // The table has no id list to bind outside a custom claim.
     assert!(!bind(Param::Ids, &mut dead, Event::Fetch)?);
+
+    // The take of an advisory claim names the row while it is still due, as the claim reads it.
+    let mut take = PgArguments::default();
+    for param in [Param::Id, Param::Group, Param::Now] {
+        assert!(bind(param, &mut take, Event::Take)?);
+    }
+    assert_eq!(take.len(), 3);
+
+    // The lock and the unlock bind the key the claim selected; a statement without one binds none.
+    let mut lock = PgArguments::default();
+    for event in [Event::Lock, Event::Unlock] {
+        let keyed = Values {
+            key: Some("email_jobs-7"),
+            ..values(event, &id)
+        };
+        assert!(<SendEmail as Events<Postgres>>::bind(
+            Param::Key,
+            &mut lock,
+            &keyed
+        )?);
+    }
+    assert!(!bind(Param::Key, &mut lock, Event::Ack)?);
+    assert_eq!(lock.len(), 2);
     Ok(())
 }
 
@@ -295,6 +319,7 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
         lease: Some(lease.expiry),
         leasing: Some(&lease),
         held: Some(lease.expiry),
+        key: None,
     };
     let mut extend = PgArguments::default();
     for param in [Param::Lease, Param::Id, Param::Held, Param::LeaseNow] {

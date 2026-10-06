@@ -48,8 +48,9 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 }
 
 /// The rules `TableSpec`'s types leave to the struct: one id, one field per role, one field per
-/// column, one form, FIFO groups outside the advisory lock form. Every broken rule is reported at
-/// once, on the field that breaks it; the field playing `id` comes back.
+/// column, one form, FIFO groups and a claim of the service's own outside the advisory lock form,
+/// `extend` in the lease form. Every broken rule is reported at once, on the field or the event
+/// that breaks it; the field playing `id` comes back.
 fn check<'i, 'a>(
     input: &DeriveInput,
     inbox: &'i Inbox<'a>,
@@ -116,6 +117,15 @@ fn check<'i, 'a>(
                 ));
             }
         }
+    }
+    if inbox.table.advisory_lock.is_some()
+        && let Some(span) = inbox.table.custom.claim
+    {
+        errors.push(syn::Error::new(
+            span,
+            "the advisory lock form selects its candidates with their keys itself: drop `claim` \
+             from `custom(..)`",
+        ));
     }
     if let Some(span) = inbox.table.custom.extend
         && !columns
@@ -455,7 +465,7 @@ mod tests {
 
     #[test]
     fn the_rules_the_types_leave_to_the_struct_are_checked() {
-        let cases: [(DeriveInput, &str); 8] = [
+        let cases: [(DeriveInput, &str); 9] = [
             (
                 parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(payload)] payload: Vec<u8> } },
                 "table `jobs` has no `id` field: mark the field that identifies a row with \
@@ -492,6 +502,11 @@ mod tests {
                 parse_quote! { #[inbox(table = "jobs", custom(extend))] struct Job { #[field(id)] job_id: i64 } },
                 "`extend` is an event of the lease form: add `#[field(locked_until)]` or drop \
                  `extend` from `custom(..)`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", advisory_lock = "jobs-{job_id}", custom(fetch, claim))] struct Job { #[field(id)] job_id: i64 } },
+                "the advisory lock form selects its candidates with their keys itself: drop \
+                 `claim` from `custom(..)`",
             ),
         ];
         for (input, expected) in cases {

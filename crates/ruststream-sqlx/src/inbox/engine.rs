@@ -23,6 +23,10 @@ use super::queue::Queue;
 use super::testing::TestClock;
 use super::time::{QueueTime, TimeSource};
 
+mod advisory;
+
+pub use advisory::{Candidates, lock, match_taken, take, take_id, unlock};
+
 /// A row's whole contract with the broker. Machinery; the derive implements it, a service never
 /// names it.
 pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + Unpin {
@@ -136,6 +140,32 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
         held: &'a Self::Token,
         until: &'a Self::Token,
     ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a;
+
+    /// The `lock` event of the advisory lock form: tries the lock on `key` for the session of
+    /// `conn`, without waiting; `true` when it took the lock.
+    fn lock<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Claiming,
+        key: &'a str,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'a;
+
+    /// The `unlock` event of the advisory lock form: releases the lock on `key` the session of
+    /// `conn` holds; `true` when it held it.
+    fn unlock<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Settling,
+        key: &'a str,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'a;
+
+    /// Takes the candidate `id` of an advisory claim, whose lock the session of `conn` holds:
+    /// counts its attempt and pushes the candidate's row onto `out` when the take found it still
+    /// claimable; `false` when the row is gone or no longer claimable.
+    fn take<'a>(
+        conn: &'a mut DB::Connection,
+        cx: &'a Claiming,
+        id: &'a Self::Id,
+        out: &'a mut Vec<Claimed<Self>>,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'a;
 }
 
 /// Which events a row's service implements itself.
@@ -182,6 +212,12 @@ pub enum Event {
     Stamp,
     /// Extending a delivery's lease, or confirming it.
     Extend,
+    /// Taking the advisory lock on a candidate's key.
+    Lock,
+    /// Releasing the advisory lock on a delivery's key.
+    Unlock,
+    /// Taking a candidate whose key the delivery's session holds.
+    Take,
 }
 
 impl Event {
@@ -198,6 +234,9 @@ impl Event {
             Self::DeadLetter => "dead_letter",
             Self::Stamp => "stamp",
             Self::Extend => "extend",
+            Self::Lock => "lock",
+            Self::Unlock => "unlock",
+            Self::Take => "take",
         }
     }
 }
@@ -228,6 +267,8 @@ pub struct Values<'a, DB: QueueDatabase, Row: Events<DB>> {
     pub leasing: Option<&'a Leasing<Row::Token>>,
     /// The lease a settlement or an extension matches: the delivery's ownership token.
     pub held: Option<Row::Token>,
+    /// The lock key the advisory lock form's lock or unlock names.
+    pub key: Option<&'a str>,
 }
 
 impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
@@ -251,6 +292,7 @@ impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
             },
             leasing,
             held: None,
+            key: None,
         }
     }
 
@@ -272,6 +314,25 @@ impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
             lease: None,
             leasing: None,
             held,
+            key: None,
+        }
+    }
+
+    /// The values of an unlock of `key`: a settlement that names no row.
+    const fn unlocking(cx: Settling, key: &'a str) -> Self {
+        Self {
+            event: Event::Unlock,
+            queue: cx.queue,
+            limit: 0,
+            id: None,
+            ids: &[],
+            delay: Duration::ZERO,
+            destination: "",
+            now: cx.now,
+            lease: None,
+            leasing: None,
+            held: None,
+            key: Some(key),
         }
     }
 }
@@ -347,7 +408,8 @@ pub struct Prepared {
     /// Taking the subscription's group for a claim's transaction, in a table whose groups keep
     /// their order and on a dialect that takes one: the claim runs only once it answers nonzero.
     pub fifo_guard: Option<Stmt>,
-    /// Claiming rows, or ids for a fetch of the service's own.
+    /// Claiming rows, or ids for a fetch of the service's own; in the advisory lock form, the
+    /// candidates with their lock keys.
     pub claim: Option<Stmt>,
     /// Reading the rows of ids a claim of the service's own returned.
     pub fetch: Option<Stmt>,
@@ -368,6 +430,17 @@ pub struct Prepared {
     pub extend: Option<Stmt>,
     /// Leasing one claimed row, where the claim only selects.
     pub stamp: Option<Stmt>,
+    /// Taking the advisory lock on a candidate's key for the delivery's session, in the advisory
+    /// lock form, where the dialect's database keeps the locks.
+    pub lock: Option<Stmt>,
+    /// Releasing that lock.
+    pub unlock: Option<Stmt>,
+    /// Taking a candidate whose key the session holds, in the advisory lock form: it counts the
+    /// attempt and reads the row while the row is still claimable.
+    pub take: Option<Stmt>,
+    /// The read of a take the dialect splits in two; it runs only once the first statement
+    /// changed the row.
+    pub take_then: Option<Stmt>,
     /// Whether the claim only selects its rows, so the claim's transaction stamps each one: a
     /// claim of the service's own, or a dialect whose lease claim writes no lease.
     pub stamps: bool,
@@ -1012,11 +1085,16 @@ impl Prepared {
             self.dead_letter_then,
             self.extend,
             self.stamp,
+            self.lock,
+            self.unlock,
+            self.take,
+            self.take_then,
         ]
         .into_iter()
         .flatten()
     }
 }
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -1028,5 +1106,11 @@ mod tests {
         assert_eq!(micros(Duration::from_millis(1500)), 1_500_000);
         assert_eq!(micros(Duration::MAX), i64::MAX);
         assert_eq!(Event::RetryAfter.name(), "retry_after");
+    }
+
+    #[test]
+    fn the_advisory_events_name_themselves_as_messages_read_them() {
+        let names = [Event::Lock, Event::Unlock, Event::Take].map(Event::name);
+        assert_eq!(names, ["lock", "unlock", "take"]);
     }
 }

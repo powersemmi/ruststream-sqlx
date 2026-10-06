@@ -100,7 +100,9 @@ fn word(meta: &ParseNestedMeta<'_>) -> syn::Result<(Option<String>, Option<Token
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Custom {
-    pub(crate) claim: bool,
+    /// Where `claim` is listed: the advisory lock form selects its candidates itself, which the
+    /// struct is checked for.
+    pub(crate) claim: Option<Span>,
     pub(crate) fetch: bool,
     pub(crate) ack: bool,
     pub(crate) retry: bool,
@@ -126,9 +128,9 @@ impl Custom {
                  without listing it",
             ));
         }
-        if word == "extend" {
-            if self.extend.replace(event.path.span()).is_some() {
-                return Err(event.error("`extend` is listed twice"));
+        if let Some(listed) = self.spanned(&word) {
+            if listed.replace(event.path.span()).is_some() {
+                return Err(event.error(format!("`{word}` is listed twice")));
             }
             return Ok(());
         }
@@ -144,10 +146,18 @@ impl Custom {
         Ok(())
     }
 
+    /// Where the event `word` names is listed, for an event the struct is checked for.
+    fn spanned(&mut self, word: &str) -> Option<&mut Option<Span>> {
+        Some(match word {
+            "claim" => &mut self.claim,
+            "extend" => &mut self.extend,
+            _ => return None,
+        })
+    }
+
     /// The switch of the event `word` names.
     fn slot(&mut self, word: &str) -> Option<&mut bool> {
         Some(match word {
-            "claim" => &mut self.claim,
             "fetch" => &mut self.fetch,
             "ack" => &mut self.ack,
             "retry" => &mut self.retry,
@@ -926,18 +936,24 @@ mod tests {
         let inbox = inbox(&input)?;
         let custom = inbox.table.custom;
         assert!(custom.fetch && custom.dead_letter);
-        assert!(!custom.claim && !custom.ack && !custom.retry);
+        assert!(custom.claim.is_none() && !custom.ack && !custom.retry);
         assert!(!custom.retry_after && !custom.discard && custom.extend.is_none());
         let leased: DeriveInput = parse_quote! {
-            #[inbox(table = "jobs", custom(extend))]
+            #[inbox(table = "jobs", custom(extend, claim))]
             struct Job { #[field(id)] id: i64 }
         };
-        assert!(self::inbox(&leased)?.table.custom.extend.is_some());
+        let listed = self::inbox(&leased)?.table.custom;
+        assert!(listed.extend.is_some() && listed.claim.is_some());
         let twice: DeriveInput = parse_quote! {
             #[inbox(table = "jobs", custom(extend, extend))]
             struct Job { #[field(id)] id: i64 }
         };
         assert_eq!(error(&twice), "`extend` is listed twice");
+        let claimed_twice: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(claim, claim))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(error(&claimed_twice), "`claim` is listed twice");
         let clock = inbox
             .table
             .clock

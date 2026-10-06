@@ -12,7 +12,7 @@ use ruststream_sqlx_dialect as dialect;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
 use ruststream_sqlx_dialect::RowLock;
 use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Lease, Opening, Statement, StatementError, TableName, TableSpec,
+    Advisory, ClaimShape, Dialect, Lease, Opening, Statement, StatementError, TableName, TableSpec,
 };
 #[cfg(any(
     feature = "postgres",
@@ -48,10 +48,10 @@ use super::database::SQLITE_BACKEND;
 /// features are on, picked when the broker connects.
 ///
 /// It serves the forms its database serves, through the traits of the dialect module: every
-/// `BuiltIn` implements [`Lease`], and `BuiltIn<Postgres>`, `BuiltIn<MySql>` and `BuiltIn<Any>`
-/// implement [`RowLock`]. A SQLite table in the row lock form therefore does not compile. An
-/// `AnyPool` names its database only when the broker connects, so on a SQLite backend the
-/// subscription to a row lock table stops when it starts, with
+/// `BuiltIn` implements [`Lease`] and [`Advisory`], and `BuiltIn<Postgres>`, `BuiltIn<MySql>` and
+/// `BuiltIn<Any>` implement [`RowLock`]. A SQLite table in the row lock form therefore does not
+/// compile. An `AnyPool` names its database only when the broker connects, so on a SQLite backend
+/// the subscription to a row lock table stops when it starts, with
 /// [`StatementError::UnsupportedForm`].
 ///
 /// It opens transactions at the isolation levels and SQLite modes its database keeps, one
@@ -212,6 +212,28 @@ impl<DB: BuiltInDialect> Lease for BuiltIn<DB> {
     }
 }
 
+impl<DB: BuiltInDialect> Advisory for BuiltIn<DB> {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.0.advisory_claim(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        self.0.lock()
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        self.0.unlock()
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.0.take(spec, shape)
+    }
+}
+
 #[cfg(feature = "postgres")]
 impl RowLock for BuiltIn<Postgres> {
     fn lock_claim(
@@ -309,6 +331,8 @@ pub struct AnyDialect {
     lease: &'static dyn Lease,
     /// Its row lock form, where its database locks rows.
     row_lock: Option<&'static dyn RowLock>,
+    /// Its advisory lock form.
+    advisory: &'static dyn Advisory,
 }
 
 #[cfg(feature = "any")]
@@ -322,6 +346,7 @@ impl AnyDialect {
                 Self {
                     lease: &dialect::Postgres,
                     row_lock: Some(&dialect::Postgres),
+                    advisory: &dialect::Postgres,
                 },
             ),
             #[cfg(feature = "mysql")]
@@ -330,6 +355,7 @@ impl AnyDialect {
                 Self {
                     lease: &dialect::MySql,
                     row_lock: Some(&dialect::MySql),
+                    advisory: &dialect::MySql,
                 },
             ),
             #[cfg(feature = "sqlite")]
@@ -338,6 +364,7 @@ impl AnyDialect {
                 Self {
                     lease: &dialect::Sqlite,
                     row_lock: None,
+                    advisory: &dialect::Sqlite,
                 },
             ),
         ];
@@ -456,6 +483,29 @@ impl Lease for AnyDialect {
 
     fn begin_lease_claim(&self) -> Option<&'static str> {
         self.lease.begin_lease_claim()
+    }
+}
+
+#[cfg(feature = "any")]
+impl Advisory for AnyDialect {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.advisory.advisory_claim(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        self.advisory.lock()
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        self.advisory.unlock()
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.advisory.take(spec, shape)
     }
 }
 

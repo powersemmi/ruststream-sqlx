@@ -107,6 +107,7 @@ pub(crate) fn events(
     let r = quote!(::ruststream_sqlx);
     let name = &input.ident;
     let custom = inbox.table.custom;
+    let claimed = custom.claim.is_some();
     let clock: Path = inbox
         .table
         .clock
@@ -209,8 +210,9 @@ pub(crate) fn events(
         playing(inbox, Role::ProcessedAt).map(|field| TimeRole::new(field.ty, &mut predicates));
     let retry_after_arms = retry_after.as_ref().map(|role| {
         let time = &role.time;
+        // The take of an advisory claim names its row while it is still due, as the claim does.
         quote! {
-            (#p::Param::Now, #p::Event::Claim) => {
+            (#p::Param::Now, #p::Event::Claim | #p::Event::Take) => {
                 #p::put::<__DB, _>(arguments, #p::now::<#clock, #time, __DB, Self>(values)?)?;
                 true
             }
@@ -278,17 +280,17 @@ pub(crate) fn events(
     };
 
     // Matching fetched rows to claimed ids compares ids.
-    if custom.claim || custom.fetch {
+    if claimed || custom.fetch {
         let column = via(id_ty);
         predicates.push(parse_quote!(#column: ::core::cmp::PartialEq));
     }
     // The crate's claim of ids collects them through sqlx, which needs them `Unpin`.
-    if custom.fetch && !custom.claim {
+    if custom.fetch && !claimed {
         let column = via(id_ty);
         predicates.push(parse_quote!(#column: ::core::marker::Unpin));
     }
     // The crate's fetch binds the ids a claim of the service's own returned.
-    let ids_arm = (custom.claim && !custom.fetch).then(|| {
+    let ids_arm = (claimed && !custom.fetch).then(|| {
         predicates.push(parse_quote!(
             for<'__q, '__x> &'__x [#id_ty]: #p::sqlx::Encode<'__q, __DB> + #p::sqlx::Type<__DB>
         ));
@@ -305,7 +307,7 @@ pub(crate) fn events(
             predicates.push(parse_quote!(Self: #r::#event<__DB>));
         }
     };
-    event_bound(custom.claim, quote!(Claim), &mut predicates);
+    event_bound(claimed, quote!(Claim), &mut predicates);
     event_bound(custom.fetch, quote!(Fetch), &mut predicates);
     event_bound(custom.ack, quote!(Ack), &mut predicates);
     event_bound(custom.retry, quote!(Retry), &mut predicates);
@@ -314,7 +316,7 @@ pub(crate) fn events(
     event_bound(custom.dead_letter, quote!(DeadLetter), &mut predicates);
     event_bound(custom.extend.is_some(), quote!(Extend), &mut predicates);
 
-    let claim = match (custom.claim, custom.fetch) {
+    let claim = match (claimed, custom.fetch) {
         (false, false) => quote!(#p::claim_rows::<__DB, Self>(conn, cx, lease, out)),
         (claim, fetch) => {
             let ids = if claim {
@@ -386,6 +388,21 @@ pub(crate) fn events(
     } else {
         quote!(#p::dead_letter::<__DB, Self>(conn, cx, id, held, destination))
     };
+    // The service's own fetch reads a taken row of the advisory lock form, as it reads the rows
+    // of a claim; the take tells it the row is still claimable.
+    let take = if custom.fetch {
+        quote!(async move {
+            if !#p::take_id::<__DB, Self>(&mut *conn, cx, id).await? {
+                return ::core::result::Result::Ok(false);
+            }
+            let rows = <Self as #r::Fetch<__DB>>::fetch(&mut *conn, ::core::slice::from_ref(id))
+                .await?;
+            #p::match_taken::<__DB, Self>(id, rows, out);
+            ::core::result::Result::Ok(true)
+        })
+    } else {
+        quote!(#p::take::<__DB, Self>(conn, cx, id, out))
+    };
     let extend = if custom.extend.is_some() {
         quote!(async move {
             let _ = cx;
@@ -401,7 +418,7 @@ pub(crate) fn events(
     };
 
     let flags = [
-        custom.claim,
+        claimed,
         custom.fetch,
         custom.ack,
         custom.retry,
@@ -510,6 +527,13 @@ pub(crate) fn events(
                         <__DB as #p::QueueDatabase>::bind_i64(arguments, #p::micros(values.delay))?;
                         true
                     }
+                    (#p::Param::Key, _) => match values.key {
+                        ::core::option::Option::Some(key) => {
+                            <__DB as #p::QueueDatabase>::bind_str(arguments, key)?;
+                            true
+                        }
+                        ::core::option::Option::None => false,
+                    },
                     #retry_after_arms
                     #processed_at_arms
                     #lease_arms
@@ -605,6 +629,37 @@ pub(crate) fn events(
                 Output = ::core::result::Result<#p::Settled, #p::sqlx::Error>,
             > + ::core::marker::Send + '__a {
                 #extend
+            }
+
+            fn lock<'__a>(
+                conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
+                cx: &'__a #p::Claiming,
+                key: &'__a str,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<bool, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
+                #p::lock::<__DB, Self>(conn, cx, key)
+            }
+
+            fn unlock<'__a>(
+                conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
+                cx: &'__a #p::Settling,
+                key: &'__a str,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<bool, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
+                #p::unlock::<__DB, Self>(conn, cx, key)
+            }
+
+            fn take<'__a>(
+                conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
+                cx: &'__a #p::Claiming,
+                id: &'__a <Self as #p::QueueRow>::Id,
+                out: &'__a mut ::std::vec::Vec<#p::Claimed<Self>>,
+            ) -> impl ::core::future::Future<
+                Output = ::core::result::Result<bool, #p::sqlx::Error>,
+            > + ::core::marker::Send + '__a {
+                #take
             }
         }
     }

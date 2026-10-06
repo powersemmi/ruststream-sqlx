@@ -12,7 +12,7 @@ use std::time::Duration;
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
 use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Opens, Role, StatementError, TableName, TableSpec,
+    ClaimShape, Dialect, Form, Opens, Role, Statement, StatementError, TableName, TableSpec,
 };
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
@@ -50,8 +50,10 @@ use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the subscription sets its own
 /// ([`lease`](Self::lease)). The broker's dialect serves a table's form when it implements the
 /// form's trait: [`RowLock`](crate::dialect::RowLock) for the row lock form,
-/// [`Lease`](crate::dialect::Lease) for the lease form. SQLite has no row locks, so a table there
-/// takes the lease form, and a subscription to one without `locked_until` does not compile.
+/// [`Lease`](crate::dialect::Lease) for the lease form, [`Advisory`](crate::dialect::Advisory) for
+/// the advisory lock form. SQLite has no row locks, so a table there takes the lease form or the
+/// advisory lock form, and a subscription to one without `locked_until` or `advisory_lock` does not
+/// compile.
 ///
 /// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table, declared together:
 /// at the cap the row moves to the `dead_letter` group (with a `group` field) or into the
@@ -408,6 +410,11 @@ impl Description {
         self.spec.column(Role::LockedUntil).is_some()
     }
 
+    /// Whether the table is claimed by advisory lock: its struct names a lock key.
+    pub(crate) const fn advisory(&self) -> bool {
+        matches!(self.spec.form(), Form::Advisory(_))
+    }
+
     /// Where the claim's select carries the id of a row read alone.
     pub(crate) const fn id_at(&self) -> IdAt {
         match self.claim {
@@ -528,8 +535,8 @@ impl Queue {
 }
 
 /// The statements a subscription to the table `description` reads runs, built by the dialect
-/// `form` shows: the claim and the lease's statements by the trait of the table's form, the
-/// guard of a FIFO group and the settlements by the dialect itself.
+/// `form` shows: the claim and the statements of the lease and advisory lock forms by the trait of
+/// the table's form, the guard of a FIFO group and the settlements by the dialect itself.
 fn build(
     form: &FormDialect,
     declaration: &RetryDeclaration,
@@ -583,20 +590,20 @@ fn build(
             let target = TableName::parse(target)
                 .map_err(|err| fail(format!("the dead-letter table {err}")))?;
             let moves = dialect.dead_letter_table(&spec, target).map_err(refused)?;
-            let count = moves.len();
-            let mut moves = moves.into_iter();
-            match (moves.next(), moves.next(), moves.next()) {
-                (Some(first), then, None) => (Some(first), then),
-                _ => {
-                    return Err(fail(format!(
-                        "the {} dialect moves a dead letter in {count} statements, and the inbox \
-                         runs one or two",
-                        dialect.name(),
-                    )));
-                }
-            }
+            let (first, then) = one_or_two(dialect, "moves a dead letter", moves, fail)?;
+            (Some(first), then)
         }
         None => (None, None),
+    };
+    // The advisory lock form's own statements: the lock and the unlock where the database keeps
+    // the locks, and the take of a candidate whose lock the delivery's session holds.
+    let (lock, unlock, take, take_then) = match form.advisory() {
+        Some(advisory) => {
+            let takes = advisory.take(&spec, description.claim).map_err(refused)?;
+            let (take, then) = one_or_two(dialect, "takes a candidate", takes, fail)?;
+            (advisory.lock(), advisory.unlock(), Some(take), then)
+        }
+        None => (None, None, None, None),
     };
     // Why a startup refusal: the derive gives a table that declares a lease the lease form's
     // type, so only a description written by hand pairs one with another form's dialect.
@@ -635,8 +642,34 @@ fn build(
         dead_letter_then: dead_letter_then.as_ref().map(intern),
         extend: extend.as_ref().map(intern),
         stamp: stamp.as_ref().map(intern),
+        lock: lock.as_ref().map(intern),
+        unlock: unlock.as_ref().map(intern),
+        take: take.as_ref().map(intern),
+        take_then: take_then.as_ref().map(intern),
         stamps,
     })
+}
+
+/// The one or two statements `dialect` builds to do `what`, the second run after the first.
+///
+/// # Errors
+///
+/// `fail`'s error where the dialect builds none or more than two.
+fn one_or_two(
+    dialect: &dyn Dialect,
+    what: &str,
+    statements: Vec<Statement>,
+    fail: &impl Fn(String) -> SqlxBrokerError,
+) -> Result<(Statement, Option<Statement>), SqlxBrokerError> {
+    let count = statements.len();
+    let mut statements = statements.into_iter();
+    match (statements.next(), statements.next(), statements.next()) {
+        (Some(first), then, None) => Ok((first, then)),
+        _ => Err(fail(format!(
+            "the {} dialect {what} in {count} statements, and the inbox runs one or two",
+            dialect.name(),
+        ))),
+    }
 }
 
 /// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
@@ -732,14 +765,24 @@ where
     ))
 }
 
-/// Whether the rows a lease subscription to `description` hands out carry the attempt its claim
-/// counted, so that a delivery reports one less.
+/// Whether the rows a subscription to `description` hands out carry the attempt its claim or its
+/// take counted, so that a delivery reports one less.
 ///
-/// A claim that stamps its rows reads them before the stamps count them. A claim that writes the
-/// lease itself counts and commits first: the service's own fetch after the crate's claim of ids
-/// then reads counted rows, and whole rows come back counted where the dialect says so. A claim by
-/// role reads the attempt as it was before the count.
+/// A lease claim that stamps its rows reads them before the stamps count them. A lease claim that
+/// writes the lease itself counts and commits first: the service's own fetch after the crate's
+/// claim of ids then reads counted rows, and whole rows come back counted where the dialect says
+/// so. A claim by role reads the attempt as it was before the count. The take of the advisory lock
+/// form reads the columns it names as they were before its count; `*` names none, and the
+/// service's own fetch reads the row after the take committed its count.
 fn counted_attempt(form: &FormDialect, description: &Description, prepared: &Prepared) -> bool {
+    if description.advisory() {
+        let counted = match description.claim {
+            ClaimShape::Rows => description.spec.selects_all(),
+            ClaimShape::Ids => true,
+            ClaimShape::Roles => false,
+        };
+        return counted && description.spec.column(Role::Attempt).is_some();
+    }
     let Some(lease) = form.lease().filter(|_| description.leased()) else {
         return false;
     };

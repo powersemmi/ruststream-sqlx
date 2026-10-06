@@ -1,0 +1,45 @@
+error[E0277]: the `WithoutLocks` dialect takes no advisory locks, so a table on it cannot take its rows by advisory lock
+  --> tests/ui/own_dialect_advisory.rs:81:16
+   |
+81 |     subscribes(InboxQueue::<Advised>::new("jobs"));
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a table with `advisory_lock` takes its rows by advisory lock
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Advisory` is not implemented for `WithoutLocks`
+  --> tests/ui/own_dialect_advisory.rs:10:1
+   |
+10 | struct WithoutLocks;
+   | ^^^^^^^^^^^^^^^^^^^
+   = note: declare `#[field(locked_until)]` (the lease form), or drop `advisory_lock` (the row lock form)
+   = note: a dialect of the service's own takes the advisory lock form by implementing `Advisory`: the claim of candidates, the lock, the unlock and the take
+help: the following other types implement trait `ruststream_sqlx::ruststream_sqlx_dialect::Advisory`
+  --> $WORKSPACE/crates/ruststream-sqlx-dialect/src/postgres.rs
+   |
+   | impl Advisory for Postgres {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Postgres`
+   |
+  ::: $WORKSPACE/crates/ruststream-sqlx-dialect/src/mysql.rs
+   |
+   | impl Advisory for MySql {
+   | ^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::MySql`
+   |
+  ::: src/inbox/built_in.rs
+   |
+   | impl<DB: BuiltInDialect> Advisory for BuiltIn<DB> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<DB>`
+   |
+  ::: $WORKSPACE/crates/ruststream-sqlx-dialect/src/sqlite.rs
+   |
+   | impl Advisory for Sqlite {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Sqlite`
+   = note: required for `ruststream_sqlx::__private::AdvisoryForm` to implement `ruststream_sqlx::__private::FormOn<WithoutLocks>`
+   = note: required for `InboxQueue<Advised>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres, WithoutLocks>>`
+note: required by a bound in `subscribes`
+  --> tests/ui/own_dialect_advisory.rs:65:13
+   |
+63 | fn subscribes<Source>(source: Source)
+   |    ---------- required by a bound in this function
+64 | where
+65 |     Source: SubscriptionSource<Connected<SqlxBroker<Postgres, WithoutLocks>>>,
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
