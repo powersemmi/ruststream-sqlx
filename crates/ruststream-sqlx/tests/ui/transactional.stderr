@@ -1,0 +1,39 @@
+error[E0277]: the handler takes `Ctx<keys::Tx<..>>`, and `InboxDelivery<sqlx::Postgres, Job>` comes from a subscription without transactional mode
+  --> tests/ui/transactional.rs:38:11
+   |
+38 |         b.include(record);
+   |           ^^^^^^^ the delivery's transaction is lent only in transactional mode
+   |
+   = note: mount the handler with `.transactional()`: `b.include(handler.transactional())`
+help: the trait `ruststream_sqlx::keys::TransactionalDelivery<sqlx::Postgres>` is not implemented for `InboxDelivery<Postgres, Job, Plain>`
+      but it is implemented for `InboxDelivery<Postgres, Job, ruststream_sqlx::Transactional>`
+  --> src/inbox/delivery/lent.rs
+   |
+   | / impl<DB, Row> TransactionalDelivery<DB> for InboxDelivery<DB, Row, Transactional>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     Row: Events<DB> + PayloadRow,
+   | |_________________________________^
+   = help: for that trait implementation, expected `ruststream_sqlx::Transactional`, found `Plain`
+   = note: required for `TxContext<sqlx::Postgres>` to implement `BuildContext<InboxDelivery<sqlx::Postgres, Job>>`
+   = note: required for `runtime::router::routes::SubscribeRoute<ruststream_sqlx::InboxQueue<Job>, Typed<InboxDelivery<sqlx::Postgres, Job>, runtime::input::Decoded<Task>, JsonCodec, runtime::handle::eager::SoloBody<Solo<Task>, TxContext<sqlx::Postgres>, record>>, TxContext<sqlx::Postgres>>` to implement `runtime::router::routes::MountRoute<ruststream_sqlx::SqlxBroker<sqlx::Postgres>, (), PublishIdentity>`
+   = note: required for `(runtime::router::routes::SubscribeRoute<ruststream_sqlx::InboxQueue<Job>, Typed<InboxDelivery<sqlx::Postgres, Job>, runtime::input::Decoded<Task>, JsonCodec, runtime::handle::eager::SoloBody<Solo<Task>, TxContext<sqlx::Postgres>, record>>, TxContext<sqlx::Postgres>>, ())` to implement `RouterDef<ruststream_sqlx::SqlxBroker<sqlx::Postgres>>`
+   = note: required for `Router<ruststream_sqlx::SqlxBroker<sqlx::Postgres>, (runtime::router::routes::SubscribeRoute<ruststream_sqlx::InboxQueue<Job>, Typed<InboxDelivery<sqlx::Postgres, Job>, runtime::input::Decoded<Task>, JsonCodec, runtime::handle::eager::SoloBody<Solo<Task>, TxContext<sqlx::Postgres>, record>>, TxContext<sqlx::Postgres>>, ())>` to implement `ruststream::runtime::ScopeCommit<ruststream_sqlx::SqlxBroker<sqlx::Postgres>, Identity, (), (), PublishIdentity>`
+   = note: required for `Subscribing` to implement `ruststream::runtime::IncludeMount<'_, ruststream_sqlx::SqlxBroker<sqlx::Postgres>, Identity, (), (), PublishIdentity, SubscriberBuilder<Sealed<HandleValue<Solo<Task>, (), (), TxContext<sqlx::Postgres>, record, ruststream::runtime::Probed>>, ruststream_sqlx::InboxQueue<Job>, (Open, Open, Open, Open)>>`
+
+error[E0277]: `.transactional()` switches an `InboxQueue` subscription to transactional mode
+  --> tests/ui/transactional.rs:40:27
+   |
+40 |         b.include(by_name.transactional());
+   |                           ^^^^^^^^^^^^^ this registration does not subscribe through `InboxQueue`
+   |
+   = help: the trait `ruststream_sqlx::TransactionalStep` is not implemented for `SubscriberBuilder<Sealed<HandleValue<Solo<Task>, (), (), (), by_name, ruststream::runtime::Probed>>, Name, (Open, Open, Open, Open)>`
+   = note: a subscription by name has no transactional mode: subscribe with `InboxQueue::<Row>::new(..)`
+help: the trait `ruststream_sqlx::TransactionalStep` is implemented for `SubscriberBuilder<Def, ruststream_sqlx::InboxQueue<Row>, State, DefCodec>`
+  --> src/inbox/transactional.rs
+   |
+   | / impl<Def, Row, State, DefCodec> TransactionalStep
+   | |     for SubscriberBuilder<Def, InboxQueue<Row, Plain>, State, DefCodec>
+   | | where
+   | |     Def: Declared,
+   | |__________________^

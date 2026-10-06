@@ -111,7 +111,8 @@ pub enum SqlxBrokerError {
         /// The oldest server the subscription's statements run on.
         required: &'static str,
     },
-    /// The registration declared a retry the table cannot carry.
+    /// The registration declared what the table cannot carry: a retry, or a mode its form does
+    /// not run.
     #[error("subscription `{subscription}` on table `{table}` ({row}): {reason}")]
     Declaration {
         /// The subscription.
@@ -167,6 +168,26 @@ pub enum SqlxBrokerError {
          and another claim took it; this settlement did not take effect"
     )]
     LeaseLost {
+        /// The subscription.
+        subscription: String,
+        /// The table, qualified with its schema.
+        table: String,
+        /// The row type.
+        row: &'static str,
+        /// The row's id, as logs name it.
+        id: String,
+    },
+    /// A settlement in transactional mode found the delivery's transaction still lent to its
+    /// handler's [`Tx`](crate::Tx), which the handler moved somewhere that outlived it.
+    ///
+    /// The settlement took no effect. The transaction ends when that `Tx` drops: its connection
+    /// closes, the server rolls back what the handler wrote, and the row returns to the queue.
+    #[error(
+        "subscription `{subscription}` on table `{table}` ({row}): the handler still holds the \
+         transaction of row {id}, so its settlement took no effect; the transaction rolls back \
+         when the handler's `Tx` drops"
+    )]
+    TransactionHeld {
         /// The subscription.
         subscription: String,
         /// The table, qualified with its schema.
@@ -253,6 +274,18 @@ mod tests {
             lost.to_string(),
             "subscription `emails` on table `email_jobs` (SendEmail): the lease on row 7 ran out \
              and another claim took it; this settlement did not take effect"
+        );
+        let held = SqlxBrokerError::TransactionHeld {
+            subscription: "emails".to_owned(),
+            table: "email_jobs".to_owned(),
+            row: "SendEmail",
+            id: "7".to_owned(),
+        };
+        assert_eq!(
+            held.to_string(),
+            "subscription `emails` on table `email_jobs` (SendEmail): the handler still holds the \
+             transaction of row 7, so its settlement took no effect; the transaction rolls back \
+             when the handler's `Tx` drops"
         );
         let old = SqlxBrokerError::ServerTooOld {
             subscription: "emails".to_owned(),

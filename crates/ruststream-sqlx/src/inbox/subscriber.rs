@@ -1,6 +1,7 @@
 //! `InboxSubscriber`: the claim loop a subscription's stream runs.
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ use super::queue::{Queue, Registration};
 use super::session::{Closing, Session};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
+use super::transactional::{InboxMode, Plain, TxBook};
 use super::tx::PoolTx;
 
 /// How long a subscription waits after a claim failed, so a persistent failure cannot spin the
@@ -57,6 +59,13 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// releasing the lock, and its row returns at once. SQLite keeps no such locks: the process keeps
 /// the keys in work instead, so one process serves a database file.
 ///
+/// In transactional mode, a registration mounted with
+/// [`transactional`](crate::InboxSettings::transactional), each delivery lends its handler the
+/// transaction it settles in. In the row lock form that is the claim's: the subscription sets a
+/// savepoint after each claim that took a row, so a settlement other than acknowledgement can
+/// discard what the handler wrote. Transactional mode serves single deliveries: the subscriber
+/// delivers no batches in it.
+///
 /// A table whose groups keep their order (`#[field(group, fifo = true)]`) has one row of a group
 /// in work at a time. A claim takes the group's head, its first unfinished row in claim order, and
 /// takes nothing while another row of the group is in work, a row that entered the group ahead of
@@ -91,10 +100,15 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// # }
 /// # fn main() {}
 /// ```
-pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>> {
+pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     shared: Arc<Shared<DB>>,
     queue: &'static Queue,
     holding: Holding<DB, Row>,
+    /// The subscription's handle on the pool, which its deliveries lend their handlers.
+    pool: &'static Pool<DB>,
+    /// Where a transactional delivery's transaction waits while its handler does not hold it;
+    /// `None` in the plain mode.
+    lending: Option<&'static TxBook<DB>>,
     /// What the last claim took, its storage reused from claim to claim.
     claimed: ClaimBuffers<DB, Row>,
     /// What the next claim waits for first.
@@ -102,6 +116,7 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>> {
     _registration: Registration<DB>,
     /// Stops the lease keeper when the subscriber drops; `None` outside the lease form.
     _keeper: Option<DropGuard>,
+    _mode: PhantomData<fn() -> Mode>,
 }
 
 /// How a subscription holds the rows it claimed until they settle.
@@ -184,7 +199,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> ClaimBuffers<DB, Row> {
     }
 }
 
-impl<DB: QueueDatabase, Row: Events<DB>> fmt::Debug for InboxSubscriber<DB, Row> {
+impl<DB: QueueDatabase, Row: Events<DB>, Mode> fmt::Debug for InboxSubscriber<DB, Row, Mode> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InboxSubscriber")
             .field("subscription", &self.queue.name)
@@ -194,22 +209,32 @@ impl<DB: QueueDatabase, Row: Events<DB>> fmt::Debug for InboxSubscriber<DB, Row>
     }
 }
 
-impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
+impl<DB, Row, Mode> InboxSubscriber<DB, Row, Mode>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + PayloadRow,
+    Mode: InboxMode,
+{
     pub(crate) fn new(
         shared: Arc<Shared<DB>>,
         queue: &'static Queue,
         holding: Holding<DB, Row>,
         registration: Registration<DB>,
         keeper: Option<DropGuard>,
+        pool: &'static Pool<DB>,
+        lending: Option<&'static TxBook<DB>>,
     ) -> Self {
         Self {
             shared,
             queue,
             holding,
+            pool,
+            lending,
             claimed: ClaimBuffers::default(),
             wait: None,
             _registration: registration,
             _keeper: keeper,
+            _mode: PhantomData,
         }
     }
 
@@ -336,20 +361,27 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
         self.queue
     }
 
-    async fn next_one(&mut self) -> Option<Result<InboxDelivery<DB, Row>, SqlxBrokerError>> {
+    async fn next_one(&mut self) -> Option<Result<InboxDelivery<DB, Row, Mode>, SqlxBrokerError>> {
         let (taken, _) = match self.claim(1).await? {
             Ok(claimed) => claimed,
             Err(error) => return Some(Err(error)),
         };
-        let queue = self.queue;
+        let (queue, pool) = (self.queue, self.pool);
         let delivery = match taken {
-            Taken::Locked(tx) => InboxDelivery::own(self.claimed.rows.pop()?, tx, queue),
+            Taken::Locked(tx) => {
+                let claimed = self.claimed.rows.pop()?;
+                match self.lending {
+                    // The claim's transaction waits in the book for the handler to borrow it.
+                    Some(book) => InboxDelivery::lent(claimed, book.enter(tx), queue, pool),
+                    None => InboxDelivery::own(claimed, tx, queue, pool),
+                }
+            }
             Taken::Leased(book, lease) => {
-                InboxDelivery::leased(self.claimed.rows.pop()?, book, lease, queue)
+                InboxDelivery::leased(self.claimed.rows.pop()?, book, lease, queue, pool)
             }
             Taken::Advised => {
                 let (claimed, hold) = self.take_advised().next()?;
-                InboxDelivery::advised(claimed, hold, queue)
+                InboxDelivery::advised(claimed, hold, queue, pool)
             }
         };
         #[cfg(feature = "testing")]
@@ -360,7 +392,8 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxSubscriber<DB, Row> {
     /// The subscription's deliveries, as a stream that owns it.
     pub(crate) fn into_stream(
         self,
-    ) -> impl Stream<Item = Result<InboxDelivery<DB, Row>, SqlxBrokerError>> + Send + 'static {
+    ) -> impl Stream<Item = Result<InboxDelivery<DB, Row, Mode>, SqlxBrokerError>> + Send + 'static
+    {
         futures::stream::unfold(self, |mut subscriber| async move {
             let next = subscriber.next_one().await?;
             Some((next, subscriber))
@@ -410,6 +443,15 @@ where
                     Row::claim(&mut tx, &cx, None, rows)
                         .await
                         .map_err(claim_failed)?;
+                }
+                // A handler that writes in the claim's transaction writes after the savepoint, so
+                // a settlement can discard what it wrote and keep the claim.
+                if let Some(savepoint) = queue.prepared.savepoint
+                    && !rows.is_empty()
+                {
+                    DB::execute_text(&mut tx, savepoint.set)
+                        .await
+                        .map_err(|source| (savepoint.set, source))?;
                 }
                 Ok::<_, Failed>(())
             }
@@ -739,12 +781,13 @@ where
     Ok(())
 }
 
-impl<DB, Row> Subscriber for InboxSubscriber<DB, Row>
+impl<DB, Row, Mode> Subscriber for InboxSubscriber<DB, Row, Mode>
 where
     DB: QueueDatabase,
     Row: Events<DB> + PayloadRow,
+    Mode: InboxMode,
 {
-    type Message = InboxDelivery<DB, Row>;
+    type Message = InboxDelivery<DB, Row, Mode>;
     type Error = SqlxBrokerError;
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
@@ -755,7 +798,9 @@ where
     }
 }
 
-impl<DB, Row> BatchSubscriber for InboxSubscriber<DB, Row>
+// Transactional mode serves single deliveries: a batch handler reads no delivery's context, so
+// it could take no delivery's transaction.
+impl<DB, Row> BatchSubscriber for InboxSubscriber<DB, Row, Plain>
 where
     DB: QueueDatabase,
     Row: Events<DB> + PayloadRow,
@@ -771,7 +816,7 @@ where
                 Ok(claimed) => claimed,
                 Err(error) => return Some((Err(error), subscriber)),
             };
-            let queue = subscriber.queue();
+            let (queue, pool) = (subscriber.queue(), subscriber.pool);
             #[cfg(feature = "testing")]
             let shared = Arc::clone(&subscriber.shared);
             let on = |delivery: InboxDelivery<DB, Row>| {
@@ -785,19 +830,24 @@ where
                     subscriber
                         .take_rows()
                         .map(|claimed| {
-                            on(InboxDelivery::batched(claimed, Arc::clone(&batch), queue))
+                            on(InboxDelivery::batched(
+                                claimed,
+                                Arc::clone(&batch),
+                                queue,
+                                pool,
+                            ))
                         })
                         .collect()
                 }
                 // Each delivery of a leased batch holds its own lease and settles on its own.
                 Taken::Leased(book, lease) => subscriber
                     .take_rows()
-                    .map(|claimed| on(InboxDelivery::leased(claimed, book, lease, queue)))
+                    .map(|claimed| on(InboxDelivery::leased(claimed, book, lease, queue, pool)))
                     .collect(),
                 // Each delivery of an advisory batch holds its own session and settles on its own.
                 Taken::Advised => subscriber
                     .take_advised()
-                    .map(|(claimed, hold)| on(InboxDelivery::advised(claimed, hold, queue)))
+                    .map(|(claimed, hold)| on(InboxDelivery::advised(claimed, hold, queue, pool)))
                     .collect(),
             };
             Some((Ok(deliveries), subscriber))

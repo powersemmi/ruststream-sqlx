@@ -8,14 +8,19 @@ mod inbox;
 #[cfg(feature = "inbox")]
 pub mod prelude;
 
+/// Machinery behind [`InboxSettings::transactional`]; a service never names it.
+#[cfg(feature = "inbox")]
+#[doc(hidden)]
+pub use inbox::TransactionalStep;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
-    InboxDelivery, InboxQueue, InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow, Lock,
-    NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Publish, QueueDatabase, QueueTime,
-    Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker,
-    SqlxBrokerError, SystemClock, TimeColumn, TimeSource, Unlock,
+    InboxDelivery, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert, KeyColumn,
+    LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Plain, Publish,
+    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
+    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    Transactional, Tx, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -32,18 +37,18 @@ pub mod __private {
     #[cfg(feature = "any")]
     pub use crate::inbox::AnyDialect;
     pub use crate::inbox::engine::{
-        Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled,
-        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, candidates, claim_ids,
-        claim_rows, dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, lock,
-        match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry, retry_after,
-        take, take_id, unlock,
+        Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint,
+        Settled, Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, candidates,
+        claim_ids, claim_rows, dead_letter, discard, extend, fetch_by_ids, first_header, later,
+        lease, lock, match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry,
+        retry_after, take, take_id, unlock,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{
-        AdvisoryForm, FormDialect, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase,
-        QueueRow, RowLockForm, no_insert,
+        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, LeaseForm, OnConnection,
+        QueueDatabase, QueueRow, RowLockForm, no_insert,
     };
 }
 

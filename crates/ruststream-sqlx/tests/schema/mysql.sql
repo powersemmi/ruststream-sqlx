@@ -173,3 +173,10 @@ CREATE TABLE unreadable_jobs (
 
 -- Where spent jobs of `unreadable_jobs` go.
 CREATE TABLE unreadable_jobs_dead LIKE unreadable_jobs;
+
+-- What a handler writes beside its job, in the delivery's transaction or through the pool: one
+-- row per write, its note naming the write.
+CREATE TABLE audit (
+    job_id BIGINT,
+    note   TEXT
+);

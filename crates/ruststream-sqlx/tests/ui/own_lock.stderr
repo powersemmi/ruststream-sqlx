@@ -48,10 +48,10 @@ help: the trait `Unlock<sqlx::Postgres>` is not implemented for `Unlocked`
 13 | struct Unlocked {
    | ^^^^^^^^^^^^^^^
    = note: implement `Unlock<sqlx::Postgres>` for `Unlocked`, or drop `unlock` from `custom(..)`
-help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row>`
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
   --> src/inbox/queue.rs
    |
-   | / impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
    | | where
    | |     DB: QueueDatabase,
    | |     D: Dialect + Opens<Row::Opening> + 'static,
@@ -61,7 +61,8 @@ help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionall
    | |                     unsatisfied requirement introduced here: `Unlocked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
    | |                     unsatisfied requirement introduced here: `Unlocked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
    | |     Row::Form: FormOn<D>,
-   | |_________________________^
+   | |     Mode: InboxMode,
+   | |____________________^
 note: required for `Unlocked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
   --> tests/ui/own_lock.rs:13:8
    |
@@ -93,17 +94,18 @@ help: the trait `Unlock<sqlx::Postgres>` is not implemented for `HalfLocked`
 23 | struct HalfLocked {
    | ^^^^^^^^^^^^^^^^^
    = note: implement `Unlock<sqlx::Postgres>` for `HalfLocked`, or drop `unlock` from `custom(..)`
-help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row>`
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
   --> src/inbox/queue.rs
    |
-   | / impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
    | | where
    | |     DB: QueueDatabase,
    | |     D: Dialect + Opens<Row::Opening> + 'static,
    | |     Row: InboxRow + Events<DB> + PayloadRow,
    | |                     ---------- unsatisfied requirement introduced here: `HalfLocked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
    | |     Row::Form: FormOn<D>,
-   | |_________________________^
+   | |     Mode: InboxMode,
+   | |____________________^
 note: required for `HalfLocked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
   --> tests/ui/own_lock.rs:23:8
    |

@@ -21,6 +21,7 @@ mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
 mod time;
+mod transactional;
 mod tx;
 
 use std::fmt::Debug;
@@ -45,6 +46,7 @@ pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use subscriber::InboxSubscriber;
 pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
+pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, TransactionalStep, Tx};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.
 ///

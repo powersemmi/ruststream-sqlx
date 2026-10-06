@@ -461,6 +461,28 @@ pub struct Prepared {
     /// Whether the claim only selects its rows, so the claim's transaction stamps each one: a
     /// claim of the service's own, or a dialect whose lease claim writes no lease.
     pub stamps: bool,
+    /// Whether the subscription runs in transactional mode: its handler writes through the
+    /// delivery's transaction, which acknowledgement commits.
+    pub transactional: bool,
+    /// The text that opens a transaction at the table's opening in place of `BEGIN`, where the
+    /// dialect names one: what transactional mode opens a delivery's transaction with where the
+    /// claim leaves none open. Sent as text, never prepared.
+    pub begin_work: Option<&'static str>,
+    /// Where a handler's writes start in the claim's transaction: in the row lock form's
+    /// transactional mode, set after each claim that took a row; `None` elsewhere.
+    pub savepoint: Option<Savepoint>,
+}
+
+/// The savepoint a transactional delivery's handler writes after, in the claim's transaction.
+/// Machinery.
+///
+/// Its two texts are sent as they are, never prepared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Savepoint {
+    /// Sets the savepoint.
+    pub set: &'static str,
+    /// Rolls the transaction back to the savepoint, keeping it open.
+    pub rollback_to: &'static str,
 }
 
 /// A claim in progress.

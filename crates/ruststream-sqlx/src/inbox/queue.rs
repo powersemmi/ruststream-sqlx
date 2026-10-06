@@ -16,18 +16,19 @@ use ruststream_sqlx_dialect::{
 };
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
-use sqlx::Database;
+use sqlx::{Database, Pool};
 
 use super::advisory::LockBook;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
-use super::engine::{Events, IdAt, Prepared, Shape, intern, intern_name};
+use super::engine::{Events, IdAt, Prepared, Savepoint, Shape, intern, intern_name};
 use super::error::SqlxBrokerError;
 use super::kinds::Kinds;
 use super::lease::{self, LeaseBook};
 use super::publish::table_of;
 use super::subscriber::{Holding, InboxSubscriber};
 use super::time::LeaseRow;
+use super::transactional::{InboxMode, Plain, Transactional, TxBook};
 use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 
 mod check;
@@ -43,6 +44,10 @@ use check::check;
 /// rolls back and the row returns at once. That transaction opens at the table's `isolation`
 /// where the struct declares one, and a subscription to a table at a level the broker's dialect
 /// does not open ([`Opens`](crate::dialect::Opens)) does not compile.
+///
+/// Mounted with [`transactional`](crate::InboxSettings::transactional), a row lock subscription
+/// lends that transaction to its handler, which writes through it: acknowledgement commits the
+/// handler's writes with the row's settlement, and every other outcome discards them first.
 ///
 /// A table with a `#[field(locked_until)]` field is claimed by lease instead: the claim writes the
 /// lease's expiry into the row, counts the attempt and commits at once, so the handler runs
@@ -109,16 +114,18 @@ use check::check;
 /// # }
 /// # fn main() {}
 /// ```
-pub struct InboxQueue<Row> {
+pub struct InboxQueue<Row, Mode = Plain> {
     name: Cow<'static, str>,
     poll_interval: Option<Duration>,
     lease: Option<Duration>,
     declaration: RetryDeclaration,
-    _row: PhantomData<fn() -> Row>,
+    _row: PhantomData<fn() -> (Row, Mode)>,
 }
 
 impl<Row> InboxQueue<Row> {
-    /// A subscription to the queue `name` of `Row`'s table.
+    /// A subscription to the queue `name` of `Row`'s table, in the plain mode: the handler leaves
+    /// the delivery's transaction alone. The mount-site step
+    /// [`transactional`](crate::InboxSettings::transactional) switches it to transactional mode.
     ///
     /// # Examples
     ///
@@ -237,9 +244,21 @@ impl<Row> InboxQueue<Row> {
         self.lease = Some(lease);
         self
     }
+
+    /// The same subscription in transactional mode: what the mount-site step
+    /// [`transactional`](crate::InboxSettings::transactional) makes of it.
+    pub(crate) fn into_transactional(self) -> InboxQueue<Row, Transactional> {
+        InboxQueue {
+            name: self.name,
+            poll_interval: self.poll_interval,
+            lease: self.lease,
+            declaration: self.declaration,
+            _row: PhantomData,
+        }
+    }
 }
 
-impl<Row> Clone for InboxQueue<Row> {
+impl<Row, Mode> Clone for InboxQueue<Row, Mode> {
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -251,10 +270,11 @@ impl<Row> Clone for InboxQueue<Row> {
     }
 }
 
-impl<Row> fmt::Debug for InboxQueue<Row> {
+impl<Row, Mode: InboxMode> fmt::Debug for InboxQueue<Row, Mode> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InboxQueue")
             .field("row", &type_name::<Row>())
+            .field("transactional", &Mode::TRANSACTIONAL)
             .field("name", &self.name)
             .field("poll_interval", &self.poll_interval)
             .field("lease", &self.lease)
@@ -263,14 +283,15 @@ impl<Row> fmt::Debug for InboxQueue<Row> {
     }
 }
 
-impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
+impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
 where
     DB: QueueDatabase,
     D: Dialect + Opens<Row::Opening> + 'static,
     Row: InboxRow + Events<DB> + PayloadRow,
     Row::Form: FormOn<D>,
+    Mode: InboxMode,
 {
-    type Subscriber = InboxSubscriber<DB, Row>;
+    type Subscriber = InboxSubscriber<DB, Row, Mode>;
     type Copies = BrokerMoves;
 
     fn name(&self) -> &str {
@@ -281,7 +302,7 @@ where
         self,
         connected: &ConnectedSqlxBroker<DB, D>,
     ) -> Result<Self::Subscriber, SqlxBrokerError> {
-        open::<DB, Row>(
+        open::<DB, Row, Mode>(
             &connected.shared,
             &<Row::Form as FormOn<D>>::erase(&connected.dialect),
             &self.name,
@@ -653,6 +674,8 @@ fn build(
         take: take.as_ref().map(intern),
         take_then: take_then.as_ref().map(intern),
         stamps,
+        // The mode's own texts, which `open` sets for the subscription's mode.
+        ..Prepared::default()
     })
 }
 
@@ -679,19 +702,20 @@ fn one_or_two(
 }
 
 /// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
-/// `Row`: builds its statements with the dialect `form` shows, checks them, and registers the
-/// subscription so a second one is refused.
-pub(crate) async fn open<DB, Row>(
+/// `Row`, in `Mode`: builds its statements with the dialect `form` shows, checks them, and
+/// registers the subscription so a second one is refused.
+pub(crate) async fn open<DB, Row, Mode>(
     shared: &Arc<Shared<DB>>,
     form: &FormDialect,
     name: &str,
     timing: Timing,
     declaration: &RetryDeclaration,
     description: &Description,
-) -> Result<InboxSubscriber<DB, Row>, SqlxBrokerError>
+) -> Result<InboxSubscriber<DB, Row, Mode>, SqlxBrokerError>
 where
     DB: QueueDatabase,
     Row: Events<DB> + PayloadRow,
+    Mode: InboxMode,
 {
     let table = table_of(&description.spec);
     let row = description.row;
@@ -718,6 +742,19 @@ where
         other => other,
     })?;
     let begin_claim = form.begin_claim(&description.spec).map_err(refused)?;
+    // The claim's opening answered for the table's: what the row lock claim opens with, and what
+    // transactional mode opens a delivery's own transaction with.
+    let begin_work = form
+        .dialect()
+        .begin(description.spec.opening())
+        .map_err(refused)?;
+    let savepoint = savepoint_of::<Mode>(form, &description.spec).map_err(declared)?;
+    let prepared = Prepared {
+        transactional: Mode::TRANSACTIONAL,
+        begin_work,
+        savepoint,
+        ..prepared
+    };
     let table_name = intern_name(&table);
     // A table without groups is one queue, whatever name the subscription gives it.
     let group = description.spec.column(Role::Group).map(|_| name);
@@ -767,13 +804,49 @@ where
         ),
         None => (Holding::Transaction, None),
     };
+    // The subscription's own handle on the pool, which each delivery copies for the handler's
+    // context instead of counting a reference.
+    let pool: &'static Pool<DB> = Box::leak(Box::new(shared.pool.clone()));
+    // A transactional delivery's transaction waits in the book while its handler does not hold it.
+    let lending = queue.prepared.savepoint.map(|_| TxBook::leak());
     Ok(InboxSubscriber::new(
         Arc::clone(shared),
         queue,
         holding,
         registration,
         keeper,
+        pool,
+        lending,
     ))
+}
+
+/// Where a handler's writes start in the claim's transaction, for a subscription in `Mode` to the
+/// table `spec` describes through the dialect `form` shows: the row lock form's savepoint in
+/// transactional mode, `None` in the plain mode.
+///
+/// # Errors
+///
+/// Why the table's form refuses transactional mode.
+fn savepoint_of<Mode: InboxMode>(
+    form: &FormDialect,
+    spec: &TableSpec<'_>,
+) -> Result<Option<Savepoint>, String> {
+    if !Mode::TRANSACTIONAL {
+        return Ok(None);
+    }
+    match form {
+        FormDialect::RowLock(dialect) => Ok(Some(Savepoint {
+            set: dialect.savepoint(),
+            rollback_to: dialect.rollback_to_savepoint(),
+        })),
+        // Why a startup refusal: the lease and advisory lock forms keep no transaction open from
+        // the claim to the settlement, and transactional mode lends that transaction.
+        FormDialect::Lease(_) | FormDialect::Advisory(_) => Err(format!(
+            "transactional mode lends the claim's transaction to the handler, and the {} form \
+             keeps none open: mount the handler without `.transactional()`",
+            spec.form().name(),
+        )),
+    }
 }
 
 /// Whether the rows a subscription to `description` hands out carry the attempt its claim or its

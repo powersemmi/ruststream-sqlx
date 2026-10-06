@@ -63,6 +63,14 @@ pub trait QueueDatabase: Database {
         arguments: Self::Arguments,
     ) -> impl Future<Output = Result<u64, Error>> + Send + 'c;
 
+    /// Runs a statement that binds nothing as text, unprepared: a savepoint, which a server need
+    /// not prepare. Machinery.
+    #[doc(hidden)]
+    fn execute_text<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
+
     /// Runs a claim or a fetch of whole rows of `queue` into `out`: a row its struct does not
     /// decode is [`Claimed::Undecodable`], its id read alone where the queue's select carries it
     /// and its attempt as the struct reads it. Machinery.
@@ -169,6 +177,12 @@ where
     ) -> Result<u64, Error> {
         let result: AnyQueryResult = sqlx::query_with(sql, arguments).execute(conn).await?.into();
         Ok(result.rows_affected())
+    }
+
+    async fn execute_text(conn: &mut Self::Connection, sql: &'static str) -> Result<(), Error> {
+        // A bare text binds nothing, so sqlx sends it as is, without preparing it.
+        conn.execute(sql).await?;
+        Ok(())
     }
 
     async fn fetch_rows<'c, Row>(
