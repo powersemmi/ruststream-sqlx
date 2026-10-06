@@ -55,11 +55,16 @@ pub trait RowLock: Dialect {
     /// The statement that claims up to [`Param::Limit`](crate::Param::Limit) rows of the
     /// subscription's group, in claim order, and locks them until the claim's transaction ends.
     ///
+    /// A table with FIFO groups keeps one row of a group in work. Its claim takes the group's
+    /// head, the first unfinished row of the group in claim order, and takes nothing while the
+    /// head is in work (another claim's transaction holds it) or not yet due. It binds no
+    /// [`Param::Limit`](crate::Param::Limit).
+    ///
     /// # Errors
     ///
-    /// [`StatementError::FormMismatch`] for a table in another form;
-    /// [`StatementError::UnsupportedFifo`] when the table has FIFO groups and the dialect has no
-    /// claim that keeps them in order.
+    /// [`StatementError::FormMismatch`] for a table in another form. A dialect of the service's
+    /// own that builds no claim for FIFO groups returns [`StatementError::UnsupportedFifo`] for a
+    /// table with them.
     ///
     /// # Examples
     ///
@@ -78,6 +83,26 @@ pub trait RowLock: Dialect {
     ///     r#"SELECT "job_id" FROM "jobs" WHERE "name" = $1 AND "retry_after" <= $2 ORDER BY "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#,
     /// );
     /// assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    ///
+    /// The claim of a FIFO group locks the group's head alone:
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")] {
+    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Param, Postgres, RowLock, TableSpec};
+    ///
+    /// const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+    ///     .fifo_group(Column::new("account"))
+    ///     .payload(Column::new("payload"));
+    ///
+    /// let claim = Postgres.lock_claim(&LEDGER, ClaimShape::Ids)?;
+    /// assert_eq!(
+    ///     claim.sql(),
+    ///     r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 ORDER BY "id" LIMIT 1) FOR UPDATE SKIP LOCKED"#,
+    /// );
+    /// assert_eq!(claim.params(), [Param::Group]);
     /// # }
     /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
     /// ```

@@ -223,3 +223,29 @@ fn the_new_errors_name_what_to_do() {
          declare `locked_until`"
     );
 }
+
+/// A ledger whose accounts keep their order, in the lease form.
+const LEASED_LEDGER: TableSpec<'static> = TableSpec::new(
+    "ledger",
+    Column::new("id"),
+    Form::Lease(Column::new("locked_until")),
+)
+.fifo_group(Column::new("account"))
+.retry_after(Column::new("retry_after"))
+.attempt(Column::new("attempt"))
+.processed_at(Column::new("processed_at"))
+.payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_lease_claim_stamps_the_head_alone() -> Result<(), Box<dyn Error>> {
+    let claim = Postgres.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
+    assert_eq!(
+        claim.sql(),
+        r#"WITH __claimed AS (SELECT "id", "account", "retry_after", "attempt", "locked_until", "processed_at", "payload" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 AND ("locked_until" IS NULL OR "locked_until" <= $3) FOR UPDATE SKIP LOCKED), __stamped AS (UPDATE "ledger" AS __row SET "locked_until" = $4, "attempt" = __row."attempt" + 1 FROM __claimed WHERE __row."id" = __claimed."id") SELECT * FROM __claimed ORDER BY "retry_after", "id""#,
+    );
+    assert_eq!(
+        claim.params(),
+        [Param::Group, Param::Now, Param::LeaseNow, Param::Lease]
+    );
+    Ok(())
+}

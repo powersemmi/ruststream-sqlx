@@ -231,7 +231,6 @@ impl RowLock for MySql {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         self.locked(spec, "lock_claim")?;
-        self.in_order(spec)?;
         let mut sql = SqlWriter::new(self);
         sql.claim(spec, shape, LOCK);
         Ok(sql.finish())
@@ -251,7 +250,6 @@ impl Lease for MySql {
         // An update cannot return the rows it changed here, so the claim selects the claimable
         // rows under a lock, and its transaction then stamps each of them.
         self.leased(spec, "lease_claim")?;
-        self.in_order(spec)?;
         let mut sql = SqlWriter::new(self);
         sql.claim(spec, shape, LOCK);
         Ok(sql.finish())

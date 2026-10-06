@@ -170,7 +170,6 @@ impl Lease for Sqlite {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         let expiry = self.leased(spec, "lease_claim")?;
-        self.in_order(spec)?;
         let mut sql = SqlWriter::new(self);
         sql.returning_claim(spec, shape, expiry.name());
         Ok(sql.finish())

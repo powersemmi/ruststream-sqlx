@@ -64,12 +64,17 @@ pub trait Lease: Dialect {
     /// new lease ([`Param::Lease`](crate::Param::Lease)), counts the attempt, and returns the rows
     /// as they were before.
     ///
+    /// A table with FIFO groups keeps one row of a group in work. Its claim takes the group's
+    /// head, the first unfinished row of the group in claim order, and takes nothing while the
+    /// head is in work (a lease holds it) or not yet due. It binds no
+    /// [`Param::Limit`](crate::Param::Limit).
+    ///
     /// # Errors
     ///
     /// [`StatementError::FormMismatch`] for a table in another form;
-    /// [`StatementError::LeaseOnDatabaseClock`] for a lease table on the database's clock;
-    /// [`StatementError::UnsupportedFifo`] when the table has FIFO groups and the dialect has no
-    /// claim that keeps them in order.
+    /// [`StatementError::LeaseOnDatabaseClock`] for a lease table on the database's clock. A
+    /// dialect of the service's own that builds no claim for FIFO groups returns
+    /// [`StatementError::UnsupportedFifo`] for a table with them.
     ///
     /// # Examples
     ///

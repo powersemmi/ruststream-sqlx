@@ -273,6 +273,29 @@ impl Display for NameLimit {
 /// );
 /// # }
 /// ```
+///
+/// A dialect of the service's own that builds no claim for FIFO groups refuses a table with them:
+///
+/// ```
+/// use ruststream_sqlx_dialect::{Column, Form, Param, Statement, StatementError, TableSpec};
+///
+/// // The row lock claim of a SQL Server dialect the service writes itself.
+/// fn lock_claim(spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///     if spec.is_fifo() {
+///         return Err(StatementError::UnsupportedFifo { dialect: "mssql" });
+///     }
+///     Ok(Statement::new(
+///         "SELECT TOP (@p1) [id], [payload] FROM [ledger] WITH (UPDLOCK, READPAST) ORDER BY [id]",
+///         [Param::Limit],
+///     ))
+/// }
+///
+/// const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+///     .fifo_group(Column::new("account"));
+///
+/// let refused = lock_claim(&LEDGER).map_err(|refused| refused.to_string());
+/// assert_eq!(refused, Err("the mssql dialect has no claim for FIFO groups".to_owned()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum StatementError {
@@ -304,7 +327,8 @@ pub enum StatementError {
         /// The name of the table's form.
         form: &'static str,
     },
-    /// The dialect has no claim that keeps a group in order.
+    /// The dialect has no claim that keeps a group in order. A dialect of the service's own
+    /// returns it from a claim of a table with FIFO groups when it builds no claim for them.
     #[error("the {dialect} dialect has no claim for FIFO groups")]
     UnsupportedFifo {
         /// The dialect's name.

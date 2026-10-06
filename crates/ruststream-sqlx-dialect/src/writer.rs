@@ -14,6 +14,46 @@ use crate::table_name::TableName;
 /// The keys a claim orders by before the id, the most significant first.
 const ORDER_KEYS: [Role; 2] = [Role::Priority, Role::RetryAfter];
 
+/// A condition a claim puts on a row, written only where the table has the column it reads.
+#[derive(Debug, Clone, Copy)]
+enum Condition {
+    /// The row is in the subscription's group.
+    InGroup,
+    /// The row's time has come.
+    Due,
+    /// The row carries no finish mark.
+    Unfinished,
+    /// No lease holds the row.
+    Free,
+}
+
+impl Condition {
+    /// The role of the column the condition reads.
+    fn role(self) -> Role {
+        match self {
+            Self::InGroup => Role::Group,
+            Self::Due => Role::RetryAfter,
+            Self::Unfinished => Role::ProcessedAt,
+            Self::Free => Role::LockedUntil,
+        }
+    }
+}
+
+/// What a row meets to be claimed, in the order a claim of many rows writes it.
+const CLAIMABLE: [Condition; 4] = [
+    Condition::InGroup,
+    Condition::Due,
+    Condition::Unfinished,
+    Condition::Free,
+];
+
+/// What makes a row a candidate for its group's head: the head is the first of these rows in
+/// claim order.
+const HEAD: [Condition; 2] = [Condition::InGroup, Condition::Unfinished];
+
+/// What the head of a group meets for a claim to take it.
+const TAKING: [Condition; 2] = [Condition::Due, Condition::Free];
+
 /// The columns a reader that knows no struct reads, with the roles they play: `id`,
 /// `partition_key`, `attempt`, `headers` and `payload`, in [`Role::ALL`] order and only where the
 /// table has them.
@@ -168,17 +208,6 @@ pub(crate) trait BuiltIn: Dialect {
                 form: other.name(),
             }),
         }
-    }
-
-    /// Refuses a table with FIFO groups for a claim: the built-in claims skip locked rows and
-    /// would skip a group's head.
-    fn in_order(&self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
-        if spec.is_fifo() {
-            return Err(StatementError::UnsupportedFifo {
-                dialect: self.name(),
-            });
-        }
-        Ok(())
     }
 
     /// Checks that a row of `spec` can move into `target`: the form is built, a lease table
@@ -549,29 +578,43 @@ where
     /// The conditions a row meets to be claimed, each present only with its column: the
     /// subscription's group, a time that has come, no finish mark, no lease in force.
     pub(crate) fn claimable(&mut self, spec: &TableSpec<'_>) -> &mut Self {
-        let mut keyword = " WHERE ";
-        if let Some(group) = spec.column(Role::Group) {
-            self.push(keyword)
-                .ident(group.name())
-                .push(" = ")
-                .param(Param::Group);
+        self.conditions(spec, &CLAIMABLE, " WHERE ")
+    }
+
+    /// The conditions of a row that may be its group's head, each present only with its column:
+    /// the subscription's group, no finish mark.
+    fn head_conditions(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        self.conditions(spec, &HEAD, " WHERE ")
+    }
+
+    /// The conditions the head of a group meets for a claim to take it, each present only with
+    /// its column and each after ` AND `, as they follow the condition that names the head: a
+    /// time that has come, no lease in force.
+    fn taking_conditions(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        self.conditions(spec, &TAKING, " AND ")
+    }
+
+    /// Each of `conditions` the table has a column for: the first after `keyword`, the others
+    /// after ` AND `.
+    fn conditions(
+        &mut self,
+        spec: &TableSpec<'_>,
+        conditions: &[Condition],
+        keyword: &str,
+    ) -> &mut Self {
+        let mut keyword = keyword;
+        for &condition in conditions {
+            let Some(column) = spec.column(condition.role()) else {
+                continue;
+            };
+            self.push(keyword);
             keyword = " AND ";
-        }
-        if let Some(retry_after) = spec.column(Role::RetryAfter) {
-            self.push(keyword)
-                .ident(retry_after.name())
-                .push(" <= ")
-                .now(spec);
-            keyword = " AND ";
-        }
-        if let Some(processed_at) = spec.column(Role::ProcessedAt) {
-            self.push(keyword)
-                .ident(processed_at.name())
-                .push(" IS NULL");
-            keyword = " AND ";
-        }
-        if let Some(expiry) = spec.column(Role::LockedUntil) {
-            self.push(keyword).lease_free(expiry.name());
+            match condition {
+                Condition::InGroup => self.ident(column.name()).push(" = ").param(Param::Group),
+                Condition::Due => self.ident(column.name()).push(" <= ").now(spec),
+                Condition::Unfinished => self.ident(column.name()).push(" IS NULL"),
+                Condition::Free => self.lease_free(column.name()),
+            };
         }
         self
     }
@@ -636,16 +679,33 @@ where
         }
     }
 
-    /// A claim's select after its columns: the claimable rows of the table in claim order, at
-    /// most [`Param::Limit`] of them, locked by `lock`.
+    /// A claim's select after its columns, locked by `lock`: the claimable rows of the table in
+    /// claim order, at most [`Param::Limit`] of them; in a table with FIFO groups, the group's
+    /// head alone, while it is due and free.
     fn claimed_rows(&mut self, spec: &TableSpec<'_>, lock: &str) -> &mut Self {
-        self.push(" FROM ")
-            .table(spec)
-            .claimable(spec)
-            .claim_order(spec, spec.id().name())
-            .push(" LIMIT ")
-            .param(Param::Limit)
-            .push(lock)
+        let id = spec.id().name();
+        self.push(" FROM ").table(spec);
+        if spec.is_fifo() {
+            // The select of the head takes no lock, so a head another claim holds stays the head:
+            // `lock` falls on the head row alone, and a held head leaves the claim empty instead
+            // of handing out the row behind it.
+            self.push(" WHERE ")
+                .ident(id)
+                .push(" = (SELECT ")
+                .ident(id)
+                .push(" FROM ")
+                .table(spec)
+                .head_conditions(spec)
+                .claim_order(spec, id)
+                .push(" LIMIT 1)")
+                .taking_conditions(spec);
+        } else {
+            self.claimable(spec)
+                .claim_order(spec, id)
+                .push(" LIMIT ")
+                .param(Param::Limit);
+        }
+        self.push(lock)
     }
 
     /// The claim that selects rows and locks them with `lock`: the columns of `shape`, of the

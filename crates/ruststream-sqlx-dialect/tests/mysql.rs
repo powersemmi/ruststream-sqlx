@@ -497,7 +497,7 @@ fn the_lease_cannot_read_the_database_clock() {
 }
 
 #[test]
-fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<dyn Error>> {
+fn forms_this_dialect_does_not_build_are_refused() -> Result<(), Box<dyn Error>> {
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     let unsupported = StatementError::UnsupportedForm {
         dialect: "mysql",
@@ -544,15 +544,49 @@ fn forms_and_groups_this_dialect_does_not_build_are_refused() -> Result<(), Box<
         MySql.lock_claim(&LEASED, ClaimShape::Rows),
         Err(other("lock_claim", "lease"))
     );
+    Ok(())
+}
 
+/// A ledger whose accounts keep their order: one row of an account in work, taken in claim order.
+const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+    .fifo_group(Column::new("account"))
+    .retry_after(Column::new("retry_after"))
+    .attempt(Column::new("attempt"))
+    .processed_at(Column::new("processed_at"))
+    .payload(Column::new("payload"));
+
+/// The same ledger in the lease form.
+const LEASED_LEDGER: TableSpec<'static> = TableSpec::new(
+    "ledger",
+    Column::new("id"),
+    Form::Lease(Column::new("locked_until")),
+)
+.fifo_group(Column::new("account"))
+.retry_after(Column::new("retry_after"))
+.attempt(Column::new("attempt"))
+.processed_at(Column::new("processed_at"))
+.payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn Error>> {
+    let claim = MySql.lock_claim(&LEDGER, ClaimShape::Rows)?;
     assert_eq!(
-        MySql.lock_claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo { dialect: "mysql" })
+        claim.sql(),
+        "SELECT `id`, `account`, `retry_after`, `attempt`, `processed_at`, `payload` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? FOR UPDATE SKIP LOCKED",
     );
+    assert_eq!(claim.params(), [Param::Group, Param::Now]);
+    Ok(())
+}
+
+#[test]
+fn a_fifo_lease_claim_selects_the_head_alone() -> Result<(), Box<dyn Error>> {
+    // The claim selects the head under a lock, and its transaction stamps it.
+    let claim = MySql.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
     assert_eq!(
-        MySql.lease_claim(&LEASED.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo { dialect: "mysql" })
+        claim.sql(),
+        "SELECT `id`, `account`, `retry_after`, `attempt`, `locked_until`, `processed_at`, `payload` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) FOR UPDATE SKIP LOCKED",
     );
+    assert_eq!(claim.params(), [Param::Group, Param::Now, Param::LeaseNow]);
     Ok(())
 }
 

@@ -175,7 +175,6 @@ impl RowLock for Postgres {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         self.locked(spec, "lock_claim")?;
-        self.in_order(spec)?;
         let mut sql = SqlWriter::new(self);
         sql.claim(spec, shape, LOCK);
         Ok(sql.finish())
@@ -189,7 +188,6 @@ impl Lease for Postgres {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         let expiry = self.leased(spec, "lease_claim")?;
-        self.in_order(spec)?;
         let mut sql = SqlWriter::new(self);
         sql.lease_claim(spec, shape, expiry.name(), LOCK);
         Ok(sql.finish())

@@ -141,7 +141,7 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
 }
 
 #[test]
-fn the_row_lock_claim_refuses_tables_of_other_forms_and_fifo_groups() {
+fn the_row_lock_claim_refuses_tables_of_other_forms() {
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     assert_eq!(
         Postgres.lock_claim(&advisory, ClaimShape::Rows),
@@ -160,12 +160,6 @@ fn the_row_lock_claim_refuses_tables_of_other_forms_and_fifo_groups() {
         Err(StatementError::FormMismatch {
             statement: "lock_claim",
             form: "lease",
-        })
-    );
-    assert_eq!(
-        Postgres.lock_claim(&EMAILS.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo {
-            dialect: "postgres"
         })
     );
 }
@@ -463,5 +457,29 @@ fn the_database_clock_reads_the_statement_timestamp() -> Result<(), StatementErr
         r#"UPDATE "app"."email_jobs" SET "retry_after" = statement_timestamp() + $1 * interval '1 microsecond', "attempt" = "attempt" + 1 WHERE "job_id" = $2"#
     );
     assert_eq!(retry_after.params(), [Param::Delay, Param::Id]);
+    Ok(())
+}
+
+/// A ledger whose accounts keep their order: one row of an account in work, taken in claim order.
+const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
+    .fifo_group(Column::new("account"))
+    .retry_after(Column::new("retry_after"))
+    .attempt(Column::new("attempt"))
+    .processed_at(Column::new("processed_at"))
+    .payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn Error>> {
+    let claim = Postgres.lock_claim(&LEDGER, ClaimShape::Rows)?;
+    assert_eq!(
+        claim.sql(),
+        r#"SELECT "id", "account", "retry_after", "attempt", "processed_at", "payload" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 FOR UPDATE SKIP LOCKED"#,
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Now]);
+    let ids = Postgres.lock_claim(&LEDGER, ClaimShape::Ids)?;
+    assert_eq!(
+        ids.sql(),
+        r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 FOR UPDATE SKIP LOCKED"#,
+    );
     Ok(())
 }

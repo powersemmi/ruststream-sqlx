@@ -380,7 +380,7 @@ fn the_row_lock_form_is_refused_for_every_statement() -> Result<(), Box<dyn Erro
 }
 
 #[test]
-fn the_advisory_form_and_fifo_groups_are_refused() -> Result<(), Box<dyn Error>> {
+fn the_advisory_form_is_refused() -> Result<(), Box<dyn Error>> {
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     let unsupported = StatementError::UnsupportedForm {
         dialect: "sqlite",
@@ -398,9 +398,31 @@ fn the_advisory_form_and_fifo_groups_are_refused() -> Result<(), Box<dyn Error>>
         Sqlite.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
         Err(unsupported)
     );
+    Ok(())
+}
+
+/// A ledger whose accounts keep their order, in the lease form.
+const LEASED_LEDGER: TableSpec<'static> = TableSpec::new(
+    "ledger",
+    Column::new("id"),
+    Form::Lease(Column::new("locked_until")),
+)
+.fifo_group(Column::new("account"))
+.retry_after(Column::new("retry_after"))
+.attempt(Column::new("attempt"))
+.processed_at(Column::new("processed_at"))
+.payload(Column::new("payload"));
+
+#[test]
+fn a_fifo_lease_claim_returns_the_head_alone() -> Result<(), Box<dyn Error>> {
+    let claim = Sqlite.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
     assert_eq!(
-        Sqlite.lease_claim(&LEASED.fifo_group(Column::new("name")), ClaimShape::Rows),
-        Err(StatementError::UnsupportedFifo { dialect: "sqlite" })
+        claim.sql(),
+        r#"UPDATE "ledger" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "id" IN (SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = ? AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= ? AND ("locked_until" IS NULL OR "locked_until" <= ?)) RETURNING "id", "account", "retry_after", "attempt" - 1 AS "attempt", "locked_until", "processed_at", "payload""#,
+    );
+    assert_eq!(
+        claim.params(),
+        [Param::Lease, Param::Group, Param::Now, Param::LeaseNow]
     );
     Ok(())
 }
