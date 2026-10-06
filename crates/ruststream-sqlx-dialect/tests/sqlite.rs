@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Lease, Param, Role, Sqlite, Statement,
-    StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, Isolation, KeyPart, Lease, Mode, Opening, Opens, Param,
+    Role, Sqlite, Statement, StatementError, TableName, TableSpec, level,
 };
 
 const EXPIRY: Column<'static> = Column::new("locked_until");
@@ -273,6 +273,61 @@ fn an_extension_and_a_stamp_write_the_lease() -> Result<(), StatementError> {
 fn a_claim_of_the_services_own_opens_its_transaction_for_writing() {
     // The write lock is taken before the claim's select, so two claims never read one row.
     assert_eq!(Sqlite.begin_lease_claim(), Some("BEGIN IMMEDIATE"));
+}
+
+#[test]
+fn transactions_open_in_the_declared_mode() -> Result<(), Box<dyn Error>> {
+    assert_eq!(Sqlite.begin(Opening::Default)?, None);
+    assert_eq!(
+        Sqlite.begin(Opening::Mode(Mode::Immediate))?,
+        Some("BEGIN IMMEDIATE")
+    );
+    assert_eq!(
+        Sqlite.begin(Opening::Mode(Mode::Exclusive))?,
+        Some("BEGIN EXCLUSIVE")
+    );
+    assert_eq!(
+        Sqlite.begin(Opening::Mode(Mode::Deferred))?,
+        Some("BEGIN DEFERRED")
+    );
+    assert_eq!(
+        Sqlite.begin(Opening::Isolation(Isolation::Serializable)),
+        Err(StatementError::UnsupportedOpening {
+            dialect: "sqlite",
+            opening: Opening::Isolation(Isolation::Serializable).name(),
+        })
+    );
+    assert!(
+        Sqlite
+            .begin(Opening::Isolation(Isolation::ReadUncommitted))
+            .is_err()
+    );
+    assert_eq!(Sqlite.savepoint(), "SAVEPOINT ruststream_claim");
+    assert_eq!(
+        Sqlite.rollback_to_savepoint(),
+        "ROLLBACK TO SAVEPOINT ruststream_claim"
+    );
+    Ok(())
+}
+
+/// The text a table that names `Level` opens its transactions with: the bound holds where the
+/// dialect opens the level.
+fn begin_at<Level, D: Opens<Level>>(
+    dialect: &D,
+    opening: Opening,
+) -> Result<Option<&'static str>, StatementError> {
+    dialect.begin(opening)
+}
+
+#[test]
+fn every_mode_sqlite_opens_is_one_its_begin_accepts() {
+    let opened = [
+        begin_at::<(), _>(&Sqlite, Opening::Default),
+        begin_at::<level::Deferred, _>(&Sqlite, Opening::Mode(Mode::Deferred)),
+        begin_at::<level::Immediate, _>(&Sqlite, Opening::Mode(Mode::Immediate)),
+        begin_at::<level::Exclusive, _>(&Sqlite, Opening::Mode(Mode::Exclusive)),
+    ];
+    assert!(opened.iter().all(Result::is_ok), "{opened:?}");
 }
 
 #[test]

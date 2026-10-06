@@ -483,7 +483,7 @@ pub struct Queue {
     /// The subscription's statements.
     pub prepared: Prepared,
     /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
-    /// names one.
+    /// names one: the row lock claim's at the table's opening.
     pub begin_claim: Option<&'static str>,
     /// Whether the rows a claim hands out carry the attempt it counted, so a delivery reports one
     /// less.
@@ -660,15 +660,17 @@ where
     if let Some(refused) = refused_declaration(name, declaration, description) {
         return Err(refused);
     }
+    let refused = |source| SqlxBrokerError::Dialect {
+        subscription: name.to_owned(),
+        table: table.clone(),
+        row,
+        source,
+    };
     let prepared = build(form, declaration, description, &declared).map_err(|err| match err {
-        SqlxBrokerError::Dialect { source, .. } => SqlxBrokerError::Dialect {
-            subscription: name.to_owned(),
-            table: table.clone(),
-            row,
-            source,
-        },
+        SqlxBrokerError::Dialect { source, .. } => refused(source),
         other => other,
     })?;
+    let begin_claim = form.begin_claim(&description.spec).map_err(refused)?;
     let table_name = intern_name(&table);
     // A table without groups is one queue, whatever name the subscription gives it.
     let group = description.spec.column(Role::Group).map(|_| name);
@@ -685,7 +687,7 @@ where
         native_retry_after: description.native_retry_after(),
         kinds: description.kinds,
         prepared,
-        begin_claim: form.begin_claim(),
+        begin_claim,
         counted_attempt: counted_attempt(form, description, &prepared),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description

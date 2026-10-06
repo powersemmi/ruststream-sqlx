@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
 use crate::lease::Lease;
+use crate::opening::{Isolation, Opening, Opens, level};
 use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
@@ -19,8 +20,16 @@ const DATABASE_NOW: &str = "UTC_TIMESTAMP(6)";
 const LOCK: &str = " FOR UPDATE SKIP LOCKED";
 
 /// How a claim's transaction opens: at READ COMMITTED, which takes no gap locks. Both statements
-/// travel as one text query, in the round trip `BEGIN` would take.
+/// travel as one text query, in the round trip `BEGIN` would take, and the level holds for this
+/// transaction alone.
 const BEGIN_CLAIM: &str = "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION";
+
+// The levels a table names open the same way: one round trip, the level for this transaction.
+const BEGIN_READ_UNCOMMITTED: &str =
+    "SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; START TRANSACTION";
+const BEGIN_REPEATABLE_READ: &str =
+    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION";
+const BEGIN_SERIALIZABLE: &str = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; START TRANSACTION";
 
 /// The oldest release of a server whose claims skip locked rows, and how a refusal names it.
 #[derive(Debug, Clone, Copy)]
@@ -54,12 +63,14 @@ const MARIADB_FLOOR: Floor = Floor {
 /// the database's clock reads `UTC_TIMESTAMP(6)`. [`fetch`](Dialect::fetch) is refused, so a
 /// claim of the service's own brings a fetch of its own.
 ///
-/// A claim's transaction opens at READ COMMITTED in both forms
-/// ([`begin_lock_claim`](RowLock::begin_lock_claim), [`begin_lease_claim`](Lease::begin_lease_claim)):
-/// under the default REPEATABLE READ a locking read also locks the gaps between the rows it
-/// scans, so a claim held for a handler would block every insert into the table until it ends. A
-/// server whose binary log records statements (`binlog_format = STATEMENT`) refuses writes in
-/// such a transaction; the row and mixed formats accept them.
+/// A claim's transaction opens at READ COMMITTED in both forms ([`begin`](Dialect::begin) for a
+/// table that names no level, [`begin_lease_claim`](Lease::begin_lease_claim)): under the
+/// server's default REPEATABLE READ a locking read also locks the gaps between the rows it scans,
+/// so a claim held for a handler would block every insert into the table until it ends. A server
+/// whose binary log records statements (`binlog_format = STATEMENT`) refuses writes in such a
+/// transaction; the row and mixed formats accept them. A row lock table that names a level opens
+/// its claims at it, any of the four, READ UNCOMMITTED included; REPEATABLE READ and SERIALIZABLE
+/// bring the gap locks back.
 ///
 /// # Examples
 ///
@@ -222,7 +233,27 @@ impl Dialect for MySql {
             required: floor.name,
         })
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        match opening {
+            Opening::Default | Opening::Isolation(Isolation::ReadCommitted) => {
+                Ok(Some(BEGIN_CLAIM))
+            }
+            Opening::Isolation(Isolation::ReadUncommitted) => Ok(Some(BEGIN_READ_UNCOMMITTED)),
+            Opening::Isolation(Isolation::RepeatableRead) => Ok(Some(BEGIN_REPEATABLE_READ)),
+            Opening::Isolation(Isolation::Serializable) => Ok(Some(BEGIN_SERIALIZABLE)),
+            Opening::Mode(_) => Err(opening.refused(self.name())),
+        }
+    }
 }
+
+impl Opens<level::ReadUncommitted> for MySql {}
+
+impl Opens<level::ReadCommitted> for MySql {}
+
+impl Opens<level::RepeatableRead> for MySql {}
+
+impl Opens<level::Serializable> for MySql {}
 
 impl RowLock for MySql {
     fn lock_claim(
@@ -234,10 +265,6 @@ impl RowLock for MySql {
         let mut sql = SqlWriter::new(self);
         sql.claim(spec, shape, LOCK);
         Ok(sql.finish())
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        Some(BEGIN_CLAIM)
     }
 }
 

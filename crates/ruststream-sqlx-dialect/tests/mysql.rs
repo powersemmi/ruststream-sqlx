@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Lease, MySql, NameLimit, Param, Role, RowLock,
-    Statement, StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, Isolation, KeyPart, Lease, Mode, MySql, NameLimit, Opening,
+    Opens, Param, Role, RowLock, Statement, StatementError, TableName, TableSpec, level,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -591,10 +591,73 @@ fn a_fifo_lease_claim_selects_the_head_alone() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn a_claim_transaction_opens_at_read_committed_in_both_forms() {
+fn a_claim_transaction_opens_at_read_committed_in_both_forms() -> Result<(), StatementError> {
     let read_committed = Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION");
-    assert_eq!(MySql.begin_lock_claim(), read_committed);
+    // A table that names no isolation level opens its row lock claim at READ COMMITTED.
+    assert_eq!(MySql.begin(BARE.opening())?, read_committed);
     assert_eq!(MySql.begin_lease_claim(), read_committed);
+    Ok(())
+}
+
+#[test]
+fn transactions_open_at_the_declared_isolation() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        MySql.begin(Opening::Default)?,
+        Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::ReadUncommitted))?,
+        Some("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::ReadCommitted))?,
+        Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::RepeatableRead))?,
+        Some("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Isolation(Isolation::Serializable))?,
+        Some("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; START TRANSACTION")
+    );
+    assert_eq!(
+        MySql.begin(Opening::Mode(Mode::Immediate)),
+        Err(StatementError::UnsupportedOpening {
+            dialect: "mysql",
+            opening: Opening::Mode(Mode::Immediate).name(),
+        })
+    );
+    assert_eq!(MySql.savepoint(), "SAVEPOINT ruststream_claim");
+    assert_eq!(
+        MySql.rollback_to_savepoint(),
+        "ROLLBACK TO SAVEPOINT ruststream_claim"
+    );
+    Ok(())
+}
+
+/// The text a table that names `Level` opens its transactions with: the bound holds where the
+/// dialect opens the level.
+fn begin_at<Level, D: Opens<Level>>(
+    dialect: &D,
+    opening: Opening,
+) -> Result<Option<&'static str>, StatementError> {
+    dialect.begin(opening)
+}
+
+#[test]
+fn every_level_mysql_opens_is_one_its_begin_accepts() {
+    let opened = [
+        begin_at::<(), _>(&MySql, Opening::Default),
+        begin_at::<level::ReadUncommitted, _>(
+            &MySql,
+            Opening::Isolation(Isolation::ReadUncommitted),
+        ),
+        begin_at::<level::ReadCommitted, _>(&MySql, Opening::Isolation(Isolation::ReadCommitted)),
+        begin_at::<level::RepeatableRead, _>(&MySql, Opening::Isolation(Isolation::RepeatableRead)),
+        begin_at::<level::Serializable, _>(&MySql, Opening::Isolation(Isolation::Serializable)),
+    ];
+    assert!(opened.iter().all(Result::is_ok), "{opened:?}");
 }
 
 #[test]

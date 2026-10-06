@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Lease, NameLimit, Param, Postgres, Role, RowLock,
-    Statement, StatementError, TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, Isolation, KeyPart, Lease, Mode, NameLimit, Opening, Opens,
+    Param, Postgres, Role, RowLock, Statement, StatementError, TableName, TableSpec, level,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -165,9 +165,11 @@ fn the_row_lock_claim_refuses_tables_of_other_forms() {
 }
 
 #[test]
-fn a_claim_transaction_opens_with_a_plain_begin() {
-    assert_eq!(Postgres.begin_lock_claim(), None);
+fn a_claim_transaction_opens_with_a_plain_begin() -> Result<(), StatementError> {
+    // A table that names no isolation level opens its row lock claim with `BEGIN`.
+    assert_eq!(Postgres.begin(BARE.opening())?, None);
     assert_eq!(Postgres.begin_lease_claim(), None);
+    Ok(())
 }
 
 #[test]
@@ -482,4 +484,61 @@ fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn E
         r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 FOR UPDATE SKIP LOCKED"#,
     );
     Ok(())
+}
+
+#[test]
+fn transactions_open_at_the_declared_isolation() -> Result<(), Box<dyn Error>> {
+    assert_eq!(Postgres.begin(Opening::Default)?, None);
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::Serializable))?,
+        Some("BEGIN ISOLATION LEVEL SERIALIZABLE")
+    );
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::RepeatableRead))?,
+        Some("BEGIN ISOLATION LEVEL REPEATABLE READ")
+    );
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::ReadCommitted))?,
+        Some("BEGIN ISOLATION LEVEL READ COMMITTED")
+    );
+    assert_eq!(
+        Postgres.begin(Opening::Isolation(Isolation::ReadUncommitted)),
+        Err(StatementError::UnsupportedOpening {
+            dialect: "postgres",
+            opening: Opening::Isolation(Isolation::ReadUncommitted).name(),
+        })
+    );
+    assert!(Postgres.begin(Opening::Mode(Mode::Immediate)).is_err());
+    assert_eq!(Postgres.savepoint(), "SAVEPOINT ruststream_claim");
+    assert_eq!(
+        Postgres.rollback_to_savepoint(),
+        "ROLLBACK TO SAVEPOINT ruststream_claim"
+    );
+    Ok(())
+}
+
+/// The text a table that names `Level` opens its transactions with: the bound holds where the
+/// dialect opens the level.
+fn begin_at<Level, D: Opens<Level>>(
+    dialect: &D,
+    opening: Opening,
+) -> Result<Option<&'static str>, StatementError> {
+    dialect.begin(opening)
+}
+
+#[test]
+fn every_level_postgres_opens_is_one_its_begin_accepts() {
+    let opened = [
+        begin_at::<(), _>(&Postgres, Opening::Default),
+        begin_at::<level::ReadCommitted, _>(
+            &Postgres,
+            Opening::Isolation(Isolation::ReadCommitted),
+        ),
+        begin_at::<level::RepeatableRead, _>(
+            &Postgres,
+            Opening::Isolation(Isolation::RepeatableRead),
+        ),
+        begin_at::<level::Serializable, _>(&Postgres, Opening::Isolation(Isolation::Serializable)),
+    ];
+    assert!(opened.iter().all(Result::is_ok), "{opened:?}");
 }

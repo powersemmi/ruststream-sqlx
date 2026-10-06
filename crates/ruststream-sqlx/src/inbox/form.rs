@@ -102,13 +102,21 @@ impl FormDialect {
         }
     }
 
-    /// The statement that opens a claim's transaction in place of `BEGIN`, where the dialect
-    /// names one for the table's form.
-    pub(crate) fn begin_claim(&self) -> Option<&'static str> {
+    /// The statement that opens a claim's transaction of `spec`'s table in place of `BEGIN`,
+    /// where the dialect names one: the row lock claim's opens at the table's opening, the lease
+    /// claim's as the lease form opens it.
+    ///
+    /// # Errors
+    ///
+    /// The dialect's refusal of the table's opening.
+    pub(crate) fn begin_claim(
+        &self,
+        spec: &TableSpec<'_>,
+    ) -> Result<Option<&'static str>, StatementError> {
         match self {
-            Self::RowLock(dialect) => dialect.begin_lock_claim(),
-            Self::Lease(dialect) => dialect.begin_lease_claim(),
-            Self::Unbuilt(_) => None,
+            Self::RowLock(dialect) => dialect.begin(spec.opening()),
+            Self::Lease(dialect) => Ok(dialect.begin_lease_claim()),
+            Self::Unbuilt(_) => Ok(None),
         }
     }
 }

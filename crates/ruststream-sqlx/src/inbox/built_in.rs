@@ -12,7 +12,7 @@ use ruststream_sqlx_dialect as dialect;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
 use ruststream_sqlx_dialect::RowLock;
 use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Lease, Statement, StatementError, TableName, TableSpec,
+    ClaimShape, Dialect, Lease, Opening, Statement, StatementError, TableName, TableSpec,
 };
 #[cfg(feature = "any")]
 use sqlx::Any;
@@ -148,6 +148,18 @@ impl<DB: BuiltInDialect> Dialect for BuiltIn<DB> {
     fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
         self.0.check_server(spec, version)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        self.0.begin(opening)
+    }
+
+    fn savepoint(&self) -> &'static str {
+        self.0.savepoint()
+    }
+
+    fn rollback_to_savepoint(&self) -> &'static str {
+        self.0.rollback_to_savepoint()
+    }
 }
 
 impl<DB: BuiltInDialect> Lease for BuiltIn<DB> {
@@ -189,10 +201,6 @@ impl RowLock for BuiltIn<Postgres> {
     ) -> Result<Statement, StatementError> {
         self.0.lock_claim(spec, shape)
     }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.0.begin_lock_claim()
-    }
 }
 
 #[cfg(feature = "mysql")]
@@ -204,10 +212,6 @@ impl RowLock for BuiltIn<MySql> {
     ) -> Result<Statement, StatementError> {
         self.0.lock_claim(spec, shape)
     }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.0.begin_lock_claim()
-    }
 }
 
 #[cfg(feature = "any")]
@@ -218,10 +222,6 @@ impl RowLock for BuiltIn<Any> {
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
         self.0.lock_claim(spec, shape)
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.0.begin_lock_claim()
     }
 }
 
@@ -336,6 +336,18 @@ impl Dialect for AnyDialect {
     fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
         self.base().check_server(spec, version)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        self.base().begin(opening)
+    }
+
+    fn savepoint(&self) -> &'static str {
+        self.base().savepoint()
+    }
+
+    fn rollback_to_savepoint(&self) -> &'static str {
+        self.base().rollback_to_savepoint()
+    }
 }
 
 #[cfg(feature = "any")]
@@ -388,10 +400,6 @@ impl RowLock for AnyDialect {
             },
             |dialect| dialect.lock_claim(spec, shape),
         )
-    }
-
-    fn begin_lock_claim(&self) -> Option<&'static str> {
-        self.row_lock.and_then(RowLock::begin_lock_claim)
     }
 }
 

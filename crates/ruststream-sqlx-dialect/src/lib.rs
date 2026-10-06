@@ -26,12 +26,19 @@
 //! dialect whose claim only selects the rows says so ([`Lease::claim_writes_lease`]), and each
 //! claimed row is then stamped with its lease ([`Lease::stamp`]).
 //!
+//! A table may open its transactions at an isolation level ([`Isolation`]) or, on SQLite, in a
+//! mode ([`Mode`]): its [`Opening`], set with [`TableSpec::isolation`] and [`TableSpec::mode`].
+//! [`Dialect::begin`] gives the statement that opens a transaction at it, and refuses an opening
+//! the database lacks. A dialect also states the openings it serves as types, one [`Opens`]
+//! implementation per [`level`] type, so a table that names a level its dialect lacks does not
+//! compile.
+//!
 //! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
 //! `sqlite` features. [`Postgres`] and [`MySql`] implement [`RowLock`] and [`Lease`], and
 //! [`MySql`] serves MariaDB too; [`Sqlite`] implements [`Lease`]. A database without a built-in
 //! dialect, or a service that writes a statement its own way, takes a type of the service's own:
-//! it implements [`Dialect`] and the trait of each form it builds, with each statement its own or
-//! delegated to a built-in dialect it wraps.
+//! it implements [`Dialect`], the trait of each form it builds and [`Opens`] for each level it
+//! opens, with each statement its own or delegated to a built-in dialect it wraps.
 //!
 //! # Examples
 //!
@@ -59,6 +66,7 @@ mod form;
 mod lease;
 #[cfg(feature = "mysql")]
 mod mysql;
+mod opening;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod role;
@@ -77,6 +85,7 @@ pub use form::{Form, KeyPart};
 pub use lease::Lease;
 #[cfg(feature = "mysql")]
 pub use mysql::MySql;
+pub use opening::{Isolation, Mode, Opening, Opens, level};
 #[cfg(feature = "postgres")]
 pub use postgres::Postgres;
 pub use role::Role;

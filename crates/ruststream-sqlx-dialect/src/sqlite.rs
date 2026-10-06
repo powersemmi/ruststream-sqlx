@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
 use crate::lease::Lease;
+use crate::opening::{Mode, Opening, Opens, level};
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
@@ -34,6 +35,10 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// SQLite keeps times as text, so the statements compare times as text: two times compare right
 /// when their text sorts as the times do.
 ///
+/// SQLite runs every transaction serializable, so a table names no isolation level here: it names
+/// a mode, and its transactions open with `BEGIN DEFERRED`, `BEGIN IMMEDIATE` or
+/// `BEGIN EXCLUSIVE` ([`begin`](Dialect::begin)), or with `BEGIN` where it names none.
+///
 /// # Examples
 ///
 /// ```
@@ -56,14 +61,18 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// A table in the row lock form finds no claim here, so a subscription to one does not compile:
 ///
 /// ```compile_fail,E0277
-/// use ruststream_sqlx_dialect::{RowLock, Sqlite};
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Column, Form, RowLock, Sqlite, Statement, StatementError, TableSpec,
+/// };
+///
+/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
 ///
 /// // What a subscription to a row lock table asks of its dialect.
-/// fn opens_its_claim(dialect: &impl RowLock) -> &'static str {
-///     dialect.begin_lock_claim().unwrap_or("BEGIN")
+/// fn claims_its_rows(dialect: &impl RowLock) -> Result<Statement, StatementError> {
+///     dialect.lock_claim(&JOBS, ClaimShape::Rows)
 /// }
 ///
-/// let opening = opens_its_claim(&Sqlite);
+/// let claim = claims_its_rows(&Sqlite);
 /// ```
 ///
 /// and its settlements are refused, naming the form:
@@ -161,7 +170,23 @@ impl Dialect for Sqlite {
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.insert_statement(spec)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        match opening {
+            Opening::Default => Ok(None),
+            Opening::Mode(Mode::Deferred) => Ok(Some("BEGIN DEFERRED")),
+            Opening::Mode(Mode::Immediate) => Ok(Some("BEGIN IMMEDIATE")),
+            Opening::Mode(Mode::Exclusive) => Ok(Some("BEGIN EXCLUSIVE")),
+            Opening::Isolation(_) => Err(opening.refused(self.name())),
+        }
+    }
 }
+
+impl Opens<level::Deferred> for Sqlite {}
+
+impl Opens<level::Immediate> for Sqlite {}
+
+impl Opens<level::Exclusive> for Sqlite {}
 
 impl Lease for Sqlite {
     fn lease_claim(

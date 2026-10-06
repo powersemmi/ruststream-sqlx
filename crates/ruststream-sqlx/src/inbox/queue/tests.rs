@@ -81,8 +81,8 @@ mod built {
 
     use ruststream::RetryDeclaration;
     use ruststream_sqlx_dialect::{
-        ClaimShape, Column, Dialect, Form, KeyPart, Lease, Param, Postgres, RowLock, Statement,
-        StatementError, TableName, TableSpec,
+        ClaimShape, Column, Dialect, Form, Isolation, KeyPart, Lease, Opening, Param, Postgres,
+        RowLock, Statement, StatementError, TableName, TableSpec,
     };
 
     use super::described;
@@ -93,7 +93,8 @@ mod built {
 
     /// The Postgres dialect, its dead-letter move cut into `parts` statements, its lease claim
     /// writing the lease or only selecting the rows, and each form's claim and transaction
-    /// opening marked with the trait that built it.
+    /// opening marked with the trait that built it. The row lock claim opens with the dialect's
+    /// own `begin`, which opens SERIALIZABLE beside the default and refuses every other level.
     #[derive(Debug)]
     struct Reshaped {
         parts: usize,
@@ -162,6 +163,19 @@ mod built {
         fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
             Postgres.insert(spec)
         }
+
+        fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+            match opening {
+                Opening::Default => Ok(Some("BEGIN /* Dialect */")),
+                Opening::Isolation(Isolation::Serializable) => {
+                    Ok(Some("BEGIN ISOLATION LEVEL SERIALIZABLE /* Dialect */"))
+                }
+                _ => Err(StatementError::UnsupportedOpening {
+                    dialect: self.name(),
+                    opening: opening.name(),
+                }),
+            }
+        }
     }
 
     impl RowLock for Reshaped {
@@ -171,10 +185,6 @@ mod built {
             shape: ClaimShape,
         ) -> Result<Statement, StatementError> {
             marked("RowLock", Postgres.lock_claim(spec, shape))
-        }
-
-        fn begin_lock_claim(&self) -> Option<&'static str> {
-            Some("BEGIN /* RowLock */")
         }
     }
 
@@ -271,14 +281,36 @@ mod built {
     }
 
     #[test]
-    fn each_form_opens_its_claim_with_the_statement_of_its_trait() {
+    fn each_form_opens_its_claim_with_the_statement_of_its_trait() -> Result<(), StatementError> {
+        // The row lock claim's transaction opens at the table's opening, as the dialect opens it.
         assert_eq!(
-            form_of(RESHAPED, &super::JOBS).begin_claim(),
-            Some("BEGIN /* RowLock */")
+            form_of(RESHAPED, &super::JOBS).begin_claim(&super::JOBS)?,
+            Some("BEGIN /* Dialect */")
         );
+        let serializable = super::JOBS.isolation(Isolation::Serializable);
         assert_eq!(
-            form_of(RESHAPED, &LEASED).begin_claim(),
+            form_of(RESHAPED, &serializable).begin_claim(&serializable)?,
+            Some("BEGIN ISOLATION LEVEL SERIALIZABLE /* Dialect */")
+        );
+        // The lease claim's own short transaction opens as the lease form opens it, whatever the
+        // table's opening.
+        let leased = LEASED.isolation(Isolation::Serializable);
+        assert_eq!(
+            form_of(RESHAPED, &leased).begin_claim(&leased)?,
             Some("BEGIN /* Lease */")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_row_lock_claim_at_an_opening_its_dialect_lacks_is_refused() {
+        let uncommitted = super::JOBS.isolation(Isolation::ReadUncommitted);
+        assert_eq!(
+            form_of(RESHAPED, &uncommitted).begin_claim(&uncommitted),
+            Err(StatementError::UnsupportedOpening {
+                dialect: "reshaped",
+                opening: "isolation `read_uncommitted`",
+            })
         );
     }
 

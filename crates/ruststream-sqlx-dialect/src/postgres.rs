@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
 use crate::lease::Lease;
+use crate::opening::{Isolation, Opening, Opens, level};
 use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
@@ -25,6 +26,11 @@ const LOCK: &str = " FOR UPDATE SKIP LOCKED";
 /// and returns them as they were. Every name is quoted, so a name keeps its case and may hold any
 /// character; a name over 63 bytes, which Postgres would cut short without a word, is refused. A
 /// table on the database's clock reads `statement_timestamp()`.
+///
+/// A table's transactions open with `BEGIN`, or at the isolation level it names
+/// ([`begin`](Dialect::begin)): READ COMMITTED, REPEATABLE READ or SERIALIZABLE. Postgres runs
+/// READ UNCOMMITTED as READ COMMITTED, so a table that names it is refused: a level the database
+/// does not keep is a level it lacks.
 ///
 /// # Examples
 ///
@@ -60,6 +66,22 @@ const LOCK: &str = " FOR UPDATE SKIP LOCKED";
 /// );
 /// assert_eq!(ack.params(), [Param::Id, Param::Held]);
 /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// ```
+///
+/// A table that names READ UNCOMMITTED is refused, and the refusal names the level:
+///
+/// ```
+/// use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Postgres};
+///
+/// let refused = Postgres
+///     .begin(Opening::Isolation(Isolation::ReadUncommitted))
+///     .map_err(|refused| format!("subscription `emails`: {refused}"));
+/// assert_eq!(
+///     refused,
+///     Err("subscription `emails`: the postgres dialect opens no transaction at isolation \
+///          `read_uncommitted`"
+///         .to_owned()),
+/// );
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Postgres;
@@ -166,7 +188,33 @@ impl Dialect for Postgres {
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.insert_statement(spec)
     }
+
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        match opening {
+            Opening::Default => Ok(None),
+            Opening::Isolation(Isolation::ReadCommitted) => {
+                Ok(Some("BEGIN ISOLATION LEVEL READ COMMITTED"))
+            }
+            Opening::Isolation(Isolation::RepeatableRead) => {
+                Ok(Some("BEGIN ISOLATION LEVEL REPEATABLE READ"))
+            }
+            Opening::Isolation(Isolation::Serializable) => {
+                Ok(Some("BEGIN ISOLATION LEVEL SERIALIZABLE"))
+            }
+            // Postgres runs READ UNCOMMITTED as READ COMMITTED: a declared level it does not keep
+            // is a level it lacks.
+            Opening::Isolation(Isolation::ReadUncommitted) | Opening::Mode(_) => {
+                Err(opening.refused(self.name()))
+            }
+        }
+    }
 }
+
+impl Opens<level::ReadCommitted> for Postgres {}
+
+impl Opens<level::RepeatableRead> for Postgres {}
+
+impl Opens<level::Serializable> for Postgres {}
 
 impl RowLock for Postgres {
     fn lock_claim(

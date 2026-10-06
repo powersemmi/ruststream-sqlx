@@ -390,6 +390,15 @@ pub enum StatementError {
         /// The dialect's name.
         dialect: &'static str,
     },
+    /// The dialect opens no transaction at the table's isolation level or mode, as
+    /// [`Dialect::begin`](crate::Dialect::begin) found.
+    #[error("the {dialect} dialect opens no transaction at {opening}")]
+    UnsupportedOpening {
+        /// The dialect's name.
+        dialect: &'static str,
+        /// The opening, as [`Opening::name`](crate::Opening::name) names it.
+        opening: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -473,6 +482,14 @@ mod tests {
             }
             .to_string(),
             "the extend statement does not serve a table in the row lock form"
+        );
+        assert_eq!(
+            StatementError::UnsupportedOpening {
+                dialect: "postgres",
+                opening: "isolation `read_uncommitted`",
+            }
+            .to_string(),
+            "the postgres dialect opens no transaction at isolation `read_uncommitted`"
         );
     }
 }
