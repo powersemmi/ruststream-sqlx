@@ -16,14 +16,14 @@ use time::OffsetDateTime;
 
 use super::by_name::ByName;
 use super::database::RoleColumns;
+#[cfg(any(feature = "chrono", feature = "time"))]
+use super::kinds::{ClockKind, TimeKind};
+use super::kinds::{IntKind, Kinds};
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{
-    self, Candidates, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape,
-    Values,
+    self, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape, Values,
 };
-#[cfg(any(feature = "chrono", feature = "time"))]
-use crate::inbox::kinds::{ClockKind, TimeKind};
-use crate::inbox::kinds::{IntKind, Kinds};
+use crate::inbox::form::advisory::events::{self as advisory, Candidates};
 use crate::inbox::queue::Queue;
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::time::{QueueTime, SystemClock};
@@ -622,7 +622,7 @@ where
         cx: &'a Claiming,
         key: &'a str,
     ) -> impl Future<Output = Result<bool, Error>> + Send + 'a {
-        engine::lock::<DB, Self>(conn, cx, key)
+        advisory::lock::<DB, Self>(conn, cx, key)
     }
 
     fn unlock<'a>(
@@ -630,7 +630,7 @@ where
         cx: &'a Settling,
         key: &'a str,
     ) -> impl Future<Output = Result<bool, Error>> + Send + 'a {
-        engine::unlock::<DB, Self>(conn, cx, key)
+        advisory::unlock::<DB, Self>(conn, cx, key)
     }
 
     fn candidates<'a>(
@@ -638,7 +638,7 @@ where
         cx: &'a Claiming,
         out: &'a mut Candidates<NamedId>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        engine::candidates::<DB, Self>(conn, cx, out)
+        advisory::candidates::<DB, Self>(conn, cx, out)
     }
 
     async fn take<'a>(
@@ -648,7 +648,7 @@ where
         out: &'a mut Vec<Claimed<Self>>,
     ) -> Result<bool, Error> {
         let taken = out.len();
-        let found = engine::take::<DB, Self>(conn, cx, id, out).await?;
+        let found = advisory::take::<DB, Self>(conn, cx, id, out).await?;
         if let Some(kinds) = cx.queue.kinds {
             for row in &mut out[taken..] {
                 hold_to(kinds, row)?;

@@ -1,4 +1,14 @@
 #![doc = include_str!("README.md")]
+#![doc = include_str!("overview/forms.md")]
+#![doc = include_str!("overview/transactional.md")]
+#![doc = include_str!("overview/isolation.md")]
+#![doc = include_str!("overview/fifo.md")]
+#![doc = include_str!("overview/databases.md")]
+#![doc = include_str!("overview/own_dialect.md")]
+#![doc = include_str!("overview/decoding.md")]
+#![doc = include_str!("overview/batches.md")]
+#![doc = include_str!("overview/names.md")]
+#![doc = include_str!("overview/testing.md")]
 #![forbid(unsafe_code)]
 
 pub use ruststream_sqlx_dialect as dialect;
@@ -37,13 +47,15 @@ pub mod __private {
     #[cfg(feature = "any")]
     pub use crate::inbox::AnyDialect;
     pub use crate::inbox::engine::{
-        Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint,
-        Settled, Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, candidates,
-        claim_ids, claim_rows, dead_letter, discard, extend, fetch_by_ids, first_header, later,
-        lease, lock, match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry,
-        retry_after, take, take_id, unlock,
+        Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
+        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
+        dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, match_claimed,
+        match_rows, micros, no_lease, now, put, retry, retry_after,
     };
-    pub use crate::inbox::kinds::{Kinds, KindsOf};
+    pub use crate::inbox::form::advisory::events::{
+        Candidates, candidates, lock, match_taken, take, take_id, unlock,
+    };
+    pub use crate::inbox::named::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{

@@ -12,10 +12,10 @@ use sqlx::{Connection, Database, Error, Pool};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
-use super::advisory::{ProcessKey, ProcessLocks};
-use super::engine::Settling;
+use super::{ProcessKey, ProcessLocks};
+use crate::inbox::engine::Settling;
 #[cfg(feature = "testing")]
-use super::testing::off_clock;
+use crate::inbox::testing::off_clock;
 
 /// How long a session's close, or the release `shutdown` runs on it, may take. Past it the
 /// connection drops, which closes its socket, and the server ends the session all the same.

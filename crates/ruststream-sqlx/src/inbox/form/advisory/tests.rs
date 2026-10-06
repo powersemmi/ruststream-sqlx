@@ -10,10 +10,10 @@ use sqlx::{Error, Sqlite, SqliteConnection, SqlitePool};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
+use super::session::{Closing, Session};
 use super::{KeptBy, LockBook, ProcessLocks, Slots, Standing, Unlent, Unlock};
 use crate::inbox::engine::{IdAt, Now, Prepared, Settling};
 use crate::inbox::queue::Queue;
-use crate::inbox::session::{Closing, Session};
 
 const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("id")];
 

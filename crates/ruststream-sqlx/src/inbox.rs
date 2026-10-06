@@ -1,22 +1,17 @@
 //! The inbox: task queues in tables a service describes with its own structs.
 
-mod advisory;
 mod broker;
-mod built_in;
 mod columns;
 mod database;
 mod delivery;
 pub(crate) mod engine;
 mod error;
 mod events;
-mod form;
+pub(crate) mod form;
 pub mod keys;
-pub(crate) mod kinds;
-mod lease;
 pub(crate) mod named;
 mod publish;
 pub(crate) mod queue;
-mod session;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
@@ -29,11 +24,10 @@ use std::fmt::Debug;
 use ruststream_sqlx_dialect::TableSpec;
 
 pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
-#[cfg(feature = "any")]
-pub use built_in::AnyDialect;
-pub use built_in::BuiltIn;
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
-pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_insert};
+#[cfg(feature = "any")]
+pub use database::AnyDialect;
+pub use database::{BuiltIn, BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_insert};
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{

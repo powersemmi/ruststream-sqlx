@@ -11,7 +11,7 @@ use sqlx::types::Json;
 #[cfg(feature = "time")]
 use time::OffsetDateTime;
 
-use super::time::{DatabaseClock, SystemClock};
+use crate::inbox::time::{DatabaseClock, SystemClock};
 
 /// The column types of a row a by-name subscription reads and binds without the row's own code.
 /// Machinery; the derive answers it once per subscription.

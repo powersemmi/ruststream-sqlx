@@ -1,6 +1,10 @@
 //! The forms of claiming as types: what a table's form asks of its dialect, checked where a
 //! subscription mounts, and the dialect seen through that form's trait once it holds.
 
+pub(crate) mod advisory;
+pub(crate) mod lease;
+pub(crate) mod row_lock;
+
 use std::sync::Arc;
 
 use ruststream_sqlx_dialect::{

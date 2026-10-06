@@ -7,6 +7,7 @@
 
 mod by_name;
 mod database;
+pub(crate) mod kinds;
 mod row;
 
 use std::fmt;

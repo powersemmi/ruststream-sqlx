@@ -1,17 +1,20 @@
 //! The settlement of a lease delivery on a connection of its own, by the lease it holds, and the
 //! release of a lease delivery dropped unsettled.
 
+use std::fmt::Debug;
 #[cfg(feature = "testing")]
 use std::sync::Arc;
 
+use ruststream::AckError;
 use sqlx::Pool;
 
-use super::{Step, run_step};
+use super::{LeaseBook, Slot};
 #[cfg(feature = "testing")]
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
+use crate::inbox::delivery::settle::{Step, run_step};
 use crate::inbox::engine::{Events, Now, Settled, Settling};
-use crate::inbox::lease::{LeaseBook, Slot};
+use crate::inbox::error::SqlxBrokerError;
 use crate::inbox::queue::Queue;
 #[cfg(feature = "testing")]
 use crate::inbox::testing::off_clock;
@@ -22,7 +25,7 @@ use crate::inbox::tx::PoolTx;
 ///
 /// A statement that fails leaves the row under its lease, which returns it once it runs out, as
 /// after a crash.
-pub(super) async fn settle_leased<DB, Row>(
+pub(crate) async fn settle_leased<DB, Row>(
     book: &LeaseBook<DB, Row>,
     slot: Slot,
     cx: &Settling,
@@ -44,7 +47,7 @@ where
 
 /// Runs the statement of `step` for the row `id` on a connection of `pool`, committed at once,
 /// by the lease `held` the delivery held when it left its book.
-pub(super) async fn run_leased<DB, Row>(
+pub(crate) async fn run_leased<DB, Row>(
     pool: &Pool<DB>,
     cx: &Settling,
     id: &Row::Id,
@@ -87,7 +90,7 @@ where
 
 /// Releases the row of the lease delivery in `slot`, dropped unsettled, while it still holds the
 /// delivery's lease, so the row returns to the queue at once. `true` when the release took effect.
-pub(super) async fn release<DB, Row>(
+pub(crate) async fn release<DB, Row>(
     book: &'static LeaseBook<DB, Row>,
     slot: Slot,
     queue: &'static Queue,
@@ -120,7 +123,7 @@ where
 /// The release of an in-process lease delivery dropped unsettled: off a paused clock, and in the
 /// harness's books, where the row is counted again before it is back.
 #[cfg(feature = "testing")]
-pub(super) fn release_in_process<DB, Row>(
+pub(crate) fn release_in_process<DB, Row>(
     connection: Arc<Shared<DB>>,
     book: &'static LeaseBook<DB, Row>,
     slot: Slot,
@@ -141,4 +144,14 @@ pub(super) fn release_in_process<DB, Row>(
         }
         connection.harness.released();
     }));
+}
+
+/// The error of a settlement that found its row under another lease.
+pub(crate) fn lease_lost<Id: Debug>(queue: &Queue, id: &Id) -> AckError {
+    AckError::Broker(Box::new(SqlxBrokerError::LeaseLost {
+        subscription: queue.name.to_owned(),
+        table: queue.table.to_owned(),
+        row: queue.row,
+        id: format!("{id:?}"),
+    }))
 }

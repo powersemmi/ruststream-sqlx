@@ -4,10 +4,7 @@
 use std::fmt;
 use std::num::NonZeroUsize;
 
-#[cfg(all(
-    feature = "any",
-    any(feature = "postgres", feature = "mysql", feature = "sqlite")
-))]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 use ruststream_sqlx_dialect as dialect;
 #[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
 use ruststream_sqlx_dialect::RowLock;
@@ -22,21 +19,17 @@ use ruststream_sqlx_dialect::{
 ))]
 use ruststream_sqlx_dialect::{Opens, level};
 #[cfg(feature = "any")]
-use sqlx::Any;
+use sqlx::{Any, AnyConnection};
 #[cfg(feature = "mysql")]
-use sqlx::MySql;
+use sqlx::{MySql, MySqlConnection};
 #[cfg(feature = "postgres")]
-use sqlx::Postgres;
+use sqlx::{PgConnection, Postgres};
 #[cfg(feature = "sqlite")]
-use sqlx::Sqlite;
+use sqlx::{Sqlite, SqliteConnection};
 
-use super::database::BuiltInDialect;
-#[cfg(all(feature = "any", feature = "mysql"))]
-use super::database::MYSQL_BACKEND;
-#[cfg(all(feature = "any", feature = "postgres"))]
-use super::database::POSTGRES_BACKEND;
-#[cfg(all(feature = "any", feature = "sqlite"))]
-use super::database::SQLITE_BACKEND;
+use super::QueueDatabase;
+#[cfg(feature = "any")]
+use super::any::AnyDialect;
 
 /// The dialect built into the crate for the database `DB`: what [`SqlxBroker::new`] builds its
 /// statements with.
@@ -321,235 +314,139 @@ impl Opens<level::Immediate> for BuiltIn<Any> {}
 #[cfg(feature = "any")]
 impl Opens<level::Exclusive> for BuiltIn<Any> {}
 
-/// The built-in dialect an `AnyPool`'s backend takes, picked when the broker connects.
-/// Machinery: `BuiltIn<Any>` builds its statements with it.
-#[cfg(feature = "any")]
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub struct AnyDialect {
-    /// The picked dialect: its lease form and, through it, its base trait.
-    lease: &'static dyn Lease,
-    /// Its row lock form, where its database locks rows.
-    row_lock: Option<&'static dyn RowLock>,
-    /// Its advisory lock form.
-    advisory: &'static dyn Advisory,
+/// A database whose dialect is built into this crate, so `SqlxBroker::new` needs no dialect of
+/// the service's own.
+///
+/// Postgres (feature `postgres`), MySQL with MariaDB (feature `mysql`) and SQLite (feature
+/// `sqlite`) have one, [`BuiltIn<DB>`](BuiltIn). `Any` (feature `any`) takes the dialect of the
+/// database its pool reaches, among those whose features are on, and the broker picks it when it
+/// connects. A row on an `AnyPool` holds only the types `sqlx::Any` carries, and no time is among
+/// them, so a table with `locked_until`, `retry_after` or `processed_at` is out of its reach.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[cfg(feature = "any")]
+/// # async fn run(pool: sqlx::AnyPool) -> Result<(), sqlx::Error> {
+/// use ruststream_sqlx::BuiltInDialect;
+/// use ruststream_sqlx::dialect::Dialect;
+///
+/// // The statements the broker builds for the database behind the pool.
+/// let conn = pool.acquire().await?;
+/// match <sqlx::Any as BuiltInDialect>::dialect(&conn) {
+///     Some(dialect) => tracing::info!(dialect = dialect.name(), "the inbox's statements"),
+///     None => tracing::warn!(backend = conn.backend_name(), "no built-in dialect"),
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no dialect built into the crate",
+    label = "no built-in dialect for this database",
+    note = "build the broker with a dialect of the service's own: \
+            `SqlxBroker::with_dialect(pool, dialect)`, a `SqlxBroker<{Self}, YourDialect>`"
+)]
+pub trait BuiltInDialect: QueueDatabase {
+    /// The dialect of the crate's `dialect` module that builds the database's statements.
+    /// Machinery; [`BuiltIn`] holds it.
+    #[doc(hidden)]
+    type Picked: Lease + Advisory + Copy + 'static;
+
+    /// The dialect that builds the statements of the database `conn` reaches, or `None` when no
+    /// built-in dialect serves it: an `AnyPool`'s backend whose feature is off.
+    ///
+    /// Postgres, MySQL and SQLite answer without reading `conn`; the broker asks with the
+    /// connection it checks when it connects.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_sqlx::BuiltInDialect;
+    /// use ruststream_sqlx::dialect::Dialect;
+    /// use sqlx::Pool;
+    ///
+    /// /// The dialect the broker builds statements with for the database `pool` reaches.
+    /// async fn dialect_of<DB: BuiltInDialect>(
+    ///     pool: &Pool<DB>,
+    /// ) -> Result<Option<&'static str>, sqlx::Error> {
+    ///     let conn = pool.acquire().await?;
+    ///     Ok(DB::dialect(&conn).map(|dialect| dialect.name()))
+    /// }
+    /// ```
+    fn dialect(conn: &Self::Connection) -> Option<BuiltIn<Self>>;
+
+    /// The name of the database `conn` reaches, which an error names when no built-in dialect
+    /// serves it. Machinery; the broker calls it.
+    #[doc(hidden)]
+    fn backend(conn: &Self::Connection) -> &str {
+        let _ = conn;
+        Self::NAME
+    }
 }
 
-#[cfg(feature = "any")]
-impl AnyDialect {
-    /// The built-in dialect of the `AnyPool` backend named `backend`, where its feature is on.
-    pub(crate) fn of(backend: &str) -> Option<Self> {
-        let dialects: &[(&str, Self)] = &[
-            #[cfg(feature = "postgres")]
-            (
-                POSTGRES_BACKEND,
-                Self {
-                    lease: &dialect::Postgres,
-                    row_lock: Some(&dialect::Postgres),
-                    advisory: &dialect::Postgres,
-                },
-            ),
-            #[cfg(feature = "mysql")]
-            (
-                MYSQL_BACKEND,
-                Self {
-                    lease: &dialect::MySql,
-                    row_lock: Some(&dialect::MySql),
-                    advisory: &dialect::MySql,
-                },
-            ),
-            #[cfg(feature = "sqlite")]
-            (
-                SQLITE_BACKEND,
-                Self {
-                    lease: &dialect::Sqlite,
-                    row_lock: None,
-                    advisory: &dialect::Sqlite,
-                },
-            ),
-        ];
-        dialects
-            .iter()
-            .find(|(name, _)| *name == backend)
-            .map(|&(_, dialect)| dialect)
-    }
+#[cfg(feature = "postgres")]
+impl BuiltInDialect for Postgres {
+    type Picked = dialect::Postgres;
 
-    /// The picked dialect, through its base trait.
-    fn base(&self) -> &'static dyn Dialect {
-        self.lease
+    fn dialect(_: &PgConnection) -> Option<BuiltIn<Self>> {
+        Some(BuiltIn::new(dialect::Postgres))
     }
 }
 
-#[cfg(feature = "any")]
-impl Dialect for AnyDialect {
-    fn name(&self) -> &'static str {
-        self.base().name()
-    }
+#[cfg(feature = "mysql")]
+impl BuiltInDialect for MySql {
+    type Picked = dialect::MySql;
 
-    fn quote_into(&self, ident: &str, out: &mut String) {
-        self.base().quote_into(ident, out);
+    fn dialect(_: &MySqlConnection) -> Option<BuiltIn<Self>> {
+        Some(BuiltIn::new(dialect::MySql))
     }
+}
 
-    fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) {
-        self.base().placeholder_into(index, out);
-    }
+#[cfg(feature = "sqlite")]
+impl BuiltInDialect for Sqlite {
+    type Picked = dialect::Sqlite;
 
-    fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.base().fetch(spec)
-    }
-
-    fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.base().ack(spec)
-    }
-
-    fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
-        self.base().retry(spec)
-    }
-
-    fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.base().retry_after(spec)
-    }
-
-    fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.base().discard(spec)
-    }
-
-    fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.base().dead_letter_group(spec)
-    }
-
-    fn dead_letter_table(
-        &self,
-        spec: &TableSpec<'_>,
-        target: TableName<'_>,
-    ) -> Result<Vec<Statement>, StatementError> {
-        self.base().dead_letter_table(spec, target)
-    }
-
-    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.base().insert(spec)
-    }
-
-    fn server_version(&self) -> Option<&'static str> {
-        self.base().server_version()
-    }
-
-    fn check_server(&self, spec: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
-        self.base().check_server(spec, version)
-    }
-
-    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
-        self.base().begin(opening)
-    }
-
-    fn savepoint(&self) -> &'static str {
-        self.base().savepoint()
-    }
-
-    fn rollback_to_savepoint(&self) -> &'static str {
-        self.base().rollback_to_savepoint()
-    }
-
-    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
-        self.base().fifo_guard(spec)
+    fn dialect(_: &SqliteConnection) -> Option<BuiltIn<Self>> {
+        Some(BuiltIn::new(dialect::Sqlite))
     }
 }
 
 #[cfg(feature = "any")]
-impl Lease for AnyDialect {
-    fn lease_claim(
-        &self,
-        spec: &TableSpec<'_>,
-        shape: ClaimShape,
-    ) -> Result<Statement, StatementError> {
-        self.lease.lease_claim(spec, shape)
+impl BuiltInDialect for Any {
+    type Picked = AnyDialect;
+
+    fn dialect(conn: &AnyConnection) -> Option<BuiltIn<Self>> {
+        AnyDialect::of(conn.backend_name()).map(BuiltIn::new)
     }
 
-    fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.lease.extend(spec)
-    }
-
-    fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.lease.stamp(spec)
-    }
-
-    fn claim_writes_lease(&self) -> bool {
-        self.lease.claim_writes_lease()
-    }
-
-    fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
-        self.lease.claim_counts_attempt(spec)
-    }
-
-    fn begin_lease_claim(&self) -> Option<&'static str> {
-        self.lease.begin_lease_claim()
+    fn backend(conn: &AnyConnection) -> &str {
+        conn.backend_name()
     }
 }
 
+/// The name an `AnyConnection` reports for a Postgres backend: its sqlx driver's
+/// `Database::NAME`.
 #[cfg(feature = "any")]
-impl Advisory for AnyDialect {
-    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.advisory.advisory_claim(spec)
-    }
+pub(crate) const POSTGRES_BACKEND: &str = "PostgreSQL";
 
-    fn lock(&self) -> Option<Statement> {
-        self.advisory.lock()
-    }
-
-    fn unlock(&self) -> Option<Statement> {
-        self.advisory.unlock()
-    }
-
-    fn take(
-        &self,
-        spec: &TableSpec<'_>,
-        shape: ClaimShape,
-    ) -> Result<Vec<Statement>, StatementError> {
-        self.advisory.take(spec, shape)
-    }
-}
-
-// Why a startup refusal: an `AnyPool` names its database only when the broker connects, so the
-// type cannot say whether the database locks rows. A SQLite backend refuses the row lock claim
-// when the subscription to such a table starts.
+/// The name an `AnyConnection` reports for a MySQL or MariaDB backend.
 #[cfg(feature = "any")]
-impl RowLock for AnyDialect {
-    fn lock_claim(
-        &self,
-        spec: &TableSpec<'_>,
-        shape: ClaimShape,
-    ) -> Result<Statement, StatementError> {
-        self.row_lock.map_or_else(
-            || {
-                Err(StatementError::UnsupportedForm {
-                    dialect: self.name(),
-                    form: spec.form().name(),
-                })
-            },
-            |dialect| dialect.lock_claim(spec, shape),
-        )
-    }
-}
+pub(crate) const MYSQL_BACKEND: &str = "MySQL";
+
+/// The name an `AnyConnection` reports for a SQLite backend.
+#[cfg(feature = "any")]
+pub(crate) const SQLITE_BACKEND: &str = "SQLite";
 
 #[cfg(all(test, feature = "any"))]
 mod tests {
-    use ruststream_sqlx_dialect::Dialect;
+    use sqlx::Database;
 
-    use super::AnyDialect;
+    use super::{MYSQL_BACKEND, POSTGRES_BACKEND, SQLITE_BACKEND};
 
     #[test]
-    fn an_any_backend_takes_the_dialect_of_its_database() {
-        let picked = |backend| AnyDialect::of(backend).map(|dialect| dialect.name());
-        #[cfg(feature = "postgres")]
-        assert_eq!(picked(super::POSTGRES_BACKEND), Some("postgres"));
-        #[cfg(feature = "mysql")]
-        assert_eq!(picked(super::MYSQL_BACKEND), Some("mysql"));
-        #[cfg(feature = "sqlite")]
-        assert_eq!(picked(super::SQLITE_BACKEND), Some("sqlite"));
-        assert_eq!(
-            picked("MSSQL"),
-            None,
-            "a backend without a built-in dialect"
-        );
+    fn the_backend_names_are_those_sqlx_reports() {
+        assert_eq!(POSTGRES_BACKEND, <sqlx::Postgres as Database>::NAME);
+        assert_eq!(MYSQL_BACKEND, <sqlx::MySql as Database>::NAME);
+        assert_eq!(SQLITE_BACKEND, <sqlx::Sqlite as Database>::NAME);
     }
 }

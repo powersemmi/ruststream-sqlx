@@ -6,17 +6,19 @@ use std::fmt::Debug;
 use ruststream::{AckError, IncomingMessage};
 use sqlx_core::transaction::TransactionManager;
 
-use super::leased::{run_leased, settle_leased};
-use super::{Hold, InboxDelivery, Step, run_advised, run_step};
+use super::{Lender, Returned, Transactional};
 use crate::inbox::PayloadRow;
 use crate::inbox::database::QueueDatabase;
+use crate::inbox::delivery::settle::{Step, run_step};
+use crate::inbox::delivery::{Hold, InboxDelivery};
 use crate::inbox::engine::{Events, Settled, Settling};
 use crate::inbox::error::SqlxBrokerError;
+use crate::inbox::form::advisory::session::Session;
+use crate::inbox::form::advisory::settle::run_advised;
+use crate::inbox::form::lease::settle::{run_leased, settle_leased};
+use crate::inbox::form::lease::{LeaseBook, Slot};
 use crate::inbox::keys::{TransactionalDelivery, TxContext};
-use crate::inbox::lease::{LeaseBook, Slot};
 use crate::inbox::queue::Queue;
-use crate::inbox::session::Session;
-use crate::inbox::transactional::{Lender, Returned, Transactional};
 use crate::inbox::tx::PoolTx;
 
 impl<DB, Row> TransactionalDelivery<DB> for InboxDelivery<DB, Row, Transactional>
@@ -51,7 +53,7 @@ where
 /// A statement that fails rolls the whole transaction back, the handler's writes with it, and the
 /// row returns at once; a rollback that fails leaves the transaction to its drop, which closes the
 /// connection.
-pub(super) async fn settle_lent<DB, Row>(
+pub(crate) async fn settle_lent<DB, Row>(
     returned: Returned<DB>,
     cx: &Settling,
     id: &Row::Id,
@@ -111,7 +113,7 @@ where
 ///
 /// An acknowledgement that fails rolls the transaction back and returns the row at once, by its
 /// lease; where that release fails too, the row returns once the lease runs out.
-pub(super) async fn settle_leased_lent<DB, Row>(
+pub(crate) async fn settle_leased_lent<DB, Row>(
     book: &'static LeaseBook<DB, Row>,
     slot: Slot,
     returned: Returned<DB>,
@@ -178,7 +180,7 @@ where
 ///
 /// A statement that fails rolls the transaction back. A rollback that fails leaves the session's
 /// transaction open, and the session closes instead of going back to the pool.
-pub(super) async fn settle_in_session<DB, Row>(
+pub(crate) async fn settle_in_session<DB, Row>(
     session: &mut Session<DB>,
     cx: &Settling,
     id: &Row::Id,
@@ -213,7 +215,7 @@ where
 }
 
 /// The error of a settlement that found the delivery's transaction still lent to its handler.
-pub(super) fn transaction_held<Id: Debug>(queue: &Queue, id: &Id) -> AckError {
+pub(crate) fn transaction_held<Id: Debug>(queue: &Queue, id: &Id) -> AckError {
     AckError::Broker(Box::new(SqlxBrokerError::TransactionHeld {
         subscription: queue.name.to_owned(),
         table: queue.table.to_owned(),

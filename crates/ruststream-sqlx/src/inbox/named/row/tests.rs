@@ -7,7 +7,7 @@ use sqlx::Error;
 
 use super::{Fits, NamedBytes, NamedId, NamedRow, hold_to};
 use crate::inbox::engine::Claimed;
-use crate::inbox::kinds::{BytesKind, ClockKind, IdKind, IntKind, Kinds};
+use crate::inbox::named::kinds::{BytesKind, ClockKind, IdKind, IntKind, Kinds};
 
 /// A struct of an `i64` id, a byte payload, a text key and an `i16` attempt.
 const KINDS: Kinds = Kinds {
@@ -192,7 +192,7 @@ mod on_postgres {
     use super::super::{NamedId, NamedRow, NamedTime};
     use super::{FITTING, KINDS, row};
     use crate::inbox::engine::{Event, Events, IdAt, Leasing, Now, Prepared, Shape, Values};
-    use crate::inbox::kinds::{ClockKind, Kinds, TimeKind};
+    use crate::inbox::named::kinds::{ClockKind, Kinds, TimeKind};
     use crate::inbox::queue::Queue;
     use crate::inbox::time::QueueTime;
     use crate::inbox::{BuiltIn, PayloadRow};

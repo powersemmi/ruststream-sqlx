@@ -7,7 +7,7 @@ error[E0277]: the handler takes `Ctx<keys::Tx<..>>`, and `InboxDelivery<sqlx::Po
    = note: mount the handler with `.transactional()`: `b.include(handler.transactional())`
 help: the trait `ruststream_sqlx::keys::TransactionalDelivery<sqlx::Postgres>` is not implemented for `InboxDelivery<Postgres, Job, Plain>`
       but it is implemented for `InboxDelivery<Postgres, Job, ruststream_sqlx::Transactional>`
-  --> src/inbox/delivery/lent.rs
+  --> src/inbox/transactional/settle.rs
    |
    | / impl<DB, Row> TransactionalDelivery<DB> for InboxDelivery<DB, Row, Transactional>
    | | where
