@@ -69,10 +69,10 @@ where
         self
     }
 
-    /// The lock key of a row, as the dialect renders it from `key`'s parts.
-    fn lock_key(&mut self, key: &[KeyPart<'_>]) -> &mut Self {
+    /// The lock key of a row of `spec`'s table, as the dialect renders it from `key`'s parts.
+    fn lock_key(&mut self, spec: &TableSpec<'_>, key: &[KeyPart<'_>]) -> &mut Self {
         let dialect = self.dialect;
-        dialect.render_lock_key(self, key);
+        dialect.render_lock_key(self, spec.schema(), key);
         self
     }
 
@@ -129,14 +129,17 @@ where
         self.push("SELECT ")
             .ident(id)
             .push(", ")
-            .lock_key(key)
+            .lock_key(spec, key)
             .push(" AS ")
             .ident(LOCK_KEY)
             .push(" FROM ")
             .table(spec);
         let keyword = self.conditions_then(spec, &CLAIMABLE, " WHERE ");
         if let Some((before, after)) = check {
-            self.push(keyword).push(before).lock_key(key).push(after);
+            self.push(keyword)
+                .push(before)
+                .lock_key(spec, key)
+                .push(after);
         }
         self.claim_order(spec, id)
     }

@@ -132,7 +132,9 @@ impl BuiltIn for Sqlite {
             .push(" / 1000000.0) || ' seconds')");
     }
 
-    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {
+    // SQLite takes no locks: the broker keeps the keys in work in the process, so the key alone
+    // is rendered.
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, _: Option<&str>, key: &[KeyPart<'_>]) {
         // `||` with a column without a value gives no text at all, so each column reads as empty
         // text there; the cast makes a key of one number text.
         sql.push("CAST(")

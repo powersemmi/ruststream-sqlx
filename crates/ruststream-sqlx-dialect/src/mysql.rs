@@ -84,11 +84,12 @@ const MARIADB_FLOOR: Floor = Floor {
 /// bring the gap locks back.
 ///
 /// In the advisory lock form a row's key is the text `CONCAT_WS` renders from the key's parts, a
-/// column without a value skipped. A session lock named by the key (`GET_LOCK`) holds the row. The
-/// server takes a lock name of 1 to 64 characters, so a key that is empty or longer is locked by
-/// its SHA-256, 64 characters of hex: the claim selects the name it locks. The claim leaves out the
-/// keys `IS_USED_LOCK` reports in use. An update returns no rows here, so the take counts the
-/// attempt, then reads the row.
+/// column without a value skipped. A session lock (`GET_LOCK`) holds the row, named by the table's
+/// database, a dot and the key (`app.jobs-7`): the server names its locks server-wide, and the
+/// database keeps the locks of two databases on one server apart. The server takes a lock name of
+/// 1 to 64 characters, so a longer name is locked by its SHA-256, 64 characters of hex: the claim
+/// selects the name it locks. The claim leaves out the names `IS_USED_LOCK` reports in use. An
+/// update returns no rows here, so the take counts the attempt, then reads the row.
 ///
 /// In a table with FIFO groups a claim's transaction takes its group
 /// ([`fifo_guard`](Dialect::fifo_guard)) with a locking read of the group's unfinished rows that
@@ -189,16 +190,30 @@ impl BuiltIn for MySql {
             .push(" MICROSECOND");
     }
 
-    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {
+    fn render_lock_key(
+        &self,
+        sql: &mut SqlWriter<'_, Self>,
+        schema: Option<&str>,
+        key: &[KeyPart<'_>],
+    ) {
+        // The server names its locks server-wide, so the name starts with the table's database:
+        // two databases on one server keep their locks apart, as Postgres keeps them per database.
+        // The database's name is lowercased, so a table named with its database and the same table
+        // reached through the connection's default name one lock alike, whatever case each writes.
         let text = |sql: &mut SqlWriter<'_, Self>| {
-            sql.push("CONCAT_WS('', ")
+            sql.push("CONCAT_WS('', LOWER(");
+            match schema {
+                Some(schema) => sql.literal(schema),
+                None => sql.push("DATABASE()"),
+            };
+            sql.push("), '.', ")
                 .key_parts(key, ", ", |sql, column| {
                     sql.ident(column);
                 })
                 .push(")");
         };
         // MySQL refuses a lock name that is empty or longer than 64 characters, and MariaDB takes
-        // no lock on an empty one: such a key is locked by its hash.
+        // no lock on an empty one: such a name is locked by its hash.
         sql.push("IF(CHAR_LENGTH(");
         text(sql);
         sql.push(") BETWEEN 1 AND 64, ");

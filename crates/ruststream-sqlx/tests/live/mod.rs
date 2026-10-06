@@ -8,10 +8,11 @@
 //! A suite writes each test once. [`matrix!`] runs it on every stand a feature turns on, once per
 //! form of the queue rows that stand serves, and [`server_matrix!`] the same on the stands that run
 //! as servers; [`stands!`] runs it once per stand, for a test whose rows name their own form,
-//! [`row_lock_stands!`] once per stand that serves the row lock form, and [`advisory_stands!`] once
-//! per stand of the advisory lock form's suite. A stand module gives each test a database of its
-//! own, the dialect the broker builds the stand's statements with, and reads the tables in its own
-//! SQL; a row module holds the queue rows of one form under the names every form shares.
+//! [`row_lock_stands!`] once per stand that serves the row lock form, [`advisory_stands!`] once per
+//! stand of the advisory lock form's suite, and [`advisory_server_stands!`] once per such stand that
+//! runs as a server. A stand module gives each test a database of its own, the dialect the broker
+//! builds the stand's statements with, and reads the tables in its own SQL; a row module holds the
+//! queue rows of one form under the names every form shares.
 
 // Each live suite is its own test binary and uses the part of this module its topic needs, so
 // what one of them leaves alone, a macro included, is not dead code.
@@ -257,6 +258,48 @@ macro_rules! advisory_stands {
     };
 }
 
+/// One module per stand of the advisory lock form that runs as a server, each holding `$items`:
+/// the stands whose databases keep the locks.
+///
+/// A stand appears when its feature is on. Each module sees the suite's own items, the stand's
+/// `Db`, `database` and `DIALECT`, and the rows of the advisory lock form.
+macro_rules! advisory_server_stands {
+    ($($items:item)*) => {
+        #[cfg(feature = "postgres")]
+        mod postgres {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::postgres::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mysql {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mysql::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mariadb {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mariadb::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+    };
+}
+
 /// One module per stand whose database locks rows, each holding `$items`: for a test whose rows
 /// take the row lock form, which SQLite does not serve.
 ///
@@ -305,4 +348,7 @@ macro_rules! mysql_stands {
 }
 
 #[allow(unused_imports)]
-pub(crate) use {advisory_stands, matrix, mysql_stands, row_lock_stands, server_matrix, stands};
+pub(crate) use {
+    advisory_server_stands, advisory_stands, matrix, mysql_stands, row_lock_stands, server_matrix,
+    stands,
+};

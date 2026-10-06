@@ -143,9 +143,14 @@ pub(crate) trait BuiltIn: Dialect {
     /// Writes the database's current time plus [`Param::Delay`] microseconds.
     fn database_later(&self, sql: &mut SqlWriter<'_, Self>);
 
-    /// Writes the lock key of a row: the text the database renders from `key`'s parts, as the
-    /// dialect locks it.
-    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]);
+    /// Writes the lock key of a row of a table in `schema` (`None` for the connection's default):
+    /// the text the database renders from `key`'s parts, as the dialect locks it.
+    fn render_lock_key(
+        &self,
+        sql: &mut SqlWriter<'_, Self>,
+        schema: Option<&str>,
+        key: &[KeyPart<'_>],
+    );
 
     /// Refuses a name longer than the database keeps.
     fn names_fit<'a>(

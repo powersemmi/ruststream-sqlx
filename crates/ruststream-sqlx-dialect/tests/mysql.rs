@@ -803,7 +803,7 @@ fn the_candidates_carry_their_guarded_keys_and_skip_the_keys_in_use() -> Result<
     let claim = MySql.advisory_claim(&ADVISED)?;
     assert_eq!(
         claim.sql(),
-        "SELECT `job_id`, IF(CHAR_LENGTH(CONCAT_WS('', 'jobs-', `job_id`)) BETWEEN 1 AND 64, CONCAT_WS('', 'jobs-', `job_id`), SHA2(CONCAT_WS('', 'jobs-', `job_id`), 256)) AS `__lock` FROM `jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND IS_USED_LOCK(IF(CHAR_LENGTH(CONCAT_WS('', 'jobs-', `job_id`)) BETWEEN 1 AND 64, CONCAT_WS('', 'jobs-', `job_id`), SHA2(CONCAT_WS('', 'jobs-', `job_id`), 256))) IS NULL ORDER BY `retry_after`, `job_id` LIMIT ?",
+        "SELECT `job_id`, IF(CHAR_LENGTH(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`)) BETWEEN 1 AND 64, CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), SHA2(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), 256)) AS `__lock` FROM `jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND IS_USED_LOCK(IF(CHAR_LENGTH(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`)) BETWEEN 1 AND 64, CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), SHA2(CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`), 256))) IS NULL ORDER BY `retry_after`, `job_id` LIMIT ?",
     );
     assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
     Ok(())
@@ -812,7 +812,7 @@ fn the_candidates_carry_their_guarded_keys_and_skip_the_keys_in_use() -> Result<
 #[test]
 fn the_database_renders_the_key_and_guards_its_length() -> Result<(), StatementError> {
     // A key of one column renders without a literal, and the probe is the only condition.
-    let key = guarded("CONCAT_WS('', `job_id`)");
+    let key = guarded("CONCAT_WS('', LOWER(DATABASE()), '.', `job_id`)");
     assert_eq!(
         claim_keyed(&[KeyPart::Column("job_id")])?.sql(),
         format!(
@@ -821,7 +821,7 @@ fn the_database_renders_the_key_and_guards_its_length() -> Result<(), StatementE
     );
     // A quote in a literal doubles, and so does a backslash.
     let escaped = claim_keyed(&[KeyPart::Literal(r"it's-a\b-"), KeyPart::Column("job_id")])?;
-    let key = guarded(r"CONCAT_WS('', 'it''s-a\\b-', `job_id`)");
+    let key = guarded(r"CONCAT_WS('', LOWER(DATABASE()), '.', 'it''s-a\\b-', `job_id`)");
     assert!(
         escaped
             .sql()
@@ -829,15 +829,38 @@ fn the_database_renders_the_key_and_guards_its_length() -> Result<(), StatementE
         "{}",
         escaped.sql()
     );
-    // A key of no parts is the empty text, which the guard hashes: every row waits for one lock.
+    // A key of no parts is the empty text: every row waits for one lock, the database's own.
     let empty = claim_keyed(&[])?;
-    let key = guarded("CONCAT_WS('', '')");
+    let key = guarded("CONCAT_WS('', LOWER(DATABASE()), '.', '')");
     assert!(
         empty
             .sql()
             .starts_with(&format!("SELECT `job_id`, {key} AS `__lock`")),
         "{}",
         empty.sql()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lock_name_starts_with_the_database_of_its_table() -> Result<(), StatementError> {
+    // A table in a named database puts that name first; a table of the connection's default
+    // database, the name the server reports for it.
+    let within = MySql.advisory_claim(
+        &TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(PREFIXED_KEY)).within("app"),
+    )?;
+    let key = guarded("CONCAT_WS('', LOWER('app'), '.', 'jobs-', `job_id`)");
+    assert_eq!(
+        within.sql(),
+        format!(
+            "SELECT `job_id`, {key} AS `__lock` FROM `app`.`jobs` WHERE IS_USED_LOCK({key}) IS NULL ORDER BY `job_id` LIMIT ?"
+        ),
+    );
+    let key = guarded("CONCAT_WS('', LOWER(DATABASE()), '.', 'jobs-', `job_id`)");
+    assert!(
+        claim_keyed(PREFIXED_KEY)?
+            .sql()
+            .starts_with(&format!("SELECT `job_id`, {key} AS `__lock` FROM `jobs`")),
     );
     Ok(())
 }

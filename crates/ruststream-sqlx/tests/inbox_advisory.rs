@@ -489,6 +489,61 @@ mod on_postgres {
     }
 }
 
+/// Two services, each in a database of its own on one stand, whose rows render the same key: each
+/// locks its own row, as each database keeps its own locks.
+mod per_database {
+    use super::*;
+
+    crate::live::advisory_server_stands! {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn two_databases_lock_their_rows_apart() {
+            let Some(one) = database().await else { return };
+            let Some(other) = database().await else { return };
+            one.plain(&[b"one".as_slice()]).await;
+            other.plain(&[b"other".as_slice()]).await;
+            let first = SqlxBroker::new(one.pool.clone())
+                .poll_interval(POLL)
+                .connect_in_process()
+                .await
+                .expect("the broker connects");
+            let second = SqlxBroker::new(other.pool.clone())
+                .poll_interval(POLL)
+                .connect_in_process()
+                .await
+                .expect("the broker connects");
+            let mut holding = InboxQueue::<Plain>::new("plain")
+                .subscribe(&first)
+                .await
+                .expect("the subscription opens");
+            let mut taking = InboxQueue::<Plain>::new("plain")
+                .subscribe(&second)
+                .await
+                .expect("the subscription opens");
+            let held = pin!(holding.stream())
+                .next()
+                .await
+                .expect("the stream goes on")
+                .expect("the claim takes the row");
+            assert_eq!(held.payload(), b"one");
+            {
+                let taken = tokio::time::timeout(AT_ONCE, pin!(taking.stream()).next())
+                    .await
+                    .expect("the other database's row is claimable at once")
+                    .expect("the stream goes on")
+                    .expect("the claim takes the row");
+                assert_eq!(taken.payload(), b"other");
+                taken.ack().await.expect("the row settles");
+            }
+            held.ack().await.expect("the row settles");
+            drop((holding, taking));
+            first.shutdown().await.expect("the broker shuts down");
+            second.shutdown().await.expect("the broker shuts down");
+            one.finish().await;
+            other.finish().await;
+        }
+    }
+}
+
 /// A table that does not match its struct, refused when the subscription starts. Postgres refuses
 /// a name that matches no column; SQLite reads a double-quoted one as a string literal instead, so
 /// the same statement prepares there.

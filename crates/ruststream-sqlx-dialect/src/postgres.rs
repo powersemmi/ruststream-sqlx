@@ -147,7 +147,8 @@ impl BuiltIn for Postgres {
             .push("::bigint * interval '1 microsecond'");
     }
 
-    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {
+    // Postgres keeps its advisory locks per database, so the key alone names the lock.
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, _: Option<&str>, key: &[KeyPart<'_>]) {
         sql.push("concat(")
             .key_parts(key, ", ", |sql, column| {
                 sql.ident(column);
