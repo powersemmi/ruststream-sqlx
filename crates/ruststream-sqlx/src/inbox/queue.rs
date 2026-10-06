@@ -12,7 +12,8 @@ use std::time::Duration;
 use ruststream::asyncapi::{Binding, Bindings};
 use ruststream::{BrokerMoves, DeclareRetryError, RetryDeclaration, SubscriptionSource};
 use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Form, Opens, Role, Statement, StatementError, TableName, TableSpec,
+    ClaimShape, Dialect, Form, Isolation, Opening, Opens, Role, Statement, StatementError,
+    TableName, TableSpec,
 };
 #[cfg(feature = "asyncapi")]
 use serde::Serialize;
@@ -45,16 +46,17 @@ use check::check;
 /// where the struct declares one, and a subscription to a table at a level the broker's dialect
 /// does not open ([`Opens`](crate::dialect::Opens)) does not compile.
 ///
-/// Mounted with [`transactional`](crate::InboxSettings::transactional), a row lock subscription
-/// lends that transaction to its handler, which writes through it: acknowledgement commits the
-/// handler's writes with the row's settlement, and every other outcome discards them first.
+/// Mounted with [`transactional`](crate::InboxSettings::transactional), a subscription lends its
+/// handler a transaction to write through, in every form: acknowledgement commits the handler's
+/// writes with the row's settlement, and every other outcome discards them first. A row lock
+/// subscription lends the claim's transaction.
 ///
 /// A table with a `#[field(locked_until)]` field is claimed by lease instead: the claim writes the
-/// lease's expiry into the row, counts the attempt and commits at once, so the handler runs
-/// outside any transaction. While the handler runs, the subscription extends the lease each half
-/// lease. Each settlement is one statement that takes effect only while the row still holds the
-/// lease, a delivery dropped unsettled releases its row at once, and after a crash the row
-/// returns once the lease runs out. The lease is the broker's
+/// lease's expiry into the row, counts the attempt and commits at once, so the lease, not a
+/// transaction, holds the row while the handler runs. While the handler runs, the subscription
+/// extends the lease each half lease. Each settlement is one statement that takes effect only
+/// while the row still holds the lease, a delivery dropped unsettled releases its row at once,
+/// and after a crash the row returns once the lease runs out. The lease is the broker's
 /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the subscription sets its own
 /// ([`lease`](Self::lease)). The broker's dialect serves a table's form when it implements the
 /// form's trait: [`RowLock`](crate::dialect::RowLock) for the row lock form,
@@ -748,7 +750,10 @@ where
         .dialect()
         .begin(description.spec.opening())
         .map_err(refused)?;
-    let savepoint = savepoint_of::<Mode>(form, &description.spec).map_err(declared)?;
+    if let Some(reason) = lease_unseen_at::<Mode>(form, description) {
+        return Err(declared(reason));
+    }
+    let savepoint = savepoint_of::<Mode>(form);
     let prepared = Prepared {
         transactional: Mode::TRANSACTIONAL,
         begin_work,
@@ -807,8 +812,9 @@ where
     // The subscription's own handle on the pool, which each delivery copies for the handler's
     // context instead of counting a reference.
     let pool: &'static Pool<DB> = Box::leak(Box::new(shared.pool.clone()));
-    // A transactional delivery's transaction waits in the book while its handler does not hold it.
-    let lending = queue.prepared.savepoint.map(|_| TxBook::leak());
+    // A transactional delivery's transaction waits in the book while its handler does not hold it;
+    // in the advisory lock form the lock book keeps the session that holds it.
+    let lending = (Mode::TRANSACTIONAL && !description.advisory()).then(TxBook::leak);
     Ok(InboxSubscriber::new(
         Arc::clone(shared),
         queue,
@@ -820,33 +826,51 @@ where
     ))
 }
 
-/// Where a handler's writes start in the claim's transaction, for a subscription in `Mode` to the
-/// table `spec` describes through the dialect `form` shows: the row lock form's savepoint in
-/// transactional mode, `None` in the plain mode.
-///
-/// # Errors
-///
-/// Why the table's form refuses transactional mode.
-fn savepoint_of<Mode: InboxMode>(
-    form: &FormDialect,
-    spec: &TableSpec<'_>,
-) -> Result<Option<Savepoint>, String> {
-    if !Mode::TRANSACTIONAL {
-        return Ok(None);
-    }
+/// Where a handler's writes start in the claim's transaction, for a subscription in `Mode` through
+/// the dialect `form` shows: the row lock form's savepoint in transactional mode. `None` in the
+/// plain mode, and in the lease and advisory lock forms, whose deliveries open transactions of
+/// their own after the claim, so a rollback discards the handler's writes alone.
+fn savepoint_of<Mode: InboxMode>(form: &FormDialect) -> Option<Savepoint> {
     match form {
-        FormDialect::RowLock(dialect) => Ok(Some(Savepoint {
+        FormDialect::RowLock(dialect) if Mode::TRANSACTIONAL => Some(Savepoint {
             set: dialect.savepoint(),
             rollback_to: dialect.rollback_to_savepoint(),
-        })),
-        // Why a startup refusal: the lease and advisory lock forms keep no transaction open from
-        // the claim to the settlement, and transactional mode lends that transaction.
-        FormDialect::Lease(_) | FormDialect::Advisory(_) => Err(format!(
-            "transactional mode lends the claim's transaction to the handler, and the {} form \
-             keeps none open: mount the handler without `.transactional()`",
-            spec.form().name(),
-        )),
+        }),
+        FormDialect::RowLock(_) | FormDialect::Lease(_) | FormDialect::Advisory(_) => None,
     }
+}
+
+/// Why a subscription in `Mode` to the table `description` reads cannot run in transactional mode
+/// at the table's isolation level on the dialect `form` shows, if it cannot.
+///
+/// A transactional lease delivery acknowledges inside its handler's transaction, by the lease the
+/// broker last extended. A Postgres transaction at REPEATABLE READ or SERIALIZABLE reads every row
+/// as its first statement found it, so it cannot see an extension committed later, and the
+/// acknowledgement of a handler that outlived half its lease would find no row: a lease it lost
+/// on paper, whose writes it would roll back.
+// Why a startup refusal: the dialect is known by its name, and the backend behind an `AnyPool` only
+// once the broker connected. MySQL and MariaDB read the latest row in an update at every level, so
+// they keep the acknowledgement at theirs.
+fn lease_unseen_at<Mode: InboxMode>(
+    form: &FormDialect,
+    description: &Description,
+) -> Option<String> {
+    let Opening::Isolation(level @ (Isolation::RepeatableRead | Isolation::Serializable)) =
+        description.spec.opening()
+    else {
+        return None;
+    };
+    if !Mode::TRANSACTIONAL || !description.leased() || form.dialect().name() != "postgres" {
+        return None;
+    }
+    Some(format!(
+        "transactional mode acknowledges a lease delivery by the lease the broker last extended, \
+         and a Postgres transaction at `isolation = {}` reads rows as its first statement found \
+         them, so a handler that outlives half its lease would lose its writes: declare \
+         `isolation = read_committed` or no level, or mount the handler without \
+         `.transactional()`",
+        level.attribute(),
+    ))
 }
 
 /// Whether the rows a subscription to `description` hands out carry the attempt its claim or its

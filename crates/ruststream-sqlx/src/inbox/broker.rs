@@ -99,8 +99,9 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
 /// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
 /// database, and picks the built-in dialect by it where the service passed none. A message in
-/// work holds one of the pool's connections until it settles (in the lease form only while it
-/// settles), and a publish takes another, so the pool is sized for both.
+/// work holds one of the pool's connections until it settles (in the lease form outside
+/// transactional mode only while it settles), and a publish takes another, so the pool is sized
+/// for both.
 /// Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors; publishing
 /// writes them through [`Repository`](crate::Repository) policies or through the routes this
 /// builder records.

@@ -94,6 +94,11 @@ struct Entry<DB: Database> {
     /// The key whose lock the delivery's session holds. A free slot keeps the last key's buffer, so
     /// the next delivery's key is copied into it.
     key: String,
+    /// Counts the deliveries that held the slot; the current one's [`LockSlot`] carries it.
+    generation: u64,
+    /// Whether a panic of the delivery's handler gave its session back: in transactional mode the
+    /// settlement then rolls back what the handler wrote, whatever the outcome.
+    panicked: bool,
     standing: Standing<DB>,
 }
 
@@ -101,13 +106,44 @@ struct Entry<DB: Database> {
 enum Standing<DB: Database> {
     /// No delivery holds the slot.
     Free,
-    /// The delivery's session waits in the slot while its handler works.
+    /// The delivery's session waits in the slot while its handler does not hold it.
     Held(Session<DB>),
-    /// A settlement, or a handler's transaction, has the session.
-    Lent,
+    /// The delivery's settlement, or its handler's transaction, has the session.
+    Lent(Borrower),
+    /// The delivery settled, or dropped, while its handler's transaction had the session: the slot
+    /// waits for the session to come back, then ends it and frees itself.
+    Abandoned,
     /// `shutdown` released the delivery's lock and ended its session: the delivery settles no
     /// more, and the slot frees when the delivery leaves.
     Released,
+}
+
+/// Who has a slot's session out of the book.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Borrower {
+    /// The delivery's settlement, which ends the session and leaves the slot.
+    Settlement,
+    /// The handler's transaction in transactional mode, which gives the session back when the
+    /// handler ends.
+    Handler,
+}
+
+/// A delivery's place in a [`LockBook`]: the slot, and which of the deliveries that held the slot
+/// it is, so a handler's transaction kept past its delivery never reaches a later delivery's
+/// session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LockSlot {
+    index: usize,
+    generation: u64,
+}
+
+/// Why a settlement found no session in its delivery's slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unlent {
+    /// `shutdown` released the delivery's lock and ended its session.
+    Released,
+    /// The handler's transaction still has the session: the handler kept its `Tx` past its end.
+    Borrowed,
 }
 
 /// A delivery's place in the book: entered at the claim, left once, when the delivery settles.
@@ -115,7 +151,7 @@ enum Standing<DB: Database> {
 /// the database closes, the lock released first, and a key the process keeps is freed.
 pub(crate) struct LockHold<DB: Database> {
     book: &'static LockBook<DB>,
-    slot: usize,
+    slot: LockSlot,
 }
 
 /// A session that may hold the lock on its key outside the book: in a claim, from its lock until
@@ -191,24 +227,91 @@ impl<DB: Database> LockBook<DB> {
         };
         let reused = free
             .pop()
-            .and_then(|slot| Some((slot, entries.get_mut(slot)?)));
-        let slot = if let Some((slot, entry)) = reused {
+            .and_then(|index| Some((index, entries.get_mut(index)?)));
+        let slot = if let Some((index, entry)) = reused {
             entry.key.clear();
             entry.key.push_str(key);
+            entry.generation = entry.generation.wrapping_add(1);
+            entry.panicked = false;
             entry.standing = standing;
-            slot
+            LockSlot {
+                index,
+                generation: entry.generation,
+            }
         } else {
             entries.push(Entry {
                 key: key.to_owned(),
+                generation: 0,
+                panicked: false,
                 standing,
             });
-            entries.len() - 1
+            LockSlot {
+                index: entries.len() - 1,
+                generation: 0,
+            }
         };
         drop(slots);
         if let Some(session) = late {
             self.end(session, Cow::Borrowed(key));
         }
         LockHold { book: self, slot }
+    }
+
+    /// The session of the delivery in `slot` with its key, out of the book for its handler's
+    /// transaction; `None` unless it waits there for the delivery `slot` names.
+    pub(crate) fn lend(&'static self, slot: LockSlot) -> Option<Locked<'static, DB>> {
+        let mut slots = self.slots();
+        let lent = slots
+            .entries
+            .get_mut(slot.index)
+            .filter(|entry| entry.generation == slot.generation)
+            .and_then(|entry| {
+                match mem::replace(&mut entry.standing, Standing::Lent(Borrower::Handler)) {
+                    Standing::Held(session) => Some((session, mem::take(&mut entry.key))),
+                    other => {
+                        entry.standing = other;
+                        None
+                    }
+                }
+            });
+        drop(slots);
+        lent.map(|(session, key)| Locked {
+            session: Some(session),
+            key: Cow::Owned(key),
+            book: self,
+        })
+    }
+
+    /// `lent` back into `slot` after the handler, `panicked` when a panic dropped it. A slot whose
+    /// delivery settled or dropped meanwhile ends the session here, the lock released first, and
+    /// frees itself; so does a slot that holds another delivery by now, the session ending alone.
+    pub(crate) fn give_back(&self, slot: LockSlot, lent: Locked<'static, DB>, panicked: bool) {
+        let (session, key) = lent.into_parts();
+        let mut slots = self.slots();
+        let Slots { entries, free, .. } = &mut *slots;
+        let ends = match entries
+            .get_mut(slot.index)
+            .filter(|entry| entry.generation == slot.generation)
+        {
+            Some(entry) if matches!(entry.standing, Standing::Lent(Borrower::Handler)) => {
+                entry.key = key.into_owned();
+                entry.panicked = panicked;
+                entry.standing = Standing::Held(session);
+                None
+            }
+            Some(entry) if matches!(entry.standing, Standing::Abandoned) => {
+                entry.standing = Standing::Free;
+                free.push(slot.index);
+                Some((session, key))
+            }
+            _ => Some((session, key)),
+        };
+        drop(slots);
+        self.returned.notify_waiters();
+        // A session no delivery waits for ends here.
+        if let Some((session, key)) = ends {
+            self.end(session, key);
+        }
     }
 
     /// `session`, which may hold the lock on `key`, out of the book: a claim's, from its lock on.
@@ -290,8 +393,10 @@ impl<DB: Database> LockBook<DB> {
                     key: Cow::Owned(mem::take(&mut entry.key)),
                     book: self,
                 }),
-                Standing::Lent => {
-                    entry.standing = Standing::Lent;
+                // A settlement in flight ends its session; a handler's transaction gives it back,
+                // and an abandoned slot ends it then.
+                standing @ (Standing::Lent(_) | Standing::Abandoned) => {
+                    entry.standing = standing;
                     lent = true;
                 }
                 other => entry.standing = other,
@@ -404,53 +509,44 @@ impl<DB: Database> LockHold<DB> {
         self.book
     }
 
-    /// The session with its key, out of the book while a settlement (or a handler's transaction)
-    /// uses it; `None` when the session is not in its slot, as once `shutdown` released it.
-    pub(crate) fn lend(&self) -> Option<Locked<'static, DB>> {
-        let mut slots = self.book.slots();
-        let lent = slots.entries.get_mut(self.slot).and_then(|entry| {
-            match mem::replace(&mut entry.standing, Standing::Lent) {
-                Standing::Held(session) => Some((session, mem::take(&mut entry.key))),
-                other => {
-                    entry.standing = other;
-                    None
-                }
-            }
-        });
-        drop(slots);
-        lent.map(|(session, key)| Locked {
-            session: Some(session),
-            key: Cow::Owned(key),
-            book: self.book,
-        })
+    /// Where the delivery is in its book, for its handler's transaction to borrow the session.
+    pub(crate) const fn slot(&self) -> LockSlot {
+        self.slot
     }
 
-    /// The session back into its slot, with its key, after a handler's transaction used it. A slot
-    /// that no longer waits for it ends it, the lock released first.
-    #[cfg_attr(
-        not(all(test, feature = "sqlite")),
-        expect(
-            dead_code,
-            reason = "a handler's transaction in transactional mode returns its session this way"
-        )
-    )]
-    pub(crate) fn give_back(&self, lent: Locked<'static, DB>) {
-        let (session, key) = lent.into_parts();
+    /// The session with its key, out of the book for the delivery's settlement, and whether a panic
+    /// of the handler gave it back. [`Unlent::Released`] once `shutdown` released it,
+    /// [`Unlent::Borrowed`] while the handler's transaction still has it.
+    pub(crate) fn lend(&self) -> Result<(Locked<'static, DB>, bool), Unlent> {
         let mut slots = self.book.slots();
-        let refused = match slots.entries.get_mut(self.slot) {
-            Some(entry) if matches!(entry.standing, Standing::Lent) => {
-                entry.key = key.into_owned();
-                entry.standing = Standing::Held(session);
-                None
-            }
-            _ => Some((session, key)),
-        };
+        let lent = slots
+            .entries
+            .get_mut(self.slot.index)
+            .map_or(Err(Unlent::Released), |entry| {
+                match mem::replace(&mut entry.standing, Standing::Lent(Borrower::Settlement)) {
+                    Standing::Held(session) => {
+                        Ok((session, mem::take(&mut entry.key), entry.panicked))
+                    }
+                    other => {
+                        let unlent = if matches!(other, Standing::Lent(Borrower::Handler)) {
+                            Unlent::Borrowed
+                        } else {
+                            Unlent::Released
+                        };
+                        entry.standing = other;
+                        Err(unlent)
+                    }
+                }
+            });
         drop(slots);
-        self.book.returned.notify_waiters();
-        // A slot that no longer waits for its session leaves the session to end here.
-        if let Some((session, key)) = refused {
-            self.book.end(session, key);
-        }
+        lent.map(|(session, key, panicked)| {
+            let locked = Locked {
+                session: Some(session),
+                key: Cow::Owned(key),
+                book: self.book,
+            };
+            (locked, panicked)
+        })
     }
 
     /// Frees the slot after a settlement, keeping the key's buffer for the next delivery.
@@ -458,7 +554,7 @@ impl<DB: Database> LockHold<DB> {
         let hold = ManuallyDrop::new(self);
         let mut slots = hold.book.slots();
         let Slots { entries, free, .. } = &mut *slots;
-        let left = entries.get_mut(hold.slot).and_then(|entry| {
+        let left = entries.get_mut(hold.slot.index).and_then(|entry| {
             if matches!(entry.standing, Standing::Free) {
                 return None;
             }
@@ -466,7 +562,7 @@ impl<DB: Database> LockHold<DB> {
             Some(mem::replace(&mut entry.standing, Standing::Free))
         });
         if left.is_some() {
-            free.push(hold.slot);
+            free.push(hold.slot.index);
         }
         drop(slots);
         hold.book.returned.notify_waiters();
@@ -480,19 +576,27 @@ impl<DB: Database> Drop for LockHold<DB> {
         let book = self.book;
         let mut slots = book.slots();
         let Slots { entries, free, .. } = &mut *slots;
-        let Some(entry) = entries.get_mut(self.slot) else {
+        let Some(entry) = entries.get_mut(self.slot.index) else {
             return;
         };
         let (session, key) = match mem::replace(&mut entry.standing, Standing::Free) {
             // A hold frees its slot once.
             Standing::Free => return,
+            // The handler's transaction has the session, which may hold the lock: the slot waits
+            // for it, so `shutdown` waits for it too, and ends it when it comes back.
+            Standing::Lent(Borrower::Handler) | Standing::Abandoned => {
+                entry.standing = Standing::Abandoned;
+                drop(slots);
+                book.returned.notify_waiters();
+                return;
+            }
             // A settlement dropped midway: its session ends with it. A released one has ended.
-            Standing::Lent | Standing::Released => (None, None),
+            Standing::Lent(Borrower::Settlement) | Standing::Released => (None, None),
             // The process's key needs no release, so the slot keeps the key's buffer.
             Standing::Held(session) if book.process() => (Some(session), None),
             Standing::Held(session) => (Some(session), Some(mem::take(&mut entry.key))),
         };
-        free.push(self.slot);
+        free.push(self.slot.index);
         drop(slots);
         book.returned.notify_waiters();
         let Some(session) = session else {
@@ -522,6 +626,27 @@ impl<'k, DB: Database> Locked<'k, DB> {
     /// The key whose lock the session may hold.
     pub(crate) fn key(&self) -> &str {
         &self.key
+    }
+
+    /// The session's connection, to read through.
+    ///
+    /// # Panics
+    ///
+    /// As [`session`](Self::session).
+    pub(crate) fn conn_ref(&self) -> &DB::Connection {
+        self.session
+            .as_ref()
+            .expect("a locked session stays until it is let go")
+            .conn_ref()
+    }
+
+    /// The session's connection, to run a statement on.
+    ///
+    /// # Panics
+    ///
+    /// As [`session`](Self::session).
+    pub(crate) fn conn(&mut self) -> &mut DB::Connection {
+        self.session().conn()
     }
 
     /// Takes the key in the process's registry, under the book's database: `false` while it is in

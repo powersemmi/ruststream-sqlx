@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
-use sqlx::{Database, Pool};
+use sqlx::{Database, Pool, SqlStr};
+use sqlx_core::transaction::TransactionManager;
+use sync_wrapper::SyncWrapper;
 use tokio_util::sync::DropGuard;
 
 use super::PayloadRow;
@@ -16,7 +18,9 @@ use super::advisory::{LockBook, LockHold};
 use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::delivery::{BatchTx, InboxDelivery};
-use super::engine::{self, Candidates, Claimed, Claiming, Events, Leasing, Now, Settling};
+use super::engine::{
+    self, Candidates, Claimed, Claiming, Events, Leasing, Now, Prepared, Settling,
+};
 use super::error::SqlxBrokerError;
 use super::lease::LeaseBook;
 use super::queue::{Queue, Registration};
@@ -45,26 +49,29 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// its rows on every attempt, until the service's SQL or schema is fixed.
 ///
 /// In the lease form the claim commits at once and holds no connection: each delivery, in a batch
-/// or alone, takes a connection only while it settles, and its settlement takes effect on its own.
+/// or alone, takes a connection only while it settles, and its settlement takes effect on its own;
+/// in transactional mode a delivery holds its transaction's connection until it settles.
 /// A task on the runtime the broker connected on extends the lease of every delivery in work each
 /// half lease, on one connection, until the subscriber drops or the broker shuts down.
 ///
 /// In the advisory lock form each message in work holds a connection of its own, in a batch too,
-/// and its session holds the lock on the row's key: no transaction stays open while the handler
-/// works. A claim selects candidates, locks each key on a session and takes the row while it is
-/// still claimable; a batch takes idle connections first and opens new ones while the pool has
-/// room, so a batch larger than the pool shrinks instead of waiting. A settlement runs its
-/// statement on the session, then releases the lock and returns the connection to the pool. A
-/// delivery dropped unsettled closes its connection on the runtime the broker connected on, after
-/// releasing the lock, and its row returns at once. SQLite keeps no such locks: the process keeps
-/// the keys in work instead, so one process serves a database file.
+/// and its session holds the lock on the row's key: outside transactional mode no transaction
+/// stays open while the handler works. A claim selects candidates, locks each key on a session
+/// and takes the row while it is still claimable; a batch takes idle connections first and opens
+/// new ones while the pool has room, so a batch larger than the pool shrinks instead of waiting. A
+/// settlement runs its statement on the session, then releases the lock and returns the connection
+/// to the pool. A delivery dropped unsettled closes its connection on the runtime the broker
+/// connected on, after releasing the lock, and its row returns at once. SQLite keeps no such
+/// locks: the process keeps the keys in work instead, so one process serves a database file.
 ///
 /// In transactional mode, a registration mounted with
 /// [`transactional`](crate::InboxSettings::transactional), each delivery lends its handler the
-/// transaction it settles in. In the row lock form that is the claim's: the subscription sets a
-/// savepoint after each claim that took a row, so a settlement other than acknowledgement can
-/// discard what the handler wrote. Transactional mode serves single deliveries: the subscriber
-/// delivers no batches in it.
+/// transaction it settles in, opened at the table's isolation level or SQLite mode. In the row lock
+/// form that is the claim's: the subscription sets a savepoint after each claim that took a row, so
+/// a settlement other than acknowledgement can discard what the handler wrote. In the lease form
+/// the subscription opens a transaction for each delivery once its claim committed; in the advisory
+/// lock form, on the delivery's session once its row is taken. Transactional mode serves single
+/// deliveries: the subscriber delivers no batches in it.
 ///
 /// A table whose groups keep their order (`#[field(group, fifo = true)]`) has one row of a group
 /// in work at a time. A claim takes the group's head, its first unfinished row in claim order, and
@@ -106,8 +113,9 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     holding: Holding<DB, Row>,
     /// The subscription's handle on the pool, which its deliveries lend their handlers.
     pool: &'static Pool<DB>,
-    /// Where a transactional delivery's transaction waits while its handler does not hold it;
-    /// `None` in the plain mode.
+    /// Where a transactional delivery's transaction waits while its handler does not hold it, in
+    /// the row lock and lease forms; `None` in the plain mode, and in the advisory lock form, whose
+    /// book keeps the session that holds the transaction.
     lending: Option<&'static TxBook<DB>>,
     /// What the last claim took, its storage reused from claim to claim.
     claimed: ClaimBuffers<DB, Row>,
@@ -156,6 +164,10 @@ pub(crate) struct ClaimBuffers<DB: QueueDatabase, Row: Events<DB>> {
     /// What only the advisory lock form keeps, made at its first claim: a subscription in another
     /// form carries the pointer alone.
     advised: Option<Box<Advised<DB, Row>>>,
+    /// In the lease form's transactional mode, the transaction of each row's delivery, opened once
+    /// the claim committed its leases; empty otherwise. Wrapped because a connection is not
+    /// `Sync`, and only the subscriber's own `&mut` reaches it.
+    transactions: SyncWrapper<Vec<PoolTx<DB>>>,
 }
 
 /// What an advisory claim keeps beside its rows.
@@ -173,6 +185,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Default for ClaimBuffers<DB, Row> {
         Self {
             rows: Vec::new(),
             advised: None,
+            transactions: SyncWrapper::new(Vec::new()),
         }
     }
 }
@@ -189,9 +202,10 @@ impl<DB: QueueDatabase, Row: Events<DB>> Default for Advised<DB, Row> {
 
 impl<DB: QueueDatabase, Row: Events<DB>> ClaimBuffers<DB, Row> {
     /// Empties them for the next claim. A hold left from a claim that failed midway drops here,
-    /// which ends its session.
+    /// which ends its session, and so does a transaction, which closes its connection.
     fn clear(&mut self) {
         self.rows.clear();
+        self.transactions.get_mut().clear();
         if let Some(advised) = self.advised.as_deref_mut() {
             advised.holds.clear();
             advised.taken.clear();
@@ -350,7 +364,7 @@ where
 
     /// The deliveries of the last advisory claim, oldest first, each with its place in the book.
     fn take_advised(&mut self) -> impl Iterator<Item = (Claimed<Row>, LockHold<DB>)> + '_ {
-        let ClaimBuffers { rows, advised } = &mut self.claimed;
+        let ClaimBuffers { rows, advised, .. } = &mut self.claimed;
         let holds = advised
             .as_deref_mut()
             .map(|advised| advised.holds.drain(..));
@@ -377,7 +391,14 @@ where
                 }
             }
             Taken::Leased(book, lease) => {
-                InboxDelivery::leased(self.claimed.rows.pop()?, book, lease, queue, pool)
+                let claimed = self.claimed.rows.pop()?;
+                // In transactional mode the delivery's own transaction waits in the book for the
+                // handler to borrow it.
+                let lent = self
+                    .lending
+                    .zip(self.claimed.transactions.get_mut().pop())
+                    .map(|(lending, tx)| lending.enter(tx));
+                InboxDelivery::leased(claimed, book, lease, lent, queue, pool)
             }
             Taken::Advised => {
                 let (claimed, hold) = self.take_advised().next()?;
@@ -432,7 +453,11 @@ where
         (statement, source)
     };
     claimed.clear();
-    let rows = &mut claimed.rows;
+    let ClaimBuffers {
+        rows,
+        advised,
+        transactions,
+    } = claimed;
     let book = match holding {
         Holding::Transaction => {
             let mut tx = begin(pool, queue).await?;
@@ -468,11 +493,40 @@ where
         }
         Holding::Leases(book) => book,
         Holding::Advisory(book) => {
-            let ClaimBuffers { rows, advised } = claimed;
             let advised = advised.get_or_insert_with(Box::default);
             claim_advised::<DB, Row>(pool, book, &cx, limit, rows, advised).await?;
             return Ok(Taken::Advised);
         }
+    };
+    let lease = claim_leased::<DB, Row>(pool, &cx, now, rows).await?;
+    // In transactional mode each row's delivery writes in a transaction of its own, opened once
+    // the claim committed: the lease, not this transaction, keeps other claims off the row. A
+    // transaction that fails to open fails the claim, and the rows it took return once their
+    // leases run out, as after a crash.
+    if queue.prepared.transactional {
+        for _ in 0..rows.len() {
+            transactions.get_mut().push(begin_work(pool, queue).await?);
+        }
+    }
+    Ok(Taken::Leased(book, lease))
+}
+
+/// Claims up to `cx.limit` rows of a lease subscription into `rows`, and returns the lease they
+/// hold: committed before it returns, so the rows hold their leases and no transaction does.
+async fn claim_leased<DB, Row>(
+    pool: &Pool<DB>,
+    cx: &Claiming,
+    now: Now,
+    rows: &mut Vec<Claimed<Row>>,
+) -> Result<Row::Token, Failed>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let queue = cx.queue;
+    let claim_failed = |source| -> Failed {
+        let statement = queue.prepared.claim.map_or("claim", |claim| claim.sql);
+        (statement, source)
     };
     // The lease is read once the connection is in hand, so a wait for the pool does not shorten
     // it. The claim reads "now" there once: the rows it finds due, the leases it finds ended and
@@ -485,13 +539,13 @@ where
         let mut tx = begin(pool, queue).await?;
         let claimed = async {
             let lease = Row::lease(queue, now).map_err(claim_failed)?;
-            let taken = take_group::<DB, Row>(&mut tx, &cx, Some(&lease)).await?;
+            let taken = take_group::<DB, Row>(&mut tx, cx, Some(&lease)).await?;
             if taken {
-                Row::claim(&mut tx, &cx, Some(&lease), rows)
+                Row::claim(&mut tx, cx, Some(&lease), rows)
                     .await
                     .map_err(claim_failed)?;
                 if queue.prepared.stamps {
-                    stamp_rows::<DB, Row>(&mut tx, &cx, &lease, rows).await?;
+                    stamp_rows::<DB, Row>(&mut tx, cx, &lease, rows).await?;
                 }
             }
             Ok::<_, Failed>((lease.expiry, taken))
@@ -500,13 +554,13 @@ where
         return match claimed {
             Ok((lease, true)) => {
                 tx.commit().await.map_err(|source| ("COMMIT", source))?;
-                Ok(Taken::Leased(book, lease))
+                Ok(lease)
             }
             // Another transaction holds the group: the claim took nothing, and the rollback lets
             // go of what the guard read.
             Ok((lease, false)) => {
                 let _ = tx.rollback().await;
-                Ok(Taken::Leased(book, lease))
+                Ok(lease)
             }
             Err(failed) => {
                 let _ = tx.rollback().await;
@@ -517,10 +571,10 @@ where
     // The claim writes the lease itself, in one statement that commits on its own.
     let mut conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
     let lease = Row::lease(queue, now).map_err(claim_failed)?;
-    Row::claim(&mut conn, &cx, Some(&lease), rows)
+    Row::claim(&mut conn, cx, Some(&lease), rows)
         .await
         .map_err(claim_failed)?;
-    Ok(Taken::Leased(book, lease.expiry))
+    Ok(lease.expiry)
 }
 
 /// Claims up to `limit` rows of an advisory subscription: each candidate's key locked on a session
@@ -567,15 +621,7 @@ where
     let mut session = Session::acquire(pool, book.closing())
         .await
         .map_err(|source| ("acquire", source))?;
-    // The select leaves out the keys in work only where it probes the locks that hold them; past
-    // the keys it cannot see, it reads as many more candidates, so a key in work at the head of
-    // the claim order does not hold back the rows behind it.
-    let unseen = i64::try_from(book.unseen_in_work()).unwrap_or(i64::MAX);
-    let reach = Claiming {
-        limit: cx.limit.saturating_add(unseen),
-        ..*cx
-    };
-    Row::candidates(session.conn(), &reach, candidates)
+    select_candidates::<DB, Row>(&mut session, book, cx, candidates)
         .await
         .map_err(named(prepared.claim, "claim"))?;
     let mut spare = Some(session);
@@ -645,6 +691,9 @@ where
                 sqlx::Error::Protocol(format!("the take of one candidate read {read} rows")),
             ));
         }
+        if prepared.transactional {
+            begin_on(locked.session(), prepared).await?;
+        }
         taking.holds.push(book.enter(key, locked.into_session()));
         taken.push(index);
         if taking.holds.len() >= limit {
@@ -655,6 +704,29 @@ where
     drop(spare);
     taking.done = true;
     Ok(())
+}
+
+/// Selects the candidates of an advisory claim on `session` into `candidates`: up to `cx.limit`
+/// rows, and as many more as there are keys in work the select cannot leave out. The select leaves
+/// out the keys in work only where it probes the locks that hold them, so past the keys it cannot
+/// see, it reads further, and a key in work at the head of the claim order does not hold back the
+/// rows behind it.
+async fn select_candidates<DB, Row>(
+    session: &mut Session<DB>,
+    book: &LockBook<DB>,
+    cx: &Claiming,
+    candidates: &mut Candidates<Row::Id>,
+) -> Result<(), sqlx::Error>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let unseen = i64::try_from(book.unseen_in_work()).unwrap_or(i64::MAX);
+    let reach = Claiming {
+        limit: cx.limit.saturating_add(unseen),
+        ..*cx
+    };
+    Row::candidates(session.conn(), &reach, candidates).await
 }
 
 /// The session an advisory claim locks its next candidate on: an idle connection of `pool`, or a
@@ -761,6 +833,34 @@ async fn begin<DB: QueueDatabase>(pool: &Pool<DB>, queue: &Queue) -> Result<Pool
         .map_err(|source| (queue.begin_claim.unwrap_or("BEGIN"), source))
 }
 
+/// Opens the handler's transaction on `session`, whose lock holds a taken row's key, at the
+/// table's isolation level or SQLite mode, or with `BEGIN` where the table names neither:
+/// transactional mode in the advisory lock form.
+async fn begin_on<DB: QueueDatabase>(
+    session: &mut Session<DB>,
+    prepared: &Prepared,
+) -> Result<(), Failed> {
+    // Open before the statement leaves: a begin dropped midway may have started the transaction,
+    // and a session that may hold one closes instead of going back to the pool.
+    session.set_open(true);
+    let begin = prepared.begin_work;
+    DB::TransactionManager::begin(session.conn(), begin.map(SqlStr::from_static))
+        .await
+        .map_err(|source| (begin.unwrap_or("BEGIN"), source))
+}
+
+/// Opens a transactional delivery's own transaction on a connection of `pool`, at the table's
+/// isolation level or SQLite mode, or with `BEGIN` where the table names neither.
+async fn begin_work<DB: QueueDatabase>(
+    pool: &Pool<DB>,
+    queue: &Queue,
+) -> Result<PoolTx<DB>, Failed> {
+    let begin = queue.prepared.begin_work;
+    PoolTx::begin(pool, begin)
+        .await
+        .map_err(|source| (begin.unwrap_or("BEGIN"), source))
+}
+
 /// Leases each of `rows` with `lease` inside the claim's transaction, and drops from the claim
 /// each row another lease holds.
 async fn stamp_rows<DB, Row>(
@@ -851,7 +951,11 @@ where
                 // Each delivery of a leased batch holds its own lease and settles on its own.
                 Taken::Leased(book, lease) => subscriber
                     .take_rows()
-                    .map(|claimed| on(InboxDelivery::leased(claimed, book, lease, queue, pool)))
+                    .map(|claimed| {
+                        on(InboxDelivery::leased(
+                            claimed, book, lease, None, queue, pool,
+                        ))
+                    })
                     .collect(),
                 // Each delivery of an advisory batch holds its own session and settles on its own.
                 Taken::Advised => subscriber

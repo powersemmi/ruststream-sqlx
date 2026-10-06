@@ -22,6 +22,9 @@ pub(crate) const fn attempts_after(delivered: i16) -> i16 {
     delivered + 1
 }
 
+/// Whether a lease holds the form's rows: no, the lock on each row's key does.
+pub(crate) const LEASED: bool = false;
+
 /// The ledger: the entries of an account share one lock key, the form's way to keep a group in
 /// order, so they go into work one at a time, by priority, then by `retry_after`.
 #[derive(Debug, Inbox, FromRow)]
@@ -102,6 +105,22 @@ pub(crate) struct SendEmail {
     pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
     #[field(payload)]
     pub(crate) payload: Vec<u8>,
+}
+
+impl SendEmail {
+    /// A job of the queue `name` that carries `payload`, due now, as a producer writes it.
+    pub(crate) fn queued(name: &str, payload: Vec<u8>) -> Self {
+        Self {
+            job_id: 0,
+            name: name.to_owned(),
+            customer: None,
+            retry_after: Utc::now(),
+            attempt: 1,
+            processed_at: None,
+            meta: None,
+            payload,
+        }
+    }
 }
 
 impl<DB> Publish<DB> for SendEmail

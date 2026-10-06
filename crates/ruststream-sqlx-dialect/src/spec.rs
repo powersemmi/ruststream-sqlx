@@ -408,8 +408,9 @@ impl<'a> TableSpec<'a> {
 
     /// The same table, with its transactions opened at the isolation level `isolation`.
     ///
-    /// The row lock claim's transaction opens at it. A table opens at one level or in one mode:
-    /// the last of `isolation` and [`mode`](Self::mode) given is the table's.
+    /// The row lock claim's transaction opens at it, and so does the transaction a broker opens
+    /// for a handler's writes. A table opens at one level or in one mode: the last of `isolation`
+    /// and [`mode`](Self::mode) given is the table's.
     ///
     /// # Examples
     ///

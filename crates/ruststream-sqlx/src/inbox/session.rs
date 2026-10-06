@@ -111,6 +111,17 @@ impl<DB: Database> Session<DB> {
             .expect("a session holds its connection until it ends")
     }
 
+    /// The connection, to read through.
+    ///
+    /// # Panics
+    ///
+    /// As [`conn`](Self::conn).
+    pub(crate) fn conn_ref(&self) -> &DB::Connection {
+        self.conn
+            .as_ref()
+            .expect("a session holds its connection until it ends")
+    }
+
     /// Records whether the session may hold an advisory lock in the database.
     pub(crate) const fn set_locked(&mut self, locked: bool) {
         self.locked = locked;

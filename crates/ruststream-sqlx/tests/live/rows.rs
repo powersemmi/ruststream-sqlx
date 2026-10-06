@@ -132,6 +132,9 @@ pub(crate) mod row_lock {
         delivered
     }
 
+    /// Whether a lease holds the form's rows: no, the claim's transaction does.
+    pub(crate) const LEASED: bool = false;
+
     /// The ledger: a FIFO group per account, whose rows are claimed one at a time, by priority,
     /// then by `retry_after`.
     #[derive(Debug, Inbox, FromRow)]
@@ -220,6 +223,22 @@ pub(crate) mod row_lock {
         pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
         #[field(payload)]
         pub(crate) payload: Vec<u8>,
+    }
+
+    impl SendEmail {
+        /// A job of the queue `name` that carries `payload`, due now, as a producer writes it.
+        pub(crate) fn queued(name: &str, payload: Vec<u8>) -> Self {
+            Self {
+                job_id: 0,
+                name: name.to_owned(),
+                customer: None,
+                retry_after: Utc::now(),
+                attempt: 1,
+                processed_at: None,
+                meta: None,
+                payload,
+            }
+        }
     }
 
     impl<DB> Publish<DB> for SendEmail
@@ -479,6 +498,9 @@ pub(crate) mod lease {
         delivered + 1
     }
 
+    /// Whether a lease holds the form's rows: yes, the one each claim writes.
+    pub(crate) const LEASED: bool = true;
+
     /// The ledger: a FIFO group per account, whose rows are claimed one at a time, by priority,
     /// then by `retry_after`.
     #[derive(Debug, Inbox, FromRow)]
@@ -572,6 +594,23 @@ pub(crate) mod lease {
         pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
         #[field(payload)]
         pub(crate) payload: Vec<u8>,
+    }
+
+    impl SendEmail {
+        /// A job of the queue `name` that carries `payload`, due now, as a producer writes it.
+        pub(crate) fn queued(name: &str, payload: Vec<u8>) -> Self {
+            Self {
+                job_id: 0,
+                name: name.to_owned(),
+                customer: None,
+                retry_after: Utc::now(),
+                attempt: 1,
+                processed_at: None,
+                locked_until: None,
+                meta: None,
+                payload,
+            }
+        }
     }
 
     impl<DB> Publish<DB> for SendEmail

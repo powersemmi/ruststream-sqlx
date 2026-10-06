@@ -167,13 +167,9 @@ where
 // Why the size difference stays: a row read by role is the delivery itself, and a box would cost an
 // allocation per delivery. Only `testing` widens it past the lint's bound, with the harness's
 // connection every in-process delivery carries.
-#[cfg_attr(
-    feature = "testing",
-    expect(
-        clippy::large_enum_variant,
-        reason = "the harness's connection widens an in-process delivery; a box would allocate per \
-                  delivery"
-    )
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a by-name delivery carries its row inline; a box would allocate per delivery"
 )]
 enum Delivered<DB, D>
 where

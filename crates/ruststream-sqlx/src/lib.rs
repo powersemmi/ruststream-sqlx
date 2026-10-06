@@ -106,7 +106,8 @@ pub mod __private {
 /// `read_uncommitted`, `read_committed`, `repeatable_read` or `serializable`. `mode = <mode>`
 /// opens them in a SQLite mode instead: `deferred`, `immediate` or `exclusive`. A table names one
 /// of the two, or neither and opens at its database's default (READ COMMITTED on MySQL and
-/// MariaDB). The row lock claim's transaction opens at it.
+/// MariaDB). The row lock claim's transaction opens at it, and so does the transaction a delivery
+/// lends its handler in transactional mode, in every form.
 ///
 /// ```
 /// # #[cfg(feature = "postgres")] {
@@ -135,7 +136,9 @@ pub mod __private {
 /// names the levels the dialect opens. An `AnyPool` reaches a database named only when the broker
 /// connects, so there the subscription stops when it starts instead. On Postgres a row lock table
 /// at `repeatable_read` or `serializable` fails claims with serialization errors when claims and
-/// settlements of its rows run at once; `read_committed` is the practical level there.
+/// settlements of its rows run at once; `read_committed` is the practical level there. A lease
+/// table at either level on Postgres refuses transactional mode when it starts: its transaction
+/// reads every row as its first statement found it, and would not see the lease extended later.
 ///
 /// # Roles
 ///

@@ -111,8 +111,8 @@ pub enum SqlxBrokerError {
         /// The oldest server the subscription's statements run on.
         required: &'static str,
     },
-    /// The registration declared what the table cannot carry: a retry, or a mode its form does
-    /// not run.
+    /// The registration declared what the table cannot carry: a retry, or transactional mode at an
+    /// isolation level its form cannot keep it at.
     #[error("subscription `{subscription}` on table `{table}` ({row}): {reason}")]
     Declaration {
         /// The subscription.
@@ -181,7 +181,8 @@ pub enum SqlxBrokerError {
     /// handler's [`Tx`](crate::Tx), which the handler moved somewhere that outlived it.
     ///
     /// The settlement took no effect. The transaction ends when that `Tx` drops: its connection
-    /// closes, the server rolls back what the handler wrote, and the row returns to the queue.
+    /// closes, the server rolls back what the handler wrote, and the row returns to the queue. In
+    /// the lease form the row returns once its lease runs out, which the broker extends no more.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}): the handler still holds the \
          transaction of row {id}, so its settlement took no effect; the transaction rolls back \

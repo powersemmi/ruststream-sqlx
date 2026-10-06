@@ -10,8 +10,9 @@
 //! statement takes a FIFO group's head, the row lock and the lease form, and [`server_matrix!`]
 //! those on the stands that run as servers. [`stands!`] runs a test once per stand, for a test
 //! whose rows name their own form, [`row_lock_stands!`] once per stand that serves the row lock
-//! form, [`advisory_stands!`] once per stand of the advisory lock form's suite, and
-//! [`advisory_server_stands!`] once per such stand that runs as a server. A stand module gives each
+//! form, [`lease_stands!`] once per stand of the lease form, [`advisory_stands!`] once per stand
+//! of the advisory lock form's suite, and [`advisory_server_stands!`] once per such stand that runs
+//! as a server. A stand module gives each
 //! test a database of its own, the dialect the broker builds the stand's statements with, and reads
 //! the tables in its own SQL; a row module holds the queue rows of one form under the names every
 //! form shares.
@@ -284,6 +285,58 @@ macro_rules! stands {
     };
 }
 
+/// One module per stand of the lease form, each holding `$items`: for a test of what a lease does.
+///
+/// A stand appears when its feature is on. Each module sees the suite's own items, the stand's
+/// `Db`, `database` and `DIALECT`, and the rows of the lease form.
+macro_rules! lease_stands {
+    ($($items:item)*) => {
+        #[cfg(feature = "postgres")]
+        mod postgres_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::postgres::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mysql_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mysql::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mariadb_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mariadb::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "sqlite")]
+        mod sqlite_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::sqlite::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
+    };
+}
+
 /// One module per stand of the advisory lock form's suite, each holding `$items`.
 ///
 /// A stand appears when its feature is on. Each module sees the suite's own items, the stand's
@@ -396,6 +449,6 @@ macro_rules! mysql_stands {
 
 #[allow(unused_imports)]
 pub(crate) use {
-    advisory_server_stands, advisory_stands, fifo_matrix, matrix, mysql_stands, row_lock_stands,
-    server_matrix, stands,
+    advisory_server_stands, advisory_stands, fifo_matrix, lease_stands, matrix, mysql_stands,
+    row_lock_stands, server_matrix, stands,
 };

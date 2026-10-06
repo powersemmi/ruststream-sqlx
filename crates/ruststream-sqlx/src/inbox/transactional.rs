@@ -11,6 +11,7 @@ use std::thread;
 use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings};
 use sqlx::Database;
 
+use super::advisory::{LockBook, LockSlot, Locked};
 use super::database::QueueDatabase;
 use super::queue::InboxQueue;
 use super::tx::PoolTx;
@@ -175,13 +176,24 @@ pub trait InboxSettings: Declared {
     /// does an acknowledgement after the handler panicked. A delivery dropped unsettled ends its
     /// transaction, and the row returns at once.
     ///
-    /// Transactional mode runs in the row lock form and lends the claim's transaction: the
-    /// subscription sets a savepoint right after each claim, one more statement per delivery, so a
-    /// retry discards the handler's writes and still counts the attempt. A subscription in the
-    /// lease or advisory lock form refuses it when it starts. Each delivery in work holds one pool
-    /// connection, so a handler that takes another connection of the same pool needs a pool larger
-    /// than its `workers(n)`. Transactional mode serves single deliveries: a batch handler mounted
-    /// with it does not compile.
+    /// Each form keeps the transaction its own way. The row lock form lends the claim's
+    /// transaction: the subscription sets a savepoint right after each claim, one more statement
+    /// per delivery, so a retry discards the handler's writes and still counts the attempt. The
+    /// lease form opens a transaction of the delivery's own once the claim committed, one more
+    /// statement per delivery: the acknowledgement runs inside it by the lease the delivery holds,
+    /// and a delivery whose lease was lost meanwhile rolls everything back and fails with
+    /// [`SqlxBrokerError::LeaseLost`](crate::SqlxBrokerError::LeaseLost). The advisory lock form
+    /// opens the transaction on the session that holds the row's key, one more statement per
+    /// delivery, and ends it before the key's release. Every transaction opens at the table's
+    /// isolation level or SQLite mode. A lease table on Postgres at `isolation = repeatable_read`
+    /// or `serializable` refuses transactional mode when it starts: its transaction cannot see the
+    /// lease extended after its first statement.
+    ///
+    /// Each delivery in work holds one pool connection, so a handler that takes another connection
+    /// of the same pool needs a pool larger than its `workers(n)`. On SQLite a delivery's
+    /// transaction holds the database's one write lock from its first write, or from its start in
+    /// `immediate` mode, until it settles: every other writer waits for it. Transactional mode
+    /// serves single deliveries: a batch handler mounted with it does not compile.
     ///
     /// # Examples
     ///
@@ -333,7 +345,6 @@ where
 pub struct Tx<DB: QueueDatabase> {
     /// The transaction, until `Tx` drops and gives it back.
     lent: Option<Lent<DB>>,
-    lender: Lender<DB>,
 }
 
 impl<DB: QueueDatabase> Tx<DB> {
@@ -342,7 +353,6 @@ impl<DB: QueueDatabase> Tx<DB> {
     pub(crate) fn lent_by(lender: Lender<DB>) -> Option<Self> {
         Some(Self {
             lent: Some(lender.lend()?),
-            lender,
         })
     }
 
@@ -394,7 +404,7 @@ impl<DB: QueueDatabase> Drop for Tx<DB> {
         if let Some(lent) = self.lent.take() {
             // A handler that panicked half way through its writes gives them back marked, so no
             // outcome commits them.
-            self.lender.give_back(lent, thread::panicking());
+            lent.give_back(thread::panicking());
         }
     }
 }
@@ -405,32 +415,60 @@ impl<DB: QueueDatabase> fmt::Debug for Tx<DB> {
     }
 }
 
-/// What a delivery lends its handler: the transaction it settles in.
+/// What a delivery lends its handler: the transaction it settles in, with the slot it goes back
+/// to.
 pub(crate) enum Lent<DB: Database> {
-    /// A transaction of the crate's own on a pool connection: the claim's in the row lock form.
-    Tx(PoolTx<DB>),
+    /// A transaction of the crate's own on a pool connection, from its slot in a [`TxBook`]: the
+    /// claim's in the row lock form, the delivery's own in the lease form.
+    Tx {
+        book: &'static TxBook<DB>,
+        slot: TxSlot,
+        tx: PoolTx<DB>,
+    },
+    /// The session that holds the lock on the row's key, its transaction open, from its slot in a
+    /// [`LockBook`]: the advisory lock form.
+    Session {
+        book: &'static LockBook<DB>,
+        slot: LockSlot,
+        locked: Locked<'static, DB>,
+    },
 }
 
 impl<DB: Database> Lent<DB> {
     fn conn(&self) -> &DB::Connection {
         match self {
-            Self::Tx(tx) => tx,
+            Self::Tx { tx, .. } => tx,
+            Self::Session { locked, .. } => locked.conn_ref(),
         }
     }
 
     fn conn_mut(&mut self) -> &mut DB::Connection {
         match self {
-            Self::Tx(tx) => tx,
+            Self::Tx { tx, .. } => tx,
+            Self::Session { locked, .. } => locked.conn(),
+        }
+    }
+
+    /// Back into the delivery's slot after the handler, `panicked` when a panic dropped it: one
+    /// lock. A slot that no longer waits for it, its delivery settled or dropped meanwhile, leaves
+    /// it to end: a transaction's connection closes and the server rolls it back; a session closes
+    /// after the unlock of its key, which ends its transaction too.
+    fn give_back(self, panicked: bool) {
+        match self {
+            Self::Tx { book, slot, tx } => book.give_back(slot, tx, panicked),
+            Self::Session { book, slot, locked } => book.give_back(slot, locked, panicked),
         }
     }
 }
 
-/// Where a delivery's handler borrows the delivery's transaction from, and gives it back to: its
-/// slot in the subscription's book. Copied into the handler's context: a reference, the slot's
-/// index and its generation.
+/// Where a delivery's handler borrows the delivery's transaction from: its slot in the
+/// subscription's book. Copied into the handler's context: a reference, the slot's index and its
+/// generation.
 pub(crate) enum Lender<DB: Database> {
     /// The delivery's slot in a [`TxBook`].
     Tx(&'static TxBook<DB>, TxSlot),
+    /// The delivery's slot in a [`LockBook`], whose session holds the transaction.
+    Lock(&'static LockBook<DB>, LockSlot),
 }
 
 impl<DB: Database> Clone for Lender<DB> {
@@ -445,6 +483,7 @@ impl<DB: Database> fmt::Debug for Lender<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tx(_, slot) => f.debug_tuple("Tx").field(slot).finish(),
+            Self::Lock(_, slot) => f.debug_tuple("Lock").field(slot).finish(),
         }
     }
 }
@@ -454,17 +493,11 @@ impl<DB: Database> Lender<DB> {
     /// does not hold it for this delivery, as once it is lent.
     pub(crate) fn lend(self) -> Option<Lent<DB>> {
         match self {
-            Self::Tx(book, slot) => book.lend(slot).map(Lent::Tx),
-        }
-    }
-
-    /// `lent` back into the delivery's slot after the handler, `panicked` when a panic dropped
-    /// it: one lock. A slot that no longer waits for it, its delivery settled or dropped
-    /// meanwhile, leaves the transaction to end here: its connection closes, and the server rolls
-    /// it back.
-    pub(crate) fn give_back(self, lent: Lent<DB>, panicked: bool) {
-        match (self, lent) {
-            (Self::Tx(book, slot), Lent::Tx(tx)) => book.give_back(slot, tx, panicked),
+            Self::Tx(book, slot) => book.lend(slot).map(|tx| Lent::Tx { book, slot, tx }),
+            Self::Lock(book, slot) => {
+                book.lend(slot)
+                    .map(|locked| Lent::Session { book, slot, locked })
+            }
         }
     }
 }
@@ -683,7 +716,9 @@ mod tests {
     }
 
     fn slot(lender: Lender<Sqlite>) -> TxSlot {
-        let Lender::Tx(_, slot) = lender;
+        let Lender::Tx(_, slot) = lender else {
+            panic!("a transaction book lends from its own slots")
+        };
         slot
     }
 
@@ -697,7 +732,7 @@ mod tests {
             .lend()
             .expect("the book lends the delivery's transaction");
         assert!(lender.lend().is_none(), "a second borrower finds it lent");
-        lender.give_back(lent, false);
+        lent.give_back(false);
         let returned = hold.settle().expect("the settlement finds it back");
         assert!(!returned.panicked);
         returned.tx.rollback().await
@@ -709,7 +744,7 @@ mod tests {
         let book = TxBook::<Sqlite>::leak();
         let hold = book.enter(PoolTx::begin(&pool, None).await?);
         let lent = hold.lender().lend().expect("lends");
-        hold.lender().give_back(lent, true);
+        lent.give_back(true);
         let returned = hold.settle().expect("the settlement finds it back");
         assert!(
             returned.panicked,
@@ -735,12 +770,12 @@ mod tests {
         assert_eq!(slot(second.lender()).index, slot(stale).index);
         let borrowed = second.lender().lend().expect("lends");
         // The first transaction comes back late: the slot it left refuses it, so it ends there.
-        stale.give_back(kept, false);
+        kept.give_back(false);
         assert!(
             second.lender().lend().is_none(),
             "the slot still waits for the second delivery's own transaction"
         );
-        second.lender().give_back(borrowed, false);
+        borrowed.give_back(false);
         let returned = second
             .settle()
             .expect("the settlement finds its own transaction");
