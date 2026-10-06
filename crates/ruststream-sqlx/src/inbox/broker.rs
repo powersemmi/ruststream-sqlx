@@ -544,6 +544,10 @@ impl<D: Dialect + 'static> DescribeServer for SqlxBroker<Sqlite, D> {
     fn describe_server(&self) -> ServerSpec {
         // Why not `from_url`: SQLite's URL holds a path, not a host, and sqlx's `to_url_lossy`
         // panics on a database named `file:..`, the name `sqlite::memory:` takes.
+        // FIXME(sqlx-sqlite 0.9.0): `SqliteConnectOptions::to_url_lossy` panics with "BUG:
+        // generated un-parseable URL: InvalidPort" on every database named `file:..`. Once sqlx
+        // fixes it, the panic stops ruling out reading the URL here and this note goes; the
+        // description stays in-process, since SQLite has no host either way.
         ServerSpec::in_process("sqlite")
     }
 }

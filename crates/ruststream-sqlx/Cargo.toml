@@ -75,6 +75,9 @@ ruststream-sqlx-dialect.workspace = true
 ruststream-sqlx-macros = { workspace = true, optional = true }
 ruststream = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
+# FIXME(sqlx-mysql 0.9.0): only the crate's own transactions use it, a workaround for a rollback
+# that hangs `Pool::close()` after a cancelled prepare; it goes once sqlx fixes that (see the
+# workspace manifest).
 sqlx-core = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "time", "sync", "macros"] }
