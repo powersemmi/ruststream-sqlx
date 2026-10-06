@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Param, Role, Sqlite, Statement, StatementError,
-    TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, KeyPart, Lease, Param, Role, Sqlite, Statement,
+    StatementError, TableName, TableSpec,
 };
 
 const EXPIRY: Column<'static> = Column::new("locked_until");
@@ -74,11 +74,11 @@ fn every_placeholder_is_a_question_mark() {
 #[test]
 fn the_lease_claim_is_one_update_that_returns_the_rows() -> Result<(), StatementError> {
     assert_eq!(
-        Sqlite.claim(&LEASED, ClaimShape::Rows)?.sql(),
+        Sqlite.lease_claim(&LEASED, ClaimShape::Rows)?.sql(),
         r#"UPDATE "email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "retry_after", "job_id" LIMIT ?) RETURNING "job_id", "name", "retry_after", "attempt" - 1 AS "attempt", "locked_until", "processed_at", "payload""#,
     );
     assert_eq!(
-        Sqlite.claim(&LEASED, ClaimShape::Rows)?.params(),
+        Sqlite.lease_claim(&LEASED, ClaimShape::Rows)?.params(),
         [
             Param::Lease,
             Param::Group,
@@ -91,7 +91,7 @@ fn the_lease_claim_is_one_update_that_returns_the_rows() -> Result<(), Statement
     // The returned rows carry the attempt as it was before the claim counted it.
     assert!(!Sqlite.claim_counts_attempt(&LEASED));
 
-    let bare = Sqlite.claim(&BARE, ClaimShape::Rows)?;
+    let bare = Sqlite.lease_claim(&BARE, ClaimShape::Rows)?;
     assert_eq!(
         bare.sql(),
         r#"UPDATE "jobs" SET "locked_until" = ? WHERE "job_id" IN (SELECT "job_id" FROM "jobs" WHERE ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "job_id" LIMIT ?) RETURNING "job_id", "locked_until", "payload""#,
@@ -103,7 +103,7 @@ fn the_lease_claim_is_one_update_that_returns_the_rows() -> Result<(), Statement
 #[test]
 fn the_claim_orders_by_priority_and_names_the_schema() -> Result<(), StatementError> {
     let spec = LEASED.within("app").priority(Column::new("priority"));
-    let claim = Sqlite.claim(&spec, ClaimShape::Ids)?;
+    let claim = Sqlite.lease_claim(&spec, ClaimShape::Ids)?;
     assert_eq!(
         claim.sql(),
         r#"UPDATE "app"."email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "app"."email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "priority", "retry_after", "job_id" LIMIT ?) RETURNING "job_id""#,
@@ -123,7 +123,7 @@ fn the_claim_orders_by_priority_and_names_the_schema() -> Result<(), StatementEr
 
 #[test]
 fn a_claim_by_role_returns_the_attempt_before_the_claim() -> Result<(), StatementError> {
-    let roles = Sqlite.claim(&KEYED, ClaimShape::Roles)?;
+    let roles = Sqlite.lease_claim(&KEYED, ClaimShape::Roles)?;
     assert_eq!(
         roles.sql(),
         r#"UPDATE "email_jobs" SET "locked_until" = ?, "tries" = "tries" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "retry_after", "job_id" LIMIT ?) RETURNING "job_id" AS "id", "customer" AS "partition_key", "tries" - 1 AS "attempt", "meta" AS "headers", "payload" AS "payload""#,
@@ -139,7 +139,7 @@ fn a_claim_by_role_returns_the_attempt_before_the_claim() -> Result<(), Statemen
         ]
     );
     // Whole rows name the attempt column under its own name.
-    let rows = Sqlite.claim(&KEYED, ClaimShape::Rows)?;
+    let rows = Sqlite.lease_claim(&KEYED, ClaimShape::Rows)?;
     assert!(
         rows.sql().ends_with(r#"RETURNING "job_id", "name", "customer", "retry_after", "tries" - 1 AS "tries", "locked_until", "meta", "payload", "subject""#),
         "{}",
@@ -153,7 +153,7 @@ fn a_claim_by_role_returns_the_attempt_before_the_claim() -> Result<(), Statemen
 fn a_struct_that_flattens_reads_every_column_and_the_counted_attempt() -> Result<(), StatementError>
 {
     let flat = LEASED.selecting_all();
-    let claim = Sqlite.claim(&flat, ClaimShape::Rows)?;
+    let claim = Sqlite.lease_claim(&flat, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
         r#"UPDATE "email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "retry_after", "job_id" LIMIT ?) RETURNING *"#,
@@ -272,7 +272,7 @@ fn an_extension_and_a_stamp_write_the_lease() -> Result<(), StatementError> {
 #[test]
 fn a_claim_of_the_services_own_opens_its_transaction_for_writing() {
     // The write lock is taken before the claim's select, so two claims never read one row.
-    assert_eq!(Sqlite.begin_claim(), Some("BEGIN IMMEDIATE"));
+    assert_eq!(Sqlite.begin_lease_claim(), Some("BEGIN IMMEDIATE"));
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn a_name_of_any_length_is_kept() -> Result<(), Box<dyn Error>> {
     let long = "n".repeat(1000);
     let spec =
         TableSpec::new(&long, Column::new(&long), Form::Lease(Column::new(&long))).within(&long);
-    let claim = Sqlite.claim(&spec, ClaimShape::Ids)?;
+    let claim = Sqlite.lease_claim(&spec, ClaimShape::Ids)?;
     assert!(claim.sql().contains(&quoted(&long)), "{}", claim.sql());
     let target = format!("{long}.{long}");
     assert_eq!(
@@ -351,13 +351,17 @@ fn the_row_lock_form_is_refused_for_every_statement() -> Result<(), Box<dyn Erro
         dialect: "sqlite",
         form: "row lock",
     };
+    let other = |statement| StatementError::FormMismatch {
+        statement,
+        form: "row lock",
+    };
     assert_eq!(
-        Sqlite.claim(&LOCKED, ClaimShape::Rows),
-        Err(refused.clone())
+        Sqlite.lease_claim(&LOCKED, ClaimShape::Rows),
+        Err(other("lease_claim"))
     );
     assert_eq!(
-        Sqlite.claim(&LOCKED, ClaimShape::Roles),
-        Err(refused.clone())
+        Sqlite.lease_claim(&LOCKED, ClaimShape::Roles),
+        Err(other("lease_claim"))
     );
     assert_eq!(Sqlite.ack(&LOCKED), Err(refused.clone()));
     assert_eq!(Sqlite.retry(&LOCKED), Err(refused.clone()));
@@ -368,8 +372,8 @@ fn the_row_lock_form_is_refused_for_every_statement() -> Result<(), Box<dyn Erro
         Sqlite.dead_letter_table(&LOCKED, TableName::parse("jobs_dead")?),
         Err(refused.clone())
     );
-    assert_eq!(Sqlite.extend(&LOCKED), Err(refused.clone()));
-    assert_eq!(Sqlite.stamp(&LOCKED), Err(refused.clone()));
+    assert_eq!(Sqlite.extend(&LOCKED), Err(other("extend")));
+    assert_eq!(Sqlite.stamp(&LOCKED), Err(other("stamp")));
     // A table on the database's clock is refused for its form all the same.
     assert_eq!(Sqlite.ack(&LOCKED.database_clock()), Err(refused));
     Ok(())
@@ -383,8 +387,11 @@ fn the_advisory_form_and_fifo_groups_are_refused() -> Result<(), Box<dyn Error>>
         form: "advisory lock",
     };
     assert_eq!(
-        Sqlite.claim(&advisory, ClaimShape::Rows),
-        Err(unsupported.clone())
+        Sqlite.lease_claim(&advisory, ClaimShape::Rows),
+        Err(StatementError::FormMismatch {
+            statement: "lease_claim",
+            form: "advisory lock",
+        })
     );
     assert_eq!(Sqlite.ack(&advisory), Err(unsupported.clone()));
     assert_eq!(
@@ -392,7 +399,7 @@ fn the_advisory_form_and_fifo_groups_are_refused() -> Result<(), Box<dyn Error>>
         Err(unsupported)
     );
     assert_eq!(
-        Sqlite.claim(&LEASED.fifo_group(Column::new("name")), ClaimShape::Rows),
+        Sqlite.lease_claim(&LEASED.fifo_group(Column::new("name")), ClaimShape::Rows),
         Err(StatementError::UnsupportedFifo { dialect: "sqlite" })
     );
     Ok(())
@@ -411,7 +418,7 @@ fn the_lease_cannot_read_the_database_clock() {
     let clocked = LEASED.database_clock();
     let refused = StatementError::LeaseOnDatabaseClock { dialect: "sqlite" };
     assert_eq!(
-        Sqlite.claim(&clocked, ClaimShape::Rows),
+        Sqlite.lease_claim(&clocked, ClaimShape::Rows),
         Err(refused.clone())
     );
     assert_eq!(Sqlite.ack(&clocked), Err(refused.clone()));

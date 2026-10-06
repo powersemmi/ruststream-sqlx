@@ -23,7 +23,7 @@ Where things are:
 - [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
 - [`Repository`] and [`Routed`]: publishing into tables.
 - [`keys`]: what a handler reads off a delivery.
-- [`dialect`]: the SQL each database runs, and the trait a dialect of the service's own
+- [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
   implements.
 
 # The inbox broker
@@ -112,9 +112,10 @@ What a handler answers decides the row's fate:
 - `retry_after(d)` hides the row until `retry_after` comes; a table without that column returns
   it at once, and the runtime logs a warning;
 - `drop()` finishes the row as `ack()` does;
-- `max_attempts(n)` on the mount reads `attempt`. At the cap, `dead_letter(..)` moves the row to
-  another group or into a table with the same columns; without a destination the row is
-  finished.
+- `max_attempts(n)` and `dead_letter(..)` on the mount come together: `attempt` counts the
+  deliveries, and at the cap the row moves to another group or into a table with the same
+  columns. With `max_attempts(1)` every failure moves the row at once. A mount that declares one
+  without the other stops at startup.
 
 "Now" comes from [`SystemClock`] unless the struct names another source:
 `#[inbox(clock = DatabaseClock)]` reads the database's clock, and a service's own [`Clock`] fits
@@ -268,8 +269,9 @@ pub fn app(pool: SqlitePool) -> RustStream {
 
 A built-in dialect builds a subscription's statements once, when it opens; the derive builds the
 insert of every enabled dialect at compile time. A database whose sqlx driver lives outside sqlx
-is served by a [`Dialect`](dialect::Dialect) of the service's own
-([`SqlxBroker::with_dialect`]), in the lease form and through [`InboxQueue`] descriptors.
+is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a type that
+implements [`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock) and
+[`Lease`](dialect::Lease) for the forms it serves, and [`ByName`] for subscriptions by name.
 
 ## Postgres
 
@@ -296,10 +298,11 @@ without one stops at startup.
 ## SQLite
 
 `sqlite` serves the lease form. SQLite locks the whole database for a writer, so no claim can hold
-rows for a handler, and a subscription to a table without `locked_until` does not compile
-([`RowLocks`]). A claim is one `UPDATE .. RETURNING` that leases its rows, and one writer at a time
-keeps two claims apart. The rows of one claim come in no particular order. A claim of the
-service's own opens its transaction with `BEGIN IMMEDIATE` and comes with a [`Fetch`] of its own.
+rows for a handler: its dialect implements no [`RowLock`](dialect::RowLock), and a subscription
+to a table without `locked_until` does not compile. A claim is one `UPDATE .. RETURNING` that
+leases its rows, and one writer at a time keeps two claims apart. The rows of one claim come in
+no particular order. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE`
+and comes with a [`Fetch`] of its own.
 
 SQLite keeps times as text and compares them as text. `chrono` times sort exactly. `time` values
 sort right only across seconds, so with them a lease may end up to a second late, and a delayed
@@ -314,6 +317,135 @@ reaches when it connects, among the dialects whose features are on; another back
 text and bytes, with no time and no JSON. An `AnyPool` therefore serves the row lock form on its
 Postgres and MySQL backends, without `retry_after`, `processed_at` or `headers`. A lease table
 is out of its reach, and on a SQLite backend a row lock table stops its subscription at startup.
+
+## A dialect of the service's own
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use std::num::NonZeroUsize;
+
+use ruststream::HeaderMap;
+use ruststream_sqlx::dialect::{
+    self, ClaimShape, Dialect, Param, RowLock, Statement, StatementError, TableName, TableSpec,
+};
+use ruststream_sqlx::prelude::*;
+use ruststream_sqlx::{BuiltIn, ByName, NamedTime};
+use serde::Deserialize;
+use sqlx::error::BoxDynError;
+use sqlx::postgres::{PgArguments, PgValueRef};
+use sqlx::{PgPool, Postgres};
+
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "email_jobs")]
+pub struct SendEmail {
+    #[field(id, generated)]
+    job_id: i64,
+    #[field(group)]
+    name: String,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+/// Postgres, with an acknowledgement of the service's own: a sent email stays in its table, in
+/// the `sent` group, for an audit.
+#[derive(Debug)]
+pub struct Audited;
+
+impl Dialect for Audited {
+    fn name(&self) -> &'static str {
+        "audited"
+    }
+
+    fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        if spec.table() == "email_jobs" {
+            return Ok(Statement::new(
+                r#"UPDATE "email_jobs" SET "name" = 'sent' WHERE "job_id" = $1"#,
+                [Param::Id],
+            ));
+        }
+        dialect::Postgres.ack(spec)
+    }
+
+    // Every other statement is the built-in dialect's.
+    fn quote_into(&self, ident: &str, out: &mut String) {
+        dialect::Postgres.quote_into(ident, out);
+    }
+#    fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { dialect::Postgres.placeholder_into(index, out) }
+#    fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.fetch(spec) }
+#    fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.retry(spec) }
+#    fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.retry_after(spec) }
+#    fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.discard(spec) }
+#    fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.dead_letter_group(spec) }
+#    fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { dialect::Postgres.dead_letter_table(spec, target) }
+#    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.insert(spec) }
+}
+
+// The row lock form, which `SendEmail` takes.
+impl RowLock for Audited {
+    fn lock_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        dialect::Postgres.lock_claim(spec, shape)
+    }
+}
+
+// Subscriptions by name, as `#[subscriber("emails")]` would mount.
+impl ByName<Postgres> for Audited {
+    fn headers(value: PgValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
+        <BuiltIn<Postgres> as ByName<Postgres>>::headers(value)
+    }
+
+    fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), sqlx::Error> {
+        <BuiltIn<Postgres> as ByName<Postgres>>::bind_time(arguments, time)
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Email {
+    to: String,
+}
+
+#[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+async fn send(email: &Email) -> HandlerOutcome {
+    tracing::info!(to = %email.to, "sending");
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    // A `SqlxBroker<Postgres, Audited>`: the dialect is part of the broker's type.
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        .with_broker(SqlxBroker::with_dialect(pool, Audited), |b| {
+            b.include(send);
+        })
+}
+# }
+# fn main() {}
+```
+
+A dialect builds the statements of a broker's tables. [`SqlxBroker::new`] takes the one built
+into the crate for its database, [`BuiltIn`]; [`SqlxBroker::with_dialect`] takes the service's
+own, for a database whose sqlx driver lives outside sqlx, or to write a statement its own way.
+The dialect is the broker's second type parameter, and each thing its tables can do is a trait it
+implements:
+
+- [`Dialect`](dialect::Dialect): names, placeholders, and the statements every form runs to
+  settle a row, move a dead letter, fetch rows and insert one;
+- [`RowLock`](dialect::RowLock): the row lock form, its claim and the statement that opens the
+  claim's transaction;
+- [`Lease`](dialect::Lease): the lease form, its claim, the extension of a lease in work and the
+  stamp of a row a claim only selected;
+- [`ByName<DB>`](ByName): subscriptions by name, the JSON headers and the times their rows hold.
+
+A table in a form whose trait the dialect lacks does not compile, and neither does a by-name
+mount on a dialect without [`ByName`]; the error names the trait. A dialect that wraps a built-in
+one writes the statements it changes and delegates the rest: the statements to
+[`dialect::Postgres`], [`dialect::MySql`] or [`dialect::Sqlite`], the by-name binding to
+[`BuiltIn<DB>`](BuiltIn). Its statements are built once, when a subscription opens, so a message
+costs the same as through the built-in dialect. A test addresses the broker by its type,
+`tb.broker::<SqlxBroker<Postgres, Audited>>()`.
 
 # Startup checks and rows that do not decode
 
@@ -368,8 +500,9 @@ not compile, and [`Inbox`] lists the errors. A subscription builds its statement
 and prepares each one on the server: a table or a column the struct names and the database lacks
 stops it, and [`SqlxBrokerError::Schema`] names the table and the statement. Preparing checks the
 names, not the column types: the types are the service's to get right. A retry declaration the
-table cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempts(..)` needs an
-`attempt` column. On MySQL and MariaDB the subscription also reads the server's version.
+table cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempts(..)` and
+`dead_letter(..)` come together, and the cap needs an `attempt` column. On MySQL and MariaDB the
+subscription also reads the server's version.
 
 A claimed row whose columns do not decode into the struct reaches the subscription's
 `on_failure(decode = ..)` policy, which settles it, and the subscription goes on with the next
@@ -530,9 +663,9 @@ A by-name subscription takes the broker's poll interval and lease. Where the rou
 every event to the crate and holds column types the crate reads itself, listed on
 [`NamedSubscriber`], the subscription reads the rows by those columns: no box and no dynamic call
 per message, in either form, as through an [`InboxQueue`]. Any other row runs its own code, at one
-boxed delivery and one boxed settlement future per message. By-name subscriptions run on the
-databases with a built-in dialect, and refuse `max_attempts(..)` and `dead_letter(..)` at
-startup: an [`InboxQueue`] takes those.
+boxed delivery and one boxed settlement future per message. By-name subscriptions run on a
+dialect that implements [`ByName`] for its database, as every built-in dialect does, and refuse
+`max_attempts(..)` and `dead_letter(..)` at startup: an [`InboxQueue`] takes those.
 
 # Testing a service on the inbox
 

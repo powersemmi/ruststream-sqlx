@@ -1,30 +1,12 @@
-//! What a database gives a by-name subscription: the columns every driver reads, and the JSON
-//! headers and times each database with a built-in dialect decodes and binds.
+//! What every database gives a by-name subscription: the integer, text and byte columns every
+//! sqlx driver reads and binds alike.
 
-#[cfg(all(
-    feature = "json",
-    any(feature = "postgres", feature = "mysql", feature = "sqlite")
-))]
-use std::collections::BTreeMap;
-
-use ruststream::HeaderMap;
 use sqlx::error::BoxDynError;
-#[cfg(all(
-    feature = "json",
-    any(feature = "postgres", feature = "mysql", feature = "sqlite")
-))]
-use sqlx::types::Json;
 use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Row, Type, TypeInfo, ValueRef,
 };
 
-use super::row::{NamedBytes, NamedId, NamedTime};
-#[cfg(all(
-    feature = "json",
-    any(feature = "postgres", feature = "mysql", feature = "sqlite")
-))]
-use crate::inbox::HeaderColumn;
-use crate::inbox::database::QueueDatabase;
+use super::row::{NamedBytes, NamedId};
 
 /// The integer, text and byte columns a by-name subscription reads and binds: what every sqlx
 /// driver decodes and encodes. Machinery; every such database implements it.
@@ -189,105 +171,12 @@ fn bits<const TYPES: usize>(held: [bool; TYPES]) -> u8 {
 }
 
 /// The error of a column whose type a by-name subscription does not read as `read_as`.
-fn unread<Info: TypeInfo>(ty: &Info, read_as: &str) -> BoxDynError {
+pub(super) fn unread<Info: TypeInfo>(ty: &Info, read_as: &str) -> BoxDynError {
     format!(
         "a by-name subscription reads this column as {read_as}, and it holds {}",
         ty.name()
     )
     .into()
-}
-
-/// A database a by-name subscription reads from the table description alone: it decodes the
-/// headers a row keeps as JSON and binds the times its statements need. Machinery; every
-/// database with a built-in dialect implements it.
-#[doc(hidden)]
-#[diagnostic::on_unimplemented(
-    message = "a subscription by name needs a database with a built-in dialect, and `{Self}` has none",
-    label = "no subscription by name on this database",
-    note = "subscribe through a descriptor instead: `#[subscriber(InboxQueue::<Row>::new(\"..\"))]`"
-)]
-pub trait NamedDatabase: QueueDatabase + RoleColumns {
-    /// The headers a row keeps as a JSON object of strings.
-    ///
-    /// # Errors
-    ///
-    /// A column that holds no JSON, or the driver's decoding error.
-    fn headers(value: Self::ValueRef<'_>) -> Result<HeaderMap, BoxDynError>;
-
-    /// Binds `time`.
-    ///
-    /// # Errors
-    ///
-    /// The driver's encoding error.
-    fn bind_time(arguments: &mut Self::Arguments, time: NamedTime) -> Result<(), Error>;
-}
-
-/// Implements [`NamedDatabase`] for a database whose driver decodes JSON and binds the `chrono`
-/// and `time` types, with the features that bring them: each built-in dialect's database.
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
-macro_rules! named_database {
-    ($database:ty) => {
-        impl NamedDatabase for $database {
-            fn headers(
-                value: <$database as Database>::ValueRef<'_>,
-            ) -> Result<HeaderMap, BoxDynError> {
-                #[cfg(feature = "json")]
-                {
-                    type Headers = Json<BTreeMap<String, String>>;
-                    let json = <Headers as Type<$database>>::compatible(&value.type_info());
-                    if !json {
-                        return Err(unread(&*value.type_info(), "JSON"));
-                    }
-                    let mut headers = <Headers as Decode<'_, $database>>::decode(value)?;
-                    Ok(HeaderColumn::take_headers(&mut headers))
-                }
-                #[cfg(not(feature = "json"))]
-                {
-                    let _ = value;
-                    Err("headers kept as JSON need the `json` feature".into())
-                }
-            }
-
-            fn bind_time(
-                arguments: &mut <$database as Database>::Arguments,
-                time: NamedTime,
-            ) -> Result<(), Error> {
-                #[cfg(not(any(feature = "chrono", feature = "time")))]
-                let _ = arguments;
-                match time {
-                    #[cfg(feature = "chrono")]
-                    NamedTime::Chrono(at) => arguments.add(at).map_err(Error::Encode),
-                    #[cfg(feature = "time")]
-                    NamedTime::Time(at) => arguments.add(at).map_err(Error::Encode),
-                }
-            }
-        }
-    };
-}
-
-#[cfg(feature = "postgres")]
-named_database!(sqlx::Postgres);
-#[cfg(feature = "mysql")]
-named_database!(sqlx::MySql);
-#[cfg(feature = "sqlite")]
-named_database!(sqlx::Sqlite);
-
-// Why errors: `sqlx::Any` decodes no JSON and binds no time, so no row on an `AnyPool` has a
-// `headers` column of JSON or a time column, and a by-name subscription there reaches neither.
-#[cfg(feature = "any")]
-impl NamedDatabase for sqlx::Any {
-    fn headers(value: <Self as Database>::ValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
-        let _ = value;
-        Err("an `AnyPool` decodes no JSON headers".into())
-    }
-
-    fn bind_time(
-        arguments: &mut <Self as Database>::Arguments,
-        time: NamedTime,
-    ) -> Result<(), Error> {
-        let _ = (arguments, time);
-        Err(Error::Configuration("an `AnyPool` binds no time".into()))
-    }
 }
 
 impl<DB: RoleColumns> Type<DB> for NamedId {

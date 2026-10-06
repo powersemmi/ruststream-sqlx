@@ -39,16 +39,17 @@ help: the trait `ruststream_sqlx::Ack<sqlx::Postgres>` is not implemented for `U
 21 | struct Unacked {
    | ^^^^^^^^^^^^^^
    = note: implement `Ack<sqlx::Postgres>` for `Unacked`, or drop `ack` from `custom(..)`
-help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB>>` is conditionally implemented for `InboxQueue<Row>`
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row>`
   --> src/inbox/queue.rs
    |
-   | / impl<DB, Row> SubscriptionSource<ConnectedSqlxBroker<DB>> for InboxQueue<Row>
+   | / impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
    | | where
    | |     DB: QueueDatabase,
+   | |     D: Dialect + 'static,
    | |     Row: InboxRow + Events<DB> + PayloadRow,
    | |                     ---------- unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
-   | |     Row::Form: FormOn<DB>,
-   | |__________________________^
+   | |     Row::Form: FormOn<D>,
+   | |_________________________^
 note: required for `Unacked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
   --> tests/ui/mount.rs:21:8
    |

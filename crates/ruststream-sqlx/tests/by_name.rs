@@ -185,7 +185,9 @@ live::matrix! {
         // The cap and the destination belong to the table's descriptor, which a bare name lacks.
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(send).max_attempts(nonzero!(3u32));
+                b.include(send)
+                    .max_attempts(nonzero!(3u32))
+                    .dead_letter("emails.dead");
             });
         let refused = TestApp::start_live(app).await.map(|_| ());
         let message = format!(

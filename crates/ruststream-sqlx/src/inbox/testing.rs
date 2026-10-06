@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use ruststream::testing::{Backlog, Coordinator, InProcess, TestableBroker};
 use ruststream::{HeaderMap, OutgoingMessage, RawMessage};
+use ruststream_sqlx_dialect::Dialect;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
@@ -199,10 +200,10 @@ pub(crate) fn returns_after<DB: QueueDatabase>(
     coordinator.schedule_redelivery(delay, move || connection.harness.expect(name));
 }
 
-impl<DB: QueueDatabase> InProcess for SqlxBroker<DB> {
+impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
     /// Connects to the database the test's pool reaches, as [`connect`](ruststream::Broker::connect)
     /// does, with every database call of the connection kept off a paused clock.
-    async fn connect_in_process(self) -> Result<ConnectedSqlxBroker<DB>, SqlxBrokerError> {
+    async fn connect_in_process(self) -> Result<ConnectedSqlxBroker<DB, D>, SqlxBrokerError> {
         let (pool, choice) = (self.pool.clone(), self.dialect.clone());
         let dialect = off_clock(async move {
             let conn = pool
@@ -223,7 +224,7 @@ impl<DB: QueueDatabase> InProcess for SqlxBroker<DB> {
     }
 }
 
-impl<DB: QueueDatabase> TestableBroker for ConnectedSqlxBroker<DB> {
+impl<DB: QueueDatabase, D: Dialect + 'static> TestableBroker for ConnectedSqlxBroker<DB, D> {
     fn install_coordinator(&self, coordinator: Coordinator) {
         let _ = self.shared.harness.coordinator.set(coordinator);
     }
@@ -279,7 +280,7 @@ async fn inject<DB: QueueDatabase>(
 ) {
     let message = OutgoingMessage::new(name, payload).with_headers(headers);
     let written = match shared.routes.find(name) {
-        Some(route) => insert_routed(shared, route, &message).await,
+        Some((route, _)) => insert_routed(shared, route, &message).await,
         None => Err(SqlxBrokerError::NoRoute {
             name: name.to_owned(),
         }),

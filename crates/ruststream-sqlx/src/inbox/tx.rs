@@ -18,6 +18,11 @@ use sqlx_core::transaction::TransactionManager;
 /// being prepared, sqlx-mysql reads the queued rollback's answer as part of the prepare's, waits
 /// for a row that never comes, and the connection never returns: `Pool::close` then never
 /// finishes. Closing the connection leaves nothing to read back.
+// FIXME(sqlx-mysql 0.9.0): a `sqlx::Transaction` dropped open queues a rollback, and after a
+// prepare whose future dropped midway that rollback reads the prepare's reply as its own and
+// hangs `Pool::close()`. Once sqlx-mysql reads such a reply before it runs the rollback, this type
+// can go: claims and settlements open `sqlx::Transaction`s with `Pool::begin_with`, and the direct
+// `sqlx-core` dependency, kept for `TransactionManager`, goes with it.
 pub(crate) struct Tx<DB: Database> {
     conn: PoolConnection<DB>,
     /// Whether the server may hold the transaction open: from the begin statement until a commit

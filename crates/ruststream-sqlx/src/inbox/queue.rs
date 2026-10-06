@@ -27,7 +27,7 @@ use super::subscriber::{Holding, InboxSubscriber};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
 use super::time::LeaseRow;
-use super::{FormOn, InboxRow, PayloadRow};
+use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 
 /// A subscription to a queue table: the rows of `Row` that the name addresses.
 ///
@@ -44,12 +44,15 @@ use super::{FormOn, InboxRow, PayloadRow};
 /// lease, a delivery dropped unsettled releases its row at once, and after a crash the row
 /// returns once the lease runs out. The lease is the broker's
 /// ([`SqlxBroker::lease`](crate::SqlxBroker::lease)) unless the subscription sets its own
-/// ([`lease`](Self::lease)). SQLite has no row locks ([`RowLocks`](crate::RowLocks)), so a table
-/// there takes the lease form, and a subscription to one without `locked_until` does not compile.
+/// ([`lease`](Self::lease)). The broker's dialect serves a table's form when it implements the
+/// form's trait: [`RowLock`](crate::dialect::RowLock) for the row lock form,
+/// [`Lease`](crate::dialect::Lease) for the lease form. SQLite has no row locks, so a table there
+/// takes the lease form, and a subscription to one without `locked_until` does not compile.
 ///
-/// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table: at the cap the
-/// row moves to the `dead_letter` group (with a `group` field) or into the `dead_letter` table
-/// (one with the same columns), and without a destination it is deleted or marked.
+/// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table, declared together:
+/// at the cap the row moves to the `dead_letter` group (with a `group` field) or into the
+/// `dead_letter` table (one with the same columns). With `max_attempts(1)` every failure moves the
+/// row at once. A registration that declares one without the other stops at startup.
 ///
 /// # Examples
 ///
@@ -251,11 +254,12 @@ impl<Row> fmt::Debug for InboxQueue<Row> {
     }
 }
 
-impl<DB, Row> SubscriptionSource<ConnectedSqlxBroker<DB>> for InboxQueue<Row>
+impl<DB, D, Row> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row>
 where
     DB: QueueDatabase,
+    D: Dialect + 'static,
     Row: InboxRow + Events<DB> + PayloadRow,
-    Row::Form: FormOn<DB>,
+    Row::Form: FormOn<D>,
 {
     type Subscriber = InboxSubscriber<DB, Row>;
     type Copies = BrokerMoves;
@@ -266,10 +270,11 @@ where
 
     async fn subscribe(
         self,
-        connected: &ConnectedSqlxBroker<DB>,
+        connected: &ConnectedSqlxBroker<DB, D>,
     ) -> Result<Self::Subscriber, SqlxBrokerError> {
         open::<DB, Row>(
             &connected.shared,
+            &<Row::Form as FormOn<D>>::erase(&connected.dialect),
             &self.name,
             Timing {
                 poll_interval: self.poll_interval,
@@ -300,7 +305,7 @@ where
 
     fn declare_retry_on(
         &self,
-        _connected: &ConnectedSqlxBroker<DB>,
+        _connected: &ConnectedSqlxBroker<DB, D>,
         declaration: &RetryDeclaration,
     ) -> Result<(), DeclareRetryError> {
         // Why a startup check rather than a bound: the core's `max_attempts(..)` and
@@ -422,6 +427,25 @@ pub(crate) fn refused_declaration(
         row: description.row,
         reason,
     };
+    // The table moves a spent row itself, so the cap and the destination come together: a half
+    // would leave the row nowhere to go, or nothing to count before it goes.
+    match (declaration.max_attempts(), declaration.dead_letter()) {
+        (Some(_), None) => {
+            return Some(refuse(
+                "the registration declares `max_attempts(..)` without `dead_letter(..)`: name \
+                 where a row whose attempts are spent goes"
+                    .to_owned(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Some(refuse(
+                "the registration declares `dead_letter(..)` without `max_attempts(..)`: name the \
+                 cap, `max_attempts(1)` to move a row at its first failure"
+                    .to_owned(),
+            ));
+        }
+        _ => {}
+    }
     if declaration.max_attempts().is_some() && spec.column(Role::Attempt).is_none() {
         return Some(refuse(
             "`max_attempts(..)` counts deliveries in the `attempt` column: add \
@@ -468,10 +492,19 @@ pub struct Queue {
     pub poll_interval: Duration,
     /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
     pub lease: Option<Duration>,
-    /// The declared cap on attempts.
-    pub max_attempts: Option<NonZeroU32>,
-    /// The declared dead-letter destination.
-    pub dead_letter: Option<&'static str>,
+    /// The declared cap on attempts and where a spent row goes, declared together.
+    pub cap: Option<Cap>,
+}
+
+/// A registration's cap on a row's attempts and the destination of a row that spent them, which
+/// it declares together. Machinery.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cap {
+    /// How many deliveries a row gets.
+    pub attempts: NonZeroU32,
+    /// The group or the table a spent row moves to.
+    pub dead_letter: &'static str,
 }
 
 static QUEUES: LazyLock<Mutex<Vec<&'static Queue>>> = LazyLock::new(Mutex::default);
@@ -490,13 +523,16 @@ impl Queue {
     }
 }
 
-/// The statements a subscription to the table `description` reads runs, built by `dialect`.
+/// The statements a subscription to the table `description` reads runs, built by the dialect
+/// `form` shows: the claim and the lease's statements by the trait of the table's form, the
+/// settlements by the dialect itself.
 fn build(
-    dialect: &dyn Dialect,
+    form: &FormDialect,
     declaration: &RetryDeclaration,
     description: &Description,
     fail: &impl Fn(String) -> SqlxBrokerError,
 ) -> Result<Prepared, SqlxBrokerError> {
+    let dialect = form.dialect();
     let spec = description.spec;
     let shape = description.shape;
     let refused = |source| SqlxBrokerError::Dialect {
@@ -506,7 +542,7 @@ fn build(
         source,
     };
     let claim = (!shape.custom_claim)
-        .then(|| dialect.claim(&spec, description.claim))
+        .then(|| form.claim(&spec, description.claim))
         .transpose()
         .map_err(refused)?;
     let fetch = (shape.custom_claim && !shape.custom_fetch)
@@ -555,16 +591,29 @@ fn build(
         }
         None => (None, None),
     };
-    let leased = description.leased();
+    // Why a startup refusal: the derive gives a table that declares a lease the lease form's
+    // type, so only a description written by hand pairs one with another form's dialect.
+    let lease = match (description.leased(), form.lease()) {
+        (false, _) => None,
+        (true, Some(lease)) => Some(lease),
+        (true, None) => {
+            return Err(refused(StatementError::UnsupportedForm {
+                dialect: dialect.name(),
+                form: spec.form().name(),
+            }));
+        }
+    };
     // A claim of the service's own, or one the dialect only selects with, leaves each row to a
     // stamp of the crate's inside the claim's transaction.
-    let stamps = leased && (shape.custom_claim || !dialect.claim_writes_lease());
-    let extend = (leased && !shape.custom_extend)
-        .then(|| dialect.extend(&spec))
+    let stamps = lease.is_some_and(|lease| shape.custom_claim || !lease.claim_writes_lease());
+    let extend = lease
+        .filter(|_| !shape.custom_extend)
+        .map(|lease| lease.extend(&spec))
         .transpose()
         .map_err(refused)?;
-    let stamp = stamps
-        .then(|| dialect.stamp(&spec))
+    let stamp = lease
+        .filter(|_| stamps)
+        .map(|lease| lease.stamp(&spec))
         .transpose()
         .map_err(refused)?;
     Ok(Prepared {
@@ -583,9 +632,11 @@ fn build(
 }
 
 /// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
-/// `Row`: builds and checks its statements, and registers it so a second one is refused.
+/// `Row`: builds its statements with the dialect `form` shows, checks them, and registers the
+/// subscription so a second one is refused.
 pub(crate) async fn open<DB, Row>(
     shared: &Arc<Shared<DB>>,
+    form: &FormDialect,
     name: &str,
     timing: Timing,
     declaration: &RetryDeclaration,
@@ -609,22 +660,20 @@ where
     if let Some(refused) = refused_declaration(name, declaration, description) {
         return Err(refused);
     }
-    let prepared = build(shared.dialect.get(), declaration, description, &declared).map_err(
-        |err| match err {
-            SqlxBrokerError::Dialect { source, .. } => SqlxBrokerError::Dialect {
-                subscription: name.to_owned(),
-                table: table.clone(),
-                row,
-                source,
-            },
-            other => other,
+    let prepared = build(form, declaration, description, &declared).map_err(|err| match err {
+        SqlxBrokerError::Dialect { source, .. } => SqlxBrokerError::Dialect {
+            subscription: name.to_owned(),
+            table: table.clone(),
+            row,
+            source,
         },
-    )?;
+        other => other,
+    })?;
     let table_name = intern_name(&table);
     // A table without groups is one queue, whatever name the subscription gives it.
     let group = description.spec.column(Role::Group).map(|_| name);
     let registration = Registration::take(shared, table_name, group, name, row)?;
-    check(shared, &description.spec, &prepared)
+    check(shared, form, &description.spec, &prepared)
         .await
         .map_err(|unchecked| unchecked.named(name, &table, row))?;
     let queue = Queue {
@@ -636,14 +685,19 @@ where
         native_retry_after: description.native_retry_after(),
         kinds: description.kinds,
         prepared,
-        begin_claim: shared.dialect.get().begin_claim(),
-        counted_attempt: counted_attempt(shared.dialect.get(), description, &prepared),
+        begin_claim: form.begin_claim(),
+        counted_attempt: counted_attempt(form, description, &prepared),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
             .leased()
             .then(|| whole_seconds(timing.lease.unwrap_or(shared.lease))),
-        max_attempts: declaration.max_attempts(),
-        dead_letter: declaration.dead_letter().map(intern_name),
+        cap: declaration
+            .max_attempts()
+            .zip(declaration.dead_letter())
+            .map(|(attempts, destination)| Cap {
+                attempts,
+                dead_letter: intern_name(destination),
+            }),
     }
     .intern();
     // A book per subscription, not per queue: a queue's description is shared by every
@@ -675,12 +729,15 @@ where
 /// lease itself counts and commits first: the service's own fetch after the crate's claim of ids
 /// then reads counted rows, and whole rows come back counted where the dialect says so. A claim by
 /// role reads the attempt as it was before the count.
-fn counted_attempt(dialect: &dyn Dialect, description: &Description, prepared: &Prepared) -> bool {
-    if !description.leased() || prepared.stamps {
+fn counted_attempt(form: &FormDialect, description: &Description, prepared: &Prepared) -> bool {
+    let Some(lease) = form.lease().filter(|_| description.leased()) else {
+        return false;
+    };
+    if prepared.stamps {
         return false;
     }
     match description.claim {
-        ClaimShape::Rows => dialect.claim_counts_attempt(&description.spec),
+        ClaimShape::Rows => lease.claim_counts_attempt(&description.spec),
         ClaimShape::Ids => true,
         ClaimShape::Roles => false,
     }
@@ -740,38 +797,28 @@ impl Unchecked {
     }
 }
 
-/// The startup check: on one connection of the pool, the server's version where the dialect asks
-/// for it, then each of `prepared`'s statements prepared, off a paused clock where the connection
-/// runs in process.
+/// The startup check: on one connection of the pool, the server's version where the dialect `form`
+/// shows asks for it, then each of `prepared`'s statements prepared, off a paused clock where the
+/// connection runs in process.
 async fn check<DB: QueueDatabase>(
     shared: &Arc<Shared<DB>>,
+    form: &FormDialect,
     spec: &TableSpec<'static>,
     prepared: &Prepared,
 ) -> Result<(), Unchecked> {
     #[cfg(feature = "testing")]
     if shared.harness.in_process() {
         let shared = Arc::clone(shared);
+        let form = form.clone();
         let spec = *spec;
         let statements: Vec<Stmt> = prepared.statements().collect();
         return off_clock(async move {
-            verify(
-                &shared.pool,
-                shared.dialect.get(),
-                &spec,
-                statements.into_iter(),
-            )
-            .await
+            verify(&shared.pool, form.dialect(), &spec, statements.into_iter()).await
         })
         .await
         .unwrap_or_else(|| Err(Unchecked::Acquire(cancelled())));
     }
-    verify(
-        &shared.pool,
-        shared.dialect.get(),
-        spec,
-        prepared.statements(),
-    )
-    .await
+    verify(&shared.pool, form.dialect(), spec, prepared.statements()).await
 }
 
 /// Checks the server's version against `dialect`'s floor for `spec`, where the dialect has one,

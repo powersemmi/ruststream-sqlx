@@ -3,10 +3,12 @@
 use std::num::NonZeroUsize;
 
 use crate::dialect::Dialect;
+use crate::lease::Lease;
+use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{Built, BuiltIn, SqlWriter};
+use crate::writer::{BuiltIn, SqlWriter};
 
 /// How Postgres reads the current time: the start of the statement, so a settlement made long
 /// after the claim began records its own moment.
@@ -18,23 +20,23 @@ const LOCK: &str = " FOR UPDATE SKIP LOCKED";
 
 /// Postgres: double-quoted names, `$1` placeholders, rows claimed with `FOR UPDATE SKIP LOCKED`.
 ///
-/// It builds the statements of the row lock and lease forms and the insert. A lease claim is one
-/// statement: it locks the claimable rows, writes their lease, and returns them as they were.
-/// Every name is quoted, so a name keeps its case and may hold any character; a name over 63
-/// bytes, which Postgres would cut short without a word, is refused. A table on the database's
-/// clock reads `statement_timestamp()`.
+/// It builds the statements of the row lock form ([`RowLock`]), of the lease form ([`Lease`]), and
+/// the insert. A lease claim is one statement: it locks the claimable rows, writes their lease,
+/// and returns them as they were. Every name is quoted, so a name keeps its case and may hold any
+/// character; a name over 63 bytes, which Postgres would cut short without a word, is refused. A
+/// table on the database's clock reads `statement_timestamp()`.
 ///
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Dialect, Form, Postgres, TableSpec};
+/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
 ///
 /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
 ///     .within("app")
 ///     .priority(Column::new("priority"))
 ///     .payload(Column::new("payload"));
 ///
-/// let claim = Postgres.claim(&JOBS, ClaimShape::Rows)?;
+/// let claim = Postgres.lock_claim(&JOBS, ClaimShape::Rows)?;
 /// assert_eq!(
 ///     claim.sql(),
 ///     r#"SELECT "job_id", "priority", "payload" FROM "app"."jobs" ORDER BY "priority", "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
@@ -104,16 +106,6 @@ impl Dialect for Postgres {
         out.push_str(&index.to_string());
     }
 
-    fn claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> {
-        let form = self.claim_form(spec)?;
-        let mut sql = SqlWriter::new(self);
-        match form {
-            Built::RowLock => sql.claim(spec, shape, LOCK),
-            Built::Lease(expiry) => sql.lease_claim(spec, shape, expiry.name(), LOCK),
-        };
-        Ok(sql.finish())
-    }
-
     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.spec_fits(spec)?;
         let id = spec.id().name();
@@ -171,15 +163,43 @@ impl Dialect for Postgres {
         Ok(vec![sql.finish()])
     }
 
+    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.insert_statement(spec)
+    }
+}
+
+impl RowLock for Postgres {
+    fn lock_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        self.locked(spec, "lock_claim")?;
+        self.in_order(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.claim(spec, shape, LOCK);
+        Ok(sql.finish())
+    }
+}
+
+impl Lease for Postgres {
+    fn lease_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        let expiry = self.leased(spec, "lease_claim")?;
+        self.in_order(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.lease_claim(spec, shape, expiry.name(), LOCK);
+        Ok(sql.finish())
+    }
+
     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.extend_statement(spec)
     }
 
     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         self.stamp_statement(spec)
-    }
-
-    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.insert_statement(spec)
     }
 }

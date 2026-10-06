@@ -1,5 +1,6 @@
-//! What happens when a row's attempts are spent: the declared move, or the discard, run as an
-//! application against each stand and form, for rows that decode and rows that do not.
+//! What happens when a row's attempts are spent: the declared move, run as an application against
+//! each stand and form, for rows that decode and rows that do not; and the declarations a
+//! registration cannot make, refused when it starts.
 
 #![cfg(all(
     feature = "inbox",
@@ -15,7 +16,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use ruststream::prelude::*;
 use ruststream::testing::{Outcome, TestApp};
-use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
+use ruststream::{Broker, ConnectedBroker, RetryDeclaration, SubscriptionSource};
+use ruststream_sqlx::{ConnectedSqlxBroker, Inbox, InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool};
 
@@ -105,23 +107,89 @@ live::matrix! {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn at_the_cap_without_a_destination_a_row_is_finished() {
+    async fn with_one_attempt_every_failure_goes_to_the_dead_letter_at_once() {
+        let Some(db) = database().await else { return };
+        let app =
+            RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
+                b.include(always_retry)
+                    .max_attempts(nonzero!(1u32))
+                    .dead_letter("emails.dead");
+            });
+        let tb = run(app, "emails").await;
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("emails")
+            .assert_called_once();
+        let rows = db.email_rows("email_jobs").await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "emails.dead", "the first retry moved the row");
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    /// What starting `app`, whose registration declares half a retry, reports.
+    async fn refusal(app: RustStream) -> String {
+        let refused = TestApp::start_live(app).await.map(|_| ());
+        format!("{:?}", refused.expect_err("half a retry declaration is refused"))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cap_without_a_destination_stops_the_service() {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(always_retry).max_attempts(nonzero!(2u32));
             });
-        let tb = run(app, "emails").await;
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("emails")
-            .assert_called(2);
-        let rows = db.email_rows("email_jobs").await;
-        assert_eq!(rows[0].0, "emails");
+        let message = refusal(app).await;
+        assert!(message.contains("emails"), "names the subscription: {message}");
         assert!(
-            rows[0].3,
-            "processed_at means finished, a rejection after the last attempt included"
+            message.contains("`max_attempts(..)` without `dead_letter(..)`"),
+            "names the half it misses: {message}"
         );
-        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_destination_without_a_cap_stops_the_service() {
+        let Some(db) = database().await else { return };
+        let app =
+            RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
+                b.include(always_retry).dead_letter("emails.dead");
+            });
+        let message = refusal(app).await;
+        assert!(message.contains("emails"), "names the subscription: {message}");
+        assert!(
+            message.contains("`dead_letter(..)` without `max_attempts(..)`"),
+            "names the half it misses: {message}"
+        );
+        db.finish().await;
+    }
+
+    // A descriptor opened without the runtime, `declare_retry_on` left out, refuses the half
+    // when it subscribes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_half_declaration_refuses_the_subscription_itself() {
+        let Some(db) = database().await else { return };
+        let connected = broker(&db.pool).connect().await.expect("connects");
+        for half in [
+            RetryDeclaration::new().with_max_attempts(nonzero!(2u32)),
+            RetryDeclaration::new().with_dead_letter("emails.dead"),
+        ] {
+            let queue = SubscriptionSource::<ConnectedSqlxBroker<Db>>::declare_retry(
+                InboxQueue::<SendEmail>::new("emails"),
+                &half,
+            );
+            let refused = queue
+                .subscribe(&connected)
+                .await
+                .map(|_| ())
+                .expect_err("half a retry declaration does not open");
+            assert!(
+                matches!(&refused, SqlxBrokerError::Declaration { subscription, .. }
+                    if subscription == "emails"),
+                "{refused:?}"
+            );
+        }
+        connected.shutdown().await.expect("stops");
         db.finish().await;
     }
 
@@ -161,7 +229,8 @@ live::matrix! {
         let app =
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(never_decoded.on_failure(retries))
-                    .max_attempts(nonzero!(2u32));
+                    .max_attempts(nonzero!(2u32))
+                    .dead_letter("unreadable_jobs_dead");
             });
         let tb = run(app, "unreadable").await;
         let outcomes = tb
@@ -177,7 +246,12 @@ live::matrix! {
         assert_eq!(
             db.count("unreadable_jobs").await,
             0,
-            "the second delivery spent the row's attempts, and the cap finished it"
+            "the second delivery spent the row's attempts"
+        );
+        assert_eq!(
+            db.count("unreadable_jobs_dead").await,
+            1,
+            "the spent row moved into the dead-letter table"
         );
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
@@ -210,7 +284,9 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let capped =
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(uncounted).max_attempts(nonzero!(3u32));
+                b.include(uncounted)
+                    .max_attempts(nonzero!(3u32))
+                    .dead_letter("plain_jobs_dead");
             });
         let message = format!(
             "{:?}",

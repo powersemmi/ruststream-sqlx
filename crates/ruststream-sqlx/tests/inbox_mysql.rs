@@ -24,7 +24,7 @@ use ruststream::{
     Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::dialect::{
-    self, ClaimShape, Dialect, Statement, StatementError, TableName, TableSpec,
+    self, ClaimShape, Dialect, Lease, RowLock, Statement, StatementError, TableName, TableSpec,
 };
 use ruststream_sqlx::{
     Claim, ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, InboxRow, SqlxBroker, SqlxBrokerError,
@@ -89,10 +89,6 @@ impl Dialect for Doctored {
         dialect::MySql.placeholder_into(index, out);
     }
 
-    fn claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> {
-        dialect::MySql.claim(spec, shape)
-    }
-
     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         dialect::MySql.fetch(spec)
     }
@@ -132,20 +128,8 @@ impl Dialect for Doctored {
         Ok(moves)
     }
 
-    fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        dialect::MySql.extend(spec)
-    }
-
-    fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        dialect::MySql.stamp(spec)
-    }
-
     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
         dialect::MySql.insert(spec)
-    }
-
-    fn claim_writes_lease(&self) -> bool {
-        dialect::MySql.claim_writes_lease()
     }
 
     fn server_version(&self) -> Option<&'static str> {
@@ -169,9 +153,45 @@ impl Dialect for Doctored {
             Self::Unanswered | Self::Missing => dialect::MySql.check_server(spec, version),
         }
     }
+}
 
-    fn begin_claim(&self) -> Option<&'static str> {
-        dialect::MySql.begin_claim()
+impl RowLock for Doctored {
+    fn lock_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        dialect::MySql.lock_claim(spec, shape)
+    }
+
+    fn begin_lock_claim(&self) -> Option<&'static str> {
+        dialect::MySql.begin_lock_claim()
+    }
+}
+
+impl Lease for Doctored {
+    fn lease_claim(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Statement, StatementError> {
+        dialect::MySql.lease_claim(spec, shape)
+    }
+
+    fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        dialect::MySql.extend(spec)
+    }
+
+    fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        dialect::MySql.stamp(spec)
+    }
+
+    fn claim_writes_lease(&self) -> bool {
+        dialect::MySql.claim_writes_lease()
+    }
+
+    fn begin_lease_claim(&self) -> Option<&'static str> {
+        dialect::MySql.begin_lease_claim()
     }
 }
 
@@ -383,9 +403,11 @@ live::mysql_stands! {
             .connect()
             .await
             .expect("connects");
-        let queue = SubscriptionSource::<ConnectedSqlxBroker<Db>>::declare_retry(
+        let queue = SubscriptionSource::<ConnectedSqlxBroker<Db, Doctored>>::declare_retry(
             InboxQueue::<lease::Plain>::new("plain"),
-            &RetryDeclaration::new().with_dead_letter("plain_jobs_dead"),
+            &RetryDeclaration::new()
+                .with_max_attempts(nonzero!(1u32))
+                .with_dead_letter("plain_jobs_dead"),
         );
         let mut subscriber = queue.subscribe(&connected).await.expect("opens");
         let delivery = {

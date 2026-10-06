@@ -1,12 +1,14 @@
 //! The inbox: task queues in tables a service describes with its own structs.
 
 mod broker;
+mod built_in;
 mod columns;
 mod database;
 mod delivery;
 pub(crate) mod engine;
 mod error;
 mod events;
+mod form;
 pub mod keys;
 pub(crate) mod kinds;
 mod lease;
@@ -24,14 +26,18 @@ use std::fmt::Debug;
 use ruststream_sqlx_dialect::TableSpec;
 
 pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
+#[cfg(feature = "any")]
+pub use built_in::AnyDialect;
+pub use built_in::BuiltIn;
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
-pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, RowLocks, no_insert};
+pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_insert};
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{
     Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Publish, Retry, RetryAfter,
 };
-pub use named::{NamedDelivery, NamedSubscriber};
+pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
+pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use subscriber::InboxSubscriber;
@@ -75,40 +81,11 @@ pub trait InboxRow: QueueRow {
     /// rows are claimed in.
     const SPEC: TableSpec<'static>;
 
-    /// The form the table's rows are claimed in, as a type: a subscription requires its database
+    /// The form the table's rows are claimed in, as a type: a subscription requires its dialect
     /// to serve it ([`FormOn`]). Machinery; the derive sets it.
     #[doc(hidden)]
     type Form;
 }
-
-/// A form of claiming rows that the database `DB` serves. Machinery: a subscription requires it of
-/// its table's [`InboxRow::Form`], so a table in a form its database lacks does not compile.
-#[doc(hidden)]
-pub trait FormOn<DB> {}
-
-/// The row lock form: the claim's transaction holds the row. Machinery; the derive names it.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RowLockForm;
-
-/// The lease form: the expiry in `locked_until` holds the row. Machinery; the derive names it.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LeaseForm;
-
-/// The advisory lock form: a lock on the row's key holds the row. Machinery; the derive names it.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AdvisoryForm;
-
-impl<DB: RowLocks> FormOn<DB> for RowLockForm {}
-
-// A column holds the lease, so every database serves the form.
-impl<DB: QueueDatabase> FormOn<DB> for LeaseForm {}
-
-// An advisory lock table compiles on every database; a dialect without its statements refuses it
-// when the subscription starts.
-impl<DB: QueueDatabase> FormOn<DB> for AdvisoryForm {}
 
 /// A row a subscription delivers, and the type of its id. Machinery: `#[derive(Inbox)]`
 /// implements it beside [`InboxRow`], and the row of a by-name subscription implements it without

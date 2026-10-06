@@ -13,13 +13,12 @@ use std::sync::Arc;
 use foldhash::fast::RandomState;
 use futures::future::BoxFuture;
 use ruststream::{DefaultPublish, Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
-use ruststream_sqlx_dialect::TableSpec;
+use ruststream_sqlx_dialect::{Dialect, TableSpec};
 use sqlx::Database;
 #[cfg(feature = "testing")]
 use sqlx::Pool;
 use stackfuture::StackFuture;
 
-use super::PayloadRow;
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
 use super::engine::Events;
@@ -29,6 +28,7 @@ use super::named::{self, ErasedStream};
 use super::queue::Description;
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
+use super::{FormDialect, PayloadRow};
 
 /// The bytes a route keeps its write's future in. A row's `Publish` future that fits costs no
 /// allocation, and a larger one is boxed. 1024 is the smallest power of two that holds the largest
@@ -274,16 +274,17 @@ impl<Row> fmt::Debug for Repository<Row> {
     }
 }
 
-impl<DB, Row> PublishPolicy<ConnectedSqlxBroker<DB>> for Repository<Row>
+impl<DB, D, Row> PublishPolicy<ConnectedSqlxBroker<DB, D>> for Repository<Row>
 where
     DB: QueueDatabase,
+    D: Dialect + 'static,
     Row: Publish<DB> + Events<DB>,
 {
     type Live = RepositoryPublisher<DB, Row>;
 
     fn pair(
         self,
-        connected: &ConnectedSqlxBroker<DB>,
+        connected: &ConnectedSqlxBroker<DB, D>,
     ) -> impl Future<Output = Result<Self::Live, PairError>> + Send {
         ready(Ok(RepositoryPublisher {
             shared: Arc::clone(&connected.shared),
@@ -374,10 +375,12 @@ pub(crate) trait Route<DB: Database>: Send + Sync {
     /// row can be read by role.
     fn description(&self) -> Description;
 
-    /// Opens a by-name subscription to `name` of the route's table through the row's own code.
+    /// Opens a by-name subscription to `name` of the route's table through the row's own code,
+    /// its statements built by `form`.
     fn subscribe<'a>(
         &'a self,
         shared: &'a Arc<Shared<DB>>,
+        form: &'a FormDialect,
         name: &'a str,
     ) -> BoxFuture<'a, Result<ErasedStream, SqlxBrokerError>>;
 
@@ -416,9 +419,10 @@ where
     fn subscribe<'a>(
         &'a self,
         shared: &'a Arc<Shared<DB>>,
+        form: &'a FormDialect,
         name: &'a str,
     ) -> BoxFuture<'a, Result<ErasedStream, SqlxBrokerError>> {
-        named::erased::<DB, Row>(shared, name)
+        named::erased::<DB, Row>(shared, form, name)
     }
 
     fn row(&self) -> &'static str {
@@ -476,14 +480,24 @@ impl RouteIndex {
     }
 }
 
+/// One route: its name, its way into the table, and its table's form on the broker's dialect.
+struct Entry<DB: Database, Form> {
+    name: Cow<'static, str>,
+    route: Box<dyn Route<DB>>,
+    form: Form,
+}
+
 /// The routes a broker records, in registration order, and their index; a later route for a name
 /// replaces an earlier one.
-pub(crate) struct Routes<DB: Database> {
-    routes: Vec<(Cow<'static, str>, Box<dyn Route<DB>>)>,
+///
+/// Each route carries its table's form: before `connect`, the way to reach it on the dialect the
+/// broker connects with; after, the dialect seen through that form's trait.
+pub(crate) struct Routes<DB: Database, Form> {
+    routes: Vec<Entry<DB, Form>>,
     index: RouteIndex,
 }
 
-impl<DB: Database> Default for Routes<DB> {
+impl<DB: Database, Form> Default for Routes<DB, Form> {
     fn default() -> Self {
         Self {
             routes: Vec::new(),
@@ -492,33 +506,65 @@ impl<DB: Database> Default for Routes<DB> {
     }
 }
 
-impl<DB: Database> fmt::Debug for Routes<DB> {
+impl<DB: Database, Form> fmt::Debug for Routes<DB, Form> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map()
-            .entries(self.routes.iter().map(|(name, route)| (name, route.row())))
+            .entries(
+                self.routes
+                    .iter()
+                    .map(|entry| (&entry.name, entry.route.row())),
+            )
             .finish()
     }
 }
 
-impl<DB: QueueDatabase> Routes<DB> {
-    pub(crate) fn add<Row>(&mut self, name: Cow<'static, str>)
+impl<DB: QueueDatabase, Form> Routes<DB, Form> {
+    /// Leads `name` to `Row`'s table, whose form `form` reaches.
+    pub(crate) fn add<Row>(&mut self, name: Cow<'static, str>, form: Form)
     where
         Row: Publish<DB> + Events<DB> + PayloadRow,
     {
-        self.routes.retain(|(existing, _)| *existing != name);
-        self.routes
-            .push((name, Box::new(TypedRoute::<Row>(PhantomData))));
-        self.index = RouteIndex::new(self.routes.iter().map(|(name, _)| RouteName::parse(name)));
+        self.routes.retain(|entry| entry.name != name);
+        self.routes.push(Entry {
+            name,
+            route: Box::new(TypedRoute::<Row>(PhantomData)),
+            form,
+        });
+        self.index = RouteIndex::new(
+            self.routes
+                .iter()
+                .map(|entry| RouteName::parse(&entry.name)),
+        );
     }
 }
 
-impl<DB: Database> Routes<DB> {
-    /// The route `name` takes: one hash lookup for an exact name, then the prefixes.
-    pub(crate) fn find(&self, name: &str) -> Option<&dyn Route<DB>> {
+impl<DB: Database, Form> Routes<DB, Form> {
+    /// The routes with each form turned by `resolve`, at the positions the index knows.
+    pub(crate) fn resolve<Resolved>(
+        self,
+        resolve: impl Fn(Form) -> Resolved,
+    ) -> Routes<DB, Resolved> {
+        Routes {
+            routes: self
+                .routes
+                .into_iter()
+                .map(|entry| Entry {
+                    name: entry.name,
+                    route: entry.route,
+                    form: resolve(entry.form),
+                })
+                .collect(),
+            index: self.index,
+        }
+    }
+
+    /// The route `name` takes, with its table's form: one hash lookup for an exact name, then
+    /// the prefixes.
+    pub(crate) fn find(&self, name: &str) -> Option<(&dyn Route<DB>, &Form)> {
         self.index
             .find(name)
             .and_then(|position| self.routes.get(position))
-            .map(|(_, route)| route.as_ref())
+            .map(|entry| (entry.route.as_ref(), &entry.form))
     }
 }
 
@@ -596,12 +642,12 @@ impl<DB: Database> Routes<DB> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Routed;
 
-impl<DB: QueueDatabase> PublishPolicy<ConnectedSqlxBroker<DB>> for Routed {
+impl<DB: QueueDatabase, D: Dialect + 'static> PublishPolicy<ConnectedSqlxBroker<DB, D>> for Routed {
     type Live = RoutedPublisher<DB>;
 
     fn pair(
         self,
-        connected: &ConnectedSqlxBroker<DB>,
+        connected: &ConnectedSqlxBroker<DB, D>,
     ) -> impl Future<Output = Result<Self::Live, PairError>> + Send {
         ready(Ok(RoutedPublisher {
             shared: Arc::clone(&connected.shared),
@@ -609,7 +655,7 @@ impl<DB: QueueDatabase> PublishPolicy<ConnectedSqlxBroker<DB>> for Routed {
     }
 }
 
-impl<DB: QueueDatabase> DefaultPublish for ConnectedSqlxBroker<DB> {
+impl<DB: QueueDatabase, D: Dialect + 'static> DefaultPublish for ConnectedSqlxBroker<DB, D> {
     type Policy = Routed;
 }
 
@@ -653,7 +699,7 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
         msg: OutgoingMessage<'_>,
         _options: Option<&()>,
     ) -> Result<(), SqlxBrokerError> {
-        let Some(route) = self.shared.routes.find(msg.name()) else {
+        let Some((route, _)) = self.shared.routes.find(msg.name()) else {
             tracing::warn!(
                 target: "ruststream_sqlx",
                 name = msg.name(),

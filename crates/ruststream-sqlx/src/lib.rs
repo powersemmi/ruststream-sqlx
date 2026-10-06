@@ -10,12 +10,12 @@ pub mod prelude;
 
 #[cfg(feature = "inbox")]
 pub use inbox::{
-    Ack, AttemptColumn, BuiltInDialect, Claim, Clock, ClosedSqlxBroker, ConnectedSqlxBroker,
-    DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn, InboxDelivery, InboxQueue,
-    InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow, NamedDelivery, NamedSubscriber,
-    PayloadRow, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
-    RetryAfter, Routed, RoutedPublisher, RowLocks, SqlxBroker, SqlxBrokerError, SystemClock,
-    TimeColumn, TimeSource,
+    Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
+    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
+    InboxDelivery, InboxQueue, InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow,
+    NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Publish, QueueDatabase, QueueTime,
+    Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, SqlxBroker,
+    SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -29,6 +29,8 @@ pub mod __private {
     pub use ruststream_sqlx_dialect::Param;
     pub use sqlx;
 
+    #[cfg(feature = "any")]
+    pub use crate::inbox::AnyDialect;
     pub use crate::inbox::engine::{
         Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled, Settling, Shape,
         Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows, dead_letter, discard,
@@ -36,13 +38,11 @@ pub mod __private {
         no_lease, now, put, retry, retry_after,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
-    pub use crate::inbox::named::{
-        NamedBytes, NamedDatabase, NamedId, NamedRow, NamedTime, RoleColumns,
-    };
+    pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{
-        AdvisoryForm, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase, QueueRow,
-        RowLockForm, no_insert,
+        AdvisoryForm, FormDialect, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase,
+        QueueRow, RowLockForm, no_insert,
     };
 }
 
@@ -55,7 +55,7 @@ pub mod __private {
 ///
 /// ```
 /// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx::dialect::{ClaimShape, Dialect, Postgres};
+/// use ruststream_sqlx::dialect::{ClaimShape, Postgres, RowLock};
 /// use ruststream_sqlx::{Inbox, InboxRow};
 ///
 /// #[derive(Inbox)]
@@ -72,7 +72,7 @@ pub mod __private {
 /// }
 ///
 /// // The statement a subscription to `SendEmail` claims its rows with.
-/// let claim = Postgres.claim(&SendEmail::SPEC, ClaimShape::Rows)?;
+/// let claim = Postgres.lock_claim(&SendEmail::SPEC, ClaimShape::Rows)?;
 /// assert_eq!(
 ///     claim.sql(),
 ///     r#"SELECT "job_id", "name", "attempt", "payload" FROM "app"."email_jobs" WHERE "name" = $1 ORDER BY "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED"#,

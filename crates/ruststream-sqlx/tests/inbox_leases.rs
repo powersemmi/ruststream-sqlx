@@ -362,7 +362,9 @@ live::stands! {
             .poll_interval(Duration::from_millis(20))
             .route::<Fetched>("plain");
         let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
-            b.include(retried).max_attempts(nonzero!(2u32));
+            b.include(retried)
+                .max_attempts(nonzero!(2u32))
+                .dead_letter("plain_jobs_dead");
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -384,8 +386,9 @@ live::stands! {
         assert_eq!(
             db.count("plain_jobs").await,
             0,
-            "the cap finished the row after its second delivery"
+            "the cap moved the row after its second delivery"
         );
+        assert_eq!(db.count("plain_jobs_dead").await, 1);
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }

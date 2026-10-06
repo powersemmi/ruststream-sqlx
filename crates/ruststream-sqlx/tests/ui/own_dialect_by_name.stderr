@@ -1,0 +1,29 @@
+error[E0277]: the `LocksOnly` dialect has no subscriptions by name on `sqlx::Postgres`
+  --> tests/ui/own_dialect_by_name.rs:80:19
+   |
+80 |     opens_by_name(connected);
+   |     ------------- ^^^^^^^^^ a subscription by name needs its dialect to read and bind its rows
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `ByName<sqlx::Postgres>` is not implemented for `LocksOnly`
+  --> tests/ui/own_dialect_by_name.rs:12:1
+   |
+12 | struct LocksOnly;
+   | ^^^^^^^^^^^^^^^^
+   = note: implement `ByName<sqlx::Postgres>` for the dialect, or subscribe through a descriptor: `#[subscriber(InboxQueue::<Row>::new(".."))]`
+help: the trait `ByName<sqlx::Postgres>` is implemented for `BuiltIn<sqlx::Postgres>`
+  --> src/inbox/named/by_name.rs
+   |
+   |         impl ByName<$database> for BuiltIn<$database> {
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+   | by_name!(sqlx::Postgres);
+   | ------------------------ in this macro invocation
+   = note: required for `ConnectedSqlxBroker<sqlx::Postgres, LocksOnly>` to implement `ruststream::Subscribe`
+note: required by a bound in `opens_by_name`
+  --> tests/ui/own_dialect_by_name.rs:75:29
+   |
+75 | fn opens_by_name<Connected: Subscribe>(connected: &Connected) {
+   |                             ^^^^^^^^^ required by this bound in `opens_by_name`
+   = note: this error originates in the macro `by_name` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -14,6 +14,15 @@ transaction that stays open until the handler settles the row. In the lease form
 into the row and commits at once, so a long handler holds no transaction, and the subscription
 extends the lease while the handler works. SQLite tables take the lease form.
 
+A subscription caps the deliveries of a message with `max_attempts(n)` and names, with
+`dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are
+declared together. With `max_attempts(1)`, every failure moves the row at once.
+
+Postgres, MySQL/MariaDB and SQLite come with dialects built into the crate. A database whose sqlx
+driver comes in a crate of its own, or a statement the service writes its own way, takes a dialect
+of the service's own. Such a dialect implements a trait for each form its tables take, and one for
+subscriptions by name; a table in a form its dialect lacks does not compile.
+
 The service owns its queue tables. At startup a subscription checks that its table has the
 columns its struct names. The column types are the service's to get right, and a row that does
 not decode is settled by the subscription's decode-failure policy.
