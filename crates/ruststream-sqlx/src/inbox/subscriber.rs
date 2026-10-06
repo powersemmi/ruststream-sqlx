@@ -22,7 +22,7 @@ use super::queue::{Queue, Registration};
 use super::session::{Closing, Session};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
-use super::tx::Tx;
+use super::tx::PoolTx;
 
 /// How long a subscription waits after a claim failed, so a persistent failure cannot spin the
 /// loop.
@@ -127,7 +127,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Copy for Holding<DB, Row> {}
 /// What a claim leaves the deliveries of its rows.
 pub(crate) enum Taken<DB: QueueDatabase, Row: Events<DB>> {
     /// The claim's transaction, which holds the rows until they settle.
-    Locked(Tx<DB>),
+    Locked(PoolTx<DB>),
     /// The lease the claim wrote and committed, and the book its deliveries enter.
     Leased(&'static LeaseBook<DB, Row>, Row::Token),
     /// Each row's place in the book, whose session holds the row's lock, next to the row.
@@ -704,8 +704,8 @@ where
 
 /// Opens a claim's transaction on a connection of `pool`, with the statement `queue`'s dialect
 /// opens it with, or `BEGIN`.
-async fn begin<DB: QueueDatabase>(pool: &Pool<DB>, queue: &Queue) -> Result<Tx<DB>, Failed> {
-    Tx::begin(pool, queue.begin_claim)
+async fn begin<DB: QueueDatabase>(pool: &Pool<DB>, queue: &Queue) -> Result<PoolTx<DB>, Failed> {
+    PoolTx::begin(pool, queue.begin_claim)
         .await
         .map_err(|source| (queue.begin_claim.unwrap_or("BEGIN"), source))
 }

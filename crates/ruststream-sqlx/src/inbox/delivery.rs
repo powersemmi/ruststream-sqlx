@@ -23,7 +23,7 @@ use super::queue::Queue;
 use super::session::Session;
 #[cfg(feature = "testing")]
 use super::testing::{off_clock, returns_after};
-use super::tx::Tx;
+use super::tx::PoolTx;
 
 /// What a handler's outcome asks of the row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,7 +70,7 @@ impl Step {
 /// What holds a delivery's row until it settles.
 enum Hold<DB: QueueDatabase, Row: Events<DB>> {
     /// The delivery's own transaction: one claim, one row.
-    Own(SyncWrapper<Tx<DB>>),
+    Own(SyncWrapper<PoolTx<DB>>),
     /// A batch's transaction: one claim, its rows sharing the transaction.
     Batch(Arc<BatchTx<DB>>),
     /// The lease the claim wrote, in the subscription's book.
@@ -86,7 +86,7 @@ enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// finish ends it. The settlements become durable together: a statement that fails rolls the
 /// whole batch back.
 pub(crate) struct BatchTx<DB: QueueDatabase> {
-    tx: Mutex<Option<Tx<DB>>>,
+    tx: Mutex<Option<PoolTx<DB>>>,
     open: AtomicUsize,
     /// The settlements that wrote something for the commit to keep.
     written: AtomicUsize,
@@ -95,7 +95,7 @@ pub(crate) struct BatchTx<DB: QueueDatabase> {
 }
 
 impl<DB: QueueDatabase> BatchTx<DB> {
-    pub(crate) fn new(tx: Tx<DB>, deliveries: usize) -> Arc<Self> {
+    pub(crate) fn new(tx: PoolTx<DB>, deliveries: usize) -> Arc<Self> {
         Arc::new(Self {
             tx: Mutex::new(Some(tx)),
             open: AtomicUsize::new(deliveries),
@@ -260,7 +260,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Debug for InboxDelivery<DB, Row> {
 
 impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
     /// A delivery that owns its claim's transaction.
-    pub(crate) fn own(claimed: Claimed<Row>, tx: Tx<DB>, queue: &'static Queue) -> Self {
+    pub(crate) fn own(claimed: Claimed<Row>, tx: PoolTx<DB>, queue: &'static Queue) -> Self {
         Self::held(claimed, Hold::Own(SyncWrapper::new(tx)), queue)
     }
 
@@ -566,7 +566,7 @@ where
     // The service's own SQL names no lease, so its transaction first confirms the delivery still
     // holds one: the lease written over itself. A move the dialect splits in two runs in one
     // transaction too, so a half-moved row never shows.
-    let mut tx = Tx::begin(book.pool(), None).await?;
+    let mut tx = PoolTx::begin(book.pool(), None).await?;
     let settled = async {
         if overridden && Row::extend(&mut tx, cx, id, held, held).await? == Settled::Lost {
             return Ok(Settled::Lost);
