@@ -1,3 +1,8 @@
 {
-  "rules": []
+  "rules": [
+    "Declare `#[field(locked_until)]` on a queue struct for the lease form: a handler that runs long, a pool that cannot hold a connection per message in work, and every table on SQLite.",
+    "A lease setting needs the field: `InboxQueue::lease` compiles only for a struct with `#[field(locked_until)]`, and `SqlxBroker::lease` sets the lease of those tables alone.",
+    "MySQL 8.0.1 and MariaDB 10.6 are the oldest servers the inbox runs on; an older one stops the subscription at startup with `SqlxBrokerError::ServerTooOld`.",
+    "The lease form reads the host's clock: `#[field(locked_until)]` beside `#[inbox(clock = DatabaseClock)]` does not compile."
+  ]
 }

@@ -4,6 +4,8 @@
 
 use std::time::SystemTime;
 
+#[cfg(feature = "chrono")]
+use chrono::{DateTime, Utc};
 use ruststream_sqlx::dialect::{Column, Form, KeyPart, Role, TableSpec};
 use ruststream_sqlx::{Inbox, InboxRow};
 
@@ -11,7 +13,7 @@ use ruststream_sqlx::{Inbox, InboxRow};
 #[derive(Inbox)]
 #[inbox(table = "email_jobs", schema = "app")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -122,10 +124,12 @@ fn the_partition_key_and_the_headers_reach_their_slots() {
     );
 }
 
+// A lease is written in a time type the crate computes in, which a time feature brings.
+#[cfg(feature = "chrono")]
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -135,9 +139,10 @@ struct Leased {
     #[field(id)]
     id: i64,
     #[field(locked_until)]
-    locked_until: Option<SystemTime>,
+    locked_until: Option<DateTime<Utc>>,
 }
 
+#[cfg(feature = "chrono")]
 #[test]
 fn a_locked_until_field_selects_the_lease_form() {
     assert_eq!(
@@ -149,7 +154,7 @@ fn a_locked_until_field_selects_the_lease_form() {
 #[derive(Inbox)]
 #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}-{type}")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -177,7 +182,7 @@ fn an_advisory_key_reads_the_columns_of_the_named_fields() {
 #[derive(Inbox)]
 #[inbox(table = "ledger")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"
@@ -238,7 +243,7 @@ fn a_flattened_field_makes_statements_select_everything() {
 #[derive(Inbox)]
 #[inbox(table = "jobs")]
 #[cfg_attr(
-    not(feature = "postgres"),
+    not(any(feature = "postgres", feature = "mysql", feature = "sqlite")),
     expect(
         dead_code,
         reason = "a queue row is read by the broker, never by this test"

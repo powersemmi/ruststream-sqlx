@@ -8,13 +8,16 @@ pub(crate) mod engine;
 mod error;
 mod events;
 pub mod keys;
-mod named;
+pub(crate) mod kinds;
+mod lease;
+pub(crate) mod named;
 mod publish;
-mod queue;
+pub(crate) mod queue;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
 mod time;
+mod tx;
 
 use std::fmt::Debug;
 
@@ -22,17 +25,17 @@ use ruststream_sqlx_dialect::TableSpec;
 
 pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
-#[cfg(feature = "postgres")]
-pub use database::OnPostgres;
-pub use database::{BuiltInDialect, QueueDatabase};
+pub use database::{BuiltInDialect, InsertSql, OnConnection, QueueDatabase, RowLocks, no_insert};
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
-pub use events::{Ack, Claim, DeadLetter, Discard, Fetch, Insert, Publish, Retry, RetryAfter};
+pub use events::{
+    Ack, Claim, DeadLetter, Discard, Extend, Fetch, Insert, Publish, Retry, RetryAfter,
+};
 pub use named::{NamedDelivery, NamedSubscriber};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use subscriber::InboxSubscriber;
-pub use time::{Clock, DatabaseClock, QueueTime, SystemClock, TimeColumn, TimeSource};
+pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.
 ///
@@ -67,13 +70,54 @@ pub use time::{Clock, DatabaseClock, QueueTime, SystemClock, TimeColumn, TimeSou
     label = "not an inbox row",
     note = "derive it: `#[derive(Inbox)]` with `#[inbox(table = \"..\")]` and a `#[field(id)]` field"
 )]
-pub trait InboxRow: Sized + Send + Sync + 'static {
+pub trait InboxRow: QueueRow {
     /// The table the struct describes: its name, its columns and their roles, and the form its
     /// rows are claimed in.
     const SPEC: TableSpec<'static>;
 
-    /// The type of the field that plays `id`; logs name a row by it.
-    type Id: Debug + Send + Sync + 'static;
+    /// The form the table's rows are claimed in, as a type: a subscription requires its database
+    /// to serve it ([`FormOn`]). Machinery; the derive sets it.
+    #[doc(hidden)]
+    type Form;
+}
+
+/// A form of claiming rows that the database `DB` serves. Machinery: a subscription requires it of
+/// its table's [`InboxRow::Form`], so a table in a form its database lacks does not compile.
+#[doc(hidden)]
+pub trait FormOn<DB> {}
+
+/// The row lock form: the claim's transaction holds the row. Machinery; the derive names it.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RowLockForm;
+
+/// The lease form: the expiry in `locked_until` holds the row. Machinery; the derive names it.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LeaseForm;
+
+/// The advisory lock form: a lock on the row's key holds the row. Machinery; the derive names it.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AdvisoryForm;
+
+impl<DB: RowLocks> FormOn<DB> for RowLockForm {}
+
+// A column holds the lease, so every database serves the form.
+impl<DB: QueueDatabase> FormOn<DB> for LeaseForm {}
+
+// An advisory lock table compiles on every database; a dialect without its statements refuses it
+// when the subscription starts.
+impl<DB: QueueDatabase> FormOn<DB> for AdvisoryForm {}
+
+/// A row a subscription delivers, and the type of its id. Machinery: `#[derive(Inbox)]`
+/// implements it beside [`InboxRow`], and the row of a by-name subscription implements it without
+/// a table description of its own.
+#[doc(hidden)]
+pub trait QueueRow: Sized + Send + Sync + 'static {
+    /// The type of the field that plays `id`; logs name a row by it, and a lease subscription
+    /// keeps a copy of each id in work to extend its lease.
+    type Id: Clone + Debug + Send + Sync + 'static;
 }
 
 /// A queue row that carries its message as bytes: payload mode.
@@ -105,7 +149,7 @@ pub trait InboxRow: Sized + Send + Sync + 'static {
     label = "no `#[field(payload)]` field",
     note = "mark the column that holds the message bytes with `#[field(payload)]`"
 )]
-pub trait PayloadRow: InboxRow {
+pub trait PayloadRow: QueueRow {
     /// The message bytes, lent from the row.
     ///
     /// # Examples

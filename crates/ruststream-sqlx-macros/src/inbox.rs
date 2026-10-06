@@ -1,9 +1,10 @@
-//! The `InboxRow` impl `#[derive(Inbox)]` generates.
+//! The `QueueRow` and `InboxRow` impls `#[derive(Inbox)]` generates.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use ruststream_sqlx_dialect::Role;
 use syn::ext::IdentExt;
+use syn::spanned::Spanned;
 use syn::{DeriveInput, Generics, parse_quote};
 
 use crate::parse::{self, ColumnField, Field, Inbox};
@@ -115,6 +116,17 @@ fn check<'i, 'a>(
             }
         }
     }
+    if let Some(span) = inbox.table.custom.extend
+        && !columns
+            .iter()
+            .any(|(_, column)| column.role == Some(Role::LockedUntil))
+    {
+        errors.push(syn::Error::new(
+            span,
+            "`extend` is an event of the lease form: add `#[field(locked_until)]` or drop \
+             `extend` from `custom(..)`",
+        ));
+    }
     errors.finish()?;
     id.ok_or_else(missing_id)
 }
@@ -165,19 +177,31 @@ fn generate(
     let lease = inbox
         .columns()
         .find(|(_, column)| column.role == Some(Role::LockedUntil));
-    let form = match (key, lease) {
+    let private = quote!(::ruststream_sqlx::__private);
+    // The form twice: as the description's value, and as the type a subscription checks against
+    // its database.
+    let (form, form_type) = match (key, lease) {
         (Some(key), _) => {
             let parts = key.iter().map(|item| match item {
                 KeyItem::Literal(text) => quote!(#dialect::KeyPart::Literal(#text)),
                 KeyItem::Column(column) => quote!(#dialect::KeyPart::Column(#column)),
             });
-            quote!(#dialect::Form::Advisory(&[#(#parts),*]))
+            (
+                quote!(#dialect::Form::Advisory(&[#(#parts),*])),
+                quote!(#private::AdvisoryForm),
+            )
         }
         (None, Some((_, expiry))) => {
             let expiry = column(expiry);
-            quote!(#dialect::Form::Lease(#expiry))
+            (
+                quote!(#dialect::Form::Lease(#expiry)),
+                quote!(#private::LeaseForm),
+            )
         }
-        (None, None) => quote!(#dialect::Form::RowLock),
+        (None, None) => (
+            quote!(#dialect::Form::RowLock),
+            quote!(#private::RowLockForm),
+        ),
     };
     let slots = inbox.columns().filter_map(|(_, slot)| {
         let role = slot.role?;
@@ -210,8 +234,14 @@ fn generate(
     let name = &input.ident;
     let id_type = id_field.ty;
     let spec = quote!(#dialect::TableSpec::new(#table, #id, #form) #within #(#slots)* #data #selecting_all);
+    let LeaseParts {
+        row: lease_row,
+        item_check,
+        spec_check,
+    } = lease_parts(input, generics, inbox, lease.map(|(field, _)| field));
     let spec = match &inbox.table.clock {
         Some(clock) => quote!({
+            #spec_check
             let spec = #spec;
             if <#clock as ::ruststream_sqlx::TimeSource>::DATABASE {
                 spec.database_clock()
@@ -224,15 +254,86 @@ fn generate(
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     quote! {
         #[automatically_derived]
-        impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
-            const SPEC: #dialect::TableSpec<'static> = #spec;
+        impl #impl_generics ::ruststream_sqlx::__private::QueueRow for #name #ty_generics #where_clause {
             type Id = #id_type;
         }
+
+        #[automatically_derived]
+        impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
+            const SPEC: #dialect::TableSpec<'static> = #spec;
+            type Form = #form_type;
+        }
+
+        #lease_row
+
+        #item_check
+    }
+}
+
+/// What the lease form adds to a struct with a `locked_until` field.
+struct LeaseParts {
+    /// The `LeaseRow` impl.
+    row: Option<TokenStream2>,
+    /// The refusal of the database's clock, as an item of its own.
+    item_check: Option<TokenStream2>,
+    /// The same refusal inside `SPEC`, for a generic struct.
+    spec_check: Option<TokenStream2>,
+}
+
+/// `LeaseRow` for a struct whose `field` plays `locked_until`, and the refusal of a lease on the
+/// database's clock.
+fn lease_parts(
+    input: &DeriveInput,
+    generics: &Generics,
+    inbox: &Inbox<'_>,
+    field: Option<&Field<'_>>,
+) -> LeaseParts {
+    let Some(field) = field else {
+        return LeaseParts {
+            row: None,
+            item_check: None,
+            spec_check: None,
+        };
+    };
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let ty = field.ty;
+    let time = quote_spanned!(ty.span()=> <#ty as ::ruststream_sqlx::TimeColumn>::Time);
+    let row = quote! {
+        #[automatically_derived]
+        impl #impl_generics ::ruststream_sqlx::LeaseRow for #name #ty_generics #where_clause {
+            type Lease = #time;
+        }
+    };
+    // The lease form computes its expiry from the crate's clock, so a lease table on the
+    // database's clock is refused while it compiles: at item level, or inside `SPEC` where the
+    // clock may name the struct's own parameters, which an item-level const cannot.
+    let check = inbox.table.clock.as_ref().map(|clock| {
+        let check = quote_spanned! {clock.span()=>
+            ::core::assert!(
+                !<#clock as ::ruststream_sqlx::TimeSource>::DATABASE,
+                "the lease form computes its expiry from the crate's clock: drop \
+                 `clock = DatabaseClock` or the `locked_until` field"
+            );
+        };
+        (clock.span(), check)
+    });
+    let (item_check, spec_check) = match check {
+        Some((span, check)) if input.generics.params.is_empty() => {
+            (Some(quote_spanned!(span=> const _: () = { #check };)), None)
+        }
+        Some((_, check)) => (None, Some(check)),
+        None => (None, None),
+    };
+    LeaseParts {
+        row: Some(row),
+        item_check,
+        spec_check,
     }
 }
 
 /// The struct's generics with what every impl of the row needs of them: `Send + Sync + 'static`
-/// of the struct, and of the id type, which logs also print.
+/// of the struct, and of the id type, which logs also print and a lease subscription copies.
 fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Generics {
     let name = &input.ident;
     let mut generics = input.generics.clone();
@@ -243,7 +344,11 @@ fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Generics {
             #name #ty_generics: ::core::marker::Send + ::core::marker::Sync + 'static
         ));
         predicates.push(parse_quote!(
-            #id_type: ::core::fmt::Debug + ::core::marker::Send + ::core::marker::Sync + 'static
+            #id_type: ::core::clone::Clone
+                + ::core::fmt::Debug
+                + ::core::marker::Send
+                + ::core::marker::Sync
+                + 'static
         ));
     }
     generics
@@ -264,7 +369,7 @@ mod tests {
 
     #[test]
     fn the_rules_the_types_leave_to_the_struct_are_checked() {
-        let cases: [(DeriveInput, &str); 7] = [
+        let cases: [(DeriveInput, &str); 8] = [
             (
                 parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(payload)] payload: Vec<u8> } },
                 "table `jobs` has no `id` field: mark the field that identifies a row with \
@@ -296,6 +401,11 @@ mod tests {
             (
                 parse_quote! { #[inbox(table = "jobs", advisory_lock = "jobs-{tenant}")] struct Job { #[field(id)] job_id: i64, #[sqlx(skip)] tenant: String } },
                 "the lock key names `tenant`, a field without a column",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(extend))] struct Job { #[field(id)] job_id: i64 } },
+                "`extend` is an event of the lease form: add `#[field(locked_until)]` or drop \
+                 `extend` from `custom(..)`",
             ),
         ];
         for (input, expected) in cases {

@@ -1,0 +1,11 @@
+error[E0080]: evaluation panicked: the lease form computes its expiry from the crate's clock: drop `clock = DatabaseClock` or the `locked_until` field
+  --> tests/ui/lease_clock.rs:10:33
+   |
+10 | #[inbox(table = "jobs", clock = Source)]
+   |                                 ^^^^^^ evaluation of `<OnAnyClock<ruststream_sqlx::DatabaseClock> as ruststream_sqlx::InboxRow>::SPEC` failed here
+
+note: erroneous constant encountered
+  --> tests/ui/lease_clock.rs:23:45
+   |
+23 | const ON_THE_DATABASE: TableSpec<'static> = <OnAnyClock<DatabaseClock> as InboxRow>::SPEC;
+   |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

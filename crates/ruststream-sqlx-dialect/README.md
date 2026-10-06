@@ -7,6 +7,12 @@ The procedural macros of `ruststream-sqlx` and its runtime build their statement
 produce the same SQL for a table. The crate generates plain text, free of any database driver, so a
 procedural macro can run it at compile time.
 
+A `TableSpec` describes a queue table, and a `Dialect` turns it into the statement each queue event
+runs. Three dialects are built in, each behind its feature: Postgres (`postgres`) and MySQL with
+MariaDB (`mysql`) build the row lock and lease forms, and SQLite (`sqlite`) builds the lease form.
+A database without a built-in dialect is served by a type of the service's own that implements
+`Dialect`.
+
 ## License
 
 Apache-2.0.

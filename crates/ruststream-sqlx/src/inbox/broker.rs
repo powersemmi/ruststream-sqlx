@@ -8,22 +8,89 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::{Broker, ConnectedBroker};
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlite",
+    feature = "any"
+))]
+use ruststream::{DescribeServer, ServerSpec};
 use ruststream_sqlx_dialect::Dialect;
+#[cfg(feature = "any")]
+use sqlx::Any;
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
+use sqlx::ConnectOptions;
+#[cfg(feature = "mysql")]
+use sqlx::MySql;
+#[cfg(feature = "postgres")]
+use sqlx::Postgres;
+#[cfg(feature = "sqlite")]
+use sqlx::Sqlite;
 use sqlx::{Database, Pool};
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
-use super::PayloadRow;
 use super::database::{BuiltInDialect, QueueDatabase};
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
 use super::publish::Routes;
+use super::{FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
 /// another interval.
 const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// The dialect a broker builds statements with: one built into the crate, or the service's own.
+/// How long a claim leases a row of a table in the lease form, unless the subscription names
+/// another lease.
+const DEFAULT_LEASE: Duration = Duration::from_secs(30);
+
+/// The dialect a broker will build statements with: one built into the crate, picked from the
+/// connection `connect` checks, or the service's own.
+pub(crate) enum DialectChoice<DB: Database> {
+    BuiltIn(fn(&DB::Connection) -> Result<&'static dyn Dialect, SqlxBrokerError>),
+    Service(Arc<dyn Dialect>),
+}
+
+impl<DB: Database> DialectChoice<DB> {
+    /// The dialect of the database `conn` reaches.
+    pub(crate) fn resolve(&self, conn: &DB::Connection) -> Result<DialectHandle, SqlxBrokerError> {
+        match self {
+            Self::BuiltIn(pick) => pick(conn).map(DialectHandle::BuiltIn),
+            Self::Service(dialect) => Ok(DialectHandle::Service(Arc::clone(dialect))),
+        }
+    }
+
+    /// The dialect's name, once there is one to name.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::BuiltIn(_) => "built in, picked at connect",
+            Self::Service(dialect) => dialect.name(),
+        }
+    }
+}
+
+impl<DB: Database> Clone for DialectChoice<DB> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::BuiltIn(pick) => Self::BuiltIn(*pick),
+            Self::Service(dialect) => Self::Service(Arc::clone(dialect)),
+        }
+    }
+}
+
+/// The built-in dialect of the database `conn` reaches, or the error that names a database no
+/// built-in dialect serves.
+fn built_in<DB: BuiltInDialect>(
+    conn: &DB::Connection,
+) -> Result<&'static dyn Dialect, SqlxBrokerError> {
+    DB::dialect(conn).ok_or_else(|| SqlxBrokerError::Backend {
+        backend: DB::backend(conn).to_owned(),
+    })
+}
+
+/// The dialect a connected broker builds statements with: one built into the crate, or the
+/// service's own.
 pub(crate) enum DialectHandle {
     BuiltIn(&'static dyn Dialect),
     Service(Arc<dyn Dialect>),
@@ -42,10 +109,12 @@ impl DialectHandle {
 ///
 /// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
 /// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
-/// database. A message in work holds one of the pool's connections until it settles, and a
-/// publish takes another, so the pool is sized for both. Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors;
-/// publishing writes them through [`Repository`](crate::Repository) policies or through the
-/// routes this builder records.
+/// database, and picks the built-in dialect by it where the service passed none. A message in
+/// work holds one of the pool's connections until it settles (in the lease form only while it
+/// settles), and a publish takes another, so the pool is sized for both.
+/// Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors; publishing
+/// writes them through [`Repository`](crate::Repository) policies or through the routes this
+/// builder records.
 ///
 /// # Examples
 ///
@@ -111,17 +180,19 @@ impl DialectHandle {
 /// ```
 pub struct SqlxBroker<DB: Database> {
     pub(crate) pool: Pool<DB>,
-    dialect: DialectHandle,
+    pub(crate) dialect: DialectChoice<DB>,
     routes: Routes<DB>,
     poll_interval: Duration,
+    lease: Duration,
 }
 
 impl<DB: Database> fmt::Debug for SqlxBroker<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqlxBroker")
-            .field("dialect", &self.dialect.get().name())
+            .field("dialect", &self.dialect.name())
             .field("routes", &self.routes)
             .field("poll_interval", &self.poll_interval)
+            .field("lease", &self.lease)
             .finish_non_exhaustive()
     }
 }
@@ -130,7 +201,9 @@ impl<DB: BuiltInDialect> SqlxBroker<DB> {
     /// A broker on `pool`, with the dialect built into the crate for its database.
     ///
     /// Synchronous and free of I/O: the database type comes from the pool, and nothing connects
-    /// before [`connect`](Broker::connect).
+    /// before [`connect`](Broker::connect), which picks the dialect from the connection it checks.
+    /// An `AnyPool` reaches a database named only then, and a database whose dialect's feature is
+    /// off stops `connect` with [`SqlxBrokerError::Backend`].
     ///
     /// # Examples
     ///
@@ -148,7 +221,7 @@ impl<DB: BuiltInDialect> SqlxBroker<DB> {
     /// ```
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
-        Self::built(pool, DialectHandle::BuiltIn(DB::dialect()))
+        Self::built(pool, DialectChoice::BuiltIn(built_in::<DB>))
     }
 }
 
@@ -177,15 +250,16 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     /// ```
     #[must_use]
     pub fn with_dialect(pool: Pool<DB>, dialect: impl Dialect + 'static) -> Self {
-        Self::built(pool, DialectHandle::Service(Arc::new(dialect)))
+        Self::built(pool, DialectChoice::Service(Arc::new(dialect)))
     }
 
-    fn built(pool: Pool<DB>, dialect: DialectHandle) -> Self {
+    fn built(pool: Pool<DB>, dialect: DialectChoice<DB>) -> Self {
         Self {
             pool,
             dialect,
             routes: Routes::default(),
             poll_interval: DEFAULT_POLL_INTERVAL,
+            lease: DEFAULT_LEASE,
         }
     }
 
@@ -242,6 +316,7 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     pub fn route<Row>(mut self, name: impl Into<Cow<'static, str>>) -> Self
     where
         Row: Publish<DB> + Events<DB> + PayloadRow,
+        Row::Form: FormOn<DB>,
     {
         self.routes.add::<Row>(name.into());
         self
@@ -273,6 +348,41 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
         self.poll_interval = interval;
         self
     }
+
+    /// How long a claim leases a row of a table in the lease form (one with a
+    /// `#[field(locked_until)]` field); thirty seconds unless set. A subscription's own
+    /// [`lease`](crate::InboxQueue::lease) overrides it, and a table in another form ignores it.
+    ///
+    /// A lease is whole seconds, at least one: a shorter one is rounded up. The subscription
+    /// extends the lease of every delivery in work each half lease, so a handler may run longer
+    /// than its lease; the lease is how long a row stays out of the queue after its process
+    /// crashed. A delivery dropped unsettled releases its row at once. A lease runs out under a
+    /// running handler only when its extensions fail or stop (the database out of reach, the
+    /// subscription closed, the broker [shut down](ConnectedBroker::shutdown)): the row then goes
+    /// to the next claim, and the late settlement fails with [`SqlxBrokerError::LeaseLost`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn build() -> Result<(), sqlx::Error> {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_sqlx::SqlxBroker;
+    /// use sqlx::postgres::PgPoolOptions;
+    ///
+    /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
+    /// // A row whose process crashed goes back to the queue once its ten-second lease runs out.
+    /// let broker = SqlxBroker::new(pool).lease(Duration::from_secs(10));
+    /// # let _ = broker;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn lease(mut self, lease: Duration) -> Self {
+        self.lease = lease;
+        self
+    }
 }
 
 impl<DB: QueueDatabase> Broker for SqlxBroker<DB> {
@@ -280,13 +390,14 @@ impl<DB: QueueDatabase> Broker for SqlxBroker<DB> {
     type Connected = ConnectedSqlxBroker<DB>;
 
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        drop(
-            self.pool
-                .acquire()
-                .await
-                .map_err(|source| SqlxBrokerError::Connect { source })?,
-        );
-        Ok(ConnectedSqlxBroker::from(self))
+        let conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|source| SqlxBrokerError::Connect { source })?;
+        let dialect = self.dialect.resolve(&conn)?;
+        drop(conn);
+        Ok(ConnectedSqlxBroker::new(self, dialect, Handle::current()))
     }
 }
 
@@ -296,9 +407,15 @@ pub(crate) struct Shared<DB: Database> {
     pub(crate) dialect: DialectHandle,
     pub(crate) routes: Routes<DB>,
     pub(crate) poll_interval: Duration,
+    /// The lease a subscription in the lease form takes, unless it names its own.
+    pub(crate) lease: Duration,
+    /// The runtime `connect` ran on: the lease keepers run there, and so do the releases of lease
+    /// deliveries dropped unsettled.
+    pub(crate) runtime: Handle,
     /// The `Closed` flag: set by `shutdown`, read with one atomic load per publish and per claim.
     closed: AtomicBool,
-    /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag.
+    /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag, and stops
+    /// the lease keepers, whose tokens are its children.
     pub(crate) stopping: CancellationToken,
     /// The queues this connection reads, by table and group; a table without groups is one queue.
     pub(crate) queues: Mutex<Vec<(&'static str, Option<String>)>>,
@@ -317,7 +434,9 @@ impl<DB: Database> Shared<DB> {
 /// The connected inbox broker: the typed witness that the database answered.
 ///
 /// It hands out publishers and opens subscriptions; [`shutdown`](ConnectedBroker::shutdown) stops
-/// its claim loops and refuses every handle it handed out.
+/// its claim loops and the extension of its leases, and refuses every handle it handed out. A
+/// delivery in work keeps its lease after `shutdown` and settles as before; its lease is no
+/// longer extended.
 ///
 /// # Examples
 ///
@@ -345,14 +464,18 @@ impl<DB: Database> fmt::Debug for ConnectedSqlxBroker<DB> {
     }
 }
 
-impl<DB: Database> From<SqlxBroker<DB>> for ConnectedSqlxBroker<DB> {
-    fn from(broker: SqlxBroker<DB>) -> Self {
+impl<DB: Database> ConnectedSqlxBroker<DB> {
+    /// The connected form of `broker`, whose statements `dialect` builds and whose internal tasks
+    /// run on `runtime`.
+    pub(crate) fn new(broker: SqlxBroker<DB>, dialect: DialectHandle, runtime: Handle) -> Self {
         Self {
             shared: Arc::new(Shared {
                 pool: broker.pool,
-                dialect: broker.dialect,
+                dialect,
                 routes: broker.routes,
                 poll_interval: broker.poll_interval,
+                lease: broker.lease,
+                runtime,
                 closed: AtomicBool::new(false),
                 stopping: CancellationToken::new(),
                 queues: Mutex::new(Vec::new()),
@@ -367,6 +490,9 @@ impl<DB: QueueDatabase> ConnectedBroker for ConnectedSqlxBroker<DB> {
     type Error = SqlxBrokerError;
     type Closed = ClosedSqlxBroker;
 
+    /// Stops the claim loops and the extension of every lease, and refuses every handle handed
+    /// out before. A delivery in work settles as before; its lease runs out unless it settles
+    /// first.
     fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
         // Why a flag rather than a type: the pool is the service's and stays open, so a
         // publisher handed out before shutdown would otherwise keep writing.
@@ -396,16 +522,49 @@ pub struct ClosedSqlxBroker {
     _private: (),
 }
 
+// Each description comes from `from_url`, which keeps the host and port and drops the user and
+// the password: the document is published and shared.
 #[cfg(feature = "postgres")]
-impl ruststream::DescribeServer for SqlxBroker<sqlx::Postgres> {
-    fn describe_server(&self) -> ruststream::ServerSpec {
-        use sqlx::ConnectOptions;
-
-        // `from_url` keeps the host and port and drops the user and the password: the document
-        // is published and shared.
-        ruststream::ServerSpec::from_url(
+impl DescribeServer for SqlxBroker<Postgres> {
+    fn describe_server(&self) -> ServerSpec {
+        ServerSpec::from_url(
             self.pool.connect_options().to_url_lossy().as_str(),
             "postgres",
         )
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl DescribeServer for SqlxBroker<MySql> {
+    fn describe_server(&self) -> ServerSpec {
+        ServerSpec::from_url(self.pool.connect_options().to_url_lossy().as_str(), "mysql")
+    }
+}
+
+/// SQLite runs inside the service, on a file or in memory: the description names the protocol and
+/// no host, so it holds neither the database's path nor any other part of its URL, and SQLite takes
+/// no credentials.
+#[cfg(feature = "sqlite")]
+impl DescribeServer for SqlxBroker<Sqlite> {
+    fn describe_server(&self) -> ServerSpec {
+        // Why not `from_url`: SQLite's URL holds a path, not a host, and sqlx's `to_url_lossy`
+        // panics on a database named `file:..`, the name `sqlite::memory:` takes.
+        ServerSpec::in_process("sqlite")
+    }
+}
+
+/// An `AnyPool` is described by the scheme of its URL, as the broker of that database describes
+/// itself: the host and port of a server, or SQLite with no host.
+#[cfg(feature = "any")]
+impl DescribeServer for SqlxBroker<Any> {
+    fn describe_server(&self) -> ServerSpec {
+        // `Any` keeps the URL it was given, so reading it back is free of the SQLite panic above.
+        let url = self.pool.connect_options().to_url_lossy();
+        match url.scheme() {
+            "sqlite" => ServerSpec::in_process("sqlite"),
+            "postgres" | "postgresql" => ServerSpec::from_url(url.as_str(), "postgres"),
+            "mysql" | "mariadb" => ServerSpec::from_url(url.as_str(), "mysql"),
+            scheme => ServerSpec::from_url(url.as_str(), scheme),
+        }
     }
 }

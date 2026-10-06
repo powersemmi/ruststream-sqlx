@@ -39,8 +39,8 @@ impl<M: IncomingMessage> BuildContext<M> for InboxContext {
     }
 }
 
-/// The delivery's attempt: the row's `attempt` field, 1 for the first delivery; `None` for a table
-/// without one.
+/// The delivery's attempt, 1 for the first delivery: the row's `attempt` as it stood before the
+/// claim; `None` for a table without one.
 ///
 /// Retry backoff is the handler's: it reads the attempt and answers with
 /// `HandlerOutcome::retry_after(..)`.

@@ -6,8 +6,8 @@ use std::error::Error;
 use std::num::NonZeroUsize;
 
 use ruststream_sqlx_dialect::{
-    ClaimShape, Column, Dialect, Form, KeyPart, Param, Postgres, Role, Statement, StatementError,
-    TableName, TableSpec,
+    ClaimShape, Column, Dialect, Form, KeyPart, NameLimit, Param, Postgres, Role, Statement,
+    StatementError, TableName, TableSpec,
 };
 
 /// Every role the row lock form reads, in a table inside a schema.
@@ -101,6 +101,33 @@ fn a_claim_of_a_flattening_struct_selects_everything() -> Result<(), StatementEr
 }
 
 #[test]
+fn a_claim_by_role_names_each_column_by_its_role() -> Result<(), StatementError> {
+    const KEYED: TableSpec<'static> =
+        TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+            .group(Column::new("name"))
+            .partition_key(Column::new("customer"))
+            .retry_after(Column::new("retry_after"))
+            .attempt(Column::new("attempt"))
+            .headers(Column::new("meta"))
+            .payload(Column::new("payload"))
+            .data(&[Column::new("subject")]);
+    let claim = Postgres.claim(&KEYED, ClaimShape::Roles)?;
+    assert_eq!(
+        claim.sql(),
+        r#"SELECT "job_id" AS "id", "customer" AS "partition_key", "attempt" AS "attempt", "meta" AS "headers", "payload" AS "payload" FROM "email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 ORDER BY "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#,
+    );
+    assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
+    // A struct that flattens still names its role columns one by one.
+    let flat = Postgres.claim(&KEYED.selecting_all(), ClaimShape::Roles)?;
+    assert!(
+        flat.sql().starts_with(r#"SELECT "job_id" AS "id", "#),
+        "{}",
+        flat.sql()
+    );
+    Ok(())
+}
+
+#[test]
 fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementError> {
     let spec = TableSpec::new("Email Jobs", Column::new("Job Id"), Form::RowLock)
         .within("Mail")
@@ -115,18 +142,6 @@ fn names_that_need_quoting_survive_into_statements() -> Result<(), StatementErro
 
 #[test]
 fn the_claim_refuses_what_the_row_lock_form_cannot_do() {
-    let lease = TableSpec::new(
-        "jobs",
-        Column::new("job_id"),
-        Form::Lease(Column::new("until")),
-    );
-    assert_eq!(
-        Postgres.claim(&lease, ClaimShape::Rows),
-        Err(StatementError::UnsupportedForm {
-            dialect: "postgres",
-            form: "lease",
-        })
-    );
     let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
     assert_eq!(
         Postgres.claim(&advisory, ClaimShape::Rows),
@@ -141,6 +156,11 @@ fn the_claim_refuses_what_the_row_lock_form_cannot_do() {
             dialect: "postgres"
         })
     );
+}
+
+#[test]
+fn a_claim_transaction_opens_with_a_plain_begin() {
+    assert_eq!(Postgres.begin_claim(), None);
 }
 
 #[test]
@@ -253,28 +273,44 @@ fn a_dead_letter_table_without_a_schema_is_one_name() -> Result<(), Box<dyn Erro
 
 #[test]
 fn settlement_refuses_forms_this_dialect_does_not_build() -> Result<(), Box<dyn Error>> {
+    let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
+    let unsupported = StatementError::UnsupportedForm {
+        dialect: "postgres",
+        form: "advisory lock",
+    };
+    assert_eq!(Postgres.ack(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.retry(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.retry_after(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.discard(&advisory), Err(unsupported.clone()));
+    assert_eq!(
+        Postgres.dead_letter_group(&advisory),
+        Err(unsupported.clone())
+    );
+    assert_eq!(
+        Postgres.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
+        Err(unsupported.clone())
+    );
+    assert_eq!(Postgres.extend(&advisory), Err(unsupported.clone()));
+    assert_eq!(Postgres.stamp(&advisory), Err(unsupported));
+    assert!(
+        Postgres.fetch(&advisory).is_ok(),
+        "a fetch reads rows in every form"
+    );
+
+    // The lease form is built; `tests/postgres_lease.rs` pins its statements.
     let lease = TableSpec::new(
         "jobs",
         Column::new("job_id"),
         Form::Lease(Column::new("until")),
-    );
-    let unsupported = StatementError::UnsupportedForm {
-        dialect: "postgres",
-        form: "lease",
-    };
-    assert_eq!(Postgres.ack(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry_after(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.discard(&lease), Err(unsupported.clone()));
-    assert_eq!(Postgres.dead_letter_group(&lease), Err(unsupported.clone()));
-    assert_eq!(
-        Postgres.dead_letter_table(&lease, TableName::parse("jobs_dead")?),
-        Err(unsupported)
-    );
-    assert!(
-        Postgres.fetch(&lease).is_ok(),
-        "a fetch reads rows in every form"
-    );
+    )
+    .group(Column::new("name"))
+    .retry_after(Column::new("retry_after"));
+    Postgres.ack(&lease)?;
+    Postgres.retry(&lease)?;
+    Postgres.retry_after(&lease)?;
+    Postgres.discard(&lease)?;
+    Postgres.dead_letter_group(&lease)?;
+    Postgres.dead_letter_table(&lease, TableName::parse("jobs_dead")?)?;
     Ok(())
 }
 
@@ -290,7 +326,7 @@ fn a_name_longer_than_63_bytes_is_refused() {
     let refused = |identifier: &str| StatementError::IdentifierTooLong {
         dialect: "postgres",
         identifier: identifier.to_owned(),
-        limit: 63,
+        limit: NameLimit::Bytes(63),
     };
 
     let table = TableSpec::new(&long, Column::new("job_id"), Form::RowLock);

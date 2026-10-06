@@ -1,0 +1,65 @@
+error[E0277]: `sqlx::Sqlite` has no row locks, so a table on it cannot use the row lock form
+  --> tests/ui/sqlite_row_lock.rs:14:47
+   |
+14 |     let _ = InboxQueue::<Locked>::new("jobs").subscribe(connected).await;
+   |                                               ^^^^^^^^^ a table without `locked_until` or `advisory_lock` takes rows by row lock
+   |
+   = help: the trait `RowLocks` is not implemented for `sqlx::Sqlite`
+   = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB>>` is conditionally implemented for `InboxQueue<Row>`
+  --> src/inbox/queue.rs
+   |
+   | / impl<DB, Row> SubscriptionSource<ConnectedSqlxBroker<DB>> for InboxQueue<Row>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     Row: InboxRow + Events<DB> + PayloadRow,
+   | |     Row::Form: FormOn<DB>,
+   | |________________----------^
+   |                  |
+   |                  unsatisfied requirement introduced here: `<Locked as InboxRow>::Form: ruststream_sqlx::__private::FormOn<sqlx::Sqlite>`
+   = note: required for `ruststream_sqlx::__private::RowLockForm` to implement `ruststream_sqlx::__private::FormOn<sqlx::Sqlite>`
+   = note: required for `InboxQueue<Locked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Sqlite>>`
+
+error[E0277]: `sqlx::Sqlite` has no row locks, so a table on it cannot use the row lock form
+  --> tests/ui/sqlite_row_lock.rs:14:13
+   |
+14 |     let _ = InboxQueue::<Locked>::new("jobs").subscribe(connected).await;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ a table without `locked_until` or `advisory_lock` takes rows by row lock
+   |
+   = help: the trait `RowLocks` is not implemented for `sqlx::Sqlite`
+   = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
+help: the trait `ruststream_sqlx::__private::FormOn<DB>` is conditionally implemented for `ruststream_sqlx::__private::RowLockForm`
+  --> src/inbox/mod.rs
+   |
+   | impl<DB: RowLocks> FormOn<DB> for RowLockForm {}
+   | ^^^^^^^^^--------^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          unsatisfied requirement introduced here: `sqlx::Sqlite: RowLocks`
+   = note: required for `ruststream_sqlx::__private::RowLockForm` to implement `ruststream_sqlx::__private::FormOn<sqlx::Sqlite>`
+note: required by a bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB>>>`
+  --> src/inbox/queue.rs
+   |
+   |     Row::Form: FormOn<DB>,
+   |                ^^^^^^^^^^ required by this bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB>>>`
+
+error[E0277]: `sqlx::Sqlite` has no row locks, so a table on it cannot use the row lock form
+  --> tests/ui/sqlite_row_lock.rs:14:68
+   |
+14 |     let _ = InboxQueue::<Locked>::new("jobs").subscribe(connected).await;
+   |                                                                    ^^^^^ a table without `locked_until` or `advisory_lock` takes rows by row lock
+   |
+   = help: the trait `RowLocks` is not implemented for `sqlx::Sqlite`
+   = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
+help: the trait `ruststream_sqlx::__private::FormOn<DB>` is conditionally implemented for `ruststream_sqlx::__private::RowLockForm`
+  --> src/inbox/mod.rs
+   |
+   | impl<DB: RowLocks> FormOn<DB> for RowLockForm {}
+   | ^^^^^^^^^--------^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |          |
+   |          unsatisfied requirement introduced here: `sqlx::Sqlite: RowLocks`
+   = note: required for `ruststream_sqlx::__private::RowLockForm` to implement `ruststream_sqlx::__private::FormOn<sqlx::Sqlite>`
+note: required by a bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB>>>`
+  --> src/inbox/queue.rs
+   |
+   |     Row::Form: FormOn<DB>,
+   |                ^^^^^^^^^^ required by this bound in `<InboxQueue<Row> as SubscriptionSource<ConnectedSqlxBroker<DB>>>`

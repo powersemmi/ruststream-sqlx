@@ -1,4 +1,4 @@
-error: unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, `retry_after`, `discard` or `dead_letter`
+error: unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, `retry_after`, `discard`, `dead_letter` or `extend`
  --> tests/ui/custom.rs:4:32
   |
 4 | #[inbox(table = "jobs", custom(lock))]

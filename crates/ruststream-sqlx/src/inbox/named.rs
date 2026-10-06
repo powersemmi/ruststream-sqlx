@@ -1,28 +1,40 @@
 //! By-name subscriptions: `#[subscriber("emails")]` and [`Subscribe`], through the route a name
 //! takes.
+//!
+//! A route's row that leaves every event to the crate is read by its role columns into
+//! [`NamedRow`], one concrete type whatever the route; any other row is read by its own code and
+//! erased behind a box.
+
+mod database;
+mod row;
 
 use std::fmt;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, Either};
 use futures::{Stream, StreamExt};
 use ruststream::{
     AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Subscribe, Subscriber,
 };
+use sync_wrapper::SyncWrapper;
 
-use super::PayloadRow;
+pub use database::{NamedDatabase, RoleColumns};
+pub use row::{NamedBytes, NamedId, NamedRow, NamedTime};
+
 use super::broker::{ConnectedSqlxBroker, Shared};
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
 use super::engine::Events;
 use super::error::SqlxBrokerError;
-use super::queue::open;
+use super::publish::table_of;
+use super::queue::{Description, Timing, open};
+use super::subscriber::InboxSubscriber;
+use super::{InboxRow, PayloadRow};
 
-/// A delivery of a by-name subscription, its row type erased.
-trait Erased: fmt::Debug + Send + Sync {
+/// A delivery of a by-name subscription whose row runs its own code, its row type erased.
+pub(crate) trait Erased: fmt::Debug + Send + Sync {
     fn payload(&self) -> &[u8];
     fn headers(&self) -> &HeaderMap;
     fn partition_key(&self) -> Option<&[u8]>;
@@ -73,10 +85,11 @@ where
 
 /// A delivery of a by-name subscription: a row of the table its name's route leads to.
 ///
-/// It settles as an [`InboxDelivery`](crate::InboxDelivery) does. The row type is chosen by the
-/// route when the subscription opens, so it is erased: each delivery is boxed, and each settlement
-/// is one dynamic call whose future is boxed too. A subscription through an
-/// [`InboxQueue`](crate::InboxQueue) descriptor delivers without either.
+/// It settles as an [`InboxDelivery`](crate::InboxDelivery) does. A route whose row leaves every
+/// event to the crate delivers its rows read by role: no box and no dynamic call per message, as
+/// through an [`InboxQueue`](crate::InboxQueue). A row that overrides an event, or holds a column
+/// type the crate does not read itself, settles through its own code: each delivery is boxed, and
+/// each settlement is a dynamic call whose future is boxed too.
 ///
 /// # Examples
 ///
@@ -139,61 +152,122 @@ where
 /// # }
 /// # fn main() {}
 /// ```
-pub struct NamedDelivery<DB> {
-    inner: Box<dyn Erased>,
-    _db: PhantomData<fn() -> DB>,
+pub struct NamedDelivery<DB: NamedDatabase> {
+    delivered: Delivered<DB>,
 }
 
-impl<DB> fmt::Debug for NamedDelivery<DB> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("NamedDelivery").field(&self.inner).finish()
+/// A by-name delivery of either path.
+enum Delivered<DB: NamedDatabase> {
+    /// A row read by role.
+    Described(InboxDelivery<DB, NamedRow>),
+    /// A row read by its own code.
+    Erased(Box<dyn Erased>),
+}
+
+impl<DB: NamedDatabase> NamedDelivery<DB> {
+    const fn described(delivery: InboxDelivery<DB, NamedRow>) -> Self {
+        Self {
+            delivered: Delivered::Described(delivery),
+        }
+    }
+
+    fn erased(delivery: Box<dyn Erased>) -> Self {
+        Self {
+            delivered: Delivered::Erased(delivery),
+        }
     }
 }
 
-impl<DB: QueueDatabase> IncomingMessage for NamedDelivery<DB> {
+impl<DB: NamedDatabase> fmt::Debug for NamedDelivery<DB> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut tuple = f.debug_tuple("NamedDelivery");
+        match &self.delivered {
+            Delivered::Described(delivery) => tuple.field(delivery),
+            Delivered::Erased(delivery) => tuple.field(delivery),
+        };
+        tuple.finish()
+    }
+}
+
+impl<DB: NamedDatabase> IncomingMessage for NamedDelivery<DB> {
     fn payload(&self) -> &[u8] {
-        self.inner.payload()
+        match &self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::payload(delivery),
+            Delivered::Erased(delivery) => delivery.payload(),
+        }
     }
 
     fn headers(&self) -> &HeaderMap {
-        self.inner.headers()
+        match &self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::headers(delivery),
+            Delivered::Erased(delivery) => delivery.headers(),
+        }
     }
 
     fn partition_key(&self) -> Option<&[u8]> {
-        self.inner.partition_key()
+        match &self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::partition_key(delivery),
+            Delivered::Erased(delivery) => delivery.partition_key(),
+        }
     }
 
     fn redelivery_count(&self) -> Option<u64> {
-        self.inner.redelivery_count()
+        match &self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::redelivery_count(delivery),
+            Delivered::Erased(delivery) => delivery.redelivery_count(),
+        }
     }
 
     async fn ack(self) -> Result<(), AckError> {
-        self.inner.ack().await
+        match self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::ack(delivery).await,
+            Delivered::Erased(delivery) => delivery.ack().await,
+        }
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
-        self.inner.nack(requeue).await
+        match self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::nack(delivery, requeue).await,
+            Delivered::Erased(delivery) => delivery.nack(requeue).await,
+        }
     }
 
     fn supports_nack_after(&self) -> bool {
-        self.inner.supports_nack_after()
+        match &self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::supports_nack_after(delivery),
+            Delivered::Erased(delivery) => delivery.supports_nack_after(),
+        }
     }
 
     async fn nack_after(self, delay: Duration) -> Result<(), AckError> {
-        self.inner.nack_after(delay).await
+        match self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::nack_after(delivery, delay).await,
+            Delivered::Erased(delivery) => delivery.nack_after(delay).await,
+        }
     }
 }
 
-type NamedStream<DB> =
-    Pin<Box<dyn Stream<Item = Result<NamedDelivery<DB>, SqlxBrokerError>> + Send>>;
+/// The deliveries of a by-name subscription whose row runs its own code.
+pub(crate) type ErasedStream =
+    Pin<Box<dyn Stream<Item = Result<Box<dyn Erased>, SqlxBrokerError>> + Send>>;
 
 /// The subscriber a by-name subscription opens: the claim loop of the table its name's route
 /// leads to.
 ///
 /// It claims as an [`InboxSubscriber`](crate::InboxSubscriber) does, with the broker's poll
-/// interval; each poll of its stream is one dynamic call. A mount that declares `max_attempts(..)`
-/// or `dead_letter(..)` on a name is refused at startup: an [`InboxQueue`](crate::InboxQueue)
-/// descriptor takes those.
+/// interval, on the databases with a built-in dialect. A route whose row leaves every event to
+/// the crate, with role columns of types the crate reads itself, is read by those columns alone,
+/// in the row lock form and in the lease form: no box and no dynamic call per message. Each
+/// column is held to the type the struct reads it as, so a row that would not decode into the
+/// struct goes to the decode-failure policy here too. The types are an `i16`, `i32`, `i64`,
+/// `String` or `Vec<u8>` id, a `Vec<u8>` or `String` payload, headers as JSON, a text or byte key,
+/// an integer attempt, `chrono` or `time` times and leases, and
+/// [`SystemClock`](crate::SystemClock) or [`DatabaseClock`](crate::DatabaseClock). Any other row
+/// runs its own code: each delivery is boxed, each settlement is a dynamic call whose future is
+/// boxed, and each poll of the stream is a dynamic call.
+///
+/// A mount that declares `max_attempts(..)` or `dead_letter(..)` on a name is refused at startup:
+/// an [`InboxQueue`](crate::InboxQueue) descriptor takes those.
 ///
 /// # Examples
 ///
@@ -226,49 +300,80 @@ type NamedStream<DB> =
 /// # }
 /// # fn main() {}
 /// ```
-pub struct NamedSubscriber<DB> {
-    stream: NamedStream<DB>,
+pub struct NamedSubscriber<DB: NamedDatabase> {
+    opened: Opened<DB>,
 }
 
-impl<DB> fmt::Debug for NamedSubscriber<DB> {
+/// A by-name subscription of either path.
+enum Opened<DB: NamedDatabase> {
+    /// Rows read by role.
+    Described(InboxSubscriber<DB, NamedRow>),
+    /// Rows read by their own code. The stream is polled only through `&mut`, so the wrapper
+    /// shares the subscriber between threads, as a mount that publishes requires, at no cost.
+    Erased(SyncWrapper<ErasedStream>),
+}
+
+impl<DB: NamedDatabase> fmt::Debug for NamedSubscriber<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NamedSubscriber").finish_non_exhaustive()
+        match &self.opened {
+            Opened::Described(subscriber) => {
+                f.debug_tuple("NamedSubscriber").field(subscriber).finish()
+            }
+            Opened::Erased(_) => f.debug_struct("NamedSubscriber").finish_non_exhaustive(),
+        }
     }
 }
 
-impl<DB: QueueDatabase> Subscriber for NamedSubscriber<DB> {
+impl<DB: NamedDatabase> Subscriber for NamedSubscriber<DB> {
     type Message = NamedDelivery<DB>;
     type Error = SqlxBrokerError;
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
-        self.stream.as_mut()
+        match &mut self.opened {
+            Opened::Described(subscriber) => Either::Left(
+                subscriber
+                    .stream()
+                    .map(|delivery| delivery.map(NamedDelivery::described)),
+            ),
+            Opened::Erased(stream) => Either::Right(
+                stream
+                    .get_mut()
+                    .as_mut()
+                    .map(|delivery| delivery.map(NamedDelivery::erased)),
+            ),
+        }
     }
 }
 
-/// Opens the by-name subscription to `name` of `Row`'s table, its row type erased.
-pub(crate) fn subscribe<'a, DB, Row>(
+/// Opens the by-name subscription to `name` of `Row`'s table through `Row`'s own code, its row
+/// type erased.
+pub(crate) fn erased<'a, DB, Row>(
     shared: &'a Arc<Shared<DB>>,
     name: &'a str,
-) -> BoxFuture<'a, Result<NamedSubscriber<DB>, SqlxBrokerError>>
+) -> BoxFuture<'a, Result<ErasedStream, SqlxBrokerError>>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: InboxRow + Events<DB> + PayloadRow,
 {
     Box::pin(async move {
-        let subscriber = open::<DB, Row>(shared, name, None, &RetryDeclaration::new()).await?;
-        let stream = subscriber.into_stream().map(|delivery| {
-            delivery.map(|delivery| NamedDelivery {
-                inner: Box::new(delivery),
-                _db: PhantomData,
-            })
-        });
-        Ok(NamedSubscriber {
-            stream: Box::pin(stream),
-        })
+        let description = Description::of::<DB, Row>();
+        let subscriber = open::<DB, Row>(
+            shared,
+            name,
+            Timing::default(),
+            &RetryDeclaration::new(),
+            &description,
+        )
+        .await?;
+        let stream = subscriber
+            .into_stream()
+            .map(|delivery| delivery.map(|delivery| -> Box<dyn Erased> { Box::new(delivery) }));
+        let stream: ErasedStream = Box::pin(stream);
+        Ok(stream)
     })
 }
 
-impl<DB: QueueDatabase> Subscribe for ConnectedSqlxBroker<DB> {
+impl<DB: NamedDatabase> Subscribe for ConnectedSqlxBroker<DB> {
     type Subscriber = NamedSubscriber<DB>;
     type Copies = BrokerMoves;
 
@@ -278,6 +383,39 @@ impl<DB: QueueDatabase> Subscribe for ConnectedSqlxBroker<DB> {
                 name: name.to_owned(),
             });
         };
-        route.subscribe(&self.shared, name).await
+        let description = route.description();
+        if description.kinds.is_some() {
+            tracing::debug!(
+                target: "ruststream_sqlx",
+                path = "described",
+                subscription = name,
+                table = %table_of(&description.spec),
+                row = description.row,
+                "a by-name subscription reads its rows by role",
+            );
+            let subscriber = open::<DB, NamedRow>(
+                &self.shared,
+                name,
+                Timing::default(),
+                &RetryDeclaration::new(),
+                &description.by_role(),
+            )
+            .await?;
+            return Ok(NamedSubscriber {
+                opened: Opened::Described(subscriber),
+            });
+        }
+        tracing::debug!(
+            target: "ruststream_sqlx",
+            path = "erased",
+            subscription = name,
+            table = %table_of(&description.spec),
+            row = description.row,
+            "a by-name subscription runs its row's own code, a box per delivery and per settlement",
+        );
+        let stream = route.subscribe(&self.shared, name).await?;
+        Ok(NamedSubscriber {
+            opened: Opened::Erased(SyncWrapper::new(stream)),
+        })
     }
 }

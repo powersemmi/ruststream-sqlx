@@ -32,13 +32,16 @@ brokers-up:
 brokers-down:
     docker compose -f docker-compose.test.yml down -v
 
-# Runs the suites against the compose stand's Postgres. RUSTSTREAM_REQUIRE_LIVE turns a skipped
-# live test into a failure, so a stand the suites never reached is reported instead of passing.
+# Runs the suites against the compose stand's Postgres, MySQL and MariaDB. RUSTSTREAM_REQUIRE_LIVE
+# turns a skipped live test into a failure, so a stand the suites never reached is reported instead
+# of passing.
 test-brokers: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
     trap 'just brokers-down' EXIT
     POSTGRES_TEST_URL=postgres://ruststream:ruststream@127.0.0.1:55432/ruststream \
+    MYSQL_TEST_URL=mysql://root:ruststream@127.0.0.1:53306 \
+    MARIADB_TEST_URL=mysql://root:ruststream@127.0.0.1:53307 \
     RUSTSTREAM_REQUIRE_LIVE=1 \
         cargo test -p ruststream-sqlx --all-features --no-fail-fast
 

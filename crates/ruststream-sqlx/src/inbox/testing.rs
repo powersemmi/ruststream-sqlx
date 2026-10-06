@@ -24,6 +24,7 @@ use super::broker::{ConnectedSqlxBroker, Shared, SqlxBroker};
 use super::database::QueueDatabase;
 use super::engine::Now;
 use super::error::SqlxBrokerError;
+use super::publish::insert_routed;
 
 /// Where an in-process connection reads "now": the tokio clock, anchored to the wall clock when
 /// the broker connected, so a test that moves a paused clock moves the queue's time with it.
@@ -202,12 +203,21 @@ impl<DB: QueueDatabase> InProcess for SqlxBroker<DB> {
     /// Connects to the database the test's pool reaches, as [`connect`](ruststream::Broker::connect)
     /// does, with every database call of the connection kept off a paused clock.
     async fn connect_in_process(self) -> Result<ConnectedSqlxBroker<DB>, SqlxBrokerError> {
-        let pool = self.pool.clone();
-        off_clock(async move { pool.acquire().await.map(drop) })
-            .await
-            .unwrap_or_else(|| Err(cancelled()))
-            .map_err(|source| SqlxBrokerError::Connect { source })?;
-        let connected = ConnectedSqlxBroker::from(self);
+        let (pool, choice) = (self.pool.clone(), self.dialect.clone());
+        let dialect = off_clock(async move {
+            let conn = pool
+                .acquire()
+                .await
+                .map_err(|source| SqlxBrokerError::Connect { source })?;
+            choice.resolve(&conn)
+        })
+        .await
+        .unwrap_or_else(|| {
+            Err(SqlxBrokerError::Connect {
+                source: cancelled(),
+            })
+        })?;
+        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current());
         let _ = connected.shared.harness.clock.set(TestClock::start());
         Ok(connected)
     }
@@ -269,7 +279,7 @@ async fn inject<DB: QueueDatabase>(
 ) {
     let message = OutgoingMessage::new(name, payload).with_headers(headers);
     let written = match shared.routes.find(name) {
-        Some(route) => route.insert(shared, &message).await,
+        Some(route) => insert_routed(shared, route, &message).await,
         None => Err(SqlxBrokerError::NoRoute {
             name: name.to_owned(),
         }),
@@ -282,3 +292,9 @@ async fn inject<DB: QueueDatabase>(
 
 #[cfg(feature = "postgres")]
 ruststream::register_testable_broker!(SqlxBroker<sqlx::Postgres>);
+#[cfg(feature = "mysql")]
+ruststream::register_testable_broker!(SqlxBroker<sqlx::MySql>);
+#[cfg(feature = "sqlite")]
+ruststream::register_testable_broker!(SqlxBroker<sqlx::Sqlite>);
+#[cfg(feature = "any")]
+ruststream::register_testable_broker!(SqlxBroker<sqlx::Any>);

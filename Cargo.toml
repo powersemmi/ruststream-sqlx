@@ -27,9 +27,12 @@ syn = "3"
 thiserror = "2"
 trybuild = "1.0.121"
 ruststream = { version = "0.7", default-features = false }
-# The driver comes from the `postgres` feature; TLS and the compile-time macros come from the
-# service's own sqlx dependency, which cargo unifies with this one.
+# The drivers come from the `postgres` and `mysql` features; TLS and the compile-time macros come
+# from the service's own sqlx dependency, which cargo unifies with this one.
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"] }
+# The transaction manager the crate's own transactions call: sqlx re-exports its `Transaction`,
+# not the trait behind it. The version sqlx itself pins.
+sqlx-core = { version = "0.9", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std", "async-await"] }
 tokio = { version = "1.44", default-features = false }
 tokio-util = { version = "0.7.10", default-features = false }
@@ -39,6 +42,13 @@ chrono = { version = "0.4.39", default-features = false, features = ["clock", "s
 time = { version = "0.3.36", default-features = false, features = ["std"] }
 serde = { version = "1.0.217", default-features = false, features = ["std", "derive"] }
 serde_json = "1.0.135"
+# `Routed` publishes keep the route's future in place: a slot of fixed size, one function pointer
+# per poll, a box only for a future larger than the slot.
+stackfuture = "0.3.1"
+# The route table's hasher: already in the tree behind sqlx's hash maps.
+foldhash = { version = "0.2", default-features = false }
+# The allocation pin: counts every allocation of its test process.
+dhat = "0.3.3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

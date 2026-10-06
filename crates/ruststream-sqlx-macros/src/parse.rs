@@ -4,6 +4,7 @@
 use proc_macro2::{Span, TokenTree};
 use ruststream_sqlx_dialect::Role;
 use syn::ext::IdentExt;
+use syn::meta::ParseNestedMeta;
 use syn::parse::ParseStream;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
@@ -32,9 +33,43 @@ pub(crate) struct Custom {
     pub(crate) retry_after: bool,
     pub(crate) discard: bool,
     pub(crate) dead_letter: bool,
+    /// Where `extend` is listed: an event of the lease form only, which the struct is checked
+    /// for.
+    pub(crate) extend: Option<Span>,
 }
 
 impl Custom {
+    /// Reads one event of `custom(..)`.
+    fn list(&mut self, event: &ParseNestedMeta<'_>) -> syn::Result<()> {
+        let word = event
+            .path
+            .get_ident()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        if word == "publish" {
+            return Err(event.error(
+                "`publish` has no default to hand over: implement `Publish` for the struct \
+                 without listing it",
+            ));
+        }
+        if word == "extend" {
+            if self.extend.replace(event.path.span()).is_some() {
+                return Err(event.error("`extend` is listed twice"));
+            }
+            return Ok(());
+        }
+        let Some(slot) = self.slot(&word) else {
+            return Err(event.error(
+                "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
+                 `retry_after`, `discard`, `dead_letter` or `extend`",
+            ));
+        };
+        if std::mem::replace(slot, true) {
+            return Err(event.error(format!("`{word}` is listed twice")));
+        }
+        Ok(())
+    }
+
     /// The switch of the event `word` names.
     fn slot(&mut self, word: &str) -> Option<&mut bool> {
         Some(match word {
@@ -68,14 +103,11 @@ pub(crate) struct ColumnField {
     /// Where `fifo = true` is written, on the field that plays `group`.
     pub(crate) fifo: Option<Span>,
     /// `#[sqlx(json)]`: sqlx reads and writes the column through `Json`.
-    #[cfg_attr(
-        not(feature = "postgres"),
-        allow(
-            dead_code,
-            reason = "only the Postgres insert binds a column through `Json`"
-        )
-    )]
     pub(crate) json: bool,
+    /// `#[sqlx(try_from = "..")]`: the type sqlx decodes the column as, then converts into the
+    /// field's.
+    // Boxed: a type is large, and every field's storage would carry its size.
+    pub(crate) try_from: Option<Box<Type>>,
 }
 
 /// One field and where its value comes from.
@@ -185,29 +217,7 @@ fn table(input: &DeriveInput) -> syn::Result<Table> {
                     return Err(meta.error("`custom` is given twice"));
                 }
                 custom_seen = true;
-                return meta.parse_nested_meta(|event| {
-                    let word = event
-                        .path
-                        .get_ident()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    if word == "publish" {
-                        return Err(event.error(
-                            "`publish` has no default to hand over: implement `Publish` for the \
-                             struct without listing it",
-                        ));
-                    }
-                    let Some(slot) = custom.slot(&word) else {
-                        return Err(event.error(
-                            "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, \
-                             `retry`, `retry_after`, `discard` or `dead_letter`",
-                        ));
-                    };
-                    if std::mem::replace(slot, true) {
-                        return Err(event.error(format!("`{word}` is listed twice")));
-                    }
-                    Ok(())
-                });
+                return meta.parse_nested_meta(|event| custom.list(&event));
             }
             if key == "clock" {
                 let path: syn::Path = meta.value()?.parse()?;
@@ -279,6 +289,7 @@ struct SqlxField {
     skip: bool,
     flatten: bool,
     json: bool,
+    try_from: Option<Box<Type>>,
 }
 
 /// What `#[field(..)]` says about one field, with the span of each word for errors.
@@ -335,6 +346,7 @@ fn field(field: &syn::Field, rename_all: Option<RenameAll>) -> syn::Result<Field
             generated: marks.generated.is_some(),
             fifo: marks.fifo.and_then(|(fifo, span)| fifo.then_some(span)),
             json: sqlx.json,
+            try_from: sqlx.try_from,
         }),
     };
     Ok(Field {
@@ -378,6 +390,9 @@ fn sqlx_field(attrs: &[Attribute]) -> syn::Result<SqlxField> {
             } else if meta.path.is_ident("json") {
                 sqlx.json = true;
                 skip_value(meta.input)?;
+            } else if meta.path.is_ident("try_from") {
+                let decoded: LitStr = meta.value()?.parse()?;
+                sqlx.try_from = Some(Box::new(decoded.parse()?));
             } else {
                 skip_value(meta.input)?;
             }
@@ -441,7 +456,7 @@ fn role_list() -> String {
 }
 
 /// Consumes what follows a key of `#[sqlx(..)]` this derive does not read (`json(nullable)`,
-/// `try_from = "i64"`, `default`), so sqlx's own options pass through untouched.
+/// `default`), so sqlx's own options pass through untouched.
 fn skip_value(input: ParseStream<'_>) -> syn::Result<()> {
     while !input.is_empty() && !input.peek(Token![,]) {
         input.parse::<TokenTree>()?;
@@ -451,6 +466,7 @@ fn skip_value(input: ParseStream<'_>) -> syn::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use quote::ToTokens;
     use ruststream_sqlx_dialect::Role;
     use syn::{DeriveInput, parse_quote};
 
@@ -562,6 +578,12 @@ mod tests {
         assert!(matches!(inbox.fields[3].storage, Storage::Skipped));
         assert!(matches!(inbox.fields[4].storage, Storage::Flattened));
         assert!(inbox.flattens());
+        // The type sqlx decodes a column as before it converts it, for a column read alone.
+        let decoded = inbox.fields[5]
+            .column()
+            .and_then(|column| column.try_from.as_ref())
+            .map(|ty| ty.to_token_stream().to_string());
+        assert_eq!(decoded.as_deref(), Some("i64"));
         Ok(())
     }
 
@@ -664,7 +686,7 @@ mod tests {
             (
                 parse_quote! { #[inbox(table = "jobs", custom(lock))] struct Job { #[field(id)] id: i64 } },
                 "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
-                 `retry_after`, `discard` or `dead_letter`",
+                 `retry_after`, `discard`, `dead_letter` or `extend`",
             ),
             (
                 parse_quote! { #[inbox(table = "jobs", custom(publish))] struct Job { #[field(id)] id: i64 } },
@@ -721,7 +743,17 @@ mod tests {
         let custom = inbox.table.custom;
         assert!(custom.fetch && custom.dead_letter);
         assert!(!custom.claim && !custom.ack && !custom.retry);
-        assert!(!custom.retry_after && !custom.discard);
+        assert!(!custom.retry_after && !custom.discard && custom.extend.is_none());
+        let leased: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(extend))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert!(self::inbox(&leased)?.table.custom.extend.is_some());
+        let twice: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(extend, extend))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(error(&twice), "`extend` is listed twice");
         let clock = inbox
             .table
             .clock

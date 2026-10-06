@@ -12,9 +12,17 @@
 //! described. A [`Dialect`] turns the description into the [`Statement`] each queue event runs; a
 //! statement carries the [`Param`]s its placeholders bind, in order.
 //!
-//! [`Postgres`] is built in, behind the `postgres` feature, and builds the statements of the row
-//! lock form. A database without a built-in dialect is served by a type of the service's own
-//! that implements [`Dialect`].
+//! In the lease form a claim writes the lease's expiry ([`Param::Lease`]) into each row it takes
+//! and commits, and skips every row whose lease has not ended by [`Param::LeaseNow`]. The expiry
+//! it wrote is the delivery's ownership token ([`Param::Held`]): a settlement, or an extension
+//! that moves the expiry forward ([`Dialect::extend`]), passes only while the row still holds it.
+//! A dialect whose claim only selects the rows says so ([`Dialect::claim_writes_lease`]), and each
+//! claimed row is then stamped with its lease ([`Dialect::stamp`]).
+//!
+//! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
+//! `sqlite` features. [`Postgres`] and [`MySql`] build the statements of the row lock and lease
+//! forms, and [`MySql`] serves MariaDB too; [`Sqlite`] builds the lease form. A database without a
+//! built-in dialect is served by a type of the service's own that implements [`Dialect`].
 //!
 //! # Examples
 //!
@@ -39,21 +47,29 @@
 mod column;
 mod dialect;
 mod form;
+#[cfg(feature = "mysql")]
+mod mysql;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod role;
 mod spec;
+#[cfg(feature = "sqlite")]
+mod sqlite;
 mod statement;
 mod table_name;
-#[cfg(feature = "postgres")]
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 mod writer;
 
 pub use column::Column;
 pub use dialect::Dialect;
 pub use form::{Form, KeyPart};
+#[cfg(feature = "mysql")]
+pub use mysql::MySql;
 #[cfg(feature = "postgres")]
 pub use postgres::Postgres;
 pub use role::Role;
 pub use spec::TableSpec;
-pub use statement::{ClaimShape, Param, Statement, StatementError};
+#[cfg(feature = "sqlite")]
+pub use sqlite::Sqlite;
+pub use statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 pub use table_name::{ParseTableNameError, TableName};

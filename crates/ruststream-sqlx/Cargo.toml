@@ -25,12 +25,18 @@ inbox = [
     "dep:ruststream-sqlx-macros",
     "dep:ruststream",
     "dep:sqlx",
+    "dep:sqlx-core",
+    # The rows a statement changed, through `AnyQueryResult`, which every sqlx driver converts its
+    # result into.
+    "sqlx/any",
     "dep:futures",
     "dep:tokio",
     "dep:tokio-util",
     "dep:tracing",
     "dep:thiserror",
     "dep:sync_wrapper",
+    "dep:stackfuture",
+    "dep:foldhash",
 ]
 # The built-in Postgres dialect, the sqlx driver, and the derive's Postgres insert.
 postgres = [
@@ -38,6 +44,21 @@ postgres = [
     "ruststream-sqlx-macros?/postgres",
     "sqlx?/postgres",
 ]
+# The built-in MySQL and MariaDB dialect, the sqlx driver, and the derive's MySQL insert.
+mysql = [
+    "ruststream-sqlx-dialect/mysql",
+    "ruststream-sqlx-macros?/mysql",
+    "sqlx?/mysql",
+]
+# The built-in SQLite dialect, the sqlx driver, and the derive's SQLite insert.
+sqlite = [
+    "ruststream-sqlx-dialect/sqlite",
+    "ruststream-sqlx-macros?/sqlite",
+    "sqlx?/sqlite",
+]
+# An `AnyPool`: the broker picks the built-in dialect of the database the pool reaches when it
+# connects, among those whose features are on.
+any = ["inbox", "sqlx/any"]
 # `chrono::DateTime<Utc>` as a time column.
 chrono = ["inbox", "dep:chrono", "sqlx/chrono"]
 # `time::OffsetDateTime` as a time column.
@@ -54,6 +75,7 @@ ruststream-sqlx-dialect.workspace = true
 ruststream-sqlx-macros = { workspace = true, optional = true }
 ruststream = { workspace = true, optional = true }
 sqlx = { workspace = true, optional = true }
+sqlx-core = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "time", "sync", "macros"] }
 tokio-util = { workspace = true, optional = true }
@@ -63,13 +85,16 @@ sync_wrapper = { workspace = true, optional = true }
 chrono = { workspace = true, optional = true }
 time = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
+stackfuture = { workspace = true, optional = true }
+foldhash = { workspace = true, optional = true }
 
 [dev-dependencies]
 ruststream = { workspace = true, features = ["macros", "json", "testing", "conformance"] }
-sqlx = { workspace = true, features = ["postgres", "chrono", "json", "derive"] }
+sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "json", "derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 chrono.workspace = true
 futures = { workspace = true, features = ["executor"] }
 serde.workspace = true
 serde_json.workspace = true
 trybuild.workspace = true
+dhat.workspace = true

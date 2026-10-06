@@ -21,6 +21,10 @@ all-features = true
 default = []
 # The built-in Postgres dialect.
 postgres = []
+# The built-in MySQL and MariaDB dialect.
+mysql = []
+# The built-in SQLite dialect.
+sqlite = []
 
 [dependencies]
 thiserror.workspace = true

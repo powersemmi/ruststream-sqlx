@@ -22,7 +22,7 @@ use ruststream_sqlx::{
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, Postgres};
 
-use live::database;
+use live::postgres::database;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Order {

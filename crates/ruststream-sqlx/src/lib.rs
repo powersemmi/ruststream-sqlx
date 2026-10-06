@@ -1,172 +1,4 @@
-//! SQL databases for the [RustStream](https://github.com/powersemmi/ruststream) messaging
-//! framework, through [`sqlx`](https://docs.rs/sqlx).
-//!
-//! The crate brings two components to a service: a transactional outbox over any RustStream
-//! broker, and task queues in Postgres, MySQL/MariaDB and SQLite tables.
-//!
-//! A queue table is described by an ordinary struct of the service's own. [`Inbox`] reads the
-//! table from `#[inbox(..)]`, the column names from sqlx's attributes and the role of each
-//! column that runs the queue from `#[field(..)]`, and implements [`InboxRow`] (feature
-//! `inbox`). The [`dialect`] module turns the description into SQL; its Postgres dialect sits
-//! behind the `postgres` feature.
-//!
-//! # The inbox broker
-//!
-//! ```no_run
-//! # #[cfg(all(feature = "postgres", feature = "chrono"))]
-//! # mod demo {
-//! use std::time::Duration;
-//!
-//! use chrono::{DateTime, Utc};
-//! use ruststream::OutgoingMessage;
-//! use ruststream_sqlx::prelude::*;
-//! use serde::Deserialize;
-//! use sqlx::{PgConnection, PgPool, Postgres};
-//!
-//! // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, retry_after TIMESTAMPTZ DEFAULT now(),
-//! // attempt SMALLINT DEFAULT 1, processed_at TIMESTAMPTZ, payload BYTEA
-//! #[derive(Inbox, sqlx::FromRow)]
-//! #[inbox(table = "email_jobs")]
-//! pub struct SendEmail {
-//!     #[field(id, generated)]
-//!     job_id: i64,
-//!     #[field(group)]
-//!     name: String,
-//!     #[field(retry_after, generated)]
-//!     retry_after: DateTime<Utc>,
-//!     #[field(attempt, generated)]
-//!     attempt: i16,
-//!     #[field(processed_at, generated)]
-//!     processed_at: Option<DateTime<Utc>>,
-//!     #[field(payload)]
-//!     payload: Vec<u8>,
-//! }
-//!
-//! impl Publish<Postgres> for SendEmail {
-//!     async fn publish(
-//!         conn: &mut PgConnection,
-//!         message: &OutgoingMessage<'_>,
-//!     ) -> Result<(), sqlx::Error> {
-//!         sqlx::query("INSERT INTO email_jobs (name, payload) VALUES ($1, $2)")
-//!             .bind(message.name())
-//!             .bind(message.payload())
-//!             .execute(conn)
-//!             .await?;
-//!         Ok(())
-//!     }
-//! }
-//!
-//! #[derive(Deserialize)]
-//! pub struct Email {
-//!     to: String,
-//! }
-//!
-//! # async fn deliver(_: &Email) -> bool { true }
-//! #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
-//! async fn send(email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
-//!     if deliver(email).await {
-//!         return HandlerOutcome::ack();
-//!     }
-//!     // The handler owns the backoff: a minute per attempt.
-//!     HandlerOutcome::retry_after(Duration::from_secs(60 * attempt.unwrap_or(1)))
-//! }
-//!
-//! pub fn app(pool: PgPool) -> RustStream {
-//!     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-//!         SqlxBroker::new(pool).route::<SendEmail>("emails"),
-//!         |b| {
-//!             b.include(send);
-//!         },
-//!     )
-//! }
-//! # }
-//! # fn main() {}
-//! ```
-//!
-//! [`SqlxBroker`] serves the queues in the tables of the service's sqlx pool, and the pool stays
-//! the service's. An [`InboxQueue`] subscription claims rows with `FOR UPDATE SKIP LOCKED`, one
-//! transaction per message or per batch, and polls when the queue runs dry. A batch's
-//! settlements take effect together, when its last delivery settles.
-//!
-//! A message in work holds a connection of the pool until it settles, a batch holds one for all
-//! its messages, and a publish takes one more for its insert. A subscription with `workers(n)`
-//! holds up to n + 1 connections, and handlers that publish need room for their inserts on top: a
-//! pool without that room makes them wait for its `acquire_timeout`. The name selects a
-//! group where the table has one; without a group the table is one queue. The bytes reach the
-//! codec lent from the row. What a handler answers decides the row's fate:
-//!
-//! - `ack()` deletes the row, or sets `processed_at` where the table has it;
-//! - `retry()` releases the row at once, and its `attempt` grows;
-//! - `retry_after(d)` hides the row until `retry_after` comes; a table without that column
-//!   releases it at once, and the runtime logs a warning;
-//! - `drop()` finishes the row as `ack()` does;
-//! - `max_attempts(n)` on the mount reads `attempt`, and with `dead_letter(..)` a spent row moves
-//!   to another group or to a table with the same columns; without one it is finished.
-//!
-//! "Now" comes from [`SystemClock`] unless the struct names another source:
-//! `#[inbox(clock = DatabaseClock)]` reads the database's `now()`, and a service's own [`Clock`]
-//! fits there too. Hosts that bind "now" must keep their clocks in step.
-//!
-//! A mistake stops the service as early as it can be seen. A subscription prepares its statements
-//! at startup, and a column the table lacks stops it with the table and the statement named. A
-//! [`Repository`] publishes into its struct's table, and a struct without [`Publish`] does not
-//! compile as one. A route leads a name to a table, and a publish to a name no route leads
-//! anywhere fails at publish time. `#[subscriber("emails")]` opens through the route too; such a
-//! subscription boxes each delivery and settles through a dynamic call, which an [`InboxQueue`]
-//! does not.
-//!
-//! # Testing a service on the inbox
-//!
-//! ```no_run
-//! # #[cfg(all(feature = "postgres", feature = "testing"))]
-//! # mod demo {
-//! # use ruststream::OutgoingMessage;
-//! # use ruststream_sqlx::prelude::*;
-//! # use serde::{Deserialize, Serialize};
-//! # use sqlx::{PgConnection, Postgres};
-//! # #[derive(Inbox, sqlx::FromRow)]
-//! # #[inbox(table = "email_jobs")]
-//! # pub struct SendEmail { #[field(id, generated)] job_id: i64, #[field(group)] name: String, #[field(payload)] payload: Vec<u8> }
-//! # impl Publish<Postgres> for SendEmail {
-//! #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
-//! # }
-//! # #[derive(Serialize, Deserialize, Outgoing)]
-//! # pub struct Email { to: String }
-//! # #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
-//! # async fn send(_: &Email) -> HandlerOutcome { HandlerOutcome::ack() }
-//! # pub fn app(pool: PgPool) -> RustStream {
-//! #     RustStream::new(AppInfo::new("mailer", "0.1.0"))
-//! #         .with_broker(SqlxBroker::new(pool).route::<SendEmail>("emails"), |b| { b.include(send); })
-//! # }
-//! use std::error::Error;
-//!
-//! use ruststream::testing::TestApp;
-//! use sqlx::PgPool;
-//!
-//! // `pool` reaches a database of the test's own, with the service's migrations applied.
-//! pub async fn an_email_is_sent(pool: PgPool) -> Result<(), Box<dyn Error + Send + Sync>> {
-//!     let tb = TestApp::start_live(app(pool)).await?;
-//!     tb.broker::<SqlxBroker<Postgres>>()
-//!         .message(&Email { to: "a@example.com".to_owned() })
-//!         .to("emails")
-//!         .publish()
-//!         .await?;
-//!     tb.broker::<SqlxBroker<Postgres>>()
-//!         .subscriber("emails")
-//!         .assert_called_once();
-//!     tb.shutdown().await?;
-//!     Ok(())
-//! }
-//! # }
-//! # fn main() {}
-//! ```
-//!
-//! A test runs the service against a real database, because the service's SQL is part of what it
-//! checks. The message goes in through the route and the service's [`Publish`], as in
-//! production. The clock is real as well: a paused tokio clock jumps to the next timer while a
-//! database reply is in flight, so a test starts with `TestApp::start_live`, and `tb.advance(by)`
-//! lets that much real time pass.
-
+#![doc = include_str!("README.md")]
 #![forbid(unsafe_code)]
 
 pub use ruststream_sqlx_dialect as dialect;
@@ -179,10 +11,11 @@ pub mod prelude;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltInDialect, Claim, Clock, ClosedSqlxBroker, ConnectedSqlxBroker,
-    DatabaseClock, DeadLetter, Discard, Fetch, HeaderColumn, InboxDelivery, InboxQueue, InboxRow,
-    InboxSubscriber, Insert, KeyColumn, NamedDelivery, NamedSubscriber, PayloadRow, Publish,
-    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
-    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn, InboxDelivery, InboxQueue,
+    InboxRow, InboxSubscriber, Insert, KeyColumn, LeaseRow, NamedDelivery, NamedSubscriber,
+    PayloadRow, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
+    RetryAfter, Routed, RoutedPublisher, RowLocks, SqlxBroker, SqlxBrokerError, SystemClock,
+    TimeColumn, TimeSource,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -195,16 +28,21 @@ pub mod __private {
     pub use ruststream::HeaderMap;
     pub use ruststream_sqlx_dialect::Param;
     pub use sqlx;
-    #[cfg(feature = "postgres")]
-    pub use sqlx::Postgres;
 
-    #[cfg(feature = "postgres")]
-    pub use crate::inbox::OnPostgres;
-    pub use crate::inbox::QueueDatabase;
     pub use crate::inbox::engine::{
-        Claimed, Claiming, Event, Events, Now, Prepared, Released, Settling, Shape, Stmt, TimeFor,
-        Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, fetch_by_ids, first_header,
-        later, match_claimed, micros, now, put, retry, retry_after,
+        Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Settled, Settling, Shape,
+        Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows, dead_letter, discard,
+        extend, fetch_by_ids, first_header, later, lease, match_claimed, match_rows, micros,
+        no_lease, now, put, retry, retry_after,
+    };
+    pub use crate::inbox::kinds::{Kinds, KindsOf};
+    pub use crate::inbox::named::{
+        NamedBytes, NamedDatabase, NamedId, NamedRow, NamedTime, RoleColumns,
+    };
+    pub use crate::inbox::queue::Queue;
+    pub use crate::inbox::{
+        AdvisoryForm, FormOn, InsertSql, LeaseForm, OnConnection, QueueDatabase, QueueRow,
+        RowLockForm, no_insert,
     };
 }
 
@@ -251,13 +89,15 @@ pub mod __private {
 /// from the fields named between braces. A placeholder names a field as written in Rust, without
 /// `r#` (`{type}` for `r#type`), and the key reads that field's column. In that form a group
 /// keeps its order through the key, as in `advisory_lock = "jobs-{name}"`, so `fifo = true` does
-/// not apply there.
+/// not apply there. The built-in dialects build the row lock and lease forms, and refuse a table
+/// in the advisory lock form when its subscription starts.
 ///
 /// # Roles
 ///
 /// `#[field(..)]` gives a field one role:
 ///
-/// - `id`, required: the row's identity.
+/// - `id`, required: the row's identity. Its type is `Clone`: a lease subscription keeps a copy
+///   of each id in work to extend its lease.
 /// - `group`: the group a subscription reads; `#[field(group, fifo = true)]` keeps each group in
 ///   order.
 /// - `partition_key`: the delivery's partition key.
@@ -271,7 +111,7 @@ pub mod __private {
 /// `generated`, alone or beside a role, marks a column the database fills in.
 ///
 /// A generic struct keeps its parameters: the impl requires `Send + Sync + 'static` of the struct
-/// and of the `id` field's type.
+/// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type.
 ///
 /// # Column names
 ///
@@ -289,6 +129,8 @@ pub mod __private {
 /// A struct that cannot drive a queue does not compile, and the error points at the field or
 /// the name that causes it: no `id`, a role played twice, a column named twice, a role or
 /// `generated` on a field without a column, `fifo` outside the `group` role, `locked_until` or
-/// `fifo = true` beside `advisory_lock`, a lock key naming no field, a dot in `table` or `schema`.
+/// `fifo = true` beside `advisory_lock`, `extend` in `custom(..)` without `locked_until`,
+/// `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in `table` or
+/// `schema`.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;

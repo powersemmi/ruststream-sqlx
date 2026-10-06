@@ -1,10 +1,9 @@
-//! The core's conformance suites against the stand: the routing contract over by-name
-//! subscriptions of a payload-mode table, and the lifecycle ladder through a typed descriptor and
-//! repository.
+//! The core's conformance suites against each stand and form: the routing contract over by-name
+//! subscriptions of a payload-mode table, and the lifecycle ladder and the retry cap through a typed
+//! descriptor and repository.
 
 #![cfg(all(
     feature = "inbox",
-    feature = "postgres",
     feature = "chrono",
     feature = "json",
     feature = "testing"
@@ -12,124 +11,110 @@
 
 mod live;
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use futures::executor::block_on;
-use ruststream::conformance::harness;
-use ruststream::{OutgoingMessage, PublishPolicy};
-use ruststream_sqlx::{HeaderColumn, Inbox, InboxQueue, Publish, Repository, SqlxBroker};
-use sqlx::types::Json;
-use sqlx::{PgConnection, PgPool, Postgres};
+use ruststream::conformance::{harness, retry};
+use ruststream::{
+    BrokerMoves, ConnectedBroker, DeclareRetryError, PublishPolicy, RetryDeclaration,
+    SubscriptionSource, nonzero,
+};
+use ruststream_sqlx::{InboxQueue, Repository, SqlxBroker};
+use sqlx::Pool;
 
-use live::database;
+/// The crate's descriptor, with the cap or the destination declared alone refused at startup.
+///
+/// `retry::broker_moves` expects a broker that moves spent deliveries itself to refuse half a
+/// declaration, as a dead-letter policy that needs both halves must. A table applies each half on
+/// its own, as the runtime does where it runs the retry path: the cap alone finishes the row at the
+/// cap, and the destination alone takes every retry. So the crate opens such a subscription; this
+/// wrapper refuses it, and the suite goes on to hold the crate's own descriptor to the cap, the
+/// counts and the move.
+struct WholeDeclarations<Source>(Source);
 
-/// The by-name table: a group per name, a native delayed retry, headers and an attempt.
-#[derive(Debug, Inbox, sqlx::FromRow)]
-#[inbox(table = "conformance_jobs")]
-struct Conformance {
-    #[field(id, generated)]
-    id: i64,
-    #[field(group)]
-    name: String,
-    #[field(retry_after)]
-    retry_after: DateTime<Utc>,
-    #[field(attempt, generated)]
-    attempt: i16,
-    #[field(headers)]
-    meta: Option<Json<BTreeMap<String, String>>>,
-    #[field(payload)]
-    payload: Vec<u8>,
-}
+impl<Connected, Source> SubscriptionSource<Connected> for WholeDeclarations<Source>
+where
+    Connected: ConnectedBroker,
+    Source: SubscriptionSource<Connected, Copies = BrokerMoves> + Send,
+{
+    type Subscriber = Source::Subscriber;
+    type Copies = BrokerMoves;
 
-impl Publish<Postgres> for Conformance {
-    async fn publish(
-        conn: &mut PgConnection,
-        message: &OutgoingMessage<'_>,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO conformance_jobs (name, meta, payload) VALUES ($1, $2, $3)")
-            .bind(message.name())
-            .bind(Option::<Json<BTreeMap<String, String>>>::from_headers(
-                message.headers(),
-            ))
-            .bind(message.payload())
-            .execute(conn)
-            .await?;
-        Ok(())
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    async fn subscribe(self, connected: &Connected) -> Result<Self::Subscriber, Connected::Error> {
+        self.0.subscribe(connected).await
+    }
+
+    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
+        Self(self.0.declare_retry(declaration))
+    }
+
+    fn declare_retry_on(
+        &self,
+        connected: &Connected,
+        declaration: &RetryDeclaration,
+    ) -> Result<(), DeclareRetryError> {
+        if declaration.max_attempts().is_some() != declaration.dead_letter().is_some() {
+            return Err(DeclareRetryError::Broker(
+                "half a retry declaration, refused for the suite".into(),
+            ));
+        }
+        self.0.declare_retry_on(connected, declaration)
     }
 }
 
-/// The lifecycle table: a group per name and a native delayed retry. It keeps no headers, so a
-/// publish that carries some is refused.
-#[derive(Debug, Inbox, sqlx::FromRow)]
-#[inbox(table = "lifecycle_jobs")]
-struct Lifecycle {
-    #[field(id, generated)]
-    id: i64,
-    #[field(group)]
-    name: String,
-    #[field(retry_after)]
-    retry_after: DateTime<Utc>,
-    #[field(attempt, generated)]
-    attempt: i16,
-    #[field(payload)]
-    payload: Vec<u8>,
-}
-
-impl Publish<Postgres> for Lifecycle {
-    async fn publish(
-        conn: &mut PgConnection,
-        message: &OutgoingMessage<'_>,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO lifecycle_jobs (name, payload) VALUES ($1, $2)")
-            .bind(message.name())
-            .bind(message.payload())
-            .execute(conn)
-            .await?;
-        Ok(())
+live::matrix! {
+    fn broker(pool: &Pool<Db>) -> SqlxBroker<Db> {
+        // The suites subscribe to names they generate; a prefix route opens them all.
+        SqlxBroker::new(pool.clone())
+            .poll_interval(Duration::from_millis(50))
+            .route::<ConformanceRow>("conformance.*")
     }
-}
 
-fn broker(pool: &PgPool) -> SqlxBroker<Postgres> {
-    // The suites subscribe to names they generate; a prefix route opens them all.
-    SqlxBroker::new(pool.clone())
-        .poll_interval(Duration::from_millis(50))
-        .route::<Conformance>("conformance.*")
-}
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn by_name_subscriptions_pass_the_routing_contract() {
+        let Some(db) = database().await else { return };
+        let pool = db.pool.clone();
+        harness::run_suite(move || broker(&pool)).await;
+        db.finish().await;
+    }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn by_name_subscriptions_pass_the_routing_contract() {
-    let Some(db) = database().await else { return };
-    let pool = db.pool.clone();
-    harness::run_suite(move || broker(&pool)).await;
-    let _ = |row: Conformance| {
-        (
-            row.id,
-            row.name,
-            row.retry_after,
-            row.attempt,
-            row.meta,
-            row.payload,
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typed_descriptor_and_repository_climb_the_lifecycle() {
+        let Some(db) = database().await else { return };
+        let pool = db.pool.clone();
+        // The ladder holds a stream, a delivery and its settlement at once, past the 16 KiB a
+        // future may take on the stack.
+        Box::pin(harness::lifecycle(
+            move || SqlxBroker::new(pool.clone()).poll_interval(Duration::from_millis(50)),
+            |name| InboxQueue::<LifecycleRow>::new(name.to_owned()),
+            // Pairing a repository does no I/O, so its future is ready at once.
+            |connected| {
+                block_on(Repository::<LifecycleRow>::default().pair(connected))
+                    .expect("a repository pairs with the connected broker")
+            },
+        ))
+        .await;
+        db.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_typed_descriptor_moves_a_spent_row_to_its_dead_letter_group() {
+        let Some(db) = database().await else { return };
+        let pool = db.pool.clone();
+        retry::broker_moves(
+            move || SqlxBroker::new(pool.clone()).poll_interval(Duration::from_millis(50)),
+            |name| WholeDeclarations(InboxQueue::<LifecycleRow>::new(name.to_owned())),
+            |connected| {
+                block_on(Repository::<LifecycleRow>::default().pair(connected))
+                    .expect("a repository pairs with the connected broker")
+            },
+            nonzero!(3u32),
         )
-    };
-    db.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_typed_descriptor_and_repository_climb_the_lifecycle() {
-    let Some(db) = database().await else { return };
-    let pool = db.pool.clone();
-    harness::lifecycle(
-        move || SqlxBroker::new(pool.clone()).poll_interval(Duration::from_millis(50)),
-        |name| InboxQueue::<Lifecycle>::new(name.to_owned()),
-        // Pairing a repository does no I/O, so its future is ready at once.
-        |connected| {
-            block_on(Repository::<Lifecycle>::default().pair(connected))
-                .expect("a repository pairs with the connected broker")
-        },
-    )
-    .await;
-    let _ = |row: Lifecycle| (row.id, row.name, row.retry_after, row.attempt, row.payload);
-    db.finish().await;
+        .await;
+        db.finish().await;
+    }
 }
