@@ -1,8 +1,10 @@
-//! The advisory lock form with a lock of the service's own: a table that lists `lock` and `unlock`
-//! in `custom(..)` holds each delivery under the service's SQL. The dialect still selects the
-//! candidates and takes each row; the lock the session holds while the handler works is the
+//! Who holds the keys of the advisory lock form. A table that lists `lock` and `unlock` in
+//! `custom(..)` holds each delivery under the service's SQL: the dialect still selects the
+//! candidates and takes each row, the lock the session holds while the handler works is the
 //! service's, and its unlock releases it when the delivery settles. On SQLite the process then
-//! keeps no registry of keys: the service's lock decides.
+//! keeps no registry of keys: the service's lock decides. Without one, SQLite's keys in work live in
+//! the process, each one under its database: two databases hold one key apart, and two brokers on
+//! one database pass over each other's keys.
 
 #![cfg(all(
     feature = "inbox",
@@ -196,6 +198,127 @@ mod on_sqlite {
             0,
             "the acknowledgement deleted the row"
         );
+        db.finish().await;
+    }
+}
+
+/// SQLite's keys in work, which the process keeps, each under the database it belongs to.
+#[cfg(feature = "sqlite")]
+mod sqlite_keys {
+    use std::time::Duration;
+
+    use ruststream::Broker;
+    use ruststream_sqlx::{ConnectedSqlxBroker, InboxDelivery, InboxSubscriber};
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::{Sqlite, SqlitePool};
+
+    use super::*;
+    use crate::live::sqlite::database;
+
+    /// The longest a test waits for a job its broker should claim at once.
+    const AT_ONCE: Duration = Duration::from_secs(2);
+
+    /// A plain job whose key is the same text in every database for its first row.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "plain_jobs", advisory_lock = "same-{id}")]
+    struct Same {
+        #[field(id, generated)]
+        id: i64,
+        #[field(attempt, generated)]
+        attempt: i16,
+        #[field(payload)]
+        payload: Vec<u8>,
+    }
+
+    /// A broker on `pool` and its subscription to the jobs.
+    async fn subscribed(
+        pool: &SqlitePool,
+    ) -> (ConnectedSqlxBroker<Sqlite>, InboxSubscriber<Sqlite, Same>) {
+        let connected = SqlxBroker::new(pool.clone())
+            .poll_interval(Duration::from_millis(20))
+            .connect()
+            .await
+            .expect("the broker connects");
+        let subscriber = InboxQueue::<Same>::new("same")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        (connected, subscriber)
+    }
+
+    /// The next delivery of `subscriber`, if it comes within `wait`.
+    async fn next_within(
+        subscriber: &mut InboxSubscriber<Sqlite, Same>,
+        wait: Duration,
+    ) -> Option<InboxDelivery<Sqlite, Same>> {
+        let mut deliveries = pin!(subscriber.stream());
+        tokio::time::timeout(wait, deliveries.next())
+            .await
+            .ok()
+            .map(|next| {
+                next.expect("the stream goes on")
+                    .expect("the claim takes the job")
+            })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_databases_hold_one_key_apart() {
+        let (Some(first), Some(second)) = (database().await, database().await) else {
+            return;
+        };
+        first.plain(&[b"first".as_slice()]).await;
+        second.plain(&[b"second".as_slice()]).await;
+        let (on_first, mut first_jobs) = subscribed(&first.pool).await;
+        let (on_second, mut second_jobs) = subscribed(&second.pool).await;
+        let held = next_within(&mut first_jobs, AT_ONCE)
+            .await
+            .expect("the first database's job is claimed");
+        assert_eq!(held.payload(), b"first");
+        let other = next_within(&mut second_jobs, AT_ONCE)
+            .await
+            .expect("the second database's job is claimed while the first holds the same key");
+        assert_eq!(other.payload(), b"second");
+        other.ack().await.expect("the job settles");
+        held.ack().await.expect("the job settles");
+        drop((first_jobs, second_jobs));
+        on_first.shutdown().await.expect("the broker shuts down");
+        on_second.shutdown().await.expect("the broker shuts down");
+        first.finish().await;
+        second.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_brokers_on_one_database_pass_over_each_others_key() {
+        let Some(db) = database().await else { return };
+        db.plain(&[b"x".as_slice()]).await;
+        // A second pool on the same in-memory database, as a second service would open it.
+        let options = (*db.pool.connect_options()).clone();
+        let other_pool = SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_with(options)
+            .await
+            .expect("a second pool opens the database");
+        let (on_one, mut one_jobs) = subscribed(&db.pool).await;
+        let (on_other, mut other_jobs) = subscribed(&other_pool).await;
+        let held = next_within(&mut one_jobs, AT_ONCE)
+            .await
+            .expect("the job is claimed");
+        assert!(
+            next_within(&mut other_jobs, Duration::from_millis(300))
+                .await
+                .is_none(),
+            "the second broker passes over the key the first holds"
+        );
+        held.nack(true).await.expect("the job returns");
+        let again = next_within(&mut other_jobs, AT_ONCE)
+            .await
+            .expect("the second broker claims the job once its key is free");
+        assert_eq!(again.payload(), b"x");
+        again.ack().await.expect("the job settles");
+        drop((one_jobs, other_jobs));
+        on_one.shutdown().await.expect("the broker shuts down");
+        on_other.shutdown().await.expect("the broker shuts down");
+        other_pool.close().await;
         db.finish().await;
     }
 }

@@ -551,7 +551,7 @@ where
         // once the close ends.
         let mut locked = book.locked(session, key);
         let took = if book.process() {
-            locked.session().take_in_process(key)
+            locked.take_in_process()
         } else {
             // Marked before the statement leaves: a lock statement dropped midway may have taken
             // the lock, and a session that may hold one closes instead of going back to the pool.

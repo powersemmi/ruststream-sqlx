@@ -121,10 +121,10 @@ impl<DB: Database> Session<DB> {
         self.open = open;
     }
 
-    /// Takes `key` in the process's registry for the session: `false` while a key of its hash is
-    /// in work.
-    pub(crate) fn take_in_process(&mut self, key: &str) -> bool {
-        self.process = ProcessLocks::try_take(key);
+    /// Takes `key` of the database `database` names in the process's registry for the session:
+    /// `false` while a key of its hash is in work.
+    pub(crate) fn take_in_process(&mut self, database: u64, key: &str) -> bool {
+        self.process = ProcessLocks::try_take(database, key);
         self.process.is_some()
     }
 
