@@ -2,14 +2,16 @@
 
 use std::num::NonZeroUsize;
 
+use crate::advisory::Advisory;
 use crate::dialect::Dialect;
+use crate::form::KeyPart;
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
 use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, SqlWriter};
+use crate::writer::{BuiltIn, Probe, SqlWriter};
 
 /// How Postgres reads the current time: the start of the statement, so a settlement made long
 /// after the claim began records its own moment.
@@ -19,13 +21,28 @@ const DATABASE_NOW: &str = "statement_timestamp()";
 /// claim holds.
 const LOCK: &str = " FOR UPDATE SKIP LOCKED";
 
+/// Tries the session's lock on the 64-bit hash of a key, without waiting.
+const TRY_LOCK: &str = "SELECT pg_try_advisory_lock(hashtextextended($1, 0))::int::bigint";
+
+/// Releases the session's lock on the 64-bit hash of a key.
+const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::bigint";
+
 /// Postgres: double-quoted names, `$1` placeholders, rows claimed with `FOR UPDATE SKIP LOCKED`.
 ///
-/// It builds the statements of the row lock form ([`RowLock`]), of the lease form ([`Lease`]), and
-/// the insert. A lease claim is one statement: it locks the claimable rows, writes their lease,
-/// and returns them as they were. Every name is quoted, so a name keeps its case and may hold any
-/// character; a name over 63 bytes, which Postgres would cut short without a word, is refused. A
-/// table on the database's clock reads `statement_timestamp()`.
+/// It builds the statements of the row lock form ([`RowLock`]), of the lease form ([`Lease`]), of
+/// the advisory lock form ([`Advisory`]), and the insert. A lease claim is one statement: it locks
+/// the claimable rows, writes their lease, and returns them as they were. Every name is quoted, so
+/// a name keeps its case and may hold any character; a name over 63 bytes, which Postgres would
+/// cut short without a word, is refused. A table on the database's clock reads
+/// `statement_timestamp()`.
+///
+/// In the advisory lock form a row's key is the text `concat` renders from the key's parts, a
+/// column without a value read as empty text. A session lock on the key's 64-bit hash
+/// (`hashtextextended`, Postgres 11 or later) holds the row, so two keys with one hash wait for
+/// each other: a delay, never a double delivery. The claim leaves out the keys another session
+/// holds: it probes each candidate's key with a shared lock that ends with the claim's own
+/// transaction, in claim order and only until it has its rows. The take counts the attempt and
+/// returns the row in one statement.
 ///
 /// A table's transactions open with `BEGIN`, or at the isolation level it names
 /// ([`begin`](Dialect::begin)): READ COMMITTED, REPEATABLE READ or SERIALIZABLE. Postgres runs
@@ -95,6 +112,18 @@ impl BuiltIn for Postgres {
 
     const DEFAULT_ROW: &'static str = " DEFAULT VALUES";
 
+    /// `standard_conforming_strings`, on by default since Postgres 9.1, keeps a backslash as it is.
+    const BACKSLASH_ESCAPES: bool = false;
+
+    const UPDATE_RETURNS: bool = true;
+
+    /// A shared lock conflicts only with the session lock a delivery holds, so concurrent claims
+    /// probe one key without excluding each other.
+    const PROBE: Probe = Probe::Lock(
+        "pg_try_advisory_xact_lock_shared(hashtextextended(",
+        ", 0))",
+    );
+
     fn database_now(&self) -> &'static str {
         DATABASE_NOW
     }
@@ -104,6 +133,14 @@ impl BuiltIn for Postgres {
             .push(" + ")
             .param(Param::Delay)
             .push(" * interval '1 microsecond'");
+    }
+
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {
+        sql.push("concat(")
+            .key_parts(key, ", ", |sql, column| {
+                sql.ident(column);
+            })
+            .push(")");
     }
 }
 
@@ -226,6 +263,28 @@ impl RowLock for Postgres {
         let mut sql = SqlWriter::new(self);
         sql.claim(spec, shape, LOCK);
         Ok(sql.finish())
+    }
+}
+
+impl Advisory for Postgres {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.advisory_claim_statement(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        Some(Statement::new(TRY_LOCK, [Param::Key]))
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        Some(Statement::new(UNLOCK, [Param::Key]))
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.take_statements(spec, shape)
     }
 }
 

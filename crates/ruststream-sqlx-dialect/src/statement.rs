@@ -61,6 +61,9 @@ pub enum Param {
     /// The expiry the delivery's claim or its last extension wrote: the ownership token that
     /// settlement and extension match.
     Held,
+    /// The lock key of the row, as text: what the advisory claim selected as `__lock`, which the
+    /// lock and the unlock name.
+    Key,
     /// The value of the column at this position of [`TableSpec::columns`](crate::TableSpec::columns),
     /// for an insert.
     Column(usize),
@@ -319,7 +322,8 @@ pub enum StatementError {
         form: &'static str,
     },
     /// The statement belongs to one form, and the table takes rows in another: the row lock
-    /// claim asked for a lease table, or a lease statement for a table without a lease.
+    /// claim asked for a lease table, a lease statement for a table without a lease, or an
+    /// advisory statement for a table without a lock key.
     #[error("the {statement} statement does not serve a table in the {form} form")]
     FormMismatch {
         /// The statement being built.
@@ -331,6 +335,17 @@ pub enum StatementError {
     /// returns it from a claim of a table with FIFO groups when it builds no claim for them.
     #[error("the {dialect} dialect has no claim for FIFO groups")]
     UnsupportedFifo {
+        /// The dialect's name.
+        dialect: &'static str,
+    },
+    /// The table takes its rows by advisory lock and keeps its groups in order. In that form a
+    /// lock key on the group's column keeps a group in order, so the advisory claim and the take
+    /// refuse FIFO groups.
+    #[error(
+        "FIFO groups do not combine with the advisory lock form in the {dialect} dialect: drop \
+         `fifo` and put the group's column into the lock key"
+    )]
+    AdvisoryFifo {
         /// The dialect's name.
         dialect: &'static str,
     },

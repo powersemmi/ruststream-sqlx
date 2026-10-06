@@ -280,61 +280,6 @@ fn a_dead_letter_table_without_a_schema_is_one_name() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-#[test]
-fn settlement_refuses_forms_this_dialect_does_not_build() -> Result<(), Box<dyn Error>> {
-    let advisory = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY));
-    let unsupported = StatementError::UnsupportedForm {
-        dialect: "postgres",
-        form: "advisory lock",
-    };
-    assert_eq!(Postgres.ack(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.retry_after(&advisory), Err(unsupported.clone()));
-    assert_eq!(Postgres.discard(&advisory), Err(unsupported.clone()));
-    assert_eq!(
-        Postgres.dead_letter_group(&advisory),
-        Err(unsupported.clone())
-    );
-    assert_eq!(
-        Postgres.dead_letter_table(&advisory, TableName::parse("jobs_dead")?),
-        Err(unsupported)
-    );
-    assert_eq!(
-        Postgres.extend(&advisory),
-        Err(StatementError::FormMismatch {
-            statement: "extend",
-            form: "advisory lock",
-        })
-    );
-    assert_eq!(
-        Postgres.stamp(&advisory),
-        Err(StatementError::FormMismatch {
-            statement: "stamp",
-            form: "advisory lock",
-        })
-    );
-    assert!(
-        Postgres.fetch(&advisory).is_ok(),
-        "a fetch reads rows in every form"
-    );
-
-    // The lease form is built; `tests/postgres_lease.rs` pins its statements.
-    let lease = TableSpec::new(
-        "jobs",
-        Column::new("job_id"),
-        Form::Lease(Column::new("until")),
-    )
-    .group(Column::new("name"))
-    .retry_after(Column::new("retry_after"));
-    Postgres.ack(&lease)?;
-    Postgres.retry(&lease)?;
-    Postgres.retry_after(&lease)?;
-    Postgres.discard(&lease)?;
-    Postgres.dead_letter_group(&lease)?;
-    Postgres.dead_letter_table(&lease, TableName::parse("jobs_dead")?)?;
-    Ok(())
-}
-
 /// A name of `len` bytes.
 fn name_of(len: usize) -> String {
     "n".repeat(len)

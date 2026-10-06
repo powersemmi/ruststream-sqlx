@@ -152,8 +152,9 @@ impl<'a> TableSpec<'a> {
     /// while the head is in work or not yet due. A delayed retry gives its row a later
     /// `retry_after`, so the row moves behind the rows of its group due earlier.
     ///
-    /// The advisory lock form keeps a group in order through its lock key instead, and a dialect
-    /// refuses a FIFO group in that form when it builds the statements.
+    /// The advisory lock form keeps a group in order through its lock key instead, so its claim
+    /// and its take refuse a FIFO group
+    /// ([`StatementError::AdvisoryFifo`](crate::StatementError::AdvisoryFifo)).
     ///
     /// # Examples
     ///

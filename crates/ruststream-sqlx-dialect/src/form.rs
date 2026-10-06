@@ -6,25 +6,28 @@ use crate::column::Column;
 /// One piece of an advisory lock key: literal text, or the value of a column of the row.
 ///
 /// `#[inbox(advisory_lock = "jobs-{job_id}")]` becomes
-/// `[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")]`.
+/// `[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")]`. The database renders each row's key
+/// from the parts, in the claim that selects the row: a literal as it is, a column's value as
+/// text, a column without a value as empty text.
 ///
 /// # Examples
 ///
 /// ```
 /// use ruststream_sqlx_dialect::KeyPart;
 ///
-/// // A dialect renders the key of one row from the row's values.
-/// fn render_key(key: &[KeyPart<'_>], value_of: impl Fn(&str) -> String) -> String {
+/// // The key the database renders for one row, from the row's values.
+/// fn render_key(key: &[KeyPart<'_>], value_of: impl Fn(&str) -> Option<String>) -> String {
 ///     key.iter()
 ///         .map(|part| match part {
 ///             KeyPart::Literal(text) => (*text).to_owned(),
-///             KeyPart::Column(column) => value_of(column),
+///             KeyPart::Column(column) => value_of(column).unwrap_or_default(),
 ///         })
 ///         .collect()
 /// }
 ///
 /// let key = [KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-/// assert_eq!(render_key(&key, |_| "42".to_owned()), "jobs-42");
+/// assert_eq!(render_key(&key, |_| Some("42".to_owned())), "jobs-42");
+/// assert_eq!(render_key(&key, |_| None), "jobs-");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyPart<'a> {

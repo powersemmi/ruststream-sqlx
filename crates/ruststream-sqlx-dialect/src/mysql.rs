@@ -2,14 +2,16 @@
 
 use std::num::NonZeroUsize;
 
+use crate::advisory::Advisory;
 use crate::dialect::Dialect;
+use crate::form::KeyPart;
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
 use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, SqlWriter};
+use crate::writer::{BuiltIn, Probe, SqlWriter};
 
 /// How MySQL reads the current time: UTC to the microsecond, fixed when the statement starts, so
 /// it does not follow the session's time zone.
@@ -30,6 +32,14 @@ const BEGIN_READ_UNCOMMITTED: &str =
 const BEGIN_REPEATABLE_READ: &str =
     "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; START TRANSACTION";
 const BEGIN_SERIALIZABLE: &str = "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; START TRANSACTION";
+
+/// Tries the session's lock on a key, without waiting. `GET_LOCK` answers `NULL` on an error,
+/// which reads as a lock not taken.
+const TRY_LOCK: &str = "SELECT CAST(COALESCE(GET_LOCK(?, 0), 0) AS SIGNED)";
+
+/// Releases the session's lock on a key. `RELEASE_LOCK` answers `NULL` for a lock no session
+/// holds, which reads as a lock not held.
+const UNLOCK: &str = "SELECT CAST(COALESCE(RELEASE_LOCK(?), 0) AS SIGNED)";
 
 /// The oldest release of a server whose claims skip locked rows, and how a refusal names it.
 #[derive(Debug, Clone, Copy)]
@@ -53,9 +63,10 @@ const MARIADB_FLOOR: Floor = Floor {
 /// MySQL and MariaDB: backtick-quoted names, `?` placeholders, rows claimed with
 /// `FOR UPDATE SKIP LOCKED`.
 ///
-/// It builds the statements of the row lock form ([`RowLock`]), of the lease form ([`Lease`]), and
-/// the insert, for MySQL 8.0.1 and MariaDB 10.6 or later, the first versions that skip locked
-/// rows; [`check_server`](Dialect::check_server) refuses an older server. A lease claim selects
+/// It builds the statements of the row lock form ([`RowLock`]), of the lease form ([`Lease`]), of
+/// the advisory lock form ([`Advisory`]), and the insert, for MySQL 8.0.1 and MariaDB 10.6 or
+/// later, the first versions that skip locked rows; [`check_server`](Dialect::check_server)
+/// refuses an older server for a table in any form. A lease claim selects
 /// the claimable rows, then stamps each one with its lease ([`stamp`](Lease::stamp)) before its
 /// transaction commits. A dead letter into a table copies the row, then deletes it, in one
 /// transaction. Every name is quoted, so a name keeps its case and may hold any character; a name
@@ -71,6 +82,13 @@ const MARIADB_FLOOR: Floor = Floor {
 /// transaction; the row and mixed formats accept them. A row lock table that names a level opens
 /// its claims at it, any of the four, READ UNCOMMITTED included; REPEATABLE READ and SERIALIZABLE
 /// bring the gap locks back.
+///
+/// In the advisory lock form a row's key is the text `CONCAT_WS` renders from the key's parts, a
+/// column without a value skipped. A session lock named by the key (`GET_LOCK`) holds the row. The
+/// server takes a lock name of 1 to 64 characters, so a key that is empty or longer is locked by
+/// its SHA-256, 64 characters of hex: the claim selects the name it locks. The claim leaves out the
+/// keys `IS_USED_LOCK` reports in use. An update returns no rows here, so the take counts the
+/// attempt, then reads the row.
 ///
 /// # Examples
 ///
@@ -141,6 +159,15 @@ impl BuiltIn for MySql {
 
     const DEFAULT_ROW: &'static str = " () VALUES ()";
 
+    /// A backslash escapes the next character of a string literal, unless the server's SQL mode
+    /// has `NO_BACKSLASH_ESCAPES`; under that mode a doubled backslash reads as two, the same in
+    /// every statement, so a key stays one key.
+    const BACKSLASH_ESCAPES: bool = true;
+
+    const UPDATE_RETURNS: bool = false;
+
+    const PROBE: Probe = Probe::Check("IS_USED_LOCK(", ") IS NULL");
+
     fn database_now(&self) -> &'static str {
         DATABASE_NOW
     }
@@ -150,6 +177,25 @@ impl BuiltIn for MySql {
             .push(" + INTERVAL ")
             .param(Param::Delay)
             .push(" MICROSECOND");
+    }
+
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {
+        let text = |sql: &mut SqlWriter<'_, Self>| {
+            sql.push("CONCAT_WS('', ")
+                .key_parts(key, ", ", |sql, column| {
+                    sql.ident(column);
+                })
+                .push(")");
+        };
+        // MySQL refuses a lock name that is empty or longer than 64 characters, and MariaDB takes
+        // no lock on an empty one: such a key is locked by its hash.
+        sql.push("IF(CHAR_LENGTH(");
+        text(sql);
+        sql.push(") BETWEEN 1 AND 64, ");
+        text(sql);
+        sql.push(", SHA2(");
+        text(sql);
+        sql.push(", 256))");
     }
 }
 
@@ -218,7 +264,8 @@ impl Dialect for MySql {
     }
 
     fn check_server(&self, _: &TableSpec<'_>, version: &str) -> Result<(), StatementError> {
-        // Both forms claim with `SKIP LOCKED`, so the floor holds for every table.
+        // The row lock and lease forms claim with `SKIP LOCKED`, and an advisory table shares
+        // their floor: one floor for every table of a server.
         let floor = if is_mariadb(version) {
             MARIADB_FLOOR
         } else {
@@ -265,6 +312,28 @@ impl RowLock for MySql {
         let mut sql = SqlWriter::new(self);
         sql.claim(spec, shape, LOCK);
         Ok(sql.finish())
+    }
+}
+
+impl Advisory for MySql {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.advisory_claim_statement(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        Some(Statement::new(TRY_LOCK, [Param::Key]))
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        Some(Statement::new(UNLOCK, [Param::Key]))
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.take_statements(spec, shape)
     }
 }
 

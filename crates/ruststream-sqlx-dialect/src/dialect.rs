@@ -18,14 +18,16 @@ use crate::table_name::TableName;
 ///
 /// The forms of claiming are traits of their own, each over this one: [`RowLock`](crate::RowLock)
 /// builds the claim that locks rows for its transaction, [`Lease`](crate::Lease) the claim that
-/// writes a lease and the lease's extension. A dialect implements the traits of the forms its
-/// database serves, and a table in another form does not compile against it. A dialect of the
-/// service's own does the same: it implements this trait, then the trait of each form it builds,
-/// with every statement its own or delegated to a built-in dialect it wraps.
+/// writes a lease and the lease's extension, [`Advisory`](crate::Advisory) the claim of candidates
+/// with their lock keys, the lock, the unlock and the take. A dialect implements the traits of the
+/// forms its database serves, and a table in another form does not compile against it. A dialect
+/// of the service's own does the same: it implements this trait, then the trait of each form it
+/// builds, with every statement its own or delegated to a built-in dialect it wraps.
 ///
 /// The settlements here serve every form the dialect builds. In the lease form each of them names
 /// the row and the delivery's ownership token ([`Param::Held`](crate::Param::Held)), so a delivery
-/// whose lease ran out, and whose row another claim took, changes nothing.
+/// whose lease ran out, and whose row another claim took, changes nothing. In the advisory lock
+/// form they name the row alone: the lock on its key keeps every other claim off it.
 ///
 /// A dialect also opens transactions: [`begin`](Self::begin) gives the statement that opens one
 /// at a table's isolation level or SQLite mode, and [`savepoint`](Self::savepoint) and
@@ -161,7 +163,8 @@ pub trait Dialect: Debug + Send + Sync {
     /// The statement that releases a row for another attempt at once, or `None` when releasing
     /// the row needs no statement.
     ///
-    /// In the lease form it clears the lease, and the attempt stays as the claim counted it.
+    /// In the lease form it clears the lease, and the attempt stays as the claim counted it. In the
+    /// advisory lock form it is `None`: the take counted the attempt, and the unlock frees the row.
     ///
     /// # Errors
     ///

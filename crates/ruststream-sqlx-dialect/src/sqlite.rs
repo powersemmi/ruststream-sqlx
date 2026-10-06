@@ -2,13 +2,15 @@
 
 use std::num::NonZeroUsize;
 
+use crate::advisory::Advisory;
 use crate::dialect::Dialect;
+use crate::form::KeyPart;
 use crate::lease::Lease;
 use crate::opening::{Mode, Opening, Opens, level};
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, SqlWriter};
+use crate::writer::{BuiltIn, Probe, SqlWriter};
 
 /// How SQLite reads the current time: as text, in the layout sqlx writes `chrono` times in, so it
 /// compares with the times a service binds.
@@ -20,9 +22,10 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 
 /// SQLite: double-quoted names, `?` placeholders, rows claimed by lease.
 ///
-/// It builds the statements of the lease form ([`Lease`]) and the insert. A writer locks the whole
-/// database, not rows, so it builds no claim that holds rows for a handler: it does not implement
-/// [`RowLock`](crate::RowLock), and a SQLite table declares `locked_until`. A lease claim is one
+/// It builds the statements of the lease form ([`Lease`]), of the advisory lock form
+/// ([`Advisory`]), and the insert. A writer locks the whole database, not rows, so it builds no
+/// claim that holds rows for a handler: it does not implement [`RowLock`](crate::RowLock), and a
+/// SQLite table declares `locked_until` or `advisory_lock`. A lease claim is one
 /// update that writes the lease, counts the attempt and returns the rows it took, as they were
 /// before; one writer at a time keeps two claims apart. The rows of one claim come back in no
 /// particular order. A dead letter into a table copies the row, then deletes it, in one
@@ -34,6 +37,12 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 ///
 /// SQLite keeps times as text, so the statements compare times as text: two times compare right
 /// when their text sorts as the times do.
+///
+/// SQLite has no locks a session holds, so in the advisory lock form the broker keeps the keys in
+/// work in the process: [`lock`](Advisory::lock) and [`unlock`](Advisory::unlock) are `None`, and
+/// the claim selects every claimable row with its key, the text the key's parts render, a column
+/// without a value read as empty text. The take counts the attempt and returns the row in one
+/// statement.
 ///
 /// SQLite runs every transaction serializable, so a table names no isolation level here: it names
 /// a mode, and its transactions open with `BEGIN DEFERRED`, `BEGIN IMMEDIATE` or
@@ -100,6 +109,13 @@ impl BuiltIn for Sqlite {
 
     const DEFAULT_ROW: &'static str = " DEFAULT VALUES";
 
+    const BACKSLASH_ESCAPES: bool = false;
+
+    const UPDATE_RETURNS: bool = true;
+
+    /// The process keeps the locks, so the database cannot tell a key in work.
+    const PROBE: Probe = Probe::Blind;
+
     fn database_now(&self) -> &'static str {
         DATABASE_NOW
     }
@@ -108,6 +124,16 @@ impl BuiltIn for Sqlite {
         sql.push("strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now', (")
             .param(Param::Delay)
             .push(" / 1000000.0) || ' seconds')");
+    }
+
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {
+        // `||` with a column without a value gives no text at all, so each column reads as empty
+        // text there; the cast makes a key of one number text.
+        sql.push("CAST(")
+            .key_parts(key, " || ", |sql, column| {
+                sql.push("ifnull(").ident(column).push(", '')");
+            })
+            .push(" AS TEXT)");
     }
 }
 
@@ -187,6 +213,28 @@ impl Opens<level::Deferred> for Sqlite {}
 impl Opens<level::Immediate> for Sqlite {}
 
 impl Opens<level::Exclusive> for Sqlite {}
+
+impl Advisory for Sqlite {
+    fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.advisory_claim_statement(spec)
+    }
+
+    fn lock(&self) -> Option<Statement> {
+        None
+    }
+
+    fn unlock(&self) -> Option<Statement> {
+        None
+    }
+
+    fn take(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.take_statements(spec, shape)
+    }
+}
 
 impl Lease for Sqlite {
     fn lease_claim(

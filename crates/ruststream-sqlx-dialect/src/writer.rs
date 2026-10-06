@@ -5,11 +5,15 @@ use std::num::NonZeroUsize;
 
 use crate::column::Column;
 use crate::dialect::Dialect;
-use crate::form::Form;
+use crate::form::{Form, KeyPart};
 use crate::role::Role;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
+
+mod advisory;
+
+pub(crate) use advisory::Probe;
 
 /// The keys a claim orders by before the id, the most significant first.
 const ORDER_KEYS: [Role; 2] = [Role::Priority, Role::RetryAfter];
@@ -95,15 +99,18 @@ pub(crate) enum Built<'a> {
     RowLock,
     /// The expiry in this column holds the row.
     Lease(Column<'a>),
+    /// A lock on the row's key, held by the delivery's session, holds the row.
+    Advisory,
 }
 
 /// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, whether it
-/// locks rows, how an insert of no column reads, and the database's own clock.
+/// locks rows, how an insert of no column reads, the database's own clock, and how it renders,
+/// probes and takes an advisory lock key.
 ///
 /// The provided methods check a table against the dialect, and against a statement of one form
-/// for the dialect's [`RowLock`](crate::RowLock) and [`Lease`](crate::Lease) implementations, and
-/// build the statements every built-in dialect writes the same way, through its quoting,
-/// placeholders and clock.
+/// for the dialect's [`RowLock`](crate::RowLock), [`Lease`](crate::Lease) and
+/// [`Advisory`](crate::Advisory) implementations, and build the statements every built-in dialect
+/// writes the same way, through its quoting, placeholders and clock.
 pub(crate) trait BuiltIn: Dialect {
     /// The longest name the database keeps; `None` where it keeps a name of any length.
     const NAME_LIMIT: Option<NameLimit>;
@@ -115,11 +122,26 @@ pub(crate) trait BuiltIn: Dialect {
     /// default.
     const DEFAULT_ROW: &'static str;
 
+    /// Whether a backslash in a string literal escapes the character after it, so a literal
+    /// doubles each backslash of its text.
+    const BACKSLASH_ESCAPES: bool;
+
+    /// Whether an update returns the rows it changed, so the take counts the attempt and reads the
+    /// row in one statement.
+    const UPDATE_RETURNS: bool;
+
+    /// How the advisory claim leaves out the candidates whose key another session holds.
+    const PROBE: Probe;
+
     /// The database's current time.
     fn database_now(&self) -> &'static str;
 
     /// Writes the database's current time plus [`Param::Delay`] microseconds.
     fn database_later(&self, sql: &mut SqlWriter<'_, Self>);
+
+    /// Writes the lock key of a row: the text the database renders from `key`'s parts, as the
+    /// dialect locks it.
+    fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]);
 
     /// Refuses a name longer than the database keeps.
     fn names_fit<'a>(
@@ -152,7 +174,7 @@ pub(crate) trait BuiltIn: Dialect {
     }
 
     /// The table's form, when the dialect builds it: the row lock where the database locks rows,
-    /// or a lease on the crate's clock.
+    /// a lease on the crate's clock, or an advisory lock.
     fn form<'a>(&self, spec: &TableSpec<'a>) -> Result<Built<'a>, StatementError> {
         self.spec_fits(spec)?;
         match spec.form() {
@@ -165,8 +187,36 @@ pub(crate) trait BuiltIn: Dialect {
                 })
             }
             Form::Lease(expiry) => Ok(Built::Lease(expiry)),
+            Form::Advisory(_) => Ok(Built::Advisory),
             other => Err(StatementError::UnsupportedForm {
                 dialect: self.name(),
+                form: other.name(),
+            }),
+        }
+    }
+
+    /// The lock key of a table, for `statement`, a statement of the advisory lock form: the table
+    /// takes its rows by advisory lock without FIFO groups, and its names and its key's fit.
+    fn advised<'a>(
+        &self,
+        spec: &TableSpec<'a>,
+        statement: &'static str,
+    ) -> Result<&'a [KeyPart<'a>], StatementError> {
+        self.spec_fits(spec)?;
+        match spec.form() {
+            // In this form the lock key keeps a group in order.
+            Form::Advisory(_) if spec.is_fifo() => Err(StatementError::AdvisoryFifo {
+                dialect: self.name(),
+            }),
+            Form::Advisory(key) => {
+                self.names_fit(key.iter().filter_map(|part| match part {
+                    KeyPart::Column(column) => Some(*column),
+                    KeyPart::Literal(_) => None,
+                }))?;
+                Ok(key)
+            }
+            other => Err(StatementError::FormMismatch {
+                statement,
                 form: other.name(),
             }),
         }
@@ -255,6 +305,8 @@ pub(crate) trait BuiltIn: Dialect {
                 // The rollback releases the row, and there is no attempt to count.
                 None => return Ok(None),
             },
+            // The take counted the attempt, and the unlock frees the row.
+            Built::Advisory => return Ok(None),
         };
         sql.settled_row(spec);
         Ok(Some(sql.finish()))
@@ -281,6 +333,8 @@ pub(crate) trait BuiltIn: Dialect {
             Built::Lease(_) => {
                 sql.release(spec);
             }
+            // The take counted the attempt, and the unlock frees the row.
+            Built::Advisory => {}
         }
         sql.settled_row(spec);
         Ok(sql.finish())
@@ -340,6 +394,58 @@ pub(crate) trait BuiltIn: Dialect {
             .push(" AND ")
             .lease_free(expiry.name());
         Ok(sql.finish())
+    }
+
+    /// The advisory claim: the id and the lock key of up to [`Param::Limit`] claimable rows in
+    /// claim order, without the rows whose key another session holds where the database can tell.
+    fn advisory_claim_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        let key = self.advised(spec, "advisory_claim")?;
+        let mut sql = SqlWriter::new(self);
+        sql.candidates(spec, key);
+        Ok(sql.finish())
+    }
+
+    /// The take of a candidate whose key the session holds: the count of its attempt and the read
+    /// of the row as it was before the count, while the row is still claimable; a read alone in a
+    /// table without an attempt.
+    fn take_statements(
+        &self,
+        spec: &TableSpec<'_>,
+        shape: ClaimShape,
+    ) -> Result<Vec<Statement>, StatementError> {
+        self.advised(spec, "take")?;
+        let Some(attempt) = spec.column(Role::Attempt) else {
+            let mut read = SqlWriter::new(self);
+            read.push("SELECT ")
+                .claimed_columns(spec, shape)
+                .push(" FROM ")
+                .table(spec)
+                .taken_row(spec);
+            return Ok(vec![read.finish()]);
+        };
+        let mut count = SqlWriter::new(self);
+        count
+            .push("UPDATE ")
+            .table(spec)
+            .push(" SET ")
+            .increment(attempt.name())
+            .taken_row(spec);
+        if Self::UPDATE_RETURNS {
+            count.push(" RETURNING ").counted_columns(spec, shape);
+            return Ok(vec![count.finish()]);
+        }
+        // The read runs only after the count changed the row, and the session's lock keeps every
+        // other claim off it, so the id alone names the row.
+        let mut read = SqlWriter::new(self);
+        read.push("SELECT ")
+            .counted_columns(spec, shape)
+            .push(" FROM ")
+            .table(spec)
+            .push(" WHERE ")
+            .ident(spec.id().name())
+            .push(" = ")
+            .param(Param::Id);
+        Ok(vec![count.finish(), read.finish()])
     }
 
     /// The move of a row whose attempts are spent into another table, as two statements of one
@@ -519,7 +625,6 @@ where
     /// The columns a reader that knows no struct reads, each under its role's attribute name:
     /// `id`, `partition_key`, `attempt`, `headers` and `payload`, in [`Role::ALL`] order and only
     /// where the table has them.
-    #[cfg(any(feature = "postgres", feature = "mysql"))]
     pub(crate) fn role_columns(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         self.roles_read(spec, false)
     }
@@ -544,7 +649,6 @@ where
     /// Every column of a row an update that counted its attempt returns, the attempt one less
     /// under its own name, so the row reads as it was before; `*` when the struct flattens
     /// another, whose columns the description cannot see.
-    #[cfg(feature = "sqlite")]
     fn columns_before_count(&mut self, spec: &TableSpec<'_>) -> &mut Self {
         if spec.selects_all() {
             return self.push("*");
@@ -600,8 +704,21 @@ where
         &mut self,
         spec: &TableSpec<'_>,
         conditions: &[Condition],
-        keyword: &str,
+        keyword: &'static str,
     ) -> &mut Self {
+        self.conditions_then(spec, conditions, keyword);
+        self
+    }
+
+    /// Each of `conditions` the table has a column for, as [`conditions`](Self::conditions)
+    /// writes them; returns what a condition after them opens with: `keyword` when the table has
+    /// none of them, ` AND ` otherwise.
+    fn conditions_then(
+        &mut self,
+        spec: &TableSpec<'_>,
+        conditions: &[Condition],
+        keyword: &'static str,
+    ) -> &'static str {
         let mut keyword = keyword;
         for &condition in conditions {
             let Some(column) = spec.column(condition.role()) else {
@@ -616,7 +733,7 @@ where
                 Condition::Free => self.lease_free(column.name()),
             };
         }
-        self
+        keyword
     }
 
     /// No lease holds the row: it has none, or its lease ended by [`Param::LeaseNow`].
@@ -670,12 +787,21 @@ where
     }
 
     /// The columns a claim of `shape` selects.
-    #[cfg(any(feature = "postgres", feature = "mysql"))]
     fn claimed_columns(&mut self, spec: &TableSpec<'_>, shape: ClaimShape) -> &mut Self {
         match shape {
             ClaimShape::Rows => self.columns(spec),
             ClaimShape::Ids => self.ident(spec.id().name()),
             ClaimShape::Roles => self.role_columns(spec),
+        }
+    }
+
+    /// The columns of `shape` of a row whose attempt an update counted, read as the row was
+    /// before the count.
+    fn counted_columns(&mut self, spec: &TableSpec<'_>, shape: ClaimShape) -> &mut Self {
+        match shape {
+            ClaimShape::Rows => self.columns_before_count(spec),
+            ClaimShape::Ids => self.ident(spec.id().name()),
+            ClaimShape::Roles => self.roles_read(spec, true),
         }
     }
 
@@ -801,12 +927,8 @@ where
             .push(" IN (SELECT ")
             .ident(id)
             .claimed_rows(spec, "")
-            .push(") RETURNING ");
-        match shape {
-            ClaimShape::Rows => self.columns_before_count(spec),
-            ClaimShape::Ids => self.ident(id),
-            ClaimShape::Roles => self.roles_read(spec, true),
-        }
+            .push(") RETURNING ")
+            .counted_columns(spec, shape)
     }
 
     /// `"column" = "column" + 1`.
