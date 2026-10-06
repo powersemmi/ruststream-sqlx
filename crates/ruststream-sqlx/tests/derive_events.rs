@@ -124,8 +124,7 @@ static EMAILS: LazyLock<Queue> = LazyLock::new(|| Queue {
     counted_attempt: false,
     poll_interval: Duration::from_secs(1),
     lease: None,
-    max_attempts: None,
-    dead_letter: None,
+    cap: None,
 });
 
 fn values(event: Event, id: &i64) -> Values<'_, Postgres, SendEmail> {
@@ -247,8 +246,7 @@ static JOBS: LazyLock<Queue> = LazyLock::new(|| Queue {
     counted_attempt: false,
     poll_interval: Duration::from_secs(1),
     lease: Some(Duration::from_secs(30)),
-    max_attempts: None,
-    dead_letter: None,
+    cap: None,
 });
 
 #[test]

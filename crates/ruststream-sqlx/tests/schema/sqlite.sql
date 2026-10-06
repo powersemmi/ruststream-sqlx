@@ -164,3 +164,11 @@ CREATE TABLE unreadable_jobs (
     locked_until TEXT,
     payload      INTEGER NOT NULL
 );
+
+-- Where spent jobs of `unreadable_jobs` go.
+CREATE TABLE unreadable_jobs_dead (
+    id           INTEGER PRIMARY KEY,
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    locked_until TEXT,
+    payload      INTEGER NOT NULL
+);

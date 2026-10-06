@@ -168,7 +168,8 @@ async fn a_row_that_does_not_decode_reports_the_attempt_its_field_converts() {
     let retries = FailurePolicies::default().with_decode(FailurePolicy::Retry);
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
         b.include(never_converted.on_failure(retries))
-            .max_attempts(nonzero!(2u32));
+            .max_attempts(nonzero!(2u32))
+            .dead_letter("unreadable_jobs_dead");
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
@@ -188,7 +189,12 @@ async fn a_row_that_does_not_decode_reports_the_attempt_its_field_converts() {
     assert_eq!(
         rows(&db.pool, "unreadable_jobs").await,
         0,
-        "the second delivery spent the row's attempts, and the cap finished it"
+        "the second delivery spent the row's attempts"
+    );
+    assert_eq!(
+        rows(&db.pool, "unreadable_jobs_dead").await,
+        1,
+        "the spent row moved into the dead-letter table"
     );
     tb.shutdown().await.expect("the app stops");
     db.finish().await;

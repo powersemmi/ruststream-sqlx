@@ -112,9 +112,10 @@ What a handler answers decides the row's fate:
 - `retry_after(d)` hides the row until `retry_after` comes; a table without that column returns
   it at once, and the runtime logs a warning;
 - `drop()` finishes the row as `ack()` does;
-- `max_attempts(n)` on the mount reads `attempt`. At the cap, `dead_letter(..)` moves the row to
-  another group or into a table with the same columns; without a destination the row is
-  finished.
+- `max_attempts(n)` and `dead_letter(..)` on the mount come together: `attempt` counts the
+  deliveries, and at the cap the row moves to another group or into a table with the same
+  columns. With `max_attempts(1)` every failure moves the row at once. A mount that declares one
+  without the other stops at startup.
 
 "Now" comes from [`SystemClock`] unless the struct names another source:
 `#[inbox(clock = DatabaseClock)]` reads the database's clock, and a service's own [`Clock`] fits
@@ -370,8 +371,9 @@ not compile, and [`Inbox`] lists the errors. A subscription builds its statement
 and prepares each one on the server: a table or a column the struct names and the database lacks
 stops it, and [`SqlxBrokerError::Schema`] names the table and the statement. Preparing checks the
 names, not the column types: the types are the service's to get right. A retry declaration the
-table cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempts(..)` needs an
-`attempt` column. On MySQL and MariaDB the subscription also reads the server's version.
+table cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempts(..)` and
+`dead_letter(..)` come together, and the cap needs an `attempt` column. On MySQL and MariaDB the
+subscription also reads the server's version.
 
 A claimed row whose columns do not decode into the struct reaches the subscription's
 `on_failure(decode = ..)` policy, which settles it, and the subscription goes on with the next

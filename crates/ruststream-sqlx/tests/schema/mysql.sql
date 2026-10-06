@@ -151,3 +151,6 @@ CREATE TABLE unreadable_jobs (
     locked_until DATETIME,
     payload      BIGINT NOT NULL
 );
+
+-- Where spent jobs of `unreadable_jobs` go.
+CREATE TABLE unreadable_jobs_dead LIKE unreadable_jobs;

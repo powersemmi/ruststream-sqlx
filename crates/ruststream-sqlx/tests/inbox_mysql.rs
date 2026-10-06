@@ -405,7 +405,9 @@ live::mysql_stands! {
             .expect("connects");
         let queue = SubscriptionSource::<ConnectedSqlxBroker<Db, Doctored>>::declare_retry(
             InboxQueue::<lease::Plain>::new("plain"),
-            &RetryDeclaration::new().with_dead_letter("plain_jobs_dead"),
+            &RetryDeclaration::new()
+                .with_max_attempts(nonzero!(1u32))
+                .with_dead_letter("plain_jobs_dead"),
         );
         let mut subscriber = queue.subscribe(&connected).await.expect("opens");
         let delivery = {

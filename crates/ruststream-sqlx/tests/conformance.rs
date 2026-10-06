@@ -15,56 +15,9 @@ use std::time::Duration;
 
 use futures::executor::block_on;
 use ruststream::conformance::{harness, retry};
-use ruststream::{
-    BrokerMoves, ConnectedBroker, DeclareRetryError, PublishPolicy, RetryDeclaration,
-    SubscriptionSource, nonzero,
-};
+use ruststream::{PublishPolicy, nonzero};
 use ruststream_sqlx::{InboxQueue, Repository, SqlxBroker};
 use sqlx::Pool;
-
-/// The crate's descriptor, with the cap or the destination declared alone refused at startup.
-///
-/// `retry::broker_moves` expects a broker that moves spent deliveries itself to refuse half a
-/// declaration, as a dead-letter policy that needs both halves must. A table applies each half on
-/// its own, as the runtime does where it runs the retry path: the cap alone finishes the row at the
-/// cap, and the destination alone takes every retry. So the crate opens such a subscription; this
-/// wrapper refuses it, and the suite goes on to hold the crate's own descriptor to the cap, the
-/// counts and the move.
-struct WholeDeclarations<Source>(Source);
-
-impl<Connected, Source> SubscriptionSource<Connected> for WholeDeclarations<Source>
-where
-    Connected: ConnectedBroker,
-    Source: SubscriptionSource<Connected, Copies = BrokerMoves> + Send,
-{
-    type Subscriber = Source::Subscriber;
-    type Copies = BrokerMoves;
-
-    fn name(&self) -> &str {
-        self.0.name()
-    }
-
-    async fn subscribe(self, connected: &Connected) -> Result<Self::Subscriber, Connected::Error> {
-        self.0.subscribe(connected).await
-    }
-
-    fn declare_retry(self, declaration: &RetryDeclaration) -> Self {
-        Self(self.0.declare_retry(declaration))
-    }
-
-    fn declare_retry_on(
-        &self,
-        connected: &Connected,
-        declaration: &RetryDeclaration,
-    ) -> Result<(), DeclareRetryError> {
-        if declaration.max_attempts().is_some() != declaration.dead_letter().is_some() {
-            return Err(DeclareRetryError::Broker(
-                "half a retry declaration, refused for the suite".into(),
-            ));
-        }
-        self.0.declare_retry_on(connected, declaration)
-    }
-}
 
 live::matrix! {
     fn broker(pool: &Pool<Db>) -> SqlxBroker<Db> {
@@ -107,7 +60,7 @@ live::matrix! {
         let pool = db.pool.clone();
         retry::broker_moves(
             move || SqlxBroker::new(pool.clone()).poll_interval(Duration::from_millis(50)),
-            |name| WholeDeclarations(InboxQueue::<LifecycleRow>::new(name.to_owned())),
+            |name| InboxQueue::<LifecycleRow>::new(name.to_owned()),
             |connected| {
                 block_on(Repository::<LifecycleRow>::default().pair(connected))
                     .expect("a repository pairs with the connected broker")

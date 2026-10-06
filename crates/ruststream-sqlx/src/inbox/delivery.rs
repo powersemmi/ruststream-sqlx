@@ -321,23 +321,13 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
         self
     }
 
-    /// Whether the row's attempts are spent: its `attempt` has reached the declared cap.
-    fn spent(&self) -> bool {
-        let attempt = self.redelivery_count();
+    /// The declared destination, where the row's `attempt` has reached the declared cap.
+    fn spent(&self) -> Option<&'static str> {
+        let attempt = self.redelivery_count()?;
         self.queue
-            .max_attempts
-            .is_some_and(|cap| attempt.is_some_and(|attempt| attempt >= u64::from(cap.get())))
-    }
-
-    /// Where a retry of this delivery goes instead of back to its queue: the declared
-    /// destination, or the discard once the attempts are spent with none declared.
-    fn redirected(&self) -> Option<Step> {
-        match (self.queue.dead_letter, self.queue.max_attempts) {
-            (Some(destination), None) => Some(Step::DeadLetter(destination)),
-            (Some(destination), Some(_)) if self.spent() => Some(Step::DeadLetter(destination)),
-            (None, Some(_)) if self.spent() => Some(Step::Discard),
-            _ => None,
-        }
+            .cap
+            .filter(|cap| attempt >= u64::from(cap.attempts.get()))
+            .map(|cap| cap.dead_letter)
     }
 
     /// What `outcome` runs: its own statement, or the declared move once the attempts are spent.
@@ -348,19 +338,20 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
             Outcome::Retry => Step::Retry,
             Outcome::RetryAfter(delay) => Step::RetryAfter(delay),
         };
-        if self.spent() {
-            tracing::warn!(
-                target: "ruststream_sqlx",
-                subscription = self.queue.name,
-                table = self.queue.table,
-                row = self.queue.row,
-                id = ?self.claimed.id::<DB>(),
-                attempt = self.redelivery_count(),
-                dead_letter = self.queue.dead_letter,
-                "the row's attempts are spent",
-            );
-        }
-        self.redirected().unwrap_or(asked)
+        let Some(dead_letter) = self.spent() else {
+            return asked;
+        };
+        tracing::warn!(
+            target: "ruststream_sqlx",
+            subscription = self.queue.name,
+            table = self.queue.table,
+            row = self.queue.row,
+            id = ?self.claimed.id::<DB>(),
+            attempt = self.redelivery_count(),
+            dead_letter,
+            "the row's attempts are spent",
+        );
+        Step::DeadLetter(dead_letter)
     }
 
     async fn settle(self, outcome: Outcome) -> Result<(), AckError> {
@@ -685,9 +676,9 @@ where
     }
 
     fn supports_nack_after(&self) -> bool {
-        // A delivery whose retry moves the row elsewhere has no delayed redelivery to offer: the
-        // runtime then settles it with `nack(true)`, which moves it, and expects nothing back.
-        self.queue.native_retry_after && self.redirected().is_none()
+        // A delivery whose attempts are spent has no delayed redelivery to offer: the runtime then
+        // settles it with `nack(true)`, which moves the row, and expects nothing back.
+        self.queue.native_retry_after && self.spent().is_none()
     }
 
     async fn nack_after(self, delay: Duration) -> Result<(), AckError> {

@@ -49,9 +49,10 @@ use super::{FormDialect, FormOn, InboxRow, PayloadRow};
 /// [`Lease`](crate::dialect::Lease) for the lease form. SQLite has no row locks, so a table there
 /// takes the lease form, and a subscription to one without `locked_until` does not compile.
 ///
-/// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table: at the cap the
-/// row moves to the `dead_letter` group (with a `group` field) or into the `dead_letter` table
-/// (one with the same columns), and without a destination it is deleted or marked.
+/// `max_attempts(n)` and `dead_letter(..)` at the mount site map onto the table, declared together:
+/// at the cap the row moves to the `dead_letter` group (with a `group` field) or into the
+/// `dead_letter` table (one with the same columns). With `max_attempts(1)` every failure moves the
+/// row at once. A registration that declares one without the other stops at startup.
 ///
 /// # Examples
 ///
@@ -426,6 +427,25 @@ pub(crate) fn refused_declaration(
         row: description.row,
         reason,
     };
+    // The table moves a spent row itself, so the cap and the destination come together: a half
+    // would leave the row nowhere to go, or nothing to count before it goes.
+    match (declaration.max_attempts(), declaration.dead_letter()) {
+        (Some(_), None) => {
+            return Some(refuse(
+                "the registration declares `max_attempts(..)` without `dead_letter(..)`: name \
+                 where a row whose attempts are spent goes"
+                    .to_owned(),
+            ));
+        }
+        (None, Some(_)) => {
+            return Some(refuse(
+                "the registration declares `dead_letter(..)` without `max_attempts(..)`: name the \
+                 cap, `max_attempts(1)` to move a row at its first failure"
+                    .to_owned(),
+            ));
+        }
+        _ => {}
+    }
     if declaration.max_attempts().is_some() && spec.column(Role::Attempt).is_none() {
         return Some(refuse(
             "`max_attempts(..)` counts deliveries in the `attempt` column: add \
@@ -472,10 +492,19 @@ pub struct Queue {
     pub poll_interval: Duration,
     /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
     pub lease: Option<Duration>,
-    /// The declared cap on attempts.
-    pub max_attempts: Option<NonZeroU32>,
-    /// The declared dead-letter destination.
-    pub dead_letter: Option<&'static str>,
+    /// The declared cap on attempts and where a spent row goes, declared together.
+    pub cap: Option<Cap>,
+}
+
+/// A registration's cap on a row's attempts and the destination of a row that spent them, which
+/// it declares together. Machinery.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Cap {
+    /// How many deliveries a row gets.
+    pub attempts: NonZeroU32,
+    /// The group or the table a spent row moves to.
+    pub dead_letter: &'static str,
 }
 
 static QUEUES: LazyLock<Mutex<Vec<&'static Queue>>> = LazyLock::new(Mutex::default);
@@ -662,8 +691,13 @@ where
         lease: description
             .leased()
             .then(|| whole_seconds(timing.lease.unwrap_or(shared.lease))),
-        max_attempts: declaration.max_attempts(),
-        dead_letter: declaration.dead_letter().map(intern_name),
+        cap: declaration
+            .max_attempts()
+            .zip(declaration.dead_letter())
+            .map(|(attempts, destination)| Cap {
+                attempts,
+                dead_letter: intern_name(destination),
+            }),
     }
     .intern();
     // A book per subscription, not per queue: a queue's description is shared by every
