@@ -558,7 +558,8 @@ pub trait Lock<DB: Database>: InboxRow {
 /// A settlement calls it after its statement, on the connection that holds the delivery, and the
 /// connection goes back to the pool once it answered `true`. An unlock that answers `false` or
 /// fails closes the connection instead, which ends the session and its locks. A delivery dropped
-/// unsettled runs it before its connection closes.
+/// unsettled runs it before its connection closes, and `shutdown` runs it for every delivery in
+/// work.
 ///
 /// # Examples
 ///

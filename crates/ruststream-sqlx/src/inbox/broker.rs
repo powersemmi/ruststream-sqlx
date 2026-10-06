@@ -4,9 +4,10 @@ use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use futures::future::join_all;
 use ruststream::{Broker, ConnectedBroker};
 #[cfg(any(
     feature = "postgres",
@@ -443,8 +444,9 @@ impl<DB: Database> Shared<DB> {
 /// It hands out publishers and opens subscriptions; [`shutdown`](ConnectedBroker::shutdown) stops
 /// its claim loops and the extension of its leases, and refuses every handle it handed out. A
 /// delivery in work keeps its lease after `shutdown` and settles as before; its lease is no
-/// longer extended. In the advisory lock form `shutdown` returns once the connections of
-/// deliveries dropped unsettled have closed, so none of their locks outlives it.
+/// longer extended. In the advisory lock form `shutdown` releases the lock of every delivery in
+/// work and returns once no lock of the broker is left; such a delivery's settlement then fails
+/// with [`SqlxBrokerError::Closed`].
 ///
 /// # Examples
 ///
@@ -455,7 +457,8 @@ impl<DB: Database> Shared<DB> {
 /// use ruststream_sqlx::SqlxBroker;
 ///
 /// let connected = SqlxBroker::new(pool).connect().await?;
-/// let _closed = connected.shutdown().await?;
+/// let closed = connected.shutdown().await?;
+/// tracing::info!(locks_released = closed.locks_released(), "inbox closed");
 /// # Ok(())
 /// # }
 /// ```
@@ -503,23 +506,43 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
     type Closed = ClosedSqlxBroker;
 
     /// Stops the claim loops and the extension of every lease, and refuses every handle handed
-    /// out before. A delivery in work settles as before; its lease runs out unless it settles
-    /// first. It returns once the sessions of advisory deliveries dropped unsettled have closed.
+    /// out before. A delivery in work in the lease or row lock form settles as before; its lease
+    /// runs out unless it settles first.
+    ///
+    /// In the advisory lock form it then releases the lock of every delivery in work: each
+    /// session unlocks its key and goes back to the pool, or closes where the database does not
+    /// confirm the release. It waits for each session lent to a settlement in flight, and for the
+    /// sessions still closing after a delivery or a claim was dropped, and returns once no lock of
+    /// the broker is left. In a service the runtime has stopped its subscriptions by then, and its
+    /// shutdown timeout bounds the handlers that hold a session.
     fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
         // Why a flag rather than a type: the pool is the service's and stays open, so a
         // publisher handed out before shutdown would otherwise keep writing.
         self.shared.closed.store(true, Ordering::Release);
         self.shared.stopping.cancel();
-        let closing = self.shared.closing;
+        self.shared.closing.begin_shutdown();
+        let shared = self.shared;
         async move {
-            // A session closing after its delivery dropped unsettled may still hold its lock.
-            closing.settled().await;
-            Ok(ClosedSqlxBroker { _private: () })
+            let books = shared
+                .locks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+            let released = join_all(books.into_iter().map(LockBook::release_all)).await;
+            // A session closing after its delivery or its claim was dropped may still hold its
+            // lock.
+            shared.closing.settled().await;
+            Ok(ClosedSqlxBroker {
+                locks_released: released.into_iter().sum(),
+                connections_closed: shared.closing.forced(),
+            })
         }
     }
 }
 
-/// The terminal witness of a shut-down inbox broker.
+/// The broker after `shutdown`: what it did to the advisory locks its deliveries held.
+///
+/// A broker without advisory subscriptions reports none of either.
 ///
 /// # Examples
 ///
@@ -530,13 +553,73 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
 /// use ruststream_sqlx::{ClosedSqlxBroker, SqlxBroker};
 ///
 /// let closed: ClosedSqlxBroker = SqlxBroker::new(pool).connect().await?.shutdown().await?;
-/// tracing::info!(?closed, "inbox closed");
+/// tracing::info!(
+///     locks_released = closed.locks_released(),
+///     connections_closed = closed.connections_closed(),
+///     "inbox closed",
+/// );
 /// # Ok(())
 /// # }
 /// ```
 #[derive(Debug)]
 pub struct ClosedSqlxBroker {
-    _private: (),
+    locks_released: usize,
+    connections_closed: usize,
+}
+
+impl ClosedSqlxBroker {
+    /// Locks `shutdown` released with `Unlock` (or freed from the process registry), whose sessions
+    /// went back to the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "postgres")]
+    /// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
+    /// use ruststream::{Broker, ConnectedBroker};
+    /// use ruststream_sqlx::SqlxBroker;
+    ///
+    /// let closed = SqlxBroker::new(pool).connect().await?.shutdown().await?;
+    /// if closed.locks_released() > 0 {
+    ///     tracing::info!(
+    ///         released = closed.locks_released(),
+    ///         "deliveries in work went back to their queues",
+    ///     );
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn locks_released(&self) -> usize {
+        self.locks_released
+    }
+
+    /// Sessions that held a lock and were closed instead: where `shutdown`'s release failed, and
+    /// where a delivery dropped unsettled, or a claim dropped midway, left its session closing when
+    /// `shutdown` began.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[cfg(feature = "postgres")]
+    /// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
+    /// use ruststream::{Broker, ConnectedBroker};
+    /// use ruststream_sqlx::SqlxBroker;
+    ///
+    /// let closed = SqlxBroker::new(pool).connect().await?.shutdown().await?;
+    /// if closed.connections_closed() > 0 {
+    ///     tracing::warn!(
+    ///         closed = closed.connections_closed(),
+    ///         "sessions holding a lock were closed rather than released",
+    ///     );
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use]
+    pub const fn connections_closed(&self) -> usize {
+        self.connections_closed
+    }
 }
 
 // Each description comes from `from_url`, which keeps the host and port and drops the user and
@@ -587,5 +670,26 @@ impl<D: Dialect + 'static> DescribeServer for SqlxBroker<Any, D> {
             "mysql" | "mariadb" => ServerSpec::from_url(url.as_str(), "mysql"),
             scheme => ServerSpec::from_url(url.as_str(), scheme),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClosedSqlxBroker;
+
+    #[test]
+    fn the_closed_broker_reports_the_counts_its_debug_shows() {
+        let closed = ClosedSqlxBroker {
+            locks_released: 2,
+            connections_closed: 1,
+        };
+        assert_eq!(
+            (closed.locks_released(), closed.connections_closed()),
+            (2, 1)
+        );
+        assert_eq!(
+            format!("{closed:?}"),
+            "ClosedSqlxBroker { locks_released: 2, connections_closed: 1 }"
+        );
     }
 }

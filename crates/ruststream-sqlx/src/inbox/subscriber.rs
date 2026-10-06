@@ -489,7 +489,8 @@ where
 /// the pool is below its size, and the claim ends where the pool is full. A key this claim took
 /// already is passed over, and so is a key another session holds. A session left over holds
 /// nothing and goes back to the pool. A claim that fails or is dropped midway leaves no lock: what
-/// it took drops, so each session ends, one that may hold a lock closed, and each row returns.
+/// it took drops, so each session ends, one that may hold a lock closed after an unlock of its key,
+/// and each row returns.
 async fn claim_advised<DB, Row>(
     pool: &Pool<DB>,
     book: &'static LockBook<DB>,
@@ -542,35 +543,46 @@ where
         if spare.is_none() {
             spare = next_session(pool, book.closing()).await;
         }
-        let Some(session) = spare.as_mut() else {
+        let Some(session) = spare.take() else {
             break;
         };
-        if book.process() {
-            if !session.take_in_process(key) {
-                continue;
-            }
+        // From its lock until the book holds it, the session goes with the candidate's key: a
+        // claim dropped or failed midway closes it after an unlock of the key, so the lock is gone
+        // once the close ends.
+        let mut locked = book.locked(session, key);
+        let took = if book.process() {
+            locked.session().take_in_process(key)
         } else {
             // Marked before the statement leaves: a lock statement dropped midway may have taken
             // the lock, and a session that may hold one closes instead of going back to the pool.
-            session.set_locked(true);
-            if !Row::lock(session.conn(), cx, key)
+            locked.session().set_locked(true);
+            let took = Row::lock(locked.session().conn(), cx, key)
                 .await
-                .map_err(named(prepared.lock, "lock"))?
-            {
-                session.set_locked(false);
-                continue;
+                .map_err(named(prepared.lock, "lock"))?;
+            if !took {
+                locked.session().set_locked(false);
             }
+            took
+        };
+        if !took {
+            spare = Some(locked.into_session());
+            continue;
         }
         let before = taking.rows.len();
-        let found = Row::take(session.conn(), cx, id, taking.rows)
+        let found = Row::take(locked.session().conn(), cx, id, taking.rows)
             .await
             .map_err(named(prepared.take, "take"))?;
         if !found {
             // Another holder settled the row between the select and the lock: its key goes, and
             // the session tries the next candidate.
-            if !free_key::<DB, Row>(session, book, &settling, key).await? {
+            let freed = free_key::<DB, Row>(locked.session(), book, &settling, key).await?;
+            let session = locked.into_session();
+            if freed {
+                spare = Some(session);
+            } else {
                 // The database did not confirm the release: the session closes, and the claim
                 // goes on with another one.
+                drop(session);
                 spare = None;
             }
             continue;
@@ -582,10 +594,7 @@ where
                 sqlx::Error::Protocol(format!("the take of one candidate read {read} rows")),
             ));
         }
-        let Some(session) = spare.take() else {
-            break;
-        };
-        taking.holds.push(book.enter(key, session));
+        taking.holds.push(book.enter(key, locked.into_session()));
         taken.push(index);
         if taking.holds.len() >= limit {
             break;

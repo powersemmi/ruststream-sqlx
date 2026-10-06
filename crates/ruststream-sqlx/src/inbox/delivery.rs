@@ -12,7 +12,7 @@ use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 use super::PayloadRow;
-use super::advisory::LockHold;
+use super::advisory::{LockHold, Locked};
 #[cfg(feature = "testing")]
 use super::broker::Shared;
 use super::database::QueueDatabase;
@@ -471,12 +471,12 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
                 }
             }
             Hold::Advisory(hold) => {
-                let Some((session, key)) = hold.lend() else {
+                let Some(lent) = hold.lend() else {
                     // Why a runtime error: `shutdown` releases the lock of a delivery whose handler
                     // still works, a race between two tasks no type can order.
                     return Err(AckError::Broker(Box::new(SqlxBrokerError::Closed)));
                 };
-                match settle_advised::<DB, Row>(hold, session, key, &cx, id, step)
+                match settle_advised::<DB, Row>(hold, lent, &cx, id, step)
                     .await
                     .map_err(failed)?
                 {
@@ -587,16 +587,16 @@ where
     settled
 }
 
-/// Settles the delivery of `hold` on `session`, which holds the lock on its row's `key`: the
+/// Settles the delivery of `hold` on its `lent` session, which holds the lock on its row's key: the
 /// statement of `step`, then the release of the key, never before the statement returned, on the
 /// same session. The session then goes back to the pool, or closes where the database did not
-/// confirm the release, and the delivery leaves the book.
+/// confirm the release, and the delivery leaves the book. Dropped midway, the settlement closes
+/// the session after an unlock of the key.
 ///
 /// A step that changes no row has still settled: the lock, not a token, holds the row.
 async fn settle_advised<DB, Row>(
     hold: LockHold<DB>,
-    mut session: Session<DB>,
-    key: String,
+    mut lent: Locked<'static, DB>,
     cx: &Settling,
     id: &Row::Id,
     step: Step,
@@ -605,12 +605,17 @@ where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    let settled = run_advised::<DB, Row>(&mut session, cx, id, step).await;
+    let settled = run_advised::<DB, Row>(lent.session(), cx, id, step).await;
     if hold.book().process() {
-        session.free_in_process();
+        lent.session().free_in_process();
     } else {
-        match Row::unlock(session.conn(), cx, &key).await {
-            Ok(true) => session.set_locked(false),
+        let unlocked = {
+            let (conn, key) = lent.conn_and_key();
+            Row::unlock(conn, cx, key).await
+        };
+        let key = lent.key();
+        match unlocked {
+            Ok(true) => lent.session().set_locked(false),
             Ok(false) => tracing::warn!(
                 target: "ruststream_sqlx",
                 subscription = cx.queue.name,
@@ -633,8 +638,9 @@ where
             ),
         }
     }
+    let (session, key) = lent.into_parts();
     session.release();
-    hold.leave(key);
+    hold.leave(key.into_owned());
     settled
 }
 

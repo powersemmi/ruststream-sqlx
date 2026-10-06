@@ -3,9 +3,7 @@
 //! either.
 
 use std::pin::pin;
-#[cfg(feature = "testing")]
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -19,9 +17,9 @@ use super::engine::Settling;
 #[cfg(feature = "testing")]
 use super::testing::off_clock;
 
-/// How long a session's close may take. Past it the connection drops, which closes its socket, and
-/// the server ends the session all the same.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a session's close, or the release `shutdown` runs on it, may take. Past it the
+/// connection drops, which closes its socket, and the server ends the session all the same.
+pub(crate) const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A row's unlock of a key, erased from the row's type: what a session about to close runs to
 /// release the lock it holds.
@@ -58,6 +56,10 @@ pub(crate) struct Session<DB: Database> {
     /// process.
     process: Option<ProcessKey>,
     closing: &'static Closing,
+    /// In process, the session among those `shutdown` waits for until the book holds it: a claim
+    /// there runs on a thread of its own, which goes on after the stream that started it is gone.
+    #[cfg(feature = "testing")]
+    claiming: Option<Counted>,
 }
 
 impl<DB: Database> Session<DB> {
@@ -75,14 +77,27 @@ impl<DB: Database> Session<DB> {
         pool.try_acquire().map(|conn| Self::on(conn, closing))
     }
 
-    const fn on(conn: PoolConnection<DB>, closing: &'static Closing) -> Self {
+    fn on(conn: PoolConnection<DB>, closing: &'static Closing) -> Self {
         Self {
             conn: Some(conn),
             locked: false,
             open: false,
             process: None,
             closing,
+            #[cfg(feature = "testing")]
+            claiming: closing.in_process().then(|| Counted::new(closing, false)),
         }
+    }
+
+    /// Whether the session may hold an advisory lock in the database.
+    pub(crate) const fn locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Records that the book holds the session, which `shutdown` releases from there.
+    #[cfg(feature = "testing")]
+    pub(crate) fn entered(&mut self) {
+        self.claiming = None;
     }
 
     /// The connection, to run a statement on.
@@ -141,7 +156,8 @@ impl<DB: Database> Session<DB> {
         // needs a runtime, and a session may end where none runs.
         let _entered = self.closing.runtime.enter();
         if self.locked || self.open {
-            self.closing.close(conn, unlocking.filter(|_| self.locked));
+            self.closing
+                .close(conn, self.locked, unlocking.filter(|_| self.locked));
         } else {
             drop(conn);
         }
@@ -154,14 +170,21 @@ impl<DB: Database> Drop for Session<DB> {
     }
 }
 
-/// The sessions of one broker being closed: `shutdown` waits until none is.
+/// The sessions of one broker being closed: `shutdown` waits until none is, and counts the closes
+/// of sessions that held a lock it waited for.
 pub(crate) struct Closing {
-    /// The closes started and not yet ended.
+    /// The closes started and not yet ended; in process, also the sessions of claims the book
+    /// does not hold yet.
     in_flight: AtomicUsize,
     /// Wakes `settled` when the last close in flight ends.
     done: Notify,
     /// The runtime the broker connected on: the closes run there.
     runtime: Handle,
+    /// Set once `shutdown` began: a close of a session that held a lock and ends from then on is
+    /// one `shutdown` waited for.
+    shutting: AtomicBool,
+    /// The closes of sessions that held a lock, among those `shutdown` waited for.
+    forced: AtomicUsize,
     /// Whether the broker's connection runs in process: a close then runs off a paused clock.
     #[cfg(feature = "testing")]
     in_process: AtomicBool,
@@ -175,9 +198,30 @@ impl Closing {
             in_flight: AtomicUsize::new(0),
             done: Notify::new(),
             runtime,
+            shutting: AtomicBool::new(false),
+            forced: AtomicUsize::new(0),
             #[cfg(feature = "testing")]
             in_process: AtomicBool::new(false),
         }))
+    }
+
+    /// Marks the start of `shutdown`: from here on, a session that held a lock and ends its close
+    /// counts as closed by force.
+    pub(crate) fn begin_shutdown(&self) {
+        self.shutting.store(true, Ordering::SeqCst);
+    }
+
+    /// The sessions that held a lock and closed while `shutdown` ran: read once every close has
+    /// ended, it counts each one `shutdown` waited for.
+    pub(crate) fn forced(&self) -> usize {
+        self.forced.load(Ordering::Acquire)
+    }
+
+    /// Whether the broker's connection runs in process, where its database calls run off a
+    /// paused clock.
+    #[cfg(feature = "testing")]
+    pub(crate) fn in_process(&self) -> bool {
+        self.in_process.load(Ordering::Acquire)
     }
 
     /// Returns once no close is in flight.
@@ -202,15 +246,17 @@ impl Closing {
     /// Detaches `conn` from its pool, so it never serves another delivery, and closes it on the
     /// broker's runtime, after `unlocking` where one is given. One timeout bounds the unlock and
     /// the close together; past it the connection drops, which closes its socket, and the server
-    /// ends the session and its lock all the same. Counted until it ends; with that runtime gone
-    /// the task drops unrun, and the connection drops with it.
+    /// ends the session and its lock all the same. Counted until it ends, as the close of a
+    /// session that held a lock where `locked` says so; with that runtime gone the task drops
+    /// unrun, and the connection drops with it.
     fn close<DB: Database>(
         &'static self,
         conn: PoolConnection<DB>,
+        locked: bool,
         unlocking: Option<Unlocking<DB>>,
     ) {
         let mut raw = conn.detach();
-        let counted = Counted::new(self);
+        let counted = Counted::new(self, locked);
         let work = async move {
             // Inside the work, so the count drops when the close ends, and when the work is
             // dropped midway or never runs.
@@ -239,20 +285,29 @@ impl Closing {
     }
 }
 
-/// One close in flight, counted while it lives.
-struct Counted(&'static Closing);
+/// One close in flight, counted while it lives; `locked` where its session held a lock.
+struct Counted {
+    closing: &'static Closing,
+    locked: bool,
+}
 
 impl Counted {
-    fn new(closing: &'static Closing) -> Self {
+    fn new(closing: &'static Closing, locked: bool) -> Self {
         closing.in_flight.fetch_add(1, Ordering::AcqRel);
-        Self(closing)
+        Self { closing, locked }
     }
 }
 
 impl Drop for Counted {
     fn drop(&mut self) {
-        if self.0.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
-            self.0.done.notify_waiters();
+        let closing = self.closing;
+        // Counted before the close leaves the count, so `shutdown` reads it once nothing is in
+        // flight.
+        if self.locked && closing.shutting.load(Ordering::SeqCst) {
+            closing.forced.fetch_add(1, Ordering::AcqRel);
+        }
+        if closing.in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
+            closing.done.notify_waiters();
         }
     }
 }
@@ -314,8 +369,8 @@ mod tests {
     #[tokio::test]
     async fn settled_waits_for_every_close_in_flight() {
         let closing = Closing::leak(Handle::current());
-        let first = Counted::new(closing);
-        let second = Counted::new(closing);
+        let first = Counted::new(closing, false);
+        let second = Counted::new(closing, false);
         let mut settled = pin!(closing.settled());
         assert!(poll!(settled.as_mut()).is_pending());
         drop(first);
