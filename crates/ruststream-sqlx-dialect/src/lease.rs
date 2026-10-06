@@ -65,9 +65,12 @@ pub trait Lease: Dialect {
     /// as they were before.
     ///
     /// A table with FIFO groups keeps one row of a group in work. Its claim takes the group's
-    /// head, the first unfinished row of the group in claim order, and takes nothing while the
-    /// head is in work (a lease holds it) or not yet due. It binds no
-    /// [`Param::Limit`](crate::Param::Limit).
+    /// head, the first unfinished row of the group in claim order, and takes nothing while a row
+    /// of the group holds a lease or the head is not yet due, so a row that enters the group ahead
+    /// of the head in work waits too. It binds no [`Param::Limit`](crate::Param::Limit). It runs
+    /// in a transaction that first takes the group with the statement
+    /// [`fifo_guard`](Dialect::fifo_guard) gives, which keeps two claims apart until one of them
+    /// commits its lease.
     ///
     /// # Errors
     ///

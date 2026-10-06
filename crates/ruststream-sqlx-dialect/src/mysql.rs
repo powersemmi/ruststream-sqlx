@@ -90,6 +90,13 @@ const MARIADB_FLOOR: Floor = Floor {
 /// keys `IS_USED_LOCK` reports in use. An update returns no rows here, so the take counts the
 /// attempt, then reads the row.
 ///
+/// In a table with FIFO groups a claim's transaction takes its group
+/// ([`fifo_guard`](Dialect::fifo_guard)) with a locking read of the group's unfinished rows that
+/// skips the rows other transactions hold: the group is the claim's when the read took all of
+/// them. The rows stay locked until the transaction ends, in the row lock form until the delivery
+/// settles, and a write to one of them from elsewhere waits that long. Each claim reads every
+/// unfinished row of its group, and the whole table where the group's column has no index.
+///
 /// # Examples
 ///
 /// ```
@@ -291,6 +298,22 @@ impl Dialect for MySql {
             Opening::Isolation(Isolation::Serializable) => Ok(Some(BEGIN_SERIALIZABLE)),
             Opening::Mode(_) => Err(opening.refused(self.name())),
         }
+    }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        if !self.guards_group(spec)? {
+            return Ok(None);
+        }
+        // A named lock belongs to the session here, not to the transaction. A locking read that
+        // skips the rows other transactions hold takes every unfinished row of the group only
+        // when no other transaction holds one, and its locks last until the transaction ends.
+        let mut sql = SqlWriter::new(self);
+        sql.push("SELECT CAST((")
+            .group_count(spec, "")
+            .push(") = (")
+            .group_count(spec, LOCK)
+            .push(") AS SIGNED)");
+        Ok(Some(sql.finish()))
     }
 }
 

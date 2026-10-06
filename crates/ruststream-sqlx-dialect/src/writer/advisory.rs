@@ -32,7 +32,7 @@ where
 {
     /// `text` as a string literal: quoted, each quote doubled, and each backslash doubled where a
     /// backslash escapes.
-    fn literal(&mut self, text: &str) -> &mut Self {
+    pub(crate) fn literal(&mut self, text: &str) -> &mut Self {
         self.sql.push('\'');
         for character in text.chars() {
             if character == '\'' || (character == '\\' && D::BACKSLASH_ESCAPES) {

@@ -305,11 +305,14 @@ fn a_fifo_group_keeps_its_order_through_the_key_instead() {
     };
     assert_eq!(Postgres.advisory_claim(&fifo), Err(refused.clone()));
     assert_eq!(Postgres.take(&fifo, ClaimShape::Rows), Err(refused.clone()));
+    assert_eq!(Postgres.fifo_guard(&fifo), Err(refused.clone()));
     assert_eq!(
         refused.to_string(),
         "FIFO groups do not combine with the advisory lock form in the postgres dialect: drop \
          `fifo` and put the group's column into the lock key"
     );
+    // A table whose groups keep no order has no guard, in this form as in every other.
+    assert_eq!(Postgres.fifo_guard(&EMAILS), Ok(None));
 }
 
 #[test]

@@ -149,7 +149,9 @@ impl<'a> TableSpec<'a> {
     /// a group is in work, taken in claim order.
     ///
     /// A claim takes the group's head, its first unfinished row in claim order, and takes nothing
-    /// while the head is in work or not yet due. A delayed retry gives its row a later
+    /// while a row of the group is in work or the head is not yet due: the claim's transaction
+    /// first takes the group ([`Dialect::fifo_guard`](crate::Dialect::fifo_guard)), and a lease
+    /// claim waits while a row of the group holds a lease. A delayed retry gives its row a later
     /// `retry_after`, so the row moves behind the rows of its group due earlier.
     ///
     /// The advisory lock form keeps a group in order through its lock key instead, so its claim

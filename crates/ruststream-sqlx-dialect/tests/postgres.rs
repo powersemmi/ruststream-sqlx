@@ -310,6 +310,9 @@ fn a_name_longer_than_63_bytes_is_refused() {
         TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new(&long));
     assert_eq!(Postgres.discard(&column), Err(refused(&long)));
     assert_eq!(Postgres.retry(&column), Err(refused(&long)));
+    let group =
+        TableSpec::new("ledger", Column::new("id"), Form::RowLock).fifo_group(Column::new(&long));
+    assert_eq!(Postgres.fifo_guard(&group), Err(refused(&long)));
 
     let target = format!("archive.{long}");
     let target = TableName::parse(&target).map_err(|err| err.to_string());
@@ -428,6 +431,35 @@ fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn E
         ids.sql(),
         r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= $2 FOR UPDATE SKIP LOCKED"#,
     );
+    Ok(())
+}
+
+/// The ledger of an odd name inside a schema: the guard's key names it as the claim does.
+const ODD_LEDGER: TableSpec<'static> = TableSpec::new("it's", Column::new("id"), Form::RowLock)
+    .within("app")
+    .fifo_group(Column::new("account"));
+
+#[test]
+fn a_fifo_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
+    let guard = Postgres
+        .fifo_guard(&LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        guard.sql(),
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('ledger:' || $1, 0))::int::bigint",
+    );
+    assert_eq!(guard.params(), [Param::Group]);
+    // The key names the table with its schema, unquoted, and a quote in it doubles.
+    let odd = Postgres
+        .fifo_guard(&ODD_LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        odd.sql(),
+        "SELECT pg_try_advisory_xact_lock(hashtextextended('app.it''s:' || $1, 0))::int::bigint",
+    );
+    // A table whose groups keep no order needs no guard.
+    assert_eq!(Postgres.fifo_guard(&EMAILS)?, None);
+    assert_eq!(Postgres.fifo_guard(&BARE)?, None);
     Ok(())
 }
 

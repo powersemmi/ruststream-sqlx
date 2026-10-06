@@ -222,6 +222,22 @@ pub(crate) trait BuiltIn: Dialect {
         }
     }
 
+    /// Whether a claim of `spec` takes its group first: the table keeps its groups in order. Such
+    /// a table is checked as its claim checks it: its names fit, and its form takes a head.
+    #[cfg(any(feature = "postgres", feature = "mysql"))]
+    fn guards_group(&self, spec: &TableSpec<'_>) -> Result<bool, StatementError> {
+        if !spec.is_fifo() {
+            return Ok(false);
+        }
+        match self.form(spec)? {
+            // In this form the lock key keeps a group in order.
+            Built::Advisory => Err(StatementError::AdvisoryFifo {
+                dialect: self.name(),
+            }),
+            Built::RowLock | Built::Lease(_) => Ok(true),
+        }
+    }
+
     /// Checks a table for `statement`, a statement of the row lock form: the table takes its rows
     /// by row lock, and its names fit.
     #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -698,6 +714,15 @@ where
         self.conditions(spec, &TAKING, " AND ")
     }
 
+    /// The count of the subscription's group's unfinished rows, read under `lock`.
+    #[cfg(feature = "mysql")]
+    pub(crate) fn group_count(&mut self, spec: &TableSpec<'_>, lock: &str) -> &mut Self {
+        self.push("SELECT COUNT(*) FROM ")
+            .table(spec)
+            .head_conditions(spec)
+            .push(lock)
+    }
+
     /// Each of `conditions` the table has a column for: the first after `keyword`, the others
     /// after ` AND `.
     fn conditions(
@@ -734,6 +759,29 @@ where
             };
         }
         keyword
+    }
+
+    /// In the lease form, the condition that no row of the subscription's group holds a lease in
+    /// force at [`Param::LeaseNow`], after ` AND `; nothing in the other forms. A row that enters
+    /// the group ahead of a head in work becomes the head, and this keeps it waiting until the
+    /// row in work settles or its lease ends.
+    fn group_free(&mut self, spec: &TableSpec<'_>) -> &mut Self {
+        let (Some(group), Some(expiry)) =
+            (spec.column(Role::Group), spec.column(Role::LockedUntil))
+        else {
+            return self;
+        };
+        self.push(" AND NOT EXISTS (SELECT 1 FROM ")
+            .table(spec)
+            .push(" AS __work WHERE __work.")
+            .ident(group.name())
+            .push(" = ")
+            .param(Param::Group)
+            .push(" AND __work.")
+            .ident(expiry.name())
+            .push(" > ")
+            .param(Param::LeaseNow)
+            .push(")")
     }
 
     /// No lease holds the row: it has none, or its lease ended by [`Param::LeaseNow`].
@@ -807,7 +855,8 @@ where
 
     /// A claim's select after its columns, locked by `lock`: the claimable rows of the table in
     /// claim order, at most [`Param::Limit`] of them; in a table with FIFO groups, the group's
-    /// head alone, while it is due and free.
+    /// head alone, while it is due and free, and in the lease form while no row of the group holds
+    /// a lease.
     fn claimed_rows(&mut self, spec: &TableSpec<'_>, lock: &str) -> &mut Self {
         let id = spec.id().name();
         self.push(" FROM ").table(spec);
@@ -824,7 +873,8 @@ where
                 .head_conditions(spec)
                 .claim_order(spec, id)
                 .push(" LIMIT 1)")
-                .taking_conditions(spec);
+                .taking_conditions(spec)
+                .group_free(spec);
         } else {
             self.claimable(spec)
                 .claim_order(spec, id)

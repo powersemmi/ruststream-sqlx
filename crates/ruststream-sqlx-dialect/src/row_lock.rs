@@ -58,7 +58,9 @@ pub trait RowLock: Dialect {
     /// A table with FIFO groups keeps one row of a group in work. Its claim takes the group's
     /// head, the first unfinished row of the group in claim order, and takes nothing while the
     /// head is in work (another claim's transaction holds it) or not yet due. It binds no
-    /// [`Param::Limit`](crate::Param::Limit).
+    /// [`Param::Limit`](crate::Param::Limit). The claim's transaction first takes the group with
+    /// the statement [`fifo_guard`](Dialect::fifo_guard) gives and holds it until the delivery
+    /// settles, so a row that enters the group ahead of the head in work waits too.
     ///
     /// # Errors
     ///

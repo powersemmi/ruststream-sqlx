@@ -35,6 +35,12 @@
 //! settlements name the row alone, and a retry needs no statement: the take counted the attempt,
 //! and the unlock frees the row.
 //!
+//! A table with FIFO groups ([`TableSpec::fifo_group`]) keeps one row of a group in work. Its
+//! claim takes the group's head, the first unfinished row of the group in claim order, or
+//! nothing. The claim's transaction first takes the group with the statement
+//! [`Dialect::fifo_guard`] gives, so a row that enters the group ahead of the head in work waits
+//! for it; a lease claim also takes nothing while a row of the group holds a lease.
+//!
 //! A table may open its transactions at an isolation level ([`Isolation`]) or, on SQLite, in a
 //! mode ([`Mode`]): its [`Opening`], set with [`TableSpec::isolation`] and [`TableSpec::mode`].
 //! [`Dialect::begin`] gives the statement that opens a transaction at it, and refuses an opening

@@ -32,7 +32,8 @@ use crate::table_name::TableName;
 /// A dialect also opens transactions: [`begin`](Self::begin) gives the statement that opens one
 /// at a table's isolation level or SQLite mode, and [`savepoint`](Self::savepoint) and
 /// [`rollback_to_savepoint`](Self::rollback_to_savepoint) mark where a handler's writes start
-/// and discard them.
+/// and discard them. In a table with FIFO groups, a claim's transaction first takes the
+/// subscription's group with the statement [`fifo_guard`](Self::fifo_guard) gives.
 ///
 /// # Examples
 ///
@@ -497,5 +498,73 @@ pub trait Dialect: Debug + Send + Sync {
     /// ```
     fn rollback_to_savepoint(&self) -> &'static str {
         "ROLLBACK TO SAVEPOINT ruststream_claim"
+    }
+
+    /// The statement a claim of a table with FIFO groups runs first in its transaction, to take
+    /// the subscription's group for it; `None` for a table without FIFO groups, or a dialect that
+    /// takes no group.
+    ///
+    /// It binds [`Param::Group`](crate::Param::Group) and returns one row whose first column is a
+    /// 64-bit integer: nonzero when the claim's transaction now holds the group, zero when another
+    /// transaction holds it. It does not wait. A claim that reads zero ends empty, so a row that
+    /// enters the group ahead of a head in work waits for that head to settle. The transaction
+    /// holds the group until it ends: in the row lock form until the delivery settles, in the
+    /// lease form until the claim commits, after which the lease claim takes nothing while a row
+    /// of the group holds a lease.
+    ///
+    /// A dialect of the service's own returns such a statement where its database can hold the
+    /// group for one transaction: a lock the transaction owns, or a locking read of the group's
+    /// rows. `None`, which the provided method returns, leaves the order to the claim alone. That
+    /// suffices where claims run one at a time and see every lease, as on SQLite. Where two claims
+    /// run side by side, it gives the order up: a row that enters the group ahead of a head in
+    /// work (a smaller `priority`, an earlier `retry_after`, a dead letter moved into the group)
+    /// becomes a second head, and the other claim takes it while the first is still in work.
+    ///
+    /// # Errors
+    ///
+    /// For a table with FIFO groups, the refusals of its claim: [`StatementError::AdvisoryFifo`]
+    /// in the advisory lock form, [`StatementError::LeaseOnDatabaseClock`] for a lease table on
+    /// the database's clock, [`StatementError::IdentifierTooLong`] for a name the database does
+    /// not keep.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "sqlite"))] {
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Column, Form, Lease, Param, Postgres, Sqlite, Statement, StatementError,
+    ///     TableSpec,
+    /// };
+    ///
+    /// const LEDGER: TableSpec<'static> =
+    ///     TableSpec::new("ledger", Column::new("id"), Form::Lease(Column::new("locked_until")))
+    ///         .fifo_group(Column::new("account"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// // What a claim of a FIFO table runs in its transaction: the guard, then the claim, which
+    /// // runs only when the guard read nonzero.
+    /// fn claiming(
+    ///     dialect: &dyn Lease,
+    ///     spec: &TableSpec<'_>,
+    /// ) -> Result<Vec<Statement>, StatementError> {
+    ///     let mut statements: Vec<Statement> = dialect.fifo_guard(spec)?.into_iter().collect();
+    ///     statements.push(dialect.lease_claim(spec, ClaimShape::Rows)?);
+    ///     Ok(statements)
+    /// }
+    ///
+    /// let postgres = claiming(&Postgres, &LEDGER)?;
+    /// assert_eq!(
+    ///     postgres[0].sql(),
+    ///     "SELECT pg_try_advisory_xact_lock(hashtextextended('ledger:' || $1, 0))::int::bigint",
+    /// );
+    /// assert_eq!(postgres[0].params(), [Param::Group]);
+    /// // One writer at a time keeps two claims apart on SQLite: the claim runs alone.
+    /// assert_eq!(claiming(&Sqlite, &LEDGER)?.len(), 1);
+    /// # }
+    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// ```
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        let _ = spec;
+        Ok(None)
     }
 }

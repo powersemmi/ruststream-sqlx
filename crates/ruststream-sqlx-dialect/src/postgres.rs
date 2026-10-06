@@ -44,6 +44,11 @@ const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::b
 /// transaction, in claim order and only until it has its rows. The take counts the attempt and
 /// returns the row in one statement.
 ///
+/// In a table with FIFO groups a claim's transaction takes its group
+/// ([`fifo_guard`](Dialect::fifo_guard)) with a lock the transaction holds on the 64-bit hash of
+/// the table's name and the group. Two groups with one hash wait for each other: a delay, never
+/// two rows of one group in work.
+///
 /// A table's transactions open with `BEGIN`, or at the isolation level it names
 /// ([`begin`](Dialect::begin)): READ COMMITTED, REPEATABLE READ or SERIALIZABLE. Postgres runs
 /// READ UNCOMMITTED as READ COMMITTED, so a table that names it is refused: a level the database
@@ -244,6 +249,27 @@ impl Dialect for Postgres {
                 Err(opening.refused(self.name()))
             }
         }
+    }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        if !self.guards_group(spec)? {
+            return Ok(None);
+        }
+        // The group's name: the table as the statements name it, unquoted, then `:` and the
+        // group, so the groups of two tables are two names.
+        let mut table = spec
+            .schema()
+            .map(|schema| format!("{schema}."))
+            .unwrap_or_default();
+        table.push_str(spec.table());
+        table.push(':');
+        let mut sql = SqlWriter::new(self);
+        sql.push("SELECT pg_try_advisory_xact_lock(hashtextextended(")
+            .literal(&table)
+            .push(" || ")
+            .param(Param::Group)
+            .push(", 0))::int::bigint");
+        Ok(Some(sql.finish()))
     }
 }
 

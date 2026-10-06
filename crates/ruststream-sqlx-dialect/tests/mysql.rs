@@ -462,6 +462,9 @@ fn a_name_longer_than_64_characters_is_refused() -> Result<(), Box<dyn Error>> {
     let column =
         TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new(&long));
     assert_eq!(MySql.discard(&column), Err(refused(&long)));
+    let group =
+        TableSpec::new("ledger", Column::new("id"), Form::RowLock).fifo_group(Column::new(&long));
+    assert_eq!(MySql.fifo_guard(&group), Err(refused(&long)));
 
     let target = format!("archive.{long}");
     assert_eq!(
@@ -575,13 +578,54 @@ fn a_fifo_claim_takes_the_head_of_its_group_or_nothing() -> Result<(), Box<dyn E
 
 #[test]
 fn a_fifo_lease_claim_selects_the_head_alone() -> Result<(), Box<dyn Error>> {
-    // The claim selects the head under a lock, and its transaction stamps it.
+    // The claim selects the head under a lock, and its transaction stamps it; nothing while a row
+    // of the group holds a lease.
     let claim = MySql.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
-        "SELECT `id`, `account`, `retry_after`, `attempt`, `locked_until`, `processed_at`, `payload` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) FOR UPDATE SKIP LOCKED",
+        "SELECT `id`, `account`, `retry_after`, `attempt`, `locked_until`, `processed_at`, `payload` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) AND NOT EXISTS (SELECT 1 FROM `ledger` AS __work WHERE __work.`account` = ? AND __work.`locked_until` > ?) FOR UPDATE SKIP LOCKED",
     );
-    assert_eq!(claim.params(), [Param::Group, Param::Now, Param::LeaseNow]);
+    assert_eq!(
+        claim.params(),
+        [
+            Param::Group,
+            Param::Now,
+            Param::LeaseNow,
+            Param::Group,
+            Param::LeaseNow
+        ]
+    );
+    Ok(())
+}
+
+/// The ledger without a finish mark: a finished row is deleted.
+const BARE_LEDGER: TableSpec<'static> =
+    TableSpec::new("ledger", Column::new("id"), Form::RowLock).fifo_group(Column::new("account"));
+
+#[test]
+fn a_fifo_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
+    // The group is the claim's when a locking read that skips held rows takes every unfinished
+    // row of it.
+    let guard = MySql
+        .fifo_guard(&LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        guard.sql(),
+        "SELECT CAST((SELECT COUNT(*) FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL) = (SELECT COUNT(*) FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL FOR UPDATE SKIP LOCKED) AS SIGNED)",
+    );
+    assert_eq!(guard.params(), [Param::Group, Param::Group]);
+    // The lease form takes its group the same way, for the claim's transaction.
+    assert_eq!(MySql.fifo_guard(&LEASED_LEDGER)?, Some(guard));
+    let bare = MySql
+        .fifo_guard(&BARE_LEDGER)?
+        .ok_or("a table with FIFO groups has a guard")?;
+    assert_eq!(
+        bare.sql(),
+        "SELECT CAST((SELECT COUNT(*) FROM `ledger` WHERE `account` = ?) = (SELECT COUNT(*) FROM `ledger` WHERE `account` = ? FOR UPDATE SKIP LOCKED) AS SIGNED)",
+    );
+    // A table whose groups keep no order needs no guard.
+    assert_eq!(MySql.fifo_guard(&EMAILS)?, None);
+    assert_eq!(MySql.fifo_guard(&LEASED)?, None);
     Ok(())
 }
 
@@ -875,5 +919,6 @@ fn an_advisory_fifo_group_is_refused() {
     let fifo = ADVISED.fifo_group(Column::new("name"));
     let refused = StatementError::AdvisoryFifo { dialect: "mysql" };
     assert_eq!(MySql.advisory_claim(&fifo), Err(refused.clone()));
-    assert_eq!(MySql.take(&fifo, ClaimShape::Ids), Err(refused));
+    assert_eq!(MySql.take(&fifo, ClaimShape::Ids), Err(refused.clone()));
+    assert_eq!(MySql.fifo_guard(&fifo), Err(refused));
 }

@@ -44,6 +44,10 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// without a value read as empty text. The take counts the attempt and returns the row in one
 /// statement.
 ///
+/// A table with FIFO groups needs no guard ([`fifo_guard`](Dialect::fifo_guard) is `None`): one
+/// writer at a time keeps two claims apart, and a lease claim takes nothing while a row of the
+/// group holds a lease.
+///
 /// SQLite runs every transaction serializable, so a table names no isolation level here: it names
 /// a mode, and its transactions open with `BEGIN DEFERRED`, `BEGIN IMMEDIATE` or
 /// `BEGIN EXCLUSIVE` ([`begin`](Dialect::begin)), or with `BEGIN` where it names none.

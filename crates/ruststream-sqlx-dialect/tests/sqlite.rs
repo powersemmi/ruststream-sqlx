@@ -600,15 +600,26 @@ const LEASED_LEDGER: TableSpec<'static> = TableSpec::new(
 
 #[test]
 fn a_fifo_lease_claim_returns_the_head_alone() -> Result<(), Box<dyn Error>> {
+    // Nothing while a row of the group holds a lease: a row that entered ahead of the head in work
+    // waits for it.
     let claim = Sqlite.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
-        r#"UPDATE "ledger" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "id" IN (SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = ? AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= ? AND ("locked_until" IS NULL OR "locked_until" <= ?)) RETURNING "id", "account", "retry_after", "attempt" - 1 AS "attempt", "locked_until", "processed_at", "payload""#,
+        r#"UPDATE "ledger" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "id" IN (SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = ? AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= ? AND ("locked_until" IS NULL OR "locked_until" <= ?) AND NOT EXISTS (SELECT 1 FROM "ledger" AS __work WHERE __work."account" = ? AND __work."locked_until" > ?)) RETURNING "id", "account", "retry_after", "attempt" - 1 AS "attempt", "locked_until", "processed_at", "payload""#,
     );
     assert_eq!(
         claim.params(),
-        [Param::Lease, Param::Group, Param::Now, Param::LeaseNow]
+        [
+            Param::Lease,
+            Param::Group,
+            Param::Now,
+            Param::LeaseNow,
+            Param::Group,
+            Param::LeaseNow
+        ]
     );
+    // One writer at a time keeps two claims apart, so the claim takes no group first.
+    assert_eq!(Sqlite.fifo_guard(&LEASED_LEDGER)?, None);
     Ok(())
 }
 
