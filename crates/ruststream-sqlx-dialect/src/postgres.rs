@@ -134,10 +134,13 @@ impl BuiltIn for Postgres {
     }
 
     fn database_later(&self, sql: &mut SqlWriter<'_, Self>) {
+        // The cast types the delay where the statement is prepared. Prepared without parameter
+        // types, as a startup check prepares it, the server would read the delay as `double
+        // precision`, and an integer bound on that connection afterwards as almost nothing.
         sql.push(DATABASE_NOW)
             .push(" + ")
             .param(Param::Delay)
-            .push(" * interval '1 microsecond'");
+            .push("::bigint * interval '1 microsecond'");
     }
 
     fn render_lock_key(&self, sql: &mut SqlWriter<'_, Self>, key: &[KeyPart<'_>]) {

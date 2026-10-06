@@ -206,7 +206,7 @@ fn the_database_clock_reads_the_statement_timestamp() -> Result<(), StatementErr
     let retry_after = Postgres.retry_after(&spec)?;
     assert_eq!(
         retry_after.sql(),
-        r#"UPDATE "jobs" SET "retry_after" = statement_timestamp() + $1 * interval '1 microsecond' WHERE "job_id" = $2"#,
+        r#"UPDATE "jobs" SET "retry_after" = statement_timestamp() + $1::bigint * interval '1 microsecond' WHERE "job_id" = $2"#,
     );
     assert_eq!(retry_after.params(), [Param::Delay, Param::Id]);
     Ok(())
