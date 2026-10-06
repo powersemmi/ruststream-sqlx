@@ -29,6 +29,16 @@ pub enum SqlxBrokerError {
         #[source]
         source: sqlx::Error,
     },
+    /// `connect` found the pool on a database no built-in dialect serves: an `AnyPool`'s backend
+    /// whose feature is off.
+    #[error(
+        "no built-in dialect serves the `{backend}` backend of this `AnyPool`: enable its feature, \
+         or pass a dialect with `SqlxBroker::with_dialect`"
+    )]
+    Backend {
+        /// The backend's name, as its sqlx driver reports it.
+        backend: String,
+    },
     /// A statement failed while the subscription ran.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}): `{statement}` failed: {source}"
@@ -224,6 +234,14 @@ mod tests {
         assert_eq!(
             SqlxBrokerError::Closed.to_string(),
             "the inbox broker is shut down"
+        );
+        let backend = SqlxBrokerError::Backend {
+            backend: "MySQL".to_owned(),
+        };
+        assert_eq!(
+            backend.to_string(),
+            "no built-in dialect serves the `MySQL` backend of this `AnyPool`: enable its feature, \
+             or pass a dialect with `SqlxBroker::with_dialect`"
         );
         let lost = SqlxBrokerError::LeaseLost {
             subscription: "emails".to_owned(),

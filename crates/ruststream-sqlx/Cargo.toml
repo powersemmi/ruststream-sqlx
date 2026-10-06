@@ -56,6 +56,9 @@ sqlite = [
     "ruststream-sqlx-macros?/sqlite",
     "sqlx?/sqlite",
 ]
+# An `AnyPool`: the broker picks the built-in dialect of the database the pool reaches when it
+# connects, among those whose features are on.
+any = ["inbox", "sqlx/any"]
 # `chrono::DateTime<Utc>` as a time column.
 chrono = ["inbox", "dep:chrono", "sqlx/chrono"]
 # `time::OffsetDateTime` as a time column.

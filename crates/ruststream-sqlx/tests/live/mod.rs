@@ -23,6 +23,8 @@ use sqlx::{Database as Backend, Pool};
 pub(crate) mod mysql;
 #[cfg(feature = "postgres")]
 pub(crate) mod postgres;
+// The shared rows keep times and JSON headers; a suite of other column types runs without them.
+#[cfg(all(feature = "chrono", feature = "json"))]
 pub(crate) mod rows;
 #[cfg(feature = "sqlite")]
 pub(crate) mod sqlite;

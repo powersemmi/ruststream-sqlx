@@ -272,6 +272,24 @@ named_database!(sqlx::MySql);
 #[cfg(feature = "sqlite")]
 named_database!(sqlx::Sqlite);
 
+// Why errors: `sqlx::Any` decodes no JSON and binds no time, so no row on an `AnyPool` has a
+// `headers` column of JSON or a time column, and a by-name subscription there reaches neither.
+#[cfg(feature = "any")]
+impl NamedDatabase for sqlx::Any {
+    fn headers(value: <Self as Database>::ValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
+        let _ = value;
+        Err("an `AnyPool` decodes no JSON headers".into())
+    }
+
+    fn bind_time(
+        arguments: &mut <Self as Database>::Arguments,
+        time: NamedTime,
+    ) -> Result<(), Error> {
+        let _ = (arguments, time);
+        Err(Error::Configuration("an `AnyPool` binds no time".into()))
+    }
+}
+
 impl<DB: RoleColumns> Type<DB> for NamedId {
     fn type_info() -> DB::TypeInfo {
         DB::id_type()

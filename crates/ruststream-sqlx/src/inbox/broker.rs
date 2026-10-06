@@ -8,10 +8,17 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ruststream::{Broker, ConnectedBroker};
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlite",
+    feature = "any"
+))]
 use ruststream::{DescribeServer, ServerSpec};
 use ruststream_sqlx_dialect::Dialect;
-#[cfg(any(feature = "postgres", feature = "mysql"))]
+#[cfg(feature = "any")]
+use sqlx::Any;
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
 use sqlx::ConnectOptions;
 #[cfg(feature = "mysql")]
 use sqlx::MySql;
@@ -38,7 +45,52 @@ const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// another lease.
 const DEFAULT_LEASE: Duration = Duration::from_secs(30);
 
-/// The dialect a broker builds statements with: one built into the crate, or the service's own.
+/// The dialect a broker will build statements with: one built into the crate, picked from the
+/// connection `connect` checks, or the service's own.
+pub(crate) enum DialectChoice<DB: Database> {
+    BuiltIn(fn(&DB::Connection) -> Result<&'static dyn Dialect, SqlxBrokerError>),
+    Service(Arc<dyn Dialect>),
+}
+
+impl<DB: Database> DialectChoice<DB> {
+    /// The dialect of the database `conn` reaches.
+    pub(crate) fn resolve(&self, conn: &DB::Connection) -> Result<DialectHandle, SqlxBrokerError> {
+        match self {
+            Self::BuiltIn(pick) => pick(conn).map(DialectHandle::BuiltIn),
+            Self::Service(dialect) => Ok(DialectHandle::Service(Arc::clone(dialect))),
+        }
+    }
+
+    /// The dialect's name, once there is one to name.
+    fn name(&self) -> &'static str {
+        match self {
+            Self::BuiltIn(_) => "built in, picked at connect",
+            Self::Service(dialect) => dialect.name(),
+        }
+    }
+}
+
+impl<DB: Database> Clone for DialectChoice<DB> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::BuiltIn(pick) => Self::BuiltIn(*pick),
+            Self::Service(dialect) => Self::Service(Arc::clone(dialect)),
+        }
+    }
+}
+
+/// The built-in dialect of the database `conn` reaches, or the error that names a database no
+/// built-in dialect serves.
+fn built_in<DB: BuiltInDialect>(
+    conn: &DB::Connection,
+) -> Result<&'static dyn Dialect, SqlxBrokerError> {
+    DB::dialect(conn).ok_or_else(|| SqlxBrokerError::Backend {
+        backend: DB::backend(conn).to_owned(),
+    })
+}
+
+/// The dialect a connected broker builds statements with: one built into the crate, or the
+/// service's own.
 pub(crate) enum DialectHandle {
     BuiltIn(&'static dyn Dialect),
     Service(Arc<dyn Dialect>),
@@ -57,8 +109,9 @@ impl DialectHandle {
 ///
 /// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
 /// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
-/// database. A message in work holds one of the pool's connections until it settles (in the lease
-/// form only while it settles), and a publish takes another, so the pool is sized for both.
+/// database, and picks the built-in dialect by it where the service passed none. A message in
+/// work holds one of the pool's connections until it settles (in the lease form only while it
+/// settles), and a publish takes another, so the pool is sized for both.
 /// Subscriptions read tables through [`InboxQueue`](crate::InboxQueue) descriptors; publishing
 /// writes them through [`Repository`](crate::Repository) policies or through the routes this
 /// builder records.
@@ -127,7 +180,7 @@ impl DialectHandle {
 /// ```
 pub struct SqlxBroker<DB: Database> {
     pub(crate) pool: Pool<DB>,
-    dialect: DialectHandle,
+    pub(crate) dialect: DialectChoice<DB>,
     routes: Routes<DB>,
     poll_interval: Duration,
     lease: Duration,
@@ -136,7 +189,7 @@ pub struct SqlxBroker<DB: Database> {
 impl<DB: Database> fmt::Debug for SqlxBroker<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqlxBroker")
-            .field("dialect", &self.dialect.get().name())
+            .field("dialect", &self.dialect.name())
             .field("routes", &self.routes)
             .field("poll_interval", &self.poll_interval)
             .field("lease", &self.lease)
@@ -148,7 +201,9 @@ impl<DB: BuiltInDialect> SqlxBroker<DB> {
     /// A broker on `pool`, with the dialect built into the crate for its database.
     ///
     /// Synchronous and free of I/O: the database type comes from the pool, and nothing connects
-    /// before [`connect`](Broker::connect).
+    /// before [`connect`](Broker::connect), which picks the dialect from the connection it checks.
+    /// An `AnyPool` reaches a database named only then, and a database whose dialect's feature is
+    /// off stops `connect` with [`SqlxBrokerError::Backend`].
     ///
     /// # Examples
     ///
@@ -166,7 +221,7 @@ impl<DB: BuiltInDialect> SqlxBroker<DB> {
     /// ```
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
-        Self::built(pool, DialectHandle::BuiltIn(DB::dialect()))
+        Self::built(pool, DialectChoice::BuiltIn(built_in::<DB>))
     }
 }
 
@@ -195,10 +250,10 @@ impl<DB: QueueDatabase> SqlxBroker<DB> {
     /// ```
     #[must_use]
     pub fn with_dialect(pool: Pool<DB>, dialect: impl Dialect + 'static) -> Self {
-        Self::built(pool, DialectHandle::Service(Arc::new(dialect)))
+        Self::built(pool, DialectChoice::Service(Arc::new(dialect)))
     }
 
-    fn built(pool: Pool<DB>, dialect: DialectHandle) -> Self {
+    fn built(pool: Pool<DB>, dialect: DialectChoice<DB>) -> Self {
         Self {
             pool,
             dialect,
@@ -335,13 +390,14 @@ impl<DB: QueueDatabase> Broker for SqlxBroker<DB> {
     type Connected = ConnectedSqlxBroker<DB>;
 
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        drop(
-            self.pool
-                .acquire()
-                .await
-                .map_err(|source| SqlxBrokerError::Connect { source })?,
-        );
-        Ok(ConnectedSqlxBroker::new(self, Handle::current()))
+        let conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|source| SqlxBrokerError::Connect { source })?;
+        let dialect = self.dialect.resolve(&conn)?;
+        drop(conn);
+        Ok(ConnectedSqlxBroker::new(self, dialect, Handle::current()))
     }
 }
 
@@ -409,12 +465,13 @@ impl<DB: Database> fmt::Debug for ConnectedSqlxBroker<DB> {
 }
 
 impl<DB: Database> ConnectedSqlxBroker<DB> {
-    /// The connected form of `broker`, whose internal tasks run on `runtime`.
-    pub(crate) fn new(broker: SqlxBroker<DB>, runtime: Handle) -> Self {
+    /// The connected form of `broker`, whose statements `dialect` builds and whose internal tasks
+    /// run on `runtime`.
+    pub(crate) fn new(broker: SqlxBroker<DB>, dialect: DialectHandle, runtime: Handle) -> Self {
         Self {
             shared: Arc::new(Shared {
                 pool: broker.pool,
-                dialect: broker.dialect,
+                dialect,
                 routes: broker.routes,
                 poll_interval: broker.poll_interval,
                 lease: broker.lease,
@@ -493,5 +550,21 @@ impl DescribeServer for SqlxBroker<Sqlite> {
         // Why not `from_url`: SQLite's URL holds a path, not a host, and sqlx's `to_url_lossy`
         // panics on a database named `file:..`, the name `sqlite::memory:` takes.
         ServerSpec::in_process("sqlite")
+    }
+}
+
+/// An `AnyPool` is described by the scheme of its URL, as the broker of that database describes
+/// itself: the host and port of a server, or SQLite with no host.
+#[cfg(feature = "any")]
+impl DescribeServer for SqlxBroker<Any> {
+    fn describe_server(&self) -> ServerSpec {
+        // `Any` keeps the URL it was given, so reading it back is free of the SQLite panic above.
+        let url = self.pool.connect_options().to_url_lossy();
+        match url.scheme() {
+            "sqlite" => ServerSpec::in_process("sqlite"),
+            "postgres" | "postgresql" => ServerSpec::from_url(url.as_str(), "postgres"),
+            "mysql" | "mariadb" => ServerSpec::from_url(url.as_str(), "mysql"),
+            scheme => ServerSpec::from_url(url.as_str(), scheme),
+        }
     }
 }

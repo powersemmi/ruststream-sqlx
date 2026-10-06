@@ -9,7 +9,10 @@
 //! column that runs the queue from `#[field(..)]`, and implements [`InboxRow`] (feature
 //! `inbox`). The [`dialect`] module turns the description into SQL; its Postgres dialect sits
 //! behind the `postgres` feature, its MySQL and MariaDB dialect behind `mysql`, and its SQLite
-//! dialect behind `sqlite`.
+//! dialect behind `sqlite`. An `AnyPool` (feature `any`) takes the dialect of the database it
+//! reaches, picked when the broker connects ([`BuiltInDialect`]). Its rows hold only the types
+//! `sqlx::Any` carries, and no time is among them, so the lease form, `retry_after` and
+//! `processed_at` are out of its reach.
 //!
 //! # The inbox broker
 //!

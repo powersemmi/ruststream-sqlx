@@ -203,12 +203,21 @@ impl<DB: QueueDatabase> InProcess for SqlxBroker<DB> {
     /// Connects to the database the test's pool reaches, as [`connect`](ruststream::Broker::connect)
     /// does, with every database call of the connection kept off a paused clock.
     async fn connect_in_process(self) -> Result<ConnectedSqlxBroker<DB>, SqlxBrokerError> {
-        let pool = self.pool.clone();
-        off_clock(async move { pool.acquire().await.map(drop) })
-            .await
-            .unwrap_or_else(|| Err(cancelled()))
-            .map_err(|source| SqlxBrokerError::Connect { source })?;
-        let connected = ConnectedSqlxBroker::new(self, Handle::current());
+        let (pool, choice) = (self.pool.clone(), self.dialect.clone());
+        let dialect = off_clock(async move {
+            let conn = pool
+                .acquire()
+                .await
+                .map_err(|source| SqlxBrokerError::Connect { source })?;
+            choice.resolve(&conn)
+        })
+        .await
+        .unwrap_or_else(|| {
+            Err(SqlxBrokerError::Connect {
+                source: cancelled(),
+            })
+        })?;
+        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current());
         let _ = connected.shared.harness.clock.set(TestClock::start());
         Ok(connected)
     }
@@ -287,3 +296,5 @@ ruststream::register_testable_broker!(SqlxBroker<sqlx::Postgres>);
 ruststream::register_testable_broker!(SqlxBroker<sqlx::MySql>);
 #[cfg(feature = "sqlite")]
 ruststream::register_testable_broker!(SqlxBroker<sqlx::Sqlite>);
+#[cfg(feature = "any")]
+ruststream::register_testable_broker!(SqlxBroker<sqlx::Any>);
