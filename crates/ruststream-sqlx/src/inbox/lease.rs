@@ -130,13 +130,14 @@ impl<DB: QueueDatabase, Row: Events<DB>> LeaseBook<DB, Row> {
         // own, and this round never waits for one while leases are in flight.
         let mut conn = self.pool.acquire().await?;
         // Read once the connection is in hand, so a wait for the pool does not shorten the lease.
-        let next = Row::expiry(self.queue, self.now)?;
+        let mut now = self.now;
+        let next = Row::lease(self.queue, &mut now)?.expiry;
         if self.leases.mark(next, round) == 0 {
             return Ok(());
         }
         let cx = Settling {
             queue: self.queue,
-            now: self.now,
+            now,
         };
         let resolving = Resolving {
             leases: &self.leases,

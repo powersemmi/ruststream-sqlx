@@ -12,9 +12,11 @@
 
 mod live;
 
+use std::cell::Cell;
 use std::pin::pin;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, Outcome, TestApp};
@@ -22,10 +24,52 @@ use ruststream::{
     AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::keys::Attempt;
-use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
+use ruststream_sqlx::{Clock, Inbox, InboxQueue, Insert, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
 const LEASE: Duration = Duration::from_secs(2);
+
+thread_local! {
+    /// How many times this thread read [`Counting`].
+    static READS: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The host's clock, counting its reads on the thread that makes them.
+struct Counting;
+
+impl Clock for Counting {
+    fn now() -> SystemTime {
+        READS.with(|reads| reads.set(reads.get() + 1));
+        SystemTime::now()
+    }
+}
+
+/// The reads of [`Counting`] on this thread so far.
+fn reads() -> usize {
+    READS.with(Cell::get)
+}
+
+/// The email queue on the counting clock: its claim binds a time for `retry_after` and one for
+/// the lease, and its acknowledgement one for `processed_at`.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "email_jobs", clock = Counting)]
+struct Counted {
+    #[field(id, generated)]
+    job_id: i64,
+    #[field(group)]
+    name: String,
+    #[field(retry_after)]
+    retry_after: DateTime<Utc>,
+    #[field(attempt, generated)]
+    attempt: i16,
+    #[field(processed_at)]
+    processed_at: Option<DateTime<Utc>>,
+    #[field(locked_until)]
+    locked_until: Option<DateTime<Utc>>,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Task {
@@ -176,6 +220,51 @@ live::stands! {
             db.plain_lease().await,
             (2, false),
             "a retry releases without counting again"
+        );
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker stops");
+        db.finish().await;
+    }
+
+    // A claim reads "now" once: the rows it finds due, the leases it finds ended and the expiry it
+    // writes start from one instant. The acknowledgement reads it once more, for `processed_at`.
+    // The test's thread runs the claim and the settlement, and with an hour's lease no extension
+    // round, which reads the clock too, comes before the test ends.
+    #[tokio::test]
+    async fn a_lease_claim_reads_the_clock_once() {
+        let Some(db) = database().await else { return };
+        let job = Counted {
+            job_id: 0,
+            name: "counted".to_owned(),
+            retry_after: Utc::now(),
+            attempt: 1,
+            processed_at: None,
+            locked_until: None,
+            payload: b"x".to_vec(),
+        };
+        let mut conn = db.pool.acquire().await.expect("a connection");
+        job.insert(&mut *conn).await.expect("the row is written");
+        drop(conn);
+        let connected = SqlxBroker::new(db.pool.clone())
+            .connect()
+            .await
+            .expect("connects");
+        let mut subscriber = InboxQueue::<Counted>::new("counted")
+            .lease(Duration::from_secs(3600))
+            .subscribe(&connected)
+            .await
+            .expect("opens");
+        let before = reads();
+        let delivery = {
+            let mut deliveries = pin!(subscriber.stream());
+            deliveries.next().await.expect("goes on").expect("claims")
+        };
+        assert_eq!(reads() - before, 1, "the claim reads the clock once");
+        delivery.ack().await.expect("the acknowledgement settles");
+        assert_eq!(
+            reads() - before,
+            2,
+            "the acknowledgement reads the clock once"
         );
         drop(subscriber);
         connected.shutdown().await.expect("the broker stops");

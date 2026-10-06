@@ -234,22 +234,25 @@ pub(crate) fn events(
     });
 
     // The lease form: the expiry a claim writes and a settlement matches is the token, in the
-    // type the `locked_until` field holds.
+    // type the `locked_until` field holds. The claim reads "now" once, with the expiry, and binds
+    // that instant wherever its statements find a lease ended.
     let leased = playing(inbox, Role::LockedUntil).is_some();
     let lease = quote!(<Self as #r::LeaseRow>::Lease);
-    let (token, expiry, lease_arms) = if leased {
+    let (token, leasing, lease_arms) = if leased {
         predicates.push(parse_quote!(
             #lease: for<'__q> #p::sqlx::Encode<'__q, __DB> + #p::sqlx::Type<__DB>
         ));
         (
             lease.clone(),
-            quote!(#p::expiry::<#clock, #lease>(queue, now)),
+            quote!(#p::lease::<#clock, #lease>(queue, now)),
             Some(quote! {
-                (#p::Param::LeaseNow, _) => {
-                    let now = #p::now::<#clock, #lease>(values.now, values.event)?;
-                    #p::put::<__DB, _>(arguments, now)?;
-                    true
-                }
+                (#p::Param::LeaseNow, _) => match values.lease_now {
+                    ::core::option::Option::Some(now) => {
+                        #p::put::<__DB, _>(arguments, now)?;
+                        true
+                    }
+                    ::core::option::Option::None => false,
+                },
                 (#p::Param::Lease, _) => match values.lease {
                     ::core::option::Option::Some(lease) => {
                         #p::put::<__DB, _>(arguments, lease)?;
@@ -271,7 +274,10 @@ pub(crate) fn events(
             quote!(()),
             quote!({
                 let _ = (queue, now);
-                ::core::result::Result::Ok(())
+                ::core::result::Result::Ok(#p::Leasing {
+                    now: (),
+                    expiry: (),
+                })
             }),
             None,
         )
@@ -518,17 +524,20 @@ pub(crate) fn events(
                 })
             }
 
-            fn expiry(
+            fn lease(
                 queue: &'static #p::Queue,
-                now: #p::Now,
-            ) -> ::core::result::Result<<Self as #p::Events<__DB>>::Token, #p::sqlx::Error> {
-                #expiry
+                now: &mut #p::Now,
+            ) -> ::core::result::Result<
+                #p::Leasing<<Self as #p::Events<__DB>>::Token>,
+                #p::sqlx::Error,
+            > {
+                #leasing
             }
 
             fn claim<'__a>(
                 conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
                 cx: &'__a #p::Claiming,
-                lease: ::core::option::Option<&'__a <Self as #p::Events<__DB>>::Token>,
+                lease: ::core::option::Option<&'__a #p::Leasing<<Self as #p::Events<__DB>>::Token>>,
                 out: &'__a mut ::std::vec::Vec<#p::Claimed<Self>>,
             ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                    + ::core::marker::Send + '__a {

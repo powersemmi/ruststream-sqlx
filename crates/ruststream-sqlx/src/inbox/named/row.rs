@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 
 use super::database::NamedDatabase;
 use crate::inbox::engine::{
-    self, Claimed, Claiming, Event, Events, Now, Settled, Settling, Shape, Values,
+    self, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape, Values,
 };
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::kinds::{ClockKind, TimeKind};
@@ -437,9 +437,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
                 Some(values.delay),
             )?,
             #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::LeaseNow, _) => {
-                bind_now::<DB>(arguments, values, |kinds| kinds.locked_until, None)?
-            }
+            (Param::LeaseNow, _) => bind_lease::<DB>(arguments, values.lease_now)?,
             #[cfg(any(feature = "chrono", feature = "time"))]
             (Param::Lease, _) => bind_lease::<DB>(arguments, values.lease)?,
             #[cfg(any(feature = "chrono", feature = "time"))]
@@ -448,7 +446,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         })
     }
 
-    fn expiry(queue: &'static Queue, now: Now) -> Result<NamedTime, Error> {
+    fn lease(queue: &'static Queue, now: &mut Now) -> Result<Leasing<NamedTime>, Error> {
         #[cfg(any(feature = "chrono", feature = "time"))]
         if let Some(Kinds {
             locked_until: Some(kind),
@@ -459,11 +457,11 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
             return Ok(match kind {
                 #[cfg(feature = "chrono")]
                 TimeKind::Chrono => {
-                    NamedTime::Chrono(engine::expiry::<SystemClock, DateTime<Utc>>(queue, now)?)
+                    engine::lease::<SystemClock, DateTime<Utc>>(queue, now)?.map(NamedTime::Chrono)
                 }
                 #[cfg(feature = "time")]
                 TimeKind::Time => {
-                    NamedTime::Time(engine::expiry::<SystemClock, OffsetDateTime>(queue, now)?)
+                    engine::lease::<SystemClock, OffsetDateTime>(queue, now)?.map(NamedTime::Time)
                 }
             });
         }
@@ -475,7 +473,7 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
     async fn claim<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
-        lease: Option<&'a NamedTime>,
+        lease: Option<&'a Leasing<NamedTime>>,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> Result<(), Error> {
         let claimed = out.len();
@@ -738,9 +736,10 @@ mod tests {
         use super::super::{NamedId, NamedRow, NamedTime};
         use super::{FITTING, KINDS, row};
         use crate::inbox::PayloadRow;
-        use crate::inbox::engine::{Event, Events, IdAt, Now, Prepared, Shape, Values};
+        use crate::inbox::engine::{Event, Events, IdAt, Leasing, Now, Prepared, Shape, Values};
         use crate::inbox::kinds::{ClockKind, Kinds, TimeKind};
         use crate::inbox::queue::Queue;
+        use crate::inbox::time::QueueTime;
 
         const SPEC: TableSpec<'static> =
             TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
@@ -791,7 +790,8 @@ mod tests {
             bind_leased(param, event, queue, id, None)
         }
 
-        /// Binds `param` for `event` where the statement writes and matches `lease`.
+        /// Binds `param` for `event` where the statement writes and matches `lease`, and finds a
+        /// lease ended by it.
         fn bind_leased(
             param: Param,
             event: Event,
@@ -809,6 +809,7 @@ mod tests {
                 destination: "emails.dead",
                 now: Now::default(),
                 lease,
+                lease_now: lease,
                 held: lease,
             };
             let mut arguments = PgArguments::default();
@@ -823,15 +824,20 @@ mod tests {
                 ..KINDS
             }));
             let before = Utc::now();
-            let expiry = <NamedRow as Events<Postgres>>::expiry(queue, Now::default())?;
+            let lease = <NamedRow as Events<Postgres>>::lease(queue, &mut Now::default())?;
             assert!(
-                matches!(expiry, NamedTime::Chrono(at)
-                    if at.timestamp_subsec_nanos() == 0 && at >= before + TimeDelta::seconds(30)),
-                "a whole second, a lease from now: {expiry:?}"
+                matches!(
+                    lease,
+                    Leasing { now: NamedTime::Chrono(now), expiry: NamedTime::Chrono(at) }
+                        if at.timestamp_subsec_nanos() == 0
+                            && at >= before + TimeDelta::seconds(30)
+                            && at == now.after(Duration::from_secs(30)).rounded_up()
+                ),
+                "a whole second, a lease from the claim's now: {lease:?}"
             );
             for param in [Param::Lease, Param::Held, Param::LeaseNow] {
                 assert_eq!(
-                    bind_leased(param, Event::Extend, queue, None, Some(expiry))?,
+                    bind_leased(param, Event::Extend, queue, None, Some(lease.expiry))?,
                     (true, 1),
                     "{param:?}"
                 );
@@ -843,7 +849,7 @@ mod tests {
             );
             // A queue whose kinds name no lease cannot tell one.
             let refused =
-                <NamedRow as Events<Postgres>>::expiry(leased(Some(KINDS)), Now::default());
+                <NamedRow as Events<Postgres>>::lease(leased(Some(KINDS)), &mut Now::default());
             assert!(
                 matches!(refused, Err(sqlx::Error::Configuration(_))),
                 "{refused:?}"

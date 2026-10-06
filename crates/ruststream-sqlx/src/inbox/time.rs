@@ -272,28 +272,36 @@ pub trait TimeSource: Send + Sync + 'static {
     /// Whether the statements read the database's own clock.
     const DATABASE: bool;
 
-    /// Now, in the column's type, for a statement that binds it; `None` where the database reads
-    /// its own.
+    /// Now, for a statement that binds it; `None` where the database reads its own.
+    ///
+    /// The crate turns it into each column's own type.
     ///
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "chrono")] {
-    /// use chrono::{DateTime, Utc};
+    /// use std::time::{Duration, SystemTime};
+    ///
     /// use ruststream_sqlx::{DatabaseClock, SystemClock, TimeSource};
     ///
-    /// assert!(<SystemClock as TimeSource>::now::<DateTime<Utc>>().is_some());
-    /// assert!(<DatabaseClock as TimeSource>::now::<DateTime<Utc>>().is_none());
-    /// # }
+    /// /// How long a task scheduled for `at` waits by the clock its table reads; `None` where
+    /// /// that clock is the database's.
+    /// fn waits<Source: TimeSource>(at: SystemTime) -> Option<Duration> {
+    ///     let now = Source::now()?;
+    ///     Some(at.duration_since(now).unwrap_or_default())
+    /// }
+    ///
+    /// let in_a_minute = SystemTime::now() + Duration::from_secs(60);
+    /// assert!(waits::<SystemClock>(in_a_minute) > Some(Duration::from_secs(59)));
+    /// assert_eq!(waits::<DatabaseClock>(in_a_minute), None);
     /// ```
-    fn now<T: QueueTime>() -> Option<T>;
+    fn now() -> Option<SystemTime>;
 }
 
 impl<C: Clock> TimeSource for C {
     const DATABASE: bool = false;
 
-    fn now<T: QueueTime>() -> Option<T> {
-        Some(T::from_system(C::now()))
+    fn now() -> Option<SystemTime> {
+        Some(C::now())
     }
 }
 
@@ -353,7 +361,7 @@ pub struct DatabaseClock;
 impl TimeSource for DatabaseClock {
     const DATABASE: bool = true;
 
-    fn now<T: QueueTime>() -> Option<T> {
+    fn now() -> Option<SystemTime> {
         None
     }
 }

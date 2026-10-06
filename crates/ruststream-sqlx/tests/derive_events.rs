@@ -17,7 +17,7 @@ use ruststream_sqlx::__private::{
     Event, Events, IdAt, KindsOf, Now, Param, Prepared, Queue, Shape, Values,
 };
 use ruststream_sqlx::{
-    Ack, Clock, DatabaseClock, Extend, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow,
+    Ack, Clock, DatabaseClock, Extend, Fetch, HeaderColumn, Inbox, InboxRow, PayloadRow, QueueTime,
     SystemClock,
 };
 use sqlx::postgres::PgArguments;
@@ -139,6 +139,7 @@ fn values(event: Event, id: &i64) -> Values<'_, Postgres, SendEmail> {
         destination: "emails.dead",
         now: Now::default(),
         lease: None,
+        lease_now: None,
         held: None,
     }
 }
@@ -253,18 +254,23 @@ static JOBS: LazyLock<Queue> = LazyLock::new(|| Queue {
 #[test]
 fn a_lease_ends_on_a_whole_second_a_lease_later() -> Result<(), sqlx::Error> {
     let before = Utc::now();
-    let expiry = <Leased as Events<Postgres>>::expiry(&JOBS, Now::default())?;
+    let lease = <Leased as Events<Postgres>>::lease(&JOBS, &mut Now::default())?;
     assert_eq!(
-        expiry.timestamp_subsec_nanos(),
+        lease.expiry.timestamp_subsec_nanos(),
         0,
         "the token is a whole second"
     );
-    assert!(expiry >= before + TimeDelta::seconds(30));
-    assert!(expiry <= Utc::now() + TimeDelta::seconds(31));
+    assert!(lease.expiry >= before + TimeDelta::seconds(30));
+    assert!(lease.expiry <= Utc::now() + TimeDelta::seconds(31));
+    assert_eq!(
+        lease.expiry,
+        lease.now.after(Duration::from_secs(30)).rounded_up(),
+        "the expiry starts from the instant the claim finds leases ended by"
+    );
     // A table in another form takes no lease, and its token is nothing.
-    <SendEmail as Events<Postgres>>::expiry(&EMAILS, Now::default())?;
+    <SendEmail as Events<Postgres>>::lease(&EMAILS, &mut Now::default())?;
     // A queue that holds no lease cannot tell a lease row's expiry.
-    let refused = <Leased as Events<Postgres>>::expiry(&EMAILS, Now::default());
+    let refused = <Leased as Events<Postgres>>::lease(&EMAILS, &mut Now::default());
     assert!(
         matches!(refused, Err(sqlx::Error::Configuration(_))),
         "{refused:?}"
@@ -275,7 +281,7 @@ fn a_lease_ends_on_a_whole_second_a_lease_later() -> Result<(), sqlx::Error> {
 #[test]
 fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sqlx::Error> {
     let id = 7;
-    let expiry = <Leased as Events<Postgres>>::expiry(&JOBS, Now::default())?;
+    let lease = <Leased as Events<Postgres>>::lease(&JOBS, &mut Now::default())?;
     let extension = Values {
         event: Event::Extend,
         queue: &JOBS,
@@ -285,8 +291,9 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
         delay: Duration::ZERO,
         destination: "",
         now: Now::default(),
-        lease: Some(expiry),
-        held: Some(expiry),
+        lease: Some(lease.expiry),
+        lease_now: Some(lease.now),
+        held: Some(lease.expiry),
     };
     let mut extend = PgArguments::default();
     for param in [Param::Lease, Param::Id, Param::Held, Param::LeaseNow] {
@@ -297,7 +304,8 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
         )?);
     }
     assert_eq!(extend.len(), 4);
-    // A claim writes a lease and holds none yet; a settlement holds one and writes none.
+    // A claim writes a lease and holds none yet; a settlement holds one, writes none and finds no
+    // lease ended.
     let claim = Values {
         held: None,
         ..extension
@@ -309,13 +317,16 @@ fn a_lease_row_binds_the_lease_it_writes_and_the_one_it_holds() -> Result<(), sq
     )?);
     let settlement = Values {
         lease: None,
+        lease_now: None,
         ..claim
     };
-    assert!(!<Leased as Events<Postgres>>::bind(
-        Param::Lease,
-        &mut extend,
-        &settlement
-    )?);
+    for param in [Param::Lease, Param::LeaseNow] {
+        assert!(!<Leased as Events<Postgres>>::bind(
+            param,
+            &mut extend,
+            &settlement
+        )?);
+    }
     // A row lock row has no lease to bind.
     assert!(!<SendEmail as Events<Postgres>>::bind(
         Param::Lease,

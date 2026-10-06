@@ -14,7 +14,7 @@ use super::PayloadRow;
 use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::delivery::{BatchTx, InboxDelivery};
-use super::engine::{self, Claimed, Claiming, Events, Now};
+use super::engine::{self, Claimed, Claiming, Events, Leasing, Now};
 use super::error::SqlxBrokerError;
 use super::lease::LeaseBook;
 use super::queue::{Queue, Registration};
@@ -294,7 +294,7 @@ where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    let cx = Claiming {
+    let mut cx = Claiming {
         queue,
         limit: i64::try_from(limit).unwrap_or(i64::MAX),
         now,
@@ -320,18 +320,19 @@ where
         Holding::Leases(book) => book,
     };
     // The lease is read once the connection is in hand, so a wait for the pool does not shorten
-    // it.
+    // it. The claim reads "now" there once: the rows it finds due, the leases it finds ended and
+    // the expiry it writes start from that instant.
     if queue.prepared.stamps {
         // The claim only selects: its transaction stamps each row it took and commits, so the
         // rows hold their leases, not the transaction.
         let mut tx = begin(pool, queue).await?;
         let claimed = async {
-            let lease = Row::expiry(queue, now).map_err(claim_failed)?;
+            let lease = Row::lease(queue, &mut cx.now).map_err(claim_failed)?;
             Row::claim(&mut tx, &cx, Some(&lease), rows)
                 .await
                 .map_err(claim_failed)?;
             stamp_rows::<DB, Row>(&mut tx, &cx, &lease, rows).await?;
-            Ok::<_, Failed>(lease)
+            Ok::<_, Failed>(lease.expiry)
         }
         .await;
         let lease = match claimed {
@@ -346,11 +347,11 @@ where
     }
     // The claim writes the lease itself, in one statement that commits on its own.
     let mut conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
-    let lease = Row::expiry(queue, now).map_err(claim_failed)?;
+    let lease = Row::lease(queue, &mut cx.now).map_err(claim_failed)?;
     Row::claim(&mut conn, &cx, Some(&lease), rows)
         .await
         .map_err(claim_failed)?;
-    Ok(Taken::Leased(book, lease))
+    Ok(Taken::Leased(book, lease.expiry))
 }
 
 /// Opens a claim's transaction on a connection of `pool`, with the statement `queue`'s dialect
@@ -366,7 +367,7 @@ async fn begin<DB: QueueDatabase>(pool: &Pool<DB>, queue: &Queue) -> Result<Tx<D
 async fn stamp_rows<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
-    lease: &Row::Token,
+    lease: &Leasing<Row::Token>,
     rows: &mut Vec<Claimed<Row>>,
 ) -> Result<(), Failed>
 where

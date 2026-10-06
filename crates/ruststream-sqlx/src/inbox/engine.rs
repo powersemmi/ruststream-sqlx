@@ -8,7 +8,7 @@ use std::convert::identity;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use ruststream::HeaderMap;
 use ruststream_sqlx_dialect::{Param, Statement, TableSpec};
@@ -68,19 +68,20 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
         values: &Values<'_, DB, Self>,
     ) -> Result<bool, Error>;
 
-    /// The end of a lease the queue's claim takes now: its lease after now, rounded up to a whole
-    /// second; `()` for a table in another form.
+    /// The lease the queue's claim takes now: "now" read once from the row's clock into `now`,
+    /// which every other time the claim binds starts from, and the lease from that instant. Both
+    /// of its times are `()` for a table in another form.
     ///
     /// # Errors
     ///
     /// [`Error::Configuration`] where the queue holds no lease or reads the database's clock.
-    fn expiry(queue: &'static Queue, now: Now) -> Result<Self::Token, Error>;
+    fn lease(queue: &'static Queue, now: &mut Now) -> Result<Leasing<Self::Token>, Error>;
 
-    /// Claims up to `cx.limit` rows into `out`; in the lease form the claim writes `lease`.
+    /// Claims up to `cx.limit` rows into `out`; in the lease form the claim takes `lease`.
     fn claim<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
-        lease: Option<&'a Self::Token>,
+        lease: Option<&'a Leasing<Self::Token>>,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 
@@ -223,12 +224,19 @@ pub struct Values<'a, DB: QueueDatabase, Row: Events<DB>> {
     pub now: Now,
     /// The lease a claim, a stamp or an extension writes.
     pub lease: Option<Row::Token>,
+    /// The instant a claim and its stamps find a lease ended by: the claim's "now", in the lease
+    /// column's type.
+    pub lease_now: Option<Row::Token>,
     /// The lease a settlement or an extension matches: the delivery's ownership token.
     pub held: Option<Row::Token>,
 }
 
 impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
-    const fn claiming(cx: Claiming, event: Event, lease: Option<Row::Token>) -> Self {
+    const fn claiming(cx: Claiming, event: Event, lease: Option<Leasing<Row::Token>>) -> Self {
+        let (lease, lease_now) = match lease {
+            Some(lease) => (Some(lease.expiry), Some(lease.now)),
+            None => (None, None),
+        };
         Self {
             event,
             queue: cx.queue,
@@ -239,6 +247,7 @@ impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
             destination: "",
             now: cx.now,
             lease,
+            lease_now,
             held: None,
         }
     }
@@ -259,6 +268,7 @@ impl<'a, DB: QueueDatabase, Row: Events<DB>> Values<'a, DB, Row> {
             destination: "",
             now: cx.now,
             lease: None,
+            lease_now: None,
             held,
         }
     }
@@ -365,8 +375,32 @@ pub struct Claiming {
     pub queue: &'static Queue,
     /// The most rows to take.
     pub limit: i64,
-    /// Where "now" comes from.
+    /// Where "now" comes from: in the lease form, the instant the claim read once.
     pub now: Now,
+}
+
+/// The lease a claim takes, from one reading of the clock: that instant and the lease's end, both
+/// in the lease column's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Leasing<Token> {
+    /// The instant the claim read: a row whose lease ended by then is free to take.
+    pub now: Token,
+    /// The lease's end, which the claim writes and its deliveries hold: the queue's lease after
+    /// `now`, rounded up to a whole second.
+    pub expiry: Token,
+}
+
+// A by-name lease turns its times into the time type its column names, and a column names one only
+// with a time feature on.
+#[cfg(any(feature = "chrono", feature = "time"))]
+impl<Token> Leasing<Token> {
+    /// The same lease, each of its times turned by `into`.
+    pub(crate) fn map<Other>(self, into: impl Fn(Token) -> Other) -> Leasing<Other> {
+        Leasing {
+            now: into(self.now),
+            expiry: into(self.expiry),
+        }
+    }
 }
 
 /// A settlement in progress.
@@ -378,34 +412,52 @@ pub struct Settling {
     pub now: Now,
 }
 
-/// Where "now" comes from for one statement: the row's [`TimeSource`].
+/// Where "now" comes from for one statement: the row's [`TimeSource`], or the instant a claim
+/// read from it once.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Now {
+    /// The instant a claim read once: every time its statements bind starts from it.
+    at: Option<SystemTime>,
     /// The clock of an in-process connection, which stands in for a host clock.
     #[cfg(feature = "testing")]
     test: Option<TestClock>,
-    _private: (),
 }
 
 impl Now {
     /// Now in `T`, from `Source`; `None` where the database reads its own clock.
     #[must_use]
     pub fn read<Source: TimeSource, T: QueueTime>(self) -> Option<T> {
-        #[cfg(feature = "testing")]
-        if let Some(clock) = self.test
-            && !Source::DATABASE
-        {
-            return Some(T::from_system(clock.now()));
+        self.instant::<Source>().map(T::from_system)
+    }
+
+    /// This "now" read once from `Source`: every time read from the result is that one instant.
+    fn once<Source: TimeSource>(mut self) -> Self {
+        self.at = self.instant::<Source>();
+        self
+    }
+
+    /// The instant read once, or else a reading of the in-process clock where it is set, or of
+    /// `Source`.
+    fn instant<Source: TimeSource>(self) -> Option<SystemTime> {
+        if Source::DATABASE {
+            return None;
         }
-        Source::now::<T>()
+        if let Some(at) = self.at {
+            return Some(at);
+        }
+        #[cfg(feature = "testing")]
+        if let Some(clock) = self.test {
+            return Some(clock.now());
+        }
+        Source::now()
     }
 
     /// "Now" of an in-process connection: `clock` instead of a host clock, where it is set.
     #[cfg(feature = "testing")]
     pub(crate) const fn test(clock: Option<TestClock>) -> Self {
         Self {
+            at: None,
             test: clock,
-            _private: (),
         }
     }
 }
@@ -501,19 +553,25 @@ pub fn later<Source: TimeSource, T: QueueTime>(
     Ok(self::now::<Source, T>(now, event)?.after(delay))
 }
 
-/// The end of a lease taken now: the queue's lease after now, rounded up to a whole second, in
-/// the lease column's time type.
+/// A lease of `queue` taken now: "now" read once from `Source` into `now`, which every other time
+/// the claim binds starts from, and the lease from that instant, in the lease column's time type.
 ///
 /// # Errors
 ///
 /// [`Error::Configuration`] where the queue holds no lease, and as [`now`].
-pub fn expiry<Source: TimeSource, T: QueueTime>(queue: &Queue, now: Now) -> Result<T, Error> {
+pub fn lease<Source: TimeSource, T: QueueTime>(
+    queue: &Queue,
+    now: &mut Now,
+) -> Result<Leasing<T>, Error> {
     let lease = queue
         .lease
         .ok_or_else(|| unbound(Param::Lease, Event::Claim))?;
-    Ok(self::now::<Source, T>(now, Event::Claim)?
-        .after(lease)
-        .rounded_up())
+    *now = now.once::<Source>();
+    let at = self::now::<Source, T>(*now, Event::Claim)?;
+    Ok(Leasing {
+        now: at,
+        expiry: at.after(lease).rounded_up(),
+    })
 }
 
 /// A delay in whole microseconds, saturating.
@@ -560,7 +618,7 @@ where
 pub async fn claim_rows<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
-    lease: Option<&Row::Token>,
+    lease: Option<&Leasing<Row::Token>>,
     out: &mut Vec<Claimed<Row>>,
 ) -> Result<(), Error>
 where
@@ -588,7 +646,7 @@ where
 pub async fn claim_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
-    lease: Option<&Row::Token>,
+    lease: Option<&Leasing<Row::Token>>,
 ) -> Result<Vec<Row::Id>, Error>
 where
     DB: QueueDatabase,
@@ -617,7 +675,7 @@ where
 pub async fn fetch_by_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
-    lease: Option<&Row::Token>,
+    lease: Option<&Leasing<Row::Token>>,
     ids: &[Row::Id],
 ) -> Result<Vec<Claimed<Row>>, Error>
 where
@@ -850,7 +908,7 @@ pub(crate) async fn stamp<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     id: &Row::Id,
-    lease: &Row::Token,
+    lease: &Leasing<Row::Token>,
 ) -> Result<bool, Error> {
     let values = Values {
         id: Some(id),

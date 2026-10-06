@@ -192,6 +192,8 @@ takes one each half lease to extend the leases in work.
 ## The lease form
 
 - The claim writes the lease's expiry into `locked_until`, counts the attempt and commits.
+- The claim reads "now" once: the rows it finds due, the leases it finds ended and the expiry it
+  writes start from that instant.
 - The expiry is the delivery's ownership token: a settlement takes effect only while the row
   still holds it.
 - The subscription extends the lease of every delivery in work each half lease, so a handler may
