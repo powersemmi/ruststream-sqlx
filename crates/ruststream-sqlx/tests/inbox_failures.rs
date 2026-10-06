@@ -1,5 +1,6 @@
 //! What a subscription does when a statement fails: a failed claim reaches the stream and the next
-//! one waits a second; a failed settlement reports itself and returns its row.
+//! one waits a second; a failed settlement reports itself and returns its row. A claim that took
+//! no row reads none, so a fetch of the service's own is never handed an empty list.
 
 #![cfg(all(
     feature = "inbox",
@@ -60,6 +61,46 @@ live::matrix! {
             );
         }
         tokio::time::resume();
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
+        db.finish().await;
+    }
+
+    // The fetch refuses an empty list, as MySQL refuses an empty `IN ()`: a claim that handed it
+    // one would reach the stream as a failed claim.
+    #[tokio::test]
+    async fn an_empty_claim_does_not_call_the_services_fetch() {
+        let Some(db) = database().await else { return };
+        let poll = Duration::from_millis(20);
+        let connected = SqlxBroker::new(db.pool.clone())
+            .poll_interval(poll)
+            .connect_in_process()
+            .await
+            .expect("the broker connects");
+        let mut subscriber = InboxQueue::<Fetched>::new("plain")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        tokio::time::pause();
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            // The paused clock stands still while the database answers, so the empty table is
+            // claimed five times before the wait ends.
+            match tokio::time::timeout(poll * 5, deliveries.next()).await {
+                Err(_) => {}
+                Ok(Some(Err(failed))) => panic!("an empty claim failed: {failed}"),
+                Ok(_) => panic!("an empty table delivered a row"),
+            }
+            tokio::time::resume();
+            db.plain(&[b"x".as_slice()]).await;
+            let delivery = deliveries
+                .next()
+                .await
+                .expect("the stream goes on")
+                .expect("the claim fetches the row it took");
+            assert_eq!(delivery.payload(), b"x");
+            delivery.ack().await.expect("the row settles");
+        }
         drop(subscriber);
         connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;

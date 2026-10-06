@@ -15,28 +15,15 @@ mod live;
 use std::pin::pin;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, Outcome, TestApp};
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber,
-    SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::keys::Attempt;
-use ruststream_sqlx::{
-    Fetch, Inbox, InboxQueue, Insert, Publish, QueueDatabase, SqlxBroker, SqlxBrokerError,
-};
+use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
-#[cfg(any(feature = "mysql", feature = "sqlite"))]
-use sqlx::AssertSqlSafe;
-use sqlx::FromRow;
-#[cfg(feature = "mysql")]
-use sqlx::{MySql, MySqlConnection};
-#[cfg(feature = "postgres")]
-use sqlx::{PgConnection, Postgres};
-#[cfg(feature = "sqlite")]
-use sqlx::{Sqlite, SqliteConnection};
 
 const LEASE: Duration = Duration::from_secs(2);
 
@@ -55,89 +42,8 @@ fn lost(error: &AckError) -> bool {
     )
 }
 
-/// A plain job whose service reads the rows itself: the crate claims and leases the ids, and the
-/// service's fetch, written per database, reads their rows.
-#[derive(Debug, Inbox, FromRow)]
-#[inbox(table = "plain_jobs", custom(fetch))]
-struct FetchedPlain {
-    #[field(id, generated)]
-    id: i64,
-    #[field(attempt, generated)]
-    attempt: i16,
-    #[field(locked_until)]
-    locked_until: Option<DateTime<Utc>>,
-    #[field(payload)]
-    payload: Vec<u8>,
-}
-
-impl<DB> Publish<DB> for FetchedPlain
-where
-    DB: QueueDatabase,
-    Self: Insert<DB::Connection>,
-{
-    async fn publish(
-        conn: &mut DB::Connection,
-        message: &OutgoingMessage<'_>,
-    ) -> Result<(), sqlx::Error> {
-        let job = Self {
-            id: 0,
-            attempt: 1,
-            locked_until: None,
-            payload: message.payload().to_vec(),
-        };
-        job.insert(conn).await
-    }
-}
-
-#[cfg(feature = "postgres")]
-impl Fetch<Postgres> for FetchedPlain {
-    async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
-        sqlx::query_as(
-            "SELECT id, attempt, locked_until, payload FROM plain_jobs WHERE id = ANY($1)",
-        )
-        .bind(ids)
-        .fetch_all(conn)
-        .await
-    }
-}
-
-/// The select of MySQL and SQLite, which bind no list as one parameter: one placeholder per id.
-#[cfg(any(feature = "mysql", feature = "sqlite"))]
-fn listed(ids: &[i64]) -> AssertSqlSafe<String> {
-    let placeholders = vec!["?"; ids.len()].join(", ");
-    AssertSqlSafe(format!(
-        "SELECT id, attempt, locked_until, payload FROM plain_jobs WHERE id IN ({placeholders})"
-    ))
-}
-
-#[cfg(feature = "mysql")]
-impl Fetch<MySql> for FetchedPlain {
-    async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
-        // MySQL refuses an empty `IN ()`, and an empty queue claims no ids.
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut select = sqlx::query_as(listed(ids));
-        for id in ids {
-            select = select.bind(id);
-        }
-        select.fetch_all(conn).await
-    }
-}
-
-#[cfg(feature = "sqlite")]
-impl Fetch<Sqlite> for FetchedPlain {
-    async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
-        let mut select = sqlx::query_as(listed(ids));
-        for id in ids {
-            select = select.bind(id);
-        }
-        select.fetch_all(conn).await
-    }
-}
-
 live::stands! {
-    use crate::live::rows::lease::Plain;
+    use crate::live::rows::lease::{Fetched, Plain};
 
     // The in-process mode keeps a paused clock still while the database answers and reads "now"
     // from the tokio clock, so a lease runs out when the test moves the clock.
@@ -350,7 +256,7 @@ live::stands! {
         db.finish().await;
     }
 
-    #[subscriber(InboxQueue::<FetchedPlain>::new("plain"))]
+    #[subscriber(InboxQueue::<Fetched>::new("plain"))]
     async fn retried(_task: &Task, Ctx(attempt): Ctx<Attempt>) -> HandlerOutcome {
         match attempt {
             // The first delivery reads what the insert wrote, the second one more; any other
@@ -365,7 +271,7 @@ live::stands! {
         let Some(db) = database().await else { return };
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(Duration::from_millis(20))
-            .route::<FetchedPlain>("plain");
+            .route::<Fetched>("plain");
         let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
             b.include(retried).max_attempts(nonzero!(2u32));
         });
@@ -392,7 +298,6 @@ live::stands! {
             "the cap finished the row after its second delivery"
         );
         tb.shutdown().await.expect("the app stops");
-        let _ = |row: FetchedPlain| (row.id, row.attempt, row.locked_until, row.payload);
         db.finish().await;
     }
 }
@@ -402,7 +307,7 @@ live::stands! {
 mod on_postgres {
     use chrono::{DateTime, Utc};
     use ruststream_sqlx::{Ack, ConnectedSqlxBroker, Extend, Inbox};
-    use sqlx::{PgConnection, PgPool, Postgres};
+    use sqlx::{Error, FromRow, PgConnection, PgPool, Postgres};
 
     use super::*;
     use crate::live::Database;
@@ -410,7 +315,7 @@ mod on_postgres {
 
     /// A leased job whose acknowledgement is the service's own: it marks the row instead of
     /// deleting it.
-    #[derive(Debug, Inbox, sqlx::FromRow)]
+    #[derive(Debug, Inbox, FromRow)]
     #[inbox(table = "acked_jobs", custom(ack))]
     struct LeasedAcked {
         #[field(id, generated)]
@@ -422,13 +327,13 @@ mod on_postgres {
     }
 
     impl Ack<Postgres> for LeasedAcked {
-        async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), Error> {
             mark(conn, id).await
         }
     }
 
     /// The same job, whose extension is the service's own as well.
-    #[derive(Debug, Inbox, sqlx::FromRow)]
+    #[derive(Debug, Inbox, FromRow)]
     #[inbox(table = "acked_jobs", custom(ack, extend))]
     struct OwnLease {
         #[field(id, generated)]
@@ -440,7 +345,7 @@ mod on_postgres {
     }
 
     impl Ack<Postgres> for OwnLease {
-        async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), Error> {
             mark(conn, id).await
         }
     }
@@ -451,7 +356,7 @@ mod on_postgres {
             id: &i64,
             held: &DateTime<Utc>,
             until: &DateTime<Utc>,
-        ) -> Result<bool, sqlx::Error> {
+        ) -> Result<bool, Error> {
             let extended = sqlx::query(
                 "UPDATE acked_jobs SET locked_until = $1 WHERE id = $2 AND locked_until = $3",
             )
@@ -465,7 +370,7 @@ mod on_postgres {
     }
 
     /// The service's acknowledgement: it marks the job, whose lease it does not name.
-    async fn mark(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+    async fn mark(conn: &mut PgConnection, id: &i64) -> Result<(), Error> {
         sqlx::query("UPDATE acked_jobs SET acked = true WHERE id = $1")
             .bind(id)
             .execute(conn)

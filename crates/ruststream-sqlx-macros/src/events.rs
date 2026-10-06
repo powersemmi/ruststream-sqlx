@@ -303,9 +303,15 @@ pub(crate) fn events(
             // A claim and a fetch of the service's own bind no lease: the crate stamps the rows
             // they take.
             let unbound = (claim && fetch).then(|| quote!(let _ = lease;));
+            // A claim that took no id has no row to read: an empty poll spends no round trip on
+            // the fetch, and a service's fetch written as `IN (..)` never meets the empty list
+            // MySQL refuses.
             quote!(async move {
                 #unbound
                 let ids = #ids;
+                if ids.is_empty() {
+                    return ::core::result::Result::Ok(());
+                }
                 let fetched = #rows;
                 #p::#matched::<__DB, Self>(ids, fetched, out);
                 ::core::result::Result::Ok(())

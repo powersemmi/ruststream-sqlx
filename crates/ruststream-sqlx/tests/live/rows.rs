@@ -4,15 +4,106 @@
 //! module imports. Every row writes a published message through its generated insert, on each
 //! database that insert serves.
 
+/// A fetch of the service's own over `plain_jobs`, per database: the rows of `ids`, read with the
+/// columns a row's struct names.
+///
+/// It refuses a list of no ids, as MySQL refuses an empty `IN ()`, so a claim that hands it none
+/// fails.
+pub(crate) mod own_fetch {
+    use sqlx::{AssertSqlSafe, Error, FromRow};
+    #[cfg(feature = "mysql")]
+    use sqlx::{MySqlConnection, mysql::MySqlRow};
+    #[cfg(feature = "postgres")]
+    use sqlx::{PgConnection, postgres::PgRow};
+    #[cfg(feature = "sqlite")]
+    use sqlx::{SqliteConnection, sqlite::SqliteRow};
+
+    fn refuse_none(ids: &[i64]) -> Result<(), Error> {
+        if ids.is_empty() {
+            return Err(Error::InvalidArgument(
+                "the claim handed the service's fetch no ids".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The select of MySQL and SQLite, which bind no list as one parameter: one placeholder per id.
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
+    fn listed(columns: &str, ids: &[i64]) -> AssertSqlSafe<String> {
+        let placeholders = vec!["?"; ids.len()].join(", ");
+        AssertSqlSafe(format!(
+            "SELECT {columns} FROM plain_jobs WHERE id IN ({placeholders})"
+        ))
+    }
+
+    #[cfg(feature = "postgres")]
+    pub(crate) async fn postgres<Row>(
+        conn: &mut PgConnection,
+        columns: &str,
+        ids: &[i64],
+    ) -> Result<Vec<Row>, Error>
+    where
+        Row: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+    {
+        refuse_none(ids)?;
+        sqlx::query_as(AssertSqlSafe(format!(
+            "SELECT {columns} FROM plain_jobs WHERE id = ANY($1)"
+        )))
+        .bind(ids)
+        .fetch_all(conn)
+        .await
+    }
+
+    #[cfg(feature = "mysql")]
+    pub(crate) async fn mysql<Row>(
+        conn: &mut MySqlConnection,
+        columns: &str,
+        ids: &[i64],
+    ) -> Result<Vec<Row>, Error>
+    where
+        Row: for<'r> FromRow<'r, MySqlRow> + Send + Unpin,
+    {
+        refuse_none(ids)?;
+        let mut select = sqlx::query_as(listed(columns, ids));
+        for id in ids {
+            select = select.bind(id);
+        }
+        select.fetch_all(conn).await
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) async fn sqlite<Row>(
+        conn: &mut SqliteConnection,
+        columns: &str,
+        ids: &[i64],
+    ) -> Result<Vec<Row>, Error>
+    where
+        Row: for<'r> FromRow<'r, SqliteRow> + Send + Unpin,
+    {
+        refuse_none(ids)?;
+        let mut select = sqlx::query_as(listed(columns, ids));
+        for id in ids {
+            select = select.bind(id);
+        }
+        select.fetch_all(conn).await
+    }
+}
+
 /// The rows of the row lock form: a claim locks its rows in a transaction their settlements end.
 pub(crate) mod row_lock {
     use std::collections::BTreeMap;
 
     use chrono::{DateTime, Utc};
     use ruststream::OutgoingMessage;
-    use ruststream_sqlx::{HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
+    use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
     use sqlx::types::Json;
     use sqlx::{Error, FromRow};
+    #[cfg(feature = "mysql")]
+    use sqlx::{MySql, MySqlConnection};
+    #[cfg(feature = "postgres")]
+    use sqlx::{PgConnection, Postgres};
+
+    use super::own_fetch;
 
     /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
     ///
@@ -93,6 +184,54 @@ pub(crate) mod row_lock {
                 payload: message.payload().to_vec(),
             };
             job.insert(conn).await
+        }
+    }
+
+    /// The plain queue read by a fetch of the service's own: the crate claims the ids, the
+    /// service's fetch reads their rows.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "plain_jobs", custom(fetch))]
+    pub(crate) struct Fetched {
+        #[field(id, generated)]
+        pub(crate) id: i64,
+        #[field(attempt, generated)]
+        pub(crate) attempt: i16,
+        #[field(payload)]
+        pub(crate) payload: Vec<u8>,
+    }
+
+    /// The columns `Fetched` decodes.
+    const FETCHED: &str = "id, attempt, payload";
+
+    impl<DB> Publish<DB> for Fetched
+    where
+        DB: QueueDatabase,
+        Self: Insert<DB::Connection>,
+    {
+        async fn publish(
+            conn: &mut DB::Connection,
+            message: &OutgoingMessage<'_>,
+        ) -> Result<(), Error> {
+            let job = Self {
+                id: 0,
+                attempt: 1,
+                payload: message.payload().to_vec(),
+            };
+            job.insert(conn).await
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    impl Fetch<Postgres> for Fetched {
+        async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+            own_fetch::postgres(conn, FETCHED, ids).await
+        }
+    }
+
+    #[cfg(feature = "mysql")]
+    impl Fetch<MySql> for Fetched {
+        async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+            own_fetch::mysql(conn, FETCHED, ids).await
         }
     }
 
@@ -208,9 +347,17 @@ pub(crate) mod lease {
 
     use chrono::{DateTime, Utc};
     use ruststream::OutgoingMessage;
-    use ruststream_sqlx::{HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
+    use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
     use sqlx::types::Json;
     use sqlx::{Error, FromRow};
+    #[cfg(feature = "mysql")]
+    use sqlx::{MySql, MySqlConnection};
+    #[cfg(feature = "postgres")]
+    use sqlx::{PgConnection, Postgres};
+    #[cfg(feature = "sqlite")]
+    use sqlx::{Sqlite, SqliteConnection};
+
+    use super::own_fetch;
 
     /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
     ///
@@ -298,6 +445,64 @@ pub(crate) mod lease {
                 payload: message.payload().to_vec(),
             };
             job.insert(conn).await
+        }
+    }
+
+    /// The plain queue read by a fetch of the service's own: the crate claims and leases the ids,
+    /// the service's fetch reads their rows.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "plain_jobs", custom(fetch))]
+    pub(crate) struct Fetched {
+        #[field(id, generated)]
+        pub(crate) id: i64,
+        #[field(attempt, generated)]
+        pub(crate) attempt: i16,
+        #[field(locked_until)]
+        pub(crate) locked_until: Option<DateTime<Utc>>,
+        #[field(payload)]
+        pub(crate) payload: Vec<u8>,
+    }
+
+    /// The columns `Fetched` decodes.
+    const FETCHED: &str = "id, attempt, locked_until, payload";
+
+    impl<DB> Publish<DB> for Fetched
+    where
+        DB: QueueDatabase,
+        Self: Insert<DB::Connection>,
+    {
+        async fn publish(
+            conn: &mut DB::Connection,
+            message: &OutgoingMessage<'_>,
+        ) -> Result<(), Error> {
+            let job = Self {
+                id: 0,
+                attempt: 1,
+                locked_until: None,
+                payload: message.payload().to_vec(),
+            };
+            job.insert(conn).await
+        }
+    }
+
+    #[cfg(feature = "postgres")]
+    impl Fetch<Postgres> for Fetched {
+        async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+            own_fetch::postgres(conn, FETCHED, ids).await
+        }
+    }
+
+    #[cfg(feature = "mysql")]
+    impl Fetch<MySql> for Fetched {
+        async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+            own_fetch::mysql(conn, FETCHED, ids).await
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    impl Fetch<Sqlite> for Fetched {
+        async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+            own_fetch::sqlite(conn, FETCHED, ids).await
         }
     }
 
