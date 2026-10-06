@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ruststream_sqlx::dialect;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
-use sqlx::{AssertSqlSafe, Connection, MySql, MySqlConnection};
+use sqlx::{AssertSqlSafe, Connection, MySql, MySqlConnection, MySqlPool};
 
 use super::{Database, url};
 
@@ -20,6 +20,34 @@ pub(crate) const DIALECT: dialect::MySql = dialect::MySql;
 
 /// The variable that names the stand: a MySQL URL whose user may create databases.
 pub(crate) const URL: &str = "MYSQL_TEST_URL";
+
+/// Whether a session of the server `pool` reaches holds the lock named `name`.
+///
+/// # Panics
+///
+/// Panics when the server refuses the query.
+pub(crate) async fn lock_held(pool: &MySqlPool, name: &str) -> bool {
+    // MySQL has no booleans: `IS NOT NULL` answers an integer, which sqlx reads as a `bool`.
+    sqlx::query_scalar("SELECT IS_USED_LOCK(?) IS NOT NULL")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .expect("the lock reads")
+}
+
+/// The name of the lock the broker takes on `key` in the database `pool` reaches, for a name that
+/// fits the 64 characters a lock name takes: the database's name, a dot and the key.
+///
+/// # Panics
+///
+/// Panics when the server refuses the query.
+pub(crate) async fn lock_name(pool: &MySqlPool, key: &str) -> String {
+    sqlx::query_scalar("SELECT CONCAT(LOWER(DATABASE()), '.', ?)")
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .expect("the name reads")
+}
 
 /// A fresh database on the stand, or `None` to skip the test.
 ///

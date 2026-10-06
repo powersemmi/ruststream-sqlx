@@ -12,7 +12,7 @@ use sqlx::{PgConnection, Postgres};
 #[cfg(feature = "sqlite")]
 use sqlx::{Sqlite, SqliteConnection};
 
-use super::own_fetch;
+use super::{PUBLISHED_PRIORITY, own_fetch};
 
 /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
 ///
@@ -20,6 +20,66 @@ use super::own_fetch;
 /// row holds one more than its deliveries.
 pub(crate) const fn attempts_after(delivered: i16) -> i16 {
     delivered + 1
+}
+
+/// The ledger: the entries of an account share one lock key, the form's way to keep a group in
+/// order, so they go into work one at a time, by priority, then by `retry_after`.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "ledger", advisory_lock = "ledger-{account}")]
+pub(crate) struct Entry {
+    #[field(id, generated)]
+    pub(crate) id: i64,
+    #[field(group)]
+    pub(crate) account: String,
+    #[field(priority)]
+    pub(crate) priority: i16,
+    #[field(retry_after)]
+    pub(crate) retry_after: DateTime<Utc>,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    #[field(processed_at)]
+    pub(crate) processed_at: Option<DateTime<Utc>>,
+    #[field(payload)]
+    pub(crate) payload: Vec<u8>,
+}
+
+impl Entry {
+    /// An entry of `account` that carries `payload`, at `priority`, due at `retry_after`.
+    pub(crate) fn new(
+        account: &str,
+        priority: i16,
+        retry_after: DateTime<Utc>,
+        payload: &[u8],
+    ) -> Self {
+        Self {
+            id: 0,
+            account: account.to_owned(),
+            priority,
+            retry_after,
+            attempt: 1,
+            processed_at: None,
+            payload: payload.to_vec(),
+        }
+    }
+}
+
+impl<DB> Publish<DB> for Entry
+where
+    DB: QueueDatabase,
+    Self: Insert<DB::Connection>,
+{
+    async fn publish(
+        conn: &mut DB::Connection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), Error> {
+        let entry = Self::new(
+            message.name(),
+            PUBLISHED_PRIORITY,
+            Utc::now(),
+            message.payload(),
+        );
+        entry.insert(conn).await
+    }
 }
 
 /// The email queue: a group per name and every role of the form, each job locked by its id.

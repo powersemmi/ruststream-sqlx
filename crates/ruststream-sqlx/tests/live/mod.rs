@@ -6,13 +6,15 @@
 //! what it wanted. The SQLite stand runs in memory and needs no URL, so it never skips.
 //!
 //! A suite writes each test once. [`matrix!`] runs it on every stand a feature turns on, once per
-//! form of the queue rows that stand serves, and [`server_matrix!`] the same on the stands that run
-//! as servers; [`stands!`] runs it once per stand, for a test whose rows name their own form,
-//! [`row_lock_stands!`] once per stand that serves the row lock form, [`advisory_stands!`] once per
-//! stand of the advisory lock form's suite, and [`advisory_server_stands!`] once per such stand that
-//! runs as a server. A stand module gives each test a database of its own, the dialect the broker
-//! builds the stand's statements with, and reads the tables in its own SQL; a row module holds the
-//! queue rows of one form under the names every form shares.
+//! form of the queue rows that stand serves; [`fifo_matrix!`] the same for the forms whose claim
+//! statement takes a FIFO group's head, the row lock and the lease form, and [`server_matrix!`]
+//! those on the stands that run as servers. [`stands!`] runs a test once per stand, for a test
+//! whose rows name their own form, [`row_lock_stands!`] once per stand that serves the row lock
+//! form, [`advisory_stands!`] once per stand of the advisory lock form's suite, and
+//! [`advisory_server_stands!`] once per such stand that runs as a server. A stand module gives each
+//! test a database of its own, the dialect the broker builds the stand's statements with, and reads
+//! the tables in its own SQL; a row module holds the queue rows of one form under the names every
+//! form shares.
 
 // Each live suite is its own test binary and uses the part of this module its topic needs, so
 // what one of them leaves alone, a macro included, is not dead code.
@@ -108,16 +110,65 @@ pub(crate) struct Database<DB: Backend> {
     keeper: Option<DB::Connection>,
 }
 
-/// One module per stand and per form of the queue rows, each holding `$items`.
+/// One module per stand and per form of the queue rows, each holding `$items`: the row lock and
+/// the lease form where each stand serves them, and the advisory lock form on the stands that run
+/// as servers.
 ///
 /// A stand appears when its feature is on; the rows of a form appear when the form exists on that
 /// stand. Each module sees the suite's own items, the stand's `Db`, `database` and `DIALECT`, and
 /// the rows of its form.
 macro_rules! matrix {
     ($($items:item)*) => {
+        $crate::live::fifo_matrix! { $($items)* }
+
+        // The advisory lock form runs on the servers: SQLite keeps the keys in work in one
+        // registry of the process, which every database a suite opens shares, so the tests of a
+        // suite would hold each other's keys there.
+        #[cfg(feature = "postgres")]
+        mod postgres_advisory {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::postgres::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mysql_advisory {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mysql::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "mysql")]
+        mod mariadb_advisory {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::mariadb::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+    };
+}
+
+/// One module per stand and per form whose claim statement takes a FIFO group's head, the row lock
+/// and the lease form, each holding `$items`: for a test that runs that statement itself.
+///
+/// A stand appears when its feature is on; SQLite has no row locks, so it runs the lease form
+/// alone. Each module sees the suite's own items, the stand's `Db`, `database` and `DIALECT`, and
+/// the rows of its form.
+macro_rules! fifo_matrix {
+    ($($items:item)*) => {
         $crate::live::server_matrix! { $($items)* }
 
-        // SQLite has no row locks, so it runs the lease form alone.
         #[cfg(feature = "sqlite")]
         mod sqlite_lease {
             #[allow(unused_imports)]
@@ -131,9 +182,9 @@ macro_rules! matrix {
     };
 }
 
-/// One module per stand that runs as a server and per form of the queue rows, each holding
-/// `$items`: for a test of what claims on separate connections do side by side, which SQLite's
-/// one writer keeps apart.
+/// One module per stand that runs as a server and per form whose claim statement takes a FIFO
+/// group's head, each holding `$items`: for a test of what such claims on separate connections do
+/// side by side, which SQLite's one writer keeps apart.
 ///
 /// A stand appears when its feature is on. Each module sees the suite's own items, the stand's
 /// `Db`, `database` and `DIALECT`, and the rows of its form.
@@ -227,23 +278,13 @@ macro_rules! stands {
     };
 }
 
-/// One module per stand of the advisory lock form's suite, each holding `$items`: Postgres and
-/// SQLite.
+/// One module per stand of the advisory lock form's suite, each holding `$items`.
 ///
 /// A stand appears when its feature is on. Each module sees the suite's own items, the stand's
 /// `Db`, `database` and `DIALECT`, and the rows of the advisory lock form.
 macro_rules! advisory_stands {
     ($($items:item)*) => {
-        #[cfg(feature = "postgres")]
-        mod postgres {
-            #[allow(unused_imports)]
-            use super::*;
-            #[allow(unused_imports)]
-            use crate::live::postgres::{DIALECT, Db, database};
-            #[allow(unused_imports)]
-            use crate::live::rows::advisory::*;
-            $($items)*
-        }
+        $crate::live::advisory_server_stands! { $($items)* }
 
         #[cfg(feature = "sqlite")]
         mod sqlite {
@@ -349,6 +390,6 @@ macro_rules! mysql_stands {
 
 #[allow(unused_imports)]
 pub(crate) use {
-    advisory_server_stands, advisory_stands, matrix, mysql_stands, row_lock_stands, server_matrix,
-    stands,
+    advisory_server_stands, advisory_stands, fifo_matrix, matrix, mysql_stands, row_lock_stands,
+    server_matrix, stands,
 };

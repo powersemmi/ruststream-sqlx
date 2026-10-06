@@ -222,3 +222,62 @@ live::stands! {
         db.finish().await;
     }
 }
+
+/// The advisory lock form: each delivery of a batch holds a session of its own and settles on it.
+mod one_session_each {
+    #[allow(unused_imports)]
+    use super::*;
+
+    crate::live::advisory_stands! {
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_failed_settlement_leaves_the_other_settlements_of_an_advisory_batch_in_place() {
+            let Some(db) = database().await else { return };
+            let ids = db.fragile(&["a", "b", "c"]).await;
+            // `b` is still referenced, so its acknowledgement fails.
+            db.reference(ids[1]).await;
+            let connected = SqlxBroker::new(db.pool.clone())
+                .connect()
+                .await
+                .expect("the broker connects");
+            let mut subscriber = InboxQueue::<Fragile>::new("fragile")
+                .subscribe(&connected)
+                .await
+                .expect("the subscription opens");
+            let batch = pin!(subscriber.batches(nonzero!(3_usize)))
+                .next()
+                .await
+                .expect("a batch")
+                .expect("the claim");
+            let [a, b, c]: [_; 3] = batch.try_into().expect("three deliveries");
+
+            a.ack().await.expect("the first acknowledgement settles");
+            let refused = b
+                .ack()
+                .await
+                .expect_err("a referenced job cannot be deleted");
+            let source = match &refused {
+                AckError::Broker(source) => source.downcast_ref::<SqlxBrokerError>(),
+                _ => None,
+            };
+            assert!(
+                matches!(
+                    source,
+                    Some(SqlxBrokerError::Sqlx {
+                        statement: "ack",
+                        ..
+                    })
+                ),
+                "{refused:?}"
+            );
+            c.ack()
+                .await
+                .expect("a delivery settles on its own session, whatever its batch did");
+            // Each settlement took effect on its own: only the job whose acknowledgement failed
+            // stays.
+            assert_eq!(db.fragile_rows().await, ["b"]);
+            drop(subscriber);
+            connected.shutdown().await.expect("the broker shuts down");
+            db.finish().await;
+        }
+    }
+}

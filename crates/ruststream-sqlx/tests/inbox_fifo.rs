@@ -1,7 +1,8 @@
 //! FIFO groups on every stand and form: a group keeps its order under `workers(n)`, a head that
 //! retries with a delay moves behind the rows of its group due earlier, and while a row of a group
 //! is in work no other row of the group is claimed, not the row behind it, not a row that enters
-//! the group ahead of it, and not by a second broker.
+//! the group ahead of it, and not by a second broker. The advisory lock form keeps a group in order
+//! by a lock key that names the group (`ledger-{account}`), and its rows behave alike.
 
 #![cfg(all(
     feature = "inbox",
@@ -81,27 +82,6 @@ live::matrix! {
         SqlxBroker::new(pool.clone())
             .poll_interval(POLL)
             .route::<Entry>(ACCOUNT)
-    }
-
-    /// The payloads of the rows `claim` hands out for the suite's group, run by hand on `pool` in
-    /// a transaction of its own that it rolls back, its times read from the host's clock.
-    async fn claimed_by_hand(pool: &Pool<Db>, claim: &Statement) -> Vec<Vec<u8>> {
-        let now = Utc::now();
-        let mut query = sqlx::query::<Db>(AssertSqlSafe(claim.sql().to_owned()));
-        for param in claim.params() {
-            query = match param {
-                Param::Group => query.bind(ACCOUNT),
-                Param::Now | Param::LeaseNow => query.bind(now),
-                Param::Lease => query.bind(now + TimeDelta::seconds(30)),
-                other => panic!("the ledger's claim binds {other:?}"),
-            };
-        }
-        let mut tx = pool.begin().await.expect("a transaction opens");
-        let rows = query.fetch_all(&mut *tx).await.expect("the claim runs");
-        tx.rollback().await.expect("the transaction rolls back");
-        rows.iter()
-            .map(|row| row.get::<Vec<u8>, _>("payload"))
-            .collect()
     }
 
     // Earlier postings take longer, so a row of the group in work beside an earlier one would
@@ -187,39 +167,6 @@ live::matrix! {
         db.finish().await;
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_head_in_work_holds_back_its_group() {
-        let Some(db) = database().await else { return };
-        write(&db.pool, Entry::new(ACCOUNT, PUBLISHED_PRIORITY, Utc::now(), b"head")).await;
-        write(&db.pool, Entry::new(ACCOUNT, PUBLISHED_PRIORITY, Utc::now(), b"next")).await;
-        let connected = SqlxBroker::new(db.pool.clone())
-            .poll_interval(POLL)
-            .connect_in_process()
-            .await
-            .expect("the broker connects");
-        let mut subscriber = InboxQueue::<Entry>::new(ACCOUNT)
-            .subscribe(&connected)
-            .await
-            .expect("the subscription opens");
-        let claim = Entry::fifo_claim(&DIALECT);
-        {
-            let mut deliveries = pin!(subscriber.stream());
-            let head = deliveries
-                .next()
-                .await
-                .expect("the stream goes on")
-                .expect("the claim takes the head");
-            assert_eq!(head.payload(), b"head");
-            // The held head stays the head: the claim takes nothing, not the row behind it.
-            assert_eq!(claimed_by_hand(&db.pool, &claim).await, Vec::<Vec<u8>>::new());
-            head.ack().await.expect("the head settles");
-            assert_eq!(claimed_by_hand(&db.pool, &claim).await, [b"next".to_vec()]);
-        }
-        drop(subscriber);
-        connected.shutdown().await.expect("the broker shuts down");
-        db.finish().await;
-    }
-
     // The clock is paused while the second broker claims, so it runs on the current thread.
     #[tokio::test]
     async fn a_row_entering_ahead_of_the_head_waits() {
@@ -270,6 +217,70 @@ live::matrix! {
         holder.shutdown().await.expect("the broker shuts down");
         other.shutdown().await.expect("the broker shuts down");
         db.finish().await;
+    }
+}
+
+/// The claim statement of a FIFO group run by hand beside a subscription, in the forms whose claim
+/// takes a group's head in one statement. The advisory lock form keeps a group in order by the lock
+/// its key names, which a statement run by hand does not take.
+mod by_hand {
+    #[allow(unused_imports)]
+    use super::*;
+
+    crate::live::fifo_matrix! {
+        /// The payloads of the rows `claim` hands out for the suite's group, run by hand on `pool`
+        /// in a transaction of its own that it rolls back, its times read from the host's clock.
+        async fn claimed_by_hand(pool: &Pool<Db>, claim: &Statement) -> Vec<Vec<u8>> {
+            let now = Utc::now();
+            let mut query = sqlx::query::<Db>(AssertSqlSafe(claim.sql().to_owned()));
+            for param in claim.params() {
+                query = match param {
+                    Param::Group => query.bind(ACCOUNT),
+                    Param::Now | Param::LeaseNow => query.bind(now),
+                    Param::Lease => query.bind(now + TimeDelta::seconds(30)),
+                    other => panic!("the ledger's claim binds {other:?}"),
+                };
+            }
+            let mut tx = pool.begin().await.expect("a transaction opens");
+            let rows = query.fetch_all(&mut *tx).await.expect("the claim runs");
+            tx.rollback().await.expect("the transaction rolls back");
+            rows.iter()
+                .map(|row| row.get::<Vec<u8>, _>("payload"))
+                .collect()
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_head_in_work_holds_back_its_group() {
+            let Some(db) = database().await else { return };
+            write(&db.pool, Entry::new(ACCOUNT, PUBLISHED_PRIORITY, Utc::now(), b"head")).await;
+            write(&db.pool, Entry::new(ACCOUNT, PUBLISHED_PRIORITY, Utc::now(), b"next")).await;
+            let connected = SqlxBroker::new(db.pool.clone())
+                .poll_interval(POLL)
+                .connect_in_process()
+                .await
+                .expect("the broker connects");
+            let mut subscriber = InboxQueue::<Entry>::new(ACCOUNT)
+                .subscribe(&connected)
+                .await
+                .expect("the subscription opens");
+            let claim = Entry::fifo_claim(&DIALECT);
+            {
+                let mut deliveries = pin!(subscriber.stream());
+                let head = deliveries
+                    .next()
+                    .await
+                    .expect("the stream goes on")
+                    .expect("the claim takes the head");
+                assert_eq!(head.payload(), b"head");
+                // The held head stays the head: the claim takes nothing, not the row behind it.
+                assert_eq!(claimed_by_hand(&db.pool, &claim).await, Vec::<Vec<u8>>::new());
+                head.ack().await.expect("the head settles");
+                assert_eq!(claimed_by_hand(&db.pool, &claim).await, [b"next".to_vec()]);
+            }
+            drop(subscriber);
+            connected.shutdown().await.expect("the broker shuts down");
+            db.finish().await;
+        }
     }
 }
 

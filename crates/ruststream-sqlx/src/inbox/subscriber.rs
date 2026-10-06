@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
-use sqlx::Pool;
+use sqlx::{Database, Pool};
 use tokio_util::sync::DropGuard;
 
 use super::PayloadRow;
@@ -19,7 +19,7 @@ use super::engine::{self, Candidates, Claimed, Claiming, Events, Leasing, Now, S
 use super::error::SqlxBrokerError;
 use super::lease::LeaseBook;
 use super::queue::{Queue, Registration};
-use super::session::Session;
+use super::session::{Closing, Session};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
 use super::tx::Tx;
@@ -50,12 +50,12 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// In the advisory lock form each message in work holds a connection of its own, in a batch too,
 /// and its session holds the lock on the row's key: no transaction stays open while the handler
 /// works. A claim selects candidates, locks each key on a session and takes the row while it is
-/// still claimable; a batch takes as many connections as the pool spares at once, so a batch larger
-/// than the pool shrinks instead of waiting. A settlement runs its statement on the session, then
-/// releases the lock and returns the connection to the pool. A delivery dropped unsettled closes its
-/// connection on the runtime the broker connected on, after releasing the lock, and its row returns
-/// at once. SQLite keeps no such locks: the process keeps the keys in work instead, so one process
-/// serves a database file.
+/// still claimable; a batch takes idle connections first and opens new ones while the pool has
+/// room, so a batch larger than the pool shrinks instead of waiting. A settlement runs its
+/// statement on the session, then releases the lock and returns the connection to the pool. A
+/// delivery dropped unsettled closes its connection on the runtime the broker connected on, after
+/// releasing the lock, and its row returns at once. SQLite keeps no such locks: the process keeps
+/// the keys in work instead, so one process serves a database file.
 ///
 /// A table whose groups keep their order (`#[field(group, fifo = true)]`) has one row of a group
 /// in work at a time. A claim takes the group's head, its first unfinished row in claim order, and
@@ -485,11 +485,11 @@ where
 /// of its own, and its row taken while it is still claimable. The rows go into `rows`, and each
 /// row's place in `book` beside it into `advised`.
 ///
-/// The first session waits for the pool; each next one is an idle connection the pool spares at
-/// once, and the claim ends where the pool spares none. A key this claim took already is passed
-/// over, and so is a key another session holds. A session left over holds nothing and goes back to
-/// the pool. A claim that fails or is dropped midway leaves no lock: what it took drops, so each
-/// session ends, one that may hold a lock closed, and each row returns.
+/// The first session waits for the pool; each next one is an idle connection, or a new one while
+/// the pool is below its size, and the claim ends where the pool is full. A key this claim took
+/// already is passed over, and so is a key another session holds. A session left over holds
+/// nothing and goes back to the pool. A claim that fails or is dropped midway leaves no lock: what
+/// it took drops, so each session ends, one that may hold a lock closed, and each row returns.
 async fn claim_advised<DB, Row>(
     pool: &Pool<DB>,
     book: &'static LockBook<DB>,
@@ -539,6 +539,9 @@ where
         if held_already {
             continue;
         }
+        if spare.is_none() {
+            spare = next_session(pool, book.closing()).await;
+        }
         let Some(session) = spare.as_mut() else {
             break;
         };
@@ -568,7 +571,7 @@ where
             if !free_key::<DB, Row>(session, book, &settling, key).await? {
                 // The database did not confirm the release: the session closes, and the claim
                 // goes on with another one.
-                spare = Session::try_acquire(pool, book.closing());
+                spare = None;
             }
             continue;
         }
@@ -587,12 +590,31 @@ where
         if taking.holds.len() >= limit {
             break;
         }
-        spare = Session::try_acquire(pool, book.closing());
     }
     // A session left over holds nothing, and goes back to the pool.
     drop(spare);
     taking.done = true;
     Ok(())
+}
+
+/// The session an advisory claim locks its next candidate on: an idle connection of `pool`, or a
+/// new one while the pool is below its size. `None` where the pool is full, so a batch larger than
+/// the pool shrinks instead of waiting for a delivery in work to settle.
+async fn next_session<DB: Database>(
+    pool: &Pool<DB>,
+    closing: &'static Closing,
+) -> Option<Session<DB>> {
+    if let Some(session) = Session::try_acquire(pool, closing) {
+        return Some(session);
+    }
+    if pool.size() >= pool.options().get_max_connections() {
+        return None;
+    }
+    // Why a wait remains: the pool has no call that opens a connection only while it has room.
+    // Another task may take the last place between the count above and this acquire, which then
+    // waits for a connection to come back, at most the pool's acquire timeout; a claim whose
+    // acquire fails ends with what it took.
+    Session::acquire(pool, closing).await.ok()
 }
 
 /// The rows and the holds of an advisory claim in progress. Dropped before the claim is done, by
