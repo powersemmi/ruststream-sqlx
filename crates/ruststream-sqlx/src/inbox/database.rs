@@ -63,8 +63,8 @@ pub trait QueueDatabase: Database {
         arguments: Self::Arguments,
     ) -> impl Future<Output = Result<u64, Error>> + Send + 'c;
 
-    /// Runs a statement that binds nothing as text, unprepared: a savepoint, which a server need
-    /// not prepare. Machinery.
+    /// Runs a statement that binds nothing as text, unprepared: a savepoint, which MySQL does not
+    /// prepare. Machinery.
     #[doc(hidden)]
     fn execute_text<'c>(
         conn: &'c mut Self::Connection,
