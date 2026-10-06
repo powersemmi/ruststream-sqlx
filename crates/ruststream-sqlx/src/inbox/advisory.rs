@@ -39,9 +39,8 @@ pub(crate) struct LockBook<DB: Database> {
     closing: &'static Closing,
     /// The subscription: its statements, and its names for messages.
     queue: &'static Queue,
-    /// Whether the process keeps the keys in work: the dialect builds no lock statement and the
-    /// service runs no lock of its own.
-    process: bool,
+    /// Who keeps the keys in work, and so whether the claim's select can leave them out.
+    kept_by: KeptBy,
     /// The database the subscription reads, as the process tells databases apart: the keys it
     /// keeps are each database's own.
     database: u64,
@@ -49,6 +48,35 @@ pub(crate) struct LockBook<DB: Database> {
     unlock: Unlock<DB>,
     /// Where "now" comes from for that unlock.
     now: Now,
+}
+
+/// Who keeps a subscription's keys in work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeptBy {
+    /// The database, in the lock statement the dialect builds: the claim's select probes the same
+    /// locks and leaves out the keys in work.
+    Database,
+    /// The service, in a lock of its own (`custom(lock, unlock)`), which the dialect's select
+    /// cannot see.
+    Service,
+    /// The process, for a dialect whose database keeps no locks: its registry, which no select
+    /// sees either.
+    Process,
+}
+
+impl KeptBy {
+    /// Who keeps the keys of a subscription that `prepared` its statements for a row of `shape`:
+    /// the dialect built no lock statement where the process keeps them, or where the row runs a
+    /// lock of the service's own.
+    const fn of(prepared: &Prepared, shape: Shape) -> Self {
+        if shape.custom_lock {
+            Self::Service
+        } else if prepared.lock.is_none() {
+            Self::Process
+        } else {
+            Self::Database
+        }
+    }
 }
 
 /// Every slot the book has held, and which of them are free.
@@ -119,7 +147,7 @@ impl<DB: QueueDatabase> LockBook<DB> {
             returned: Notify::new(),
             closing: shared.closing,
             queue,
-            process: in_process(&queue.prepared, Row::SHAPE),
+            kept_by: KeptBy::of(&queue.prepared, Row::SHAPE),
             database: database_of(&shared.pool),
             unlock: unlock::<DB, Row>,
             #[cfg(feature = "testing")]
@@ -203,7 +231,24 @@ impl<DB: Database> LockBook<DB> {
 
     /// Whether the process keeps the keys in work, rather than the database.
     pub(crate) const fn process(&self) -> bool {
-        self.process
+        matches!(self.kept_by, KeptBy::Process)
+    }
+
+    /// How many keys in work a claim's select may meet without leaving them out, so the claim
+    /// reads that many candidates past its limit: the keys the process keeps for the book's
+    /// database, in every subscription and broker of the process; the subscription's deliveries in
+    /// work under a lock of the service's own; none where the database keeps the locks the select
+    /// probes. A key held elsewhere under a service's lock is passed over only as far as that
+    /// margin reaches.
+    pub(crate) fn unseen_in_work(&self) -> usize {
+        match self.kept_by {
+            KeptBy::Database => 0,
+            KeptBy::Process => ProcessLocks::held(self.database),
+            KeptBy::Service => {
+                let slots = self.slots();
+                slots.entries.len() - slots.free.len()
+            }
+        }
     }
 
     /// Releases the lock of every delivery in the book, once `shutdown` began, and returns how many
@@ -271,7 +316,7 @@ impl<DB: Database> LockBook<DB> {
     }
 
     async fn unlock_and_release(&'static self, mut locked: Locked<'static, DB>) -> bool {
-        if self.process {
+        if self.process() {
             let mut session = locked.into_session();
             session.free_in_process();
             session.release();
@@ -337,7 +382,7 @@ impl<DB: Database> LockBook<DB> {
     /// Ends `session`, which may hold the lock on `key`: one that may hold it in the database
     /// closes after an unlock of the key; any other goes back to the pool, its process key freed.
     fn end(&self, session: Session<DB>, key: Cow<'_, str>) {
-        if self.process || !session.locked() {
+        if self.process() || !session.locked() {
             session.release();
             return;
         }
@@ -444,7 +489,7 @@ impl<DB: Database> Drop for LockHold<DB> {
             // A settlement dropped midway: its session ends with it. A released one has ended.
             Standing::Lent | Standing::Released => (None, None),
             // The process's key needs no release, so the slot keeps the key's buffer.
-            Standing::Held(session) if book.process => (Some(session), None),
+            Standing::Held(session) if book.process() => (Some(session), None),
             Standing::Held(session) => (Some(session), Some(mem::take(&mut entry.key))),
         };
         free.push(self.slot);
@@ -531,12 +576,6 @@ impl<DB: Database> Drop for Locked<'_, DB> {
             self.book.end(session, mem::take(&mut self.key));
         }
     }
-}
-
-/// Whether the process keeps a subscription's keys in work: its dialect built no lock statement,
-/// and its row runs no lock of the service's own, which holds a key where the service says.
-const fn in_process(prepared: &Prepared, shape: Shape) -> bool {
-    prepared.lock.is_none() && !shape.custom_lock
 }
 
 /// `Row`'s unlock of `key` on `conn`, boxed so the book runs it without the row's type: for a

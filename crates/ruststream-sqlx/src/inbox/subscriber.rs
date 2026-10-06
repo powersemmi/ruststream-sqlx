@@ -529,7 +529,8 @@ where
 ///
 /// The first session waits for the pool; each next one is an idle connection, or a new one while
 /// the pool is below its size, and the claim ends where the pool is full. A key this claim took
-/// already is passed over, and so is a key another session holds. A session left over holds
+/// already is passed over, and so is a key another session holds. The candidate select reads as
+/// many rows past `limit` as there are keys in work it cannot leave out. A session left over holds
 /// nothing and goes back to the pool. A claim that fails or is dropped midway leaves no lock: what
 /// it took drops, so each session ends, one that may hold a lock closed after an unlock of its key,
 /// and each row returns.
@@ -566,7 +567,15 @@ where
     let mut session = Session::acquire(pool, book.closing())
         .await
         .map_err(|source| ("acquire", source))?;
-    Row::candidates(session.conn(), cx, candidates)
+    // The select leaves out the keys in work only where it probes the locks that hold them; past
+    // the keys it cannot see, it reads as many more candidates, so a key in work at the head of
+    // the claim order does not hold back the rows behind it.
+    let unseen = i64::try_from(book.unseen_in_work()).unwrap_or(i64::MAX);
+    let reach = Claiming {
+        limit: cx.limit.saturating_add(unseen),
+        ..*cx
+    };
+    Row::candidates(session.conn(), &reach, candidates)
         .await
         .map_err(named(prepared.claim, "claim"))?;
     let mut spare = Some(session);

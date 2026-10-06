@@ -10,7 +10,7 @@ use sqlx::{Error, Sqlite, SqliteConnection, SqlitePool};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
-use super::{LockBook, ProcessLocks, Slots, Standing, Unlock};
+use super::{KeptBy, LockBook, ProcessLocks, Slots, Standing, Unlock};
 use crate::inbox::engine::{IdAt, Now, Prepared, Settling};
 use crate::inbox::queue::Queue;
 use crate::inbox::session::{Closing, Session};
@@ -66,7 +66,11 @@ fn book_with(process: bool, unlock: Unlock<Sqlite>) -> &'static LockBook<Sqlite>
         returned: Notify::new(),
         closing: Closing::leak(Handle::current()),
         queue: queue(),
-        process,
+        kept_by: if process {
+            KeptBy::Process
+        } else {
+            KeptBy::Database
+        },
         database: 0,
         unlock,
         now: Now::default(),

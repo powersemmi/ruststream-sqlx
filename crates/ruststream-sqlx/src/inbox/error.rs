@@ -93,8 +93,8 @@ pub enum SqlxBrokerError {
     /// The server is older than the statements of the subscription's form need.
     ///
     /// A subscription reads the server's version when it opens, where its dialect asks for it:
-    /// MySQL claims rows with `SKIP LOCKED` in both forms, which MySQL 8.0.1 and MariaDB 10.6
-    /// added.
+    /// MySQL claims rows with `SKIP LOCKED` in the row lock and lease forms, which MySQL 8.0.1 and
+    /// MariaDB 10.6 added, and a table in the advisory lock form shares that floor.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}): the server reports \
          `{server}`, and this form needs {required} or later"

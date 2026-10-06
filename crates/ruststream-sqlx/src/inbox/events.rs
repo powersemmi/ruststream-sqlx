@@ -473,6 +473,12 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// and where the delivery is dropped unsettled the connection closes after that unlock. With a
 /// lock of the service's own the process keeps no registry of keys, on SQLite too.
 ///
+/// The dialect's candidate select cannot see a lock of the service's own, so a claim reads as many
+/// candidates past its limit as the subscription has deliveries in work: a key its deliveries hold
+/// does not hold back the rows behind it. A key the service's lock holds elsewhere, in another
+/// process or system, is passed over within that margin only: while such keys head the claim
+/// order, the claim may end empty and wait for its next poll.
+///
 /// # Examples
 ///
 /// ```no_run

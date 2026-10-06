@@ -42,9 +42,10 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 ///
 /// SQLite has no locks a session holds, so in the advisory lock form the broker keeps the keys in
 /// work in the process: [`lock`](Advisory::lock) and [`unlock`](Advisory::unlock) are `None`, and
-/// the claim selects every claimable row with its key, the text the key's parts render, a column
-/// without a value read as empty text. The take counts the attempt and returns the row in one
-/// statement.
+/// the claim selects up to [`Param::Limit`] claimable rows in claim order with their keys, the text
+/// the key's parts render, a column without a value read as empty text. The select cannot leave
+/// out the keys in work, so the broker binds a limit that reaches past them. The take counts the
+/// attempt and returns the row in one statement.
 ///
 /// A table with FIFO groups needs no guard ([`fifo_guard`](Dialect::fifo_guard) is `None`): one
 /// writer at a time keeps two claims apart, and a lease claim takes nothing while a row of the

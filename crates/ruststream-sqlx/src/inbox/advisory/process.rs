@@ -2,7 +2,7 @@
 //! keeps, and how the process tells the databases of those keys apart.
 
 use std::any::Any;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
@@ -61,7 +61,8 @@ fn file_of(hasher: &FixedState, sqlite: &SqliteConnectOptions) -> u64 {
 }
 
 /// The process's registry of advisory keys in work, for a dialect whose locks the process keeps
-/// (SQLite): the 64-bit hash of each key with the database it belongs to.
+/// (SQLite): the 64-bit hash of each key with the database it belongs to, and how many keys in work
+/// each database holds.
 ///
 /// Two keys with one hash wait for each other, a delay and never a double delivery. A key is its
 /// database's, as a server keeps each database's locks apart: two databases in one process hold one
@@ -71,34 +72,65 @@ pub(crate) struct ProcessLocks;
 /// The seed of the key hashes, fixed so a key hashes alike in every run.
 const SEED: u64 = 0x5d1c_9e37_79b9_7f4a;
 
-/// The hashes of the keys in work. The set keeps its capacity, so a key in work allocates only
-/// when the process has more keys in work than ever before.
-static KEYS: LazyLock<Mutex<HashSet<u64, FixedState>>> =
-    LazyLock::new(|| Mutex::new(HashSet::with_hasher(FixedState::default())));
+/// The keys in work. Both collections keep their capacity, and a database keeps its count at zero,
+/// so a key in work allocates only when the process has more keys in work than ever before, or a
+/// database it has not seen.
+static KEYS: LazyLock<Mutex<Registry>> = LazyLock::new(|| {
+    Mutex::new(Registry {
+        keys: HashSet::with_hasher(FixedState::default()),
+        held: HashMap::with_hasher(FixedState::default()),
+    })
+});
+
+/// The keys in work, and how many each database holds.
+struct Registry {
+    /// The hashes of the keys in work.
+    keys: HashSet<u64, FixedState>,
+    /// How many keys in work each database holds, by the database as the process tells them apart.
+    held: HashMap<u64, usize, FixedState>,
+}
 
 impl ProcessLocks {
     /// Takes `key` of the database `database` names for the process: `None` while a key of its
     /// hash is in work.
     pub(crate) fn try_take(database: u64, key: &str) -> Option<ProcessKey> {
         let hash = FixedState::with_seed(SEED).hash_one((database, key));
+        let mut registry = Self::registry();
         // The key is made only when taken: a key dropped here would free its hash, which another
         // holder keeps.
-        let taken = Self::keys().insert(hash);
-        taken.then(|| ProcessKey(hash))
+        if !registry.keys.insert(hash) {
+            return None;
+        }
+        *registry.held.entry(database).or_insert(0) += 1;
+        drop(registry);
+        Some(ProcessKey { hash, database })
     }
 
-    fn keys() -> MutexGuard<'static, HashSet<u64, FixedState>> {
+    /// How many keys in work the database `database` names holds, in every subscription and
+    /// broker of the process.
+    pub(crate) fn held(database: u64) -> usize {
+        Self::registry().held.get(&database).copied().unwrap_or(0)
+    }
+
+    fn registry() -> MutexGuard<'static, Registry> {
         KEYS.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// A key the process keeps in work, by its hash; dropping it frees the key.
+/// A key the process keeps in work, by its hash, with its database; dropping it frees the key.
 #[derive(Debug)]
-pub(crate) struct ProcessKey(u64);
+pub(crate) struct ProcessKey {
+    hash: u64,
+    database: u64,
+}
 
 impl Drop for ProcessKey {
     fn drop(&mut self) {
-        ProcessLocks::keys().remove(&self.0);
+        let mut registry = ProcessLocks::registry();
+        registry.keys.remove(&self.hash);
+        if let Some(held) = registry.held.get_mut(&self.database) {
+            *held = held.saturating_sub(1);
+        }
     }
 }
 
@@ -167,6 +199,28 @@ mod tests {
         assert!(
             ProcessLocks::try_take(0, "unit-refused-take").is_some(),
             "a freed key is taken again"
+        );
+    }
+
+    #[test]
+    fn the_registry_counts_the_keys_each_database_holds() {
+        // Databases no other test names, so the counts are this test's alone.
+        let (jobs, other) = (0x5eed_0001, 0x5eed_0002);
+        let first = ProcessLocks::try_take(jobs, "unit-count-1").expect("a free key is taken");
+        let second = ProcessLocks::try_take(jobs, "unit-count-2").expect("a free key is taken");
+        let elsewhere = ProcessLocks::try_take(other, "unit-count-1").expect("a free key is taken");
+        assert!(
+            ProcessLocks::try_take(jobs, "unit-count-1").is_none(),
+            "a refused take counts nothing"
+        );
+        assert_eq!(ProcessLocks::held(jobs), 2);
+        assert_eq!(ProcessLocks::held(other), 1);
+        drop(first);
+        assert_eq!(ProcessLocks::held(jobs), 1, "a freed key leaves the count");
+        drop((second, elsewhere));
+        assert_eq!(
+            (ProcessLocks::held(jobs), ProcessLocks::held(other)),
+            (0, 0)
         );
     }
 }
