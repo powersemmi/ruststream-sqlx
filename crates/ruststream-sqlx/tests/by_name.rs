@@ -30,6 +30,13 @@ fn email() -> Email {
     }
 }
 
+/// What a by-name handler answers an email with: a row of the `receipts` group.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+#[outgoing(name = "receipts")]
+struct Receipt {
+    to: String,
+}
+
 live::matrix! {
     fn broker(pool: &Pool<Db>) -> SqlxBroker<Db> {
         SqlxBroker::new(pool.clone())
@@ -65,6 +72,52 @@ live::matrix! {
         let rows = db.email_rows("email_jobs").await;
         assert_eq!(rows.len(), 1);
         assert!(rows[0].3, "an acknowledged row carries processed_at");
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    #[subscriber("emails", reply)]
+    async fn answer(email: &Email) -> Receipt {
+        Receipt {
+            to: email.to.clone(),
+        }
+    }
+
+    #[subscriber("receipts")]
+    async fn file(_receipt: &Receipt) -> HandlerOutcome {
+        HandlerOutcome::ack()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handler_mounted_by_name_replies_through_the_route_of_its_reply() {
+        let Some(db) = database().await else { return };
+        let broker = broker(&db.pool).route::<SendEmail>("receipts");
+        let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker, |b| {
+            b.include(answer);
+            b.include(file);
+        });
+        let tb = TestApp::start_live(app).await.expect("the app starts");
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&email())
+            .to("emails")
+            .publish()
+            .await
+            .expect("the publish settles");
+        tb.advance(Duration::from_millis(200))
+            .await
+            .expect("the reply settles");
+
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("emails")
+            .assert_called_once()
+            .with(&email());
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("receipts")
+            .assert_called_once()
+            .with(&Receipt {
+                to: "a@example.com".to_owned(),
+            })
+            .settled(HandlerOutcome::ack());
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }

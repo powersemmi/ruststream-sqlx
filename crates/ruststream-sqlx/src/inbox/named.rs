@@ -18,6 +18,7 @@ use futures::{Stream, StreamExt};
 use ruststream::{
     AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Subscribe, Subscriber,
 };
+use sync_wrapper::SyncWrapper;
 
 pub use database::{NamedDatabase, RoleColumns};
 pub use row::{NamedBytes, NamedId, NamedRow, NamedTime};
@@ -307,8 +308,9 @@ pub struct NamedSubscriber<DB: NamedDatabase> {
 enum Opened<DB: NamedDatabase> {
     /// Rows read by role.
     Described(InboxSubscriber<DB, NamedRow>),
-    /// Rows read by their own code.
-    Erased(ErasedStream),
+    /// Rows read by their own code. The stream is polled only through `&mut`, so the wrapper
+    /// shares the subscriber between threads, as a mount that publishes requires, at no cost.
+    Erased(SyncWrapper<ErasedStream>),
 }
 
 impl<DB: NamedDatabase> fmt::Debug for NamedSubscriber<DB> {
@@ -335,6 +337,7 @@ impl<DB: NamedDatabase> Subscriber for NamedSubscriber<DB> {
             ),
             Opened::Erased(stream) => Either::Right(
                 stream
+                    .get_mut()
                     .as_mut()
                     .map(|delivery| delivery.map(NamedDelivery::erased)),
             ),
@@ -412,7 +415,7 @@ impl<DB: NamedDatabase> Subscribe for ConnectedSqlxBroker<DB> {
         );
         let stream = route.subscribe(&self.shared, name).await?;
         Ok(NamedSubscriber {
-            opened: Opened::Erased(stream),
+            opened: Opened::Erased(SyncWrapper::new(stream)),
         })
     }
 }
