@@ -176,6 +176,10 @@ impl<DB: BuiltInDialect> Dialect for BuiltIn<DB> {
     fn rollback_to_savepoint(&self) -> &'static str {
         self.0.rollback_to_savepoint()
     }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.0.fifo_guard(spec)
+    }
 }
 
 impl<DB: BuiltInDialect> Lease for BuiltIn<DB> {
@@ -417,6 +421,10 @@ impl Dialect for AnyDialect {
 
     fn rollback_to_savepoint(&self) -> &'static str {
         self.base().rollback_to_savepoint()
+    }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.base().fifo_guard(spec)
     }
 }
 

@@ -344,6 +344,9 @@ pub struct Stmt {
 /// The statements of one subscription: one per event the crate runs by default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Prepared {
+    /// Taking the subscription's group for a claim's transaction, in a table whose groups keep
+    /// their order and on a dialect that takes one: the claim runs only once it answers nonzero.
+    pub fifo_guard: Option<Stmt>,
     /// Claiming rows, or ids for a fetch of the service's own.
     pub claim: Option<Stmt>,
     /// Reading the rows of ids a claim of the service's own returned.
@@ -905,6 +908,25 @@ pub async fn extend<DB: QueueDatabase, Row: Events<DB>>(
     Ok(settled(cx.queue, changed))
 }
 
+/// Takes the subscription's group for the claim's transaction with `guard`, the queue's guard;
+/// `false` when another transaction holds the group, and the claim then takes nothing.
+///
+/// The guard binds as the claim binds, with the claim's `lease`, so the guard of a dialect of the
+/// service's own may compare the times the claim compares.
+///
+/// # Errors
+///
+/// The database's error.
+pub(crate) async fn take_group<DB: QueueDatabase, Row: Events<DB>>(
+    conn: &mut DB::Connection,
+    cx: &Claiming,
+    guard: Stmt,
+    lease: Option<&Leasing<Row::Token>>,
+) -> Result<bool, Error> {
+    let arguments = arguments::<DB, Row>(guard, &Values::claiming(*cx, Event::Claim, lease))?;
+    DB::fetch_flag(conn, guard.sql, arguments).await
+}
+
 /// Leases the claimed row `id` with `lease`, inside the claim's transaction; `false` when another
 /// lease holds the row, which the claim then passes over.
 ///
@@ -979,6 +1001,7 @@ impl Prepared {
     /// Every statement it holds, for the startup check.
     pub(crate) fn statements(&self) -> impl Iterator<Item = Stmt> {
         [
+            self.fifo_guard,
             self.claim,
             self.fetch,
             self.ack,

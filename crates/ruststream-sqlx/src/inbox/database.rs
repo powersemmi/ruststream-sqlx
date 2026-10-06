@@ -26,8 +26,8 @@ use super::built_in::BuiltIn;
 use super::engine::{Claimed, Events, IdAt};
 use super::queue::Queue;
 
-/// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
-/// statements bind, runs statements on a connection, and reports the rows a statement changed.
+/// A sqlx database the inbox runs on: one that binds and reads the values the queue's own
+/// statements use, runs statements on a connection, and reports the rows a statement changed.
 ///
 /// Every database whose sqlx driver does so implements it; Postgres, MySQL, SQLite and `Any` do.
 /// The rows a statement changed come through sqlx's [`AnyQueryResult`], which every driver in sqlx
@@ -108,6 +108,15 @@ pub trait QueueDatabase: Database {
         conn: &'c mut Self::Connection,
         sql: &'static str,
     ) -> impl Future<Output = Result<String, Error>> + Send + 'c;
+
+    /// Runs a statement whose one row starts with a 64-bit integer, such as the guard a FIFO
+    /// claim takes its group with, and returns whether the integer is nonzero. Machinery.
+    #[doc(hidden)]
+    fn fetch_flag<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> impl Future<Output = Result<bool, Error>> + Send + 'c;
 }
 
 impl<DB> QueueDatabase for DB
@@ -116,7 +125,7 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
-    for<'q> i64: Encode<'q, DB> + Type<DB>,
+    for<'a> i64: Encode<'a, DB> + Decode<'a, DB> + Type<DB>,
     for<'r> String: Decode<'r, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
     for<'a> &'a str: ColumnIndex<DB::Row>,
@@ -205,6 +214,17 @@ where
         sql: &'static str,
     ) -> impl Future<Output = Result<String, Error>> + Send + 'c {
         sqlx::query_scalar::<Self, String>(sql).fetch_one(conn)
+    }
+
+    async fn fetch_flag(
+        conn: &mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> Result<bool, Error> {
+        let flag: i64 = sqlx::query_scalar_with::<Self, i64, _>(sql, arguments)
+            .fetch_one(conn)
+            .await?;
+        Ok(flag != 0)
     }
 }
 

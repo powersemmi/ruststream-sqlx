@@ -529,7 +529,7 @@ impl Queue {
 
 /// The statements a subscription to the table `description` reads runs, built by the dialect
 /// `form` shows: the claim and the lease's statements by the trait of the table's form, the
-/// settlements by the dialect itself.
+/// guard of a FIFO group and the settlements by the dialect itself.
 fn build(
     form: &FormDialect,
     declaration: &RetryDeclaration,
@@ -549,6 +549,9 @@ fn build(
         .then(|| form.claim(&spec, description.claim))
         .transpose()
         .map_err(refused)?;
+    // Whoever writes the claim: a claim of the service's own takes its rows in the transaction the
+    // guard took the group in, as the crate's does.
+    let fifo_guard = dialect.fifo_guard(&spec).map_err(refused)?;
     let fetch = (shape.custom_claim && !shape.custom_fetch)
         .then(|| dialect.fetch(&spec))
         .transpose()
@@ -621,6 +624,7 @@ fn build(
         .transpose()
         .map_err(refused)?;
     Ok(Prepared {
+        fifo_guard: fifo_guard.as_ref().map(intern),
         claim: claim.as_ref().map(intern),
         fetch: fetch.as_ref().map(intern),
         ack: ack.as_ref().map(intern),

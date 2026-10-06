@@ -45,6 +45,14 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// A task on the runtime the broker connected on extends the lease of every delivery in work each
 /// half lease, on one connection, until the subscriber drops or the broker shuts down.
 ///
+/// A table whose groups keep their order (`#[field(group, fifo = true)]`) has one row of a group
+/// in work at a time. A claim takes the group's head, its first unfinished row in claim order, and
+/// takes nothing while another row of the group is in work, a row that entered the group ahead of
+/// it included. The claim first takes the group in its transaction with the guard its dialect
+/// builds, so subscriptions to one group on separate brokers keep the order too. A batch of such a
+/// table holds one row, and a handler mounted with `workers(n)` handles the group's rows one after
+/// another.
+///
 /// # Examples
 ///
 /// ```no_run
@@ -282,6 +290,9 @@ type Failed = (&'static str, sqlx::Error);
 
 /// Claims up to `limit` rows of `queue` into `rows`, holding them as `holding` says: in a
 /// transaction of `pool` it returns open, or by a lease it commits.
+///
+/// The claim of a table whose groups keep their order takes the group first, in the claim's
+/// transaction, and takes nothing while another transaction holds it.
 async fn claim_rows<DB, Row>(
     pool: &Pool<DB>,
     queue: &'static Queue,
@@ -307,13 +318,24 @@ where
     let book = match holding {
         Holding::Locks => {
             let mut tx = begin(pool, queue).await?;
-            return match Row::claim(&mut tx, &cx, None, rows).await {
+            let claimed = async {
+                // The transaction keeps the group until the delivery settles. A claim that finds
+                // it kept takes nothing, and the claim loop ends its transaction.
+                if take_group::<DB, Row>(&mut tx, &cx, None).await? {
+                    Row::claim(&mut tx, &cx, None, rows)
+                        .await
+                        .map_err(claim_failed)?;
+                }
+                Ok::<_, Failed>(())
+            }
+            .await;
+            return match claimed {
                 Ok(()) => Ok(Taken::Locked(tx)),
-                Err(source) => {
+                Err(failed) => {
                     // A rollback that fails leaves the transaction to its drop, which closes the
                     // connection.
                     let _ = tx.rollback().await;
-                    Err(claim_failed(source))
+                    Err(failed)
                 }
             };
         }
@@ -322,28 +344,42 @@ where
     // The lease is read once the connection is in hand, so a wait for the pool does not shorten
     // it. The claim reads "now" there once: the rows it finds due, the leases it finds ended and
     // the expiry it writes start from that instant.
-    if queue.prepared.stamps {
-        // The claim only selects: its transaction stamps each row it took and commits, so the
-        // rows hold their leases, not the transaction.
+    if queue.prepared.stamps || queue.prepared.fifo_guard.is_some() {
+        // The claim only selects, and its transaction stamps each row it took; or it takes its
+        // group first, and the group stays taken until the transaction commits its lease. Either
+        // way the transaction commits before the handlers run, so the rows hold their leases, not
+        // the transaction.
         let mut tx = begin(pool, queue).await?;
         let claimed = async {
             let lease = Row::lease(queue, now).map_err(claim_failed)?;
-            Row::claim(&mut tx, &cx, Some(&lease), rows)
-                .await
-                .map_err(claim_failed)?;
-            stamp_rows::<DB, Row>(&mut tx, &cx, &lease, rows).await?;
-            Ok::<_, Failed>(lease.expiry)
+            let taken = take_group::<DB, Row>(&mut tx, &cx, Some(&lease)).await?;
+            if taken {
+                Row::claim(&mut tx, &cx, Some(&lease), rows)
+                    .await
+                    .map_err(claim_failed)?;
+                if queue.prepared.stamps {
+                    stamp_rows::<DB, Row>(&mut tx, &cx, &lease, rows).await?;
+                }
+            }
+            Ok::<_, Failed>((lease.expiry, taken))
         }
         .await;
-        let lease = match claimed {
-            Ok(lease) => lease,
+        return match claimed {
+            Ok((lease, true)) => {
+                tx.commit().await.map_err(|source| ("COMMIT", source))?;
+                Ok(Taken::Leased(book, lease))
+            }
+            // Another transaction holds the group: the claim took nothing, and the rollback lets
+            // go of what the guard read.
+            Ok((lease, false)) => {
+                let _ = tx.rollback().await;
+                Ok(Taken::Leased(book, lease))
+            }
             Err(failed) => {
                 let _ = tx.rollback().await;
-                return Err(failed);
+                Err(failed)
             }
         };
-        tx.commit().await.map_err(|source| ("COMMIT", source))?;
-        return Ok(Taken::Leased(book, lease));
     }
     // The claim writes the lease itself, in one statement that commits on its own.
     let mut conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
@@ -352,6 +388,26 @@ where
         .await
         .map_err(claim_failed)?;
     Ok(Taken::Leased(book, lease.expiry))
+}
+
+/// Takes the group of `cx` for the claim's transaction on `conn`, where its table keeps its groups
+/// in order: `false` when another transaction holds the group. A queue without a guard takes no
+/// group and claims at once.
+async fn take_group<DB, Row>(
+    conn: &mut DB::Connection,
+    cx: &Claiming,
+    lease: Option<&Leasing<Row::Token>>,
+) -> Result<bool, Failed>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let Some(guard) = cx.queue.prepared.fifo_guard else {
+        return Ok(true);
+    };
+    engine::take_group::<DB, Row>(conn, cx, guard, lease)
+        .await
+        .map_err(|source| (guard.sql, source))
 }
 
 /// Opens a claim's transaction on a connection of `pool`, with the statement `queue`'s dialect
