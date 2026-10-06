@@ -114,3 +114,17 @@ impl<'a> Column<'a> {
         self.generated
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Column;
+
+    #[test]
+    fn a_column_carries_its_name_and_generation() {
+        let id = Column::new("job_id").generated();
+        assert_eq!(id.name(), "job_id");
+        assert!(id.is_generated());
+        let subject = Column::new("subject");
+        assert!(!subject.is_generated());
+    }
+}

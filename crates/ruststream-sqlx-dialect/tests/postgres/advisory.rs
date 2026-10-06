@@ -1,7 +1,5 @@
 //! The statements the Postgres dialect builds for the advisory lock form.
 
-#![cfg(feature = "postgres")]
-
 use std::error::Error;
 
 use ruststream_sqlx_dialect::{

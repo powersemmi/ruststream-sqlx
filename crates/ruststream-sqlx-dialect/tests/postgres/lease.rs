@@ -1,25 +1,12 @@
 //! The statements the Postgres dialect builds for the lease form.
 
-#![cfg(feature = "postgres")]
-
 use std::error::Error;
 
 use ruststream_sqlx_dialect::{
     ClaimShape, Column, Dialect, Form, Lease, Param, Postgres, StatementError, TableName, TableSpec,
 };
 
-const EXPIRY: Column<'static> = Column::new("locked_until");
-
-/// Every role the lease form reads, in a table inside a schema.
-const LEASED: TableSpec<'static> =
-    TableSpec::new("email_jobs", Column::new("job_id"), Form::Lease(EXPIRY))
-        .within("app")
-        .group(Column::new("name"))
-        .priority(Column::new("priority"))
-        .retry_after(Column::new("retry_after"))
-        .attempt(Column::new("attempt"))
-        .processed_at(Column::new("processed_at"))
-        .payload(Column::new("payload"));
+use crate::{EXPIRY, LEASED};
 
 /// Only an id, a lease and a payload: rows are deleted when finished.
 const BARE: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::Lease(EXPIRY))
@@ -190,38 +177,6 @@ fn the_lease_statements_refuse_other_forms_and_the_database_clock() {
     );
     assert_eq!(Postgres.ack(&clocked), Err(refused.clone()));
     assert_eq!(Postgres.extend(&clocked), Err(refused));
-}
-
-#[test]
-fn postgres_asks_nothing_of_its_server() -> Result<(), StatementError> {
-    assert_eq!(Postgres.server_version(), None);
-    Postgres.check_server(&LEASED, "17.2")?;
-    Ok(())
-}
-
-#[test]
-fn the_new_errors_name_what_to_do() {
-    assert_eq!(
-        StatementError::ServerTooOld {
-            dialect: "mysql",
-            server: "5.7.44".to_owned(),
-            required: "MySQL 8.0.1"
-        }
-        .to_string(),
-        "the mysql dialect needs MySQL 8.0.1 or later for this form; the server reports `5.7.44`"
-    );
-    assert_eq!(
-        StatementError::UnsupportedFetch { dialect: "sqlite" }.to_string(),
-        "the sqlite dialect cannot read rows by a list of ids: list `fetch` in `custom(..)` beside `claim`"
-    );
-    assert_eq!(
-        StatementError::LeaseOnDatabaseClock {
-            dialect: "postgres"
-        }
-        .to_string(),
-        "the lease form computes its expiry from the crate's clock: a table on `DatabaseClock` cannot \
-         declare `locked_until`"
-    );
 }
 
 /// A ledger whose accounts keep their order, in the lease form.

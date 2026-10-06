@@ -1,7 +1,8 @@
 //! The advisory lock form's text: how a dialect probes a key in use, the key a row's parts render,
 //! the candidates of a claim and the row a take names.
 
-use super::{BuiltIn, CLAIMABLE, SqlWriter};
+use super::claim::CLAIMABLE;
+use super::{BuiltIn, SqlWriter};
 use crate::form::KeyPart;
 use crate::spec::TableSpec;
 use crate::statement::Param;
@@ -30,20 +31,6 @@ impl<D> SqlWriter<'_, D>
 where
     D: BuiltIn + ?Sized,
 {
-    /// `text` as a string literal: quoted, each quote doubled, and each backslash doubled where a
-    /// backslash escapes.
-    pub(crate) fn literal(&mut self, text: &str) -> &mut Self {
-        self.sql.push('\'');
-        for character in text.chars() {
-            if character == '\'' || (character == '\\' && D::BACKSLASH_ESCAPES) {
-                self.sql.push(character);
-            }
-            self.sql.push(character);
-        }
-        self.sql.push('\'');
-        self
-    }
-
     /// The parts of a lock key with `separator` between them: each literal quoted, each column as
     /// `column` writes it. A key of no parts is one empty literal.
     pub(crate) fn key_parts(
