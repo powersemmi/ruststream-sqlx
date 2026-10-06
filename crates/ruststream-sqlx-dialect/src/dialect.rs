@@ -525,7 +525,8 @@ pub trait Dialect: Debug + Send + Sync {
     /// For a table with FIFO groups, the refusals of its claim: [`StatementError::AdvisoryFifo`]
     /// in the advisory lock form, [`StatementError::LeaseOnDatabaseClock`] for a lease table on
     /// the database's clock, [`StatementError::IdentifierTooLong`] for a name the database does
-    /// not keep.
+    /// not keep. A guard may also refuse the isolation level its claim opens at: MySQL refuses a
+    /// row lock table at SERIALIZABLE with [`StatementError::FifoAtSerializable`].
     ///
     /// # Examples
     ///

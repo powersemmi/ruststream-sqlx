@@ -1,10 +1,13 @@
 {
   "rules": [
-    "Declare `#[field(locked_until)]` on a queue struct for the lease form: a handler that runs long, a pool that cannot hold a connection per message in work, and every table on SQLite.",
+    "Declare `#[field(locked_until)]` on a queue struct for the lease form where a handler runs long or the pool cannot hold a connection per message in work; a SQLite table declares `locked_until` or `#[inbox(advisory_lock = \"..\")]`, as SQLite has no row locks.",
     "A lease setting needs the field: `InboxQueue::lease` compiles only for a struct with `#[field(locked_until)]`, and `SqlxBroker::lease` sets the lease of those tables alone.",
     "MySQL 8.0.1 and MariaDB 10.6 are the oldest servers the inbox runs on; an older one stops the subscription at startup with `SqlxBrokerError::ServerTooOld`.",
     "The lease form reads the host's clock: `#[field(locked_until)]` beside `#[inbox(clock = DatabaseClock)]` does not compile.",
-    "A dialect of the service's own implements `Dialect`, the trait of each form its tables take (`RowLock`, `Lease`) and `ByName<DB>` for subscriptions by name, and goes to the broker through `SqlxBroker::with_dialect`.",
-    "Declare `max_attempts(..)` and `dead_letter(..)` together on an inbox mount: `max_attempts(1)` sends every failure to the dead letter at once, and one without the other stops the service at startup."
+    "A dialect of the service's own implements `Dialect`, the trait of each form its tables take (`RowLock`, `Lease`, `Advisory`) and `ByName<DB>` for subscriptions by name, and goes to the broker through `SqlxBroker::with_dialect`.",
+    "Declare `max_attempts(..)` and `dead_letter(..)` together on an inbox mount: `max_attempts(1)` sends every failure to the dead letter at once, and one without the other stops the service at startup.",
+    "In the advisory lock form (`#[inbox(advisory_lock = \"..\")]`) each delivery in work holds a pool connection of its own until it settles, batches included: size the pool for `workers(n)` or the batch size, plus the inserts the handlers publish.",
+    "Serve a SQLite file with advisory lock tables from one process: the process keeps their locks, and two processes on one file deliver a row twice.",
+    "On Postgres, advisory lock tables need a direct connection or PgBouncer in session pooling: the lock lives in the database session, which transaction pooling hands to other clients."
   ]
 }
