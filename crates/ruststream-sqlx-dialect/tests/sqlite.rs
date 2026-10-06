@@ -54,12 +54,15 @@ fn quoted(ident: &str) -> String {
 }
 
 #[test]
-fn names_are_double_quoted_and_keep_their_case() {
-    assert_eq!(quoted("email_jobs"), r#""email_jobs""#);
-    assert_eq!(quoted("EmailJobs"), r#""EmailJobs""#);
-    assert_eq!(quoted("email jobs"), r#""email jobs""#);
-    assert_eq!(quoted(r#"a"b"#), r#""a""b""#);
-    assert_eq!(quoted("a`b"), r#""a`b""#);
+fn names_are_quoted_with_backticks_and_keep_their_case() {
+    // SQLite reads a backtick-quoted name as a name wherever it stands, and a double-quoted one
+    // that matches no column as text.
+    assert_eq!(quoted("email_jobs"), "`email_jobs`");
+    assert_eq!(quoted("EmailJobs"), "`EmailJobs`");
+    assert_eq!(quoted("email jobs"), "`email jobs`");
+    assert_eq!(quoted("a`b"), "`a``b`");
+    assert_eq!(quoted("``"), "``````");
+    assert_eq!(quoted(r#"a"b"#), r#"`a"b`"#);
 }
 
 #[test]
@@ -76,7 +79,7 @@ fn every_placeholder_is_a_question_mark() {
 fn the_lease_claim_is_one_update_that_returns_the_rows() -> Result<(), StatementError> {
     assert_eq!(
         Sqlite.lease_claim(&LEASED, ClaimShape::Rows)?.sql(),
-        r#"UPDATE "email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "retry_after", "job_id" LIMIT ?) RETURNING "job_id", "name", "retry_after", "attempt" - 1 AS "attempt", "locked_until", "processed_at", "payload""#,
+        "UPDATE `email_jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `retry_after`, `job_id` LIMIT ?) RETURNING `job_id`, `name`, `retry_after`, `attempt` - 1 AS `attempt`, `locked_until`, `processed_at`, `payload`",
     );
     assert_eq!(
         Sqlite.lease_claim(&LEASED, ClaimShape::Rows)?.params(),
@@ -95,7 +98,7 @@ fn the_lease_claim_is_one_update_that_returns_the_rows() -> Result<(), Statement
     let bare = Sqlite.lease_claim(&BARE, ClaimShape::Rows)?;
     assert_eq!(
         bare.sql(),
-        r#"UPDATE "jobs" SET "locked_until" = ? WHERE "job_id" IN (SELECT "job_id" FROM "jobs" WHERE ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "job_id" LIMIT ?) RETURNING "job_id", "locked_until", "payload""#,
+        "UPDATE `jobs` SET `locked_until` = ? WHERE `job_id` IN (SELECT `job_id` FROM `jobs` WHERE (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `job_id` LIMIT ?) RETURNING `job_id`, `locked_until`, `payload`",
     );
     assert_eq!(bare.params(), [Param::Lease, Param::LeaseNow, Param::Limit]);
     Ok(())
@@ -107,7 +110,7 @@ fn the_claim_orders_by_priority_and_names_the_schema() -> Result<(), StatementEr
     let claim = Sqlite.lease_claim(&spec, ClaimShape::Ids)?;
     assert_eq!(
         claim.sql(),
-        r#"UPDATE "app"."email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "app"."email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "priority", "retry_after", "job_id" LIMIT ?) RETURNING "job_id""#,
+        "UPDATE `app`.`email_jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `app`.`email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `priority`, `retry_after`, `job_id` LIMIT ?) RETURNING `job_id`",
     );
     assert_eq!(
         claim.params(),
@@ -127,7 +130,7 @@ fn a_claim_by_role_returns_the_attempt_before_the_claim() -> Result<(), Statemen
     let roles = Sqlite.lease_claim(&KEYED, ClaimShape::Roles)?;
     assert_eq!(
         roles.sql(),
-        r#"UPDATE "email_jobs" SET "locked_until" = ?, "tries" = "tries" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "retry_after", "job_id" LIMIT ?) RETURNING "job_id" AS "id", "customer" AS "partition_key", "tries" - 1 AS "attempt", "meta" AS "headers", "payload" AS "payload""#,
+        "UPDATE `email_jobs` SET `locked_until` = ?, `tries` = `tries` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `retry_after`, `job_id` LIMIT ?) RETURNING `job_id` AS `id`, `customer` AS `partition_key`, `tries` - 1 AS `attempt`, `meta` AS `headers`, `payload` AS `payload`",
     );
     assert_eq!(
         roles.params(),
@@ -142,7 +145,7 @@ fn a_claim_by_role_returns_the_attempt_before_the_claim() -> Result<(), Statemen
     // Whole rows name the attempt column under its own name.
     let rows = Sqlite.lease_claim(&KEYED, ClaimShape::Rows)?;
     assert!(
-        rows.sql().ends_with(r#"RETURNING "job_id", "name", "customer", "retry_after", "tries" - 1 AS "tries", "locked_until", "meta", "payload", "subject""#),
+        rows.sql().ends_with("RETURNING `job_id`, `name`, `customer`, `retry_after`, `tries` - 1 AS `tries`, `locked_until`, `meta`, `payload`, `subject`"),
         "{}",
         rows.sql()
     );
@@ -157,7 +160,7 @@ fn a_struct_that_flattens_reads_every_column_and_the_counted_attempt() -> Result
     let claim = Sqlite.lease_claim(&flat, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
-        r#"UPDATE "email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL AND ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "retry_after", "job_id" LIMIT ?) RETURNING *"#,
+        "UPDATE `email_jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `email_jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `retry_after`, `job_id` LIMIT ?) RETURNING *",
     );
     // `*` returns the attempt the claim wrote, so a delivery reports one less.
     assert!(Sqlite.claim_counts_attempt(&flat));
@@ -169,14 +172,14 @@ fn settlement_names_the_row_and_its_token() -> Result<(), StatementError> {
     for statement in [Sqlite.ack(&LEASED)?, Sqlite.discard(&LEASED)?] {
         assert_eq!(
             statement.sql(),
-            r#"UPDATE "email_jobs" SET "processed_at" = ?, "locked_until" = NULL WHERE "job_id" = ? AND "locked_until" = ?"#,
+            "UPDATE `email_jobs` SET `processed_at` = ?, `locked_until` = NULL WHERE `job_id` = ? AND `locked_until` = ?",
         );
         assert_eq!(statement.params(), [Param::Now, Param::Id, Param::Held]);
     }
     for statement in [Sqlite.ack(&BARE)?, Sqlite.discard(&BARE)?] {
         assert_eq!(
             statement.sql(),
-            r#"DELETE FROM "jobs" WHERE "job_id" = ? AND "locked_until" = ?"#,
+            "DELETE FROM `jobs` WHERE `job_id` = ? AND `locked_until` = ?",
         );
         assert_eq!(statement.params(), [Param::Id, Param::Held]);
     }
@@ -189,7 +192,7 @@ fn a_retry_releases_the_lease_and_counts_nothing_more() -> Result<(), StatementE
     assert_eq!(
         retry.as_ref().map(Statement::sql),
         Some(
-            r#"UPDATE "email_jobs" SET "locked_until" = NULL WHERE "job_id" = ? AND "locked_until" = ?"#
+            "UPDATE `email_jobs` SET `locked_until` = NULL WHERE `job_id` = ? AND `locked_until` = ?"
         ),
     );
     assert_eq!(
@@ -199,7 +202,7 @@ fn a_retry_releases_the_lease_and_counts_nothing_more() -> Result<(), StatementE
     let later = Sqlite.retry_after(&LEASED)?;
     assert_eq!(
         later.sql(),
-        r#"UPDATE "email_jobs" SET "retry_after" = ?, "locked_until" = NULL WHERE "job_id" = ? AND "locked_until" = ?"#,
+        "UPDATE `email_jobs` SET `retry_after` = ?, `locked_until` = NULL WHERE `job_id` = ? AND `locked_until` = ?",
     );
     assert_eq!(later.params(), [Param::RetryAfter, Param::Id, Param::Held]);
     assert_eq!(
@@ -217,7 +220,7 @@ fn a_dead_letter_into_a_group_moves_only_a_row_still_held() -> Result<(), Statem
     let group = Sqlite.dead_letter_group(&LEASED)?;
     assert_eq!(
         group.sql(),
-        r#"UPDATE "email_jobs" SET "name" = ?, "locked_until" = NULL WHERE "job_id" = ? AND "locked_until" = ?"#,
+        "UPDATE `email_jobs` SET `name` = ?, `locked_until` = NULL WHERE `job_id` = ? AND `locked_until` = ?",
     );
     assert_eq!(group.params(), [Param::Destination, Param::Id, Param::Held]);
     assert_eq!(
@@ -236,8 +239,8 @@ fn a_dead_letter_into_a_table_is_a_copy_then_a_delete() -> Result<(), Box<dyn Er
     assert_eq!(
         moves.iter().map(Statement::sql).collect::<Vec<_>>(),
         [
-            r#"INSERT INTO "archive"."dead_jobs" ("job_id", "name", "retry_after", "attempt", "locked_until", "processed_at", "payload") SELECT "job_id", "name", "retry_after", "attempt", NULL, "processed_at", "payload" FROM "email_jobs" WHERE "job_id" = ? AND "locked_until" = ?"#,
-            r#"DELETE FROM "email_jobs" WHERE "job_id" = ? AND "locked_until" = ?"#,
+            "INSERT INTO `archive`.`dead_jobs` (`job_id`, `name`, `retry_after`, `attempt`, `locked_until`, `processed_at`, `payload`) SELECT `job_id`, `name`, `retry_after`, `attempt`, NULL, `processed_at`, `payload` FROM `email_jobs` WHERE `job_id` = ? AND `locked_until` = ?",
+            "DELETE FROM `email_jobs` WHERE `job_id` = ? AND `locked_until` = ?",
         ]
     );
     assert_eq!(moves[0].params(), [Param::Id, Param::Held]);
@@ -257,14 +260,14 @@ fn an_extension_and_a_stamp_write_the_lease() -> Result<(), StatementError> {
     let extend = Sqlite.extend(&LEASED)?;
     assert_eq!(
         extend.sql(),
-        r#"UPDATE "email_jobs" SET "locked_until" = ? WHERE "job_id" = ? AND "locked_until" = ?"#,
+        "UPDATE `email_jobs` SET `locked_until` = ? WHERE `job_id` = ? AND `locked_until` = ?",
     );
     assert_eq!(extend.params(), [Param::Lease, Param::Id, Param::Held]);
     // A claim of the service's own leaves each row to this stamp, inside its transaction.
     let stamp = Sqlite.stamp(&LEASED)?;
     assert_eq!(
         stamp.sql(),
-        r#"UPDATE "email_jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" = ? AND ("locked_until" IS NULL OR "locked_until" <= ?)"#,
+        "UPDATE `email_jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` = ? AND (`locked_until` IS NULL OR `locked_until` <= ?)",
     );
     assert_eq!(stamp.params(), [Param::Lease, Param::Id, Param::LeaseNow]);
     Ok(())
@@ -351,7 +354,7 @@ fn the_insert_writes_every_column_the_database_does_not_fill() -> Result<(), Sta
     let insert = Sqlite.insert(&spec)?;
     assert_eq!(
         insert.sql(),
-        r#"INSERT INTO "email_jobs" ("name", "retry_after", "payload", "subject") VALUES (?, ?, ?, ?)"#,
+        "INSERT INTO `email_jobs` (`name`, `retry_after`, `payload`, `subject`) VALUES (?, ?, ?, ?)",
     );
     assert_eq!(
         insert.params(),
@@ -373,7 +376,7 @@ fn an_insert_of_only_generated_columns_writes_the_defaults() -> Result<(), State
         Form::Lease(EXPIRY.generated()),
     );
     let insert = Sqlite.insert(&spec)?;
-    assert_eq!(insert.sql(), r#"INSERT INTO "jobs" DEFAULT VALUES"#);
+    assert_eq!(insert.sql(), "INSERT INTO `jobs` DEFAULT VALUES");
     assert_eq!(insert.params(), []);
     assert_eq!(
         Sqlite.insert(&BARE.selecting_all()),
@@ -462,7 +465,7 @@ fn the_candidates_carry_their_keys() -> Result<(), StatementError> {
     let claim = Sqlite.advisory_claim(&ADVISED)?;
     assert_eq!(
         claim.sql(),
-        r#"SELECT "job_id", CAST('jobs-' || ifnull("job_id", '') AS TEXT) AS "__lock" FROM "jobs" WHERE "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL ORDER BY "retry_after", "job_id" LIMIT ?"#,
+        "SELECT `job_id`, CAST('jobs-' || ifnull(`job_id`, '') AS TEXT) AS `__lock` FROM `jobs` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL ORDER BY `retry_after`, `job_id` LIMIT ?",
     );
     assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
     assert_eq!(Sqlite.lock(), None);
@@ -475,21 +478,21 @@ fn the_database_renders_the_key_from_its_parts() -> Result<(), StatementError> {
     // A key of one column renders without a literal.
     assert_eq!(
         claim_keyed(&[KeyPart::Column("job_id")])?.sql(),
-        r#"SELECT "job_id", CAST(ifnull("job_id", '') AS TEXT) AS "__lock" FROM "jobs" ORDER BY "job_id" LIMIT ?"#,
+        "SELECT `job_id`, CAST(ifnull(`job_id`, '') AS TEXT) AS `__lock` FROM `jobs` ORDER BY `job_id` LIMIT ?",
     );
     // A quote in a literal doubles; a backslash stays as it is.
     let quoted = claim_keyed(&[KeyPart::Literal(r"it's-a\b-"), KeyPart::Column("job_id")])?;
     assert!(
         quoted
             .sql()
-            .contains(r#"CAST('it''s-a\b-' || ifnull("job_id", '') AS TEXT) AS "__lock""#),
+            .contains(r"CAST('it''s-a\b-' || ifnull(`job_id`, '') AS TEXT) AS `__lock`"),
         "{}",
         quoted.sql()
     );
     // A key of no parts is the empty text: every row waits for one lock.
     let empty = claim_keyed(&[])?;
     assert!(
-        empty.sql().contains(r#"CAST('' AS TEXT) AS "__lock""#),
+        empty.sql().contains("CAST('' AS TEXT) AS `__lock`"),
         "{}",
         empty.sql()
     );
@@ -502,14 +505,14 @@ fn the_take_counts_the_attempt_and_returns_the_row_as_it_was() -> Result<(), Sta
     assert_eq!(
         rows.iter().map(Statement::sql).collect::<Vec<_>>(),
         [
-            r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = ? AND "name" = ? AND "retry_after" <= ? AND "processed_at" IS NULL RETURNING "job_id", "name", "retry_after", "attempt" - 1 AS "attempt", "processed_at", "payload""#,
+            "UPDATE `jobs` SET `attempt` = `attempt` + 1 WHERE `job_id` = ? AND `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL RETURNING `job_id`, `name`, `retry_after`, `attempt` - 1 AS `attempt`, `processed_at`, `payload`",
         ]
     );
     assert_eq!(rows[0].params(), [Param::Id, Param::Group, Param::Now]);
     let roles = Sqlite.take(&ADVISED, ClaimShape::Roles)?;
     assert!(
         roles[0].sql().ends_with(
-            r#"RETURNING "job_id" AS "id", "attempt" - 1 AS "attempt", "payload" AS "payload""#
+            "RETURNING `job_id` AS `id`, `attempt` - 1 AS `attempt`, `payload` AS `payload`"
         ),
         "{}",
         roles[0].sql()
@@ -525,7 +528,7 @@ fn the_take_counts_the_attempt_and_returns_the_row_as_it_was() -> Result<(), Sta
             .map(Statement::sql)
             .collect::<Vec<_>>(),
         [
-            r#"SELECT "job_id" AS "id", "payload" AS "payload" FROM "jobs" WHERE "job_id" = ? AND "name" = ?"#
+            "SELECT `job_id` AS `id`, `payload` AS `payload` FROM `jobs` WHERE `job_id` = ? AND `name` = ?"
         ]
     );
     Ok(())
@@ -536,7 +539,7 @@ fn the_advisory_form_settles_by_the_row_alone() -> Result<(), Box<dyn Error>> {
     for statement in [Sqlite.ack(&ADVISED)?, Sqlite.discard(&ADVISED)?] {
         assert_eq!(
             statement.sql(),
-            r#"UPDATE "jobs" SET "processed_at" = ? WHERE "job_id" = ?"#
+            "UPDATE `jobs` SET `processed_at` = ? WHERE `job_id` = ?"
         );
         assert_eq!(statement.params(), [Param::Now, Param::Id]);
     }
@@ -545,20 +548,20 @@ fn the_advisory_form_settles_by_the_row_alone() -> Result<(), Box<dyn Error>> {
     let retry_after = Sqlite.retry_after(&ADVISED)?;
     assert_eq!(
         retry_after.sql(),
-        r#"UPDATE "jobs" SET "retry_after" = ? WHERE "job_id" = ?"#
+        "UPDATE `jobs` SET `retry_after` = ? WHERE `job_id` = ?"
     );
     assert_eq!(retry_after.params(), [Param::RetryAfter, Param::Id]);
     let group = Sqlite.dead_letter_group(&ADVISED)?;
     assert_eq!(
         group.sql(),
-        r#"UPDATE "jobs" SET "name" = ? WHERE "job_id" = ?"#
+        "UPDATE `jobs` SET `name` = ? WHERE `job_id` = ?"
     );
     let moves = Sqlite.dead_letter_table(&ADVISED, TableName::parse("jobs_dead")?)?;
     assert_eq!(
         moves.iter().map(Statement::sql).collect::<Vec<_>>(),
         [
-            r#"INSERT INTO "jobs_dead" ("job_id", "name", "retry_after", "attempt", "processed_at", "payload") SELECT "job_id", "name", "retry_after", "attempt", "processed_at", "payload" FROM "jobs" WHERE "job_id" = ?"#,
-            r#"DELETE FROM "jobs" WHERE "job_id" = ?"#,
+            "INSERT INTO `jobs_dead` (`job_id`, `name`, `retry_after`, `attempt`, `processed_at`, `payload`) SELECT `job_id`, `name`, `retry_after`, `attempt`, `processed_at`, `payload` FROM `jobs` WHERE `job_id` = ?",
+            "DELETE FROM `jobs` WHERE `job_id` = ?",
         ]
     );
     Ok(())
@@ -605,7 +608,7 @@ fn a_fifo_lease_claim_returns_the_head_alone() -> Result<(), Box<dyn Error>> {
     let claim = Sqlite.lease_claim(&LEASED_LEDGER, ClaimShape::Rows)?;
     assert_eq!(
         claim.sql(),
-        r#"UPDATE "ledger" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "id" IN (SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = ? AND "processed_at" IS NULL ORDER BY "retry_after", "id" LIMIT 1) AND "retry_after" <= ? AND ("locked_until" IS NULL OR "locked_until" <= ?) AND NOT EXISTS (SELECT 1 FROM "ledger" AS __work WHERE __work."account" = ? AND __work."locked_until" > ?)) RETURNING "id", "account", "retry_after", "attempt" - 1 AS "attempt", "locked_until", "processed_at", "payload""#,
+        "UPDATE `ledger` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `id` IN (SELECT `id` FROM `ledger` WHERE `id` = (SELECT `id` FROM `ledger` WHERE `account` = ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT 1) AND `retry_after` <= ? AND (`locked_until` IS NULL OR `locked_until` <= ?) AND NOT EXISTS (SELECT 1 FROM `ledger` AS __work WHERE __work.`account` = ? AND __work.`locked_until` > ?)) RETURNING `id`, `account`, `retry_after`, `attempt` - 1 AS `attempt`, `locked_until`, `processed_at`, `payload`",
     );
     assert_eq!(
         claim.params(),

@@ -20,7 +20,7 @@ const DATABASE_NOW: &str = "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')";
 /// so no other writer comes between its select and its stamps.
 const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 
-/// SQLite: double-quoted names, `?` placeholders, rows claimed by lease.
+/// SQLite: backtick-quoted names, `?` placeholders, rows claimed by lease.
 ///
 /// It builds the statements of the lease form ([`Lease`]), of the advisory lock form
 /// ([`Advisory`]), and the insert. A writer locks the whole database, not rows, so it builds no
@@ -32,8 +32,10 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// transaction. A claim of the service's own opens its transaction with `BEGIN IMMEDIATE`
 /// ([`begin_lease_claim`](Lease::begin_lease_claim)), so it takes the write lock before it
 /// selects. Every name is quoted, so a name keeps its case and may hold any character, and SQLite
-/// keeps a name of any length. [`fetch`](Dialect::fetch) is refused, so a claim of the service's
-/// own brings a fetch of its own.
+/// keeps a name of any length. The quotes are backticks, which SQLite always reads as a name: a
+/// statement that names a column the table lacks fails when it is prepared.
+/// [`fetch`](Dialect::fetch) is refused, so a claim of the service's own brings a fetch of its
+/// own.
 ///
 /// SQLite keeps times as text, so the statements compare times as text: two times compare right
 /// when their text sorts as the times do.
@@ -65,7 +67,7 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// let claim = Sqlite.lease_claim(&JOBS, ClaimShape::Rows)?;
 /// assert_eq!(
 ///     claim.sql(),
-///     r#"UPDATE "jobs" SET "locked_until" = ?, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "jobs" WHERE ("locked_until" IS NULL OR "locked_until" <= ?) ORDER BY "job_id" LIMIT ?) RETURNING "job_id", "attempt" - 1 AS "attempt", "locked_until", "payload""#,
+///     "UPDATE `jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `jobs` WHERE (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `job_id` LIMIT ?) RETURNING `job_id`, `attempt` - 1 AS `attempt`, `locked_until`, `payload`",
 /// );
 /// assert_eq!(claim.params(), [Param::Lease, Param::LeaseNow, Param::Limit]);
 /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
@@ -147,14 +149,16 @@ impl Dialect for Sqlite {
     }
 
     fn quote_into(&self, ident: &str, out: &mut String) {
-        out.push('"');
+        // SQLite reads a double-quoted name that matches no column as a string literal, so a
+        // misnamed column would prepare and read as text; a backtick-quoted name is always a name.
+        out.push('`');
         for character in ident.chars() {
-            if character == '"' {
-                out.push('"');
+            if character == '`' {
+                out.push('`');
             }
             out.push(character);
         }
-        out.push('"');
+        out.push('`');
     }
 
     fn placeholder_into(&self, _: NonZeroUsize, out: &mut String) {
