@@ -715,7 +715,7 @@ mod on_mysql {
 mod per_database {
     use super::*;
 
-    crate::live::advisory_server_stands! {
+    crate::live::advisory_stands! {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn two_databases_lock_their_rows_apart() {
             let Some(one) = database().await else { return };

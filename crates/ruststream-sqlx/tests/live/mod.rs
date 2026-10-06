@@ -110,9 +110,7 @@ pub(crate) struct Database<DB: Backend> {
     keeper: Option<DB::Connection>,
 }
 
-/// One module per stand and per form of the queue rows, each holding `$items`: the row lock and
-/// the lease form where each stand serves them, and the advisory lock form on the stands that run
-/// as servers.
+/// One module per stand and per form of the queue rows, each holding `$items`.
 ///
 /// A stand appears when its feature is on; the rows of a form appear when the form exists on that
 /// stand. Each module sees the suite's own items, the stand's `Db`, `database` and `DIALECT`, and
@@ -121,9 +119,6 @@ macro_rules! matrix {
     ($($items:item)*) => {
         $crate::live::fifo_matrix! { $($items)* }
 
-        // The advisory lock form runs on the servers: SQLite keeps the keys in work in one
-        // registry of the process, which every database a suite opens shares, so the tests of a
-        // suite would hold each other's keys there.
         #[cfg(feature = "postgres")]
         mod postgres_advisory {
             #[allow(unused_imports)]
@@ -152,6 +147,17 @@ macro_rules! matrix {
             use super::*;
             #[allow(unused_imports)]
             use crate::live::mariadb::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::advisory::*;
+            $($items)*
+        }
+
+        #[cfg(feature = "sqlite")]
+        mod sqlite_advisory {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::sqlite::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::advisory::*;
             $($items)*
