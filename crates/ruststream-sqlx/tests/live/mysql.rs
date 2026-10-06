@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ruststream_sqlx::dialect;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use sqlx::{AssertSqlSafe, Connection, MySql, MySqlConnection};
 
@@ -13,6 +14,9 @@ use super::{Database, url};
 
 /// The database the stand serves.
 pub(crate) type Db = MySql;
+
+/// The dialect the broker builds the stand's statements with, on MySQL and MariaDB alike.
+pub(crate) const DIALECT: dialect::MySql = dialect::MySql;
 
 /// The variable that names the stand: a MySQL URL whose user may create databases.
 pub(crate) const URL: &str = "MYSQL_TEST_URL";

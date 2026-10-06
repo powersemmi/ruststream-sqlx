@@ -19,6 +19,19 @@ CREATE TABLE email_jobs (
 -- Where spent emails go when a registration dead-letters them into a table.
 CREATE TABLE email_jobs_dead (LIKE email_jobs INCLUDING DEFAULTS);
 
+-- A ledger whose accounts keep their order: a FIFO group per account, claimed by priority, then
+-- by `retry_after`.
+CREATE TABLE ledger (
+    id           BIGSERIAL PRIMARY KEY,
+    account      TEXT NOT NULL,
+    priority     SMALLINT NOT NULL DEFAULT 0,
+    retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    processed_at TIMESTAMPTZ,
+    locked_until TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
+);
+
 -- One queue per table: no group, no time, rows deleted when finished.
 CREATE TABLE plain_jobs (
     id           BIGSERIAL PRIMARY KEY,

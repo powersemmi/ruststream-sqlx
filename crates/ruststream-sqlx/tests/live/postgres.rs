@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use ruststream_sqlx::dialect;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, Connection, PgConnection, Postgres};
 
@@ -12,6 +13,9 @@ use super::{Database, url};
 
 /// The database the stand serves.
 pub(crate) type Db = Postgres;
+
+/// The dialect the broker builds the stand's statements with.
+pub(crate) const DIALECT: dialect::Postgres = dialect::Postgres;
 
 /// The variable that names the stand: a Postgres URL whose user may create databases.
 pub(crate) const URL: &str = "POSTGRES_TEST_URL";

@@ -6,6 +6,10 @@
 
 use sqlx::{Database, Error, Executor};
 
+/// The priority a published ledger entry takes: a row written by hand with a smaller one goes
+/// ahead of it.
+pub(crate) const PUBLISHED_PRIORITY: i16 = 1;
+
 /// Writes a job of `unreadable_jobs`, whatever the message: an integer where its struct reads
 /// bytes, so the row never decodes.
 pub(crate) async fn unreadable<DB>(conn: &mut DB::Connection) -> Result<(), Error>
@@ -110,7 +114,8 @@ pub(crate) mod row_lock {
 
     use chrono::{DateTime, Utc};
     use ruststream::OutgoingMessage;
-    use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
+    use ruststream_sqlx::dialect::{ClaimShape, RowLock, Statement};
+    use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, InboxRow, Insert, Publish, QueueDatabase};
     use sqlx::types::Json;
     use sqlx::{Error, Executor, FromRow};
     #[cfg(feature = "mysql")]
@@ -118,13 +123,81 @@ pub(crate) mod row_lock {
     #[cfg(feature = "postgres")]
     use sqlx::{PgConnection, Postgres};
 
-    use super::own_fetch;
+    use super::{PUBLISHED_PRIORITY, own_fetch};
 
     /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
     ///
     /// A claim counts nothing and a retry counts one, so the row keeps its count of deliveries.
     pub(crate) const fn attempts_after(delivered: i16) -> i16 {
         delivered
+    }
+
+    /// The ledger: a FIFO group per account, whose rows are claimed one at a time, by priority,
+    /// then by `retry_after`.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "ledger")]
+    pub(crate) struct Entry {
+        #[field(id, generated)]
+        pub(crate) id: i64,
+        #[field(group, fifo = true)]
+        pub(crate) account: String,
+        #[field(priority)]
+        pub(crate) priority: i16,
+        #[field(retry_after)]
+        pub(crate) retry_after: DateTime<Utc>,
+        #[field(attempt, generated)]
+        pub(crate) attempt: i16,
+        #[field(processed_at)]
+        pub(crate) processed_at: Option<DateTime<Utc>>,
+        #[field(payload)]
+        pub(crate) payload: Vec<u8>,
+    }
+
+    impl Entry {
+        /// An entry of `account` that carries `payload`, at `priority`, due at `retry_after`.
+        pub(crate) fn new(
+            account: &str,
+            priority: i16,
+            retry_after: DateTime<Utc>,
+            payload: &[u8],
+        ) -> Self {
+            Self {
+                id: 0,
+                account: account.to_owned(),
+                priority,
+                retry_after,
+                attempt: 1,
+                processed_at: None,
+                payload: payload.to_vec(),
+            }
+        }
+
+        /// The claim of the ledger as `dialect` builds it: the head of a group, while it is due
+        /// and no other claim holds it.
+        pub(crate) fn fifo_claim(dialect: &impl RowLock) -> Statement {
+            dialect
+                .lock_claim(&Self::SPEC, ClaimShape::Rows)
+                .expect("the dialect claims the ledger")
+        }
+    }
+
+    impl<DB> Publish<DB> for Entry
+    where
+        DB: QueueDatabase,
+        Self: Insert<DB::Connection>,
+    {
+        async fn publish(
+            conn: &mut DB::Connection,
+            message: &OutgoingMessage<'_>,
+        ) -> Result<(), Error> {
+            let entry = Self::new(
+                message.name(),
+                PUBLISHED_PRIORITY,
+                Utc::now(),
+                message.payload(),
+            );
+            entry.insert(conn).await
+        }
     }
 
     /// The email queue: a group per name and every role of the form.
@@ -385,7 +458,8 @@ pub(crate) mod lease {
 
     use chrono::{DateTime, Utc};
     use ruststream::OutgoingMessage;
-    use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
+    use ruststream_sqlx::dialect::{ClaimShape, Lease, Statement};
+    use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, InboxRow, Insert, Publish, QueueDatabase};
     use sqlx::types::Json;
     use sqlx::{Error, Executor, FromRow};
     #[cfg(feature = "mysql")]
@@ -395,7 +469,7 @@ pub(crate) mod lease {
     #[cfg(feature = "sqlite")]
     use sqlx::{Sqlite, SqliteConnection};
 
-    use super::own_fetch;
+    use super::{PUBLISHED_PRIORITY, own_fetch};
 
     /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
     ///
@@ -403,6 +477,77 @@ pub(crate) mod lease {
     /// row holds one more than its deliveries.
     pub(crate) const fn attempts_after(delivered: i16) -> i16 {
         delivered + 1
+    }
+
+    /// The ledger: a FIFO group per account, whose rows are claimed one at a time, by priority,
+    /// then by `retry_after`.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "ledger")]
+    pub(crate) struct Entry {
+        #[field(id, generated)]
+        pub(crate) id: i64,
+        #[field(group, fifo = true)]
+        pub(crate) account: String,
+        #[field(priority)]
+        pub(crate) priority: i16,
+        #[field(retry_after)]
+        pub(crate) retry_after: DateTime<Utc>,
+        #[field(attempt, generated)]
+        pub(crate) attempt: i16,
+        #[field(processed_at)]
+        pub(crate) processed_at: Option<DateTime<Utc>>,
+        #[field(locked_until)]
+        pub(crate) locked_until: Option<DateTime<Utc>>,
+        #[field(payload)]
+        pub(crate) payload: Vec<u8>,
+    }
+
+    impl Entry {
+        /// An entry of `account` that carries `payload`, at `priority`, due at `retry_after`.
+        pub(crate) fn new(
+            account: &str,
+            priority: i16,
+            retry_after: DateTime<Utc>,
+            payload: &[u8],
+        ) -> Self {
+            Self {
+                id: 0,
+                account: account.to_owned(),
+                priority,
+                retry_after,
+                attempt: 1,
+                processed_at: None,
+                locked_until: None,
+                payload: payload.to_vec(),
+            }
+        }
+
+        /// The claim of the ledger as `dialect` builds it: the head of a group, while it is due
+        /// and no row of the group holds a lease.
+        pub(crate) fn fifo_claim(dialect: &impl Lease) -> Statement {
+            dialect
+                .lease_claim(&Self::SPEC, ClaimShape::Rows)
+                .expect("the dialect claims the ledger")
+        }
+    }
+
+    impl<DB> Publish<DB> for Entry
+    where
+        DB: QueueDatabase,
+        Self: Insert<DB::Connection>,
+    {
+        async fn publish(
+            conn: &mut DB::Connection,
+            message: &OutgoingMessage<'_>,
+        ) -> Result<(), Error> {
+            let entry = Self::new(
+                message.name(),
+                PUBLISHED_PRIORITY,
+                Utc::now(),
+                message.payload(),
+            );
+            entry.insert(conn).await
+        }
     }
 
     /// The email queue: a group per name and every role of the form.

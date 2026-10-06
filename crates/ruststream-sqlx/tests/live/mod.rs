@@ -6,10 +6,12 @@
 //! what it wanted. The SQLite stand runs in memory and needs no URL, so it never skips.
 //!
 //! A suite writes each test once. [`matrix!`] runs it on every stand a feature turns on, once per
-//! form of the queue rows that stand serves; [`stands!`] runs it once per stand, for a test whose
-//! rows name their own form, and [`row_lock_stands!`] once per stand that serves the row lock form.
-//! A stand module gives each test a database of its own and reads the tables in its own SQL; a row
-//! module holds the queue rows of one form under the names every form shares.
+//! form of the queue rows that stand serves, and [`server_matrix!`] the same on the stands that run
+//! as servers; [`stands!`] runs it once per stand, for a test whose rows name their own form, and
+//! [`row_lock_stands!`] once per stand that serves the row lock form. A stand module gives each
+//! test a database of its own, the dialect the broker builds the stand's statements with, and
+//! reads the tables in its own SQL; a row module holds the queue rows of one form under the names
+//! every form shares.
 
 // Each live suite is its own test binary and uses the part of this module its topic needs, so
 // what one of them leaves alone, a macro included, is not dead code.
@@ -34,10 +36,15 @@ pub(crate) mod sqlite;
 pub(crate) mod mariadb {
     pub(crate) use super::mysql::Db;
 
+    use ruststream_sqlx::dialect;
+
     use super::Database;
 
     /// The variable that names the stand: a MariaDB URL whose user may create databases.
     pub(crate) const URL: &str = "MARIADB_TEST_URL";
+
+    /// The dialect the broker builds the stand's statements with: the MySQL stand's.
+    pub(crate) const DIALECT: dialect::MySql = super::mysql::DIALECT;
 
     /// A fresh database on the stand, or `None` to skip the test.
     pub(crate) async fn database() -> Option<Database<Db>> {
@@ -103,16 +110,40 @@ pub(crate) struct Database<DB: Backend> {
 /// One module per stand and per form of the queue rows, each holding `$items`.
 ///
 /// A stand appears when its feature is on; the rows of a form appear when the form exists on that
-/// stand. Each module sees the suite's own items, the stand's `Db` and `database`, and the rows of
-/// its form.
+/// stand. Each module sees the suite's own items, the stand's `Db`, `database` and `DIALECT`, and
+/// the rows of its form.
 macro_rules! matrix {
+    ($($items:item)*) => {
+        $crate::live::server_matrix! { $($items)* }
+
+        // SQLite has no row locks, so it runs the lease form alone.
+        #[cfg(feature = "sqlite")]
+        mod sqlite_lease {
+            #[allow(unused_imports)]
+            use super::*;
+            #[allow(unused_imports)]
+            use crate::live::sqlite::{DIALECT, Db, database};
+            #[allow(unused_imports)]
+            use crate::live::rows::lease::*;
+            $($items)*
+        }
+    };
+}
+
+/// One module per stand that runs as a server and per form of the queue rows, each holding
+/// `$items`: for a test of what claims on separate connections do side by side, which SQLite's
+/// one writer keeps apart.
+///
+/// A stand appears when its feature is on. Each module sees the suite's own items, the stand's
+/// `Db`, `database` and `DIALECT`, and the rows of its form.
+macro_rules! server_matrix {
     ($($items:item)*) => {
         #[cfg(feature = "postgres")]
         mod postgres_row_lock {
             #[allow(unused_imports)]
             use super::*;
             #[allow(unused_imports)]
-            use crate::live::postgres::{Db, database};
+            use crate::live::postgres::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::row_lock::*;
             $($items)*
@@ -123,7 +154,7 @@ macro_rules! matrix {
             #[allow(unused_imports)]
             use super::*;
             #[allow(unused_imports)]
-            use crate::live::postgres::{Db, database};
+            use crate::live::postgres::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::lease::*;
             $($items)*
@@ -134,7 +165,7 @@ macro_rules! matrix {
             #[allow(unused_imports)]
             use super::*;
             #[allow(unused_imports)]
-            use crate::live::mysql::{Db, database};
+            use crate::live::mysql::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::row_lock::*;
             $($items)*
@@ -145,7 +176,7 @@ macro_rules! matrix {
             #[allow(unused_imports)]
             use super::*;
             #[allow(unused_imports)]
-            use crate::live::mysql::{Db, database};
+            use crate::live::mysql::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::lease::*;
             $($items)*
@@ -156,7 +187,7 @@ macro_rules! matrix {
             #[allow(unused_imports)]
             use super::*;
             #[allow(unused_imports)]
-            use crate::live::mariadb::{Db, database};
+            use crate::live::mariadb::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::row_lock::*;
             $($items)*
@@ -167,19 +198,7 @@ macro_rules! matrix {
             #[allow(unused_imports)]
             use super::*;
             #[allow(unused_imports)]
-            use crate::live::mariadb::{Db, database};
-            #[allow(unused_imports)]
-            use crate::live::rows::lease::*;
-            $($items)*
-        }
-
-        // SQLite has no row locks, so it runs the lease form alone.
-        #[cfg(feature = "sqlite")]
-        mod sqlite_lease {
-            #[allow(unused_imports)]
-            use super::*;
-            #[allow(unused_imports)]
-            use crate::live::sqlite::{Db, database};
+            use crate::live::mariadb::{DIALECT, Db, database};
             #[allow(unused_imports)]
             use crate::live::rows::lease::*;
             $($items)*
@@ -255,4 +274,4 @@ macro_rules! mysql_stands {
 }
 
 #[allow(unused_imports)]
-pub(crate) use {matrix, mysql_stands, row_lock_stands, stands};
+pub(crate) use {matrix, mysql_stands, row_lock_stands, server_matrix, stands};

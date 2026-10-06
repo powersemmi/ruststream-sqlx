@@ -31,6 +31,19 @@ CREATE TABLE email_jobs_dead (
     payload      BLOB NOT NULL
 );
 
+-- A ledger whose accounts keep their order: a FIFO group per account, claimed by priority, then
+-- by `retry_after`.
+CREATE TABLE ledger (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    account      TEXT NOT NULL,
+    priority     INTEGER NOT NULL DEFAULT 0,
+    retry_after  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')),
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    processed_at TEXT,
+    locked_until TEXT,
+    payload      BLOB NOT NULL
+);
+
 -- One queue per table: no group, no time, rows deleted when finished.
 CREATE TABLE plain_jobs (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
