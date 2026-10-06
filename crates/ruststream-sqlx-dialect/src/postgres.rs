@@ -129,6 +129,10 @@ impl BuiltIn for Postgres {
         ", 0))",
     );
 
+    /// Postgres widens a `smallint` that loses an `integer` one to `integer`, and a struct's
+    /// `i16` field reads no `integer`; one `smallint` less keeps every integer column's type.
+    const UNCOUNT: &'static str = " - 1::smallint";
+
     fn database_now(&self) -> &'static str {
         DATABASE_NOW
     }

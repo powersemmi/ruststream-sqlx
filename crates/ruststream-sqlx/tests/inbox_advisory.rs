@@ -94,8 +94,8 @@ mod refused {
 }
 
 /// The advisory lock form's events on their own, for a subscription whose statements the test
-/// prepares: the lock and the unlock on Postgres, the take on SQLite in memory, written as SQLite
-/// and as MySQL write it.
+/// prepares: the lock, the unlock and the take on Postgres, and the take on SQLite in memory,
+/// written as SQLite and as MySQL write it.
 #[cfg(any(feature = "postgres", all(feature = "sqlite", feature = "mysql")))]
 mod events {
     use std::time::Duration;
@@ -158,13 +158,69 @@ mod events {
 
     #[cfg(feature = "postgres")]
     mod on_postgres {
-        use ruststream_sqlx::__private::{Events, Prepared, Settling};
+        use ruststream_sqlx::__private::{Claimed, Events, Prepared, Settling};
         use ruststream_sqlx::InboxRow;
-        use ruststream_sqlx::dialect::Advisory;
-        use sqlx::{Error, Postgres};
+        use ruststream_sqlx::dialect::{Advisory, ClaimShape};
+        use sqlx::{
+            AssertSqlSafe, Column, Error, Executor, PgConnection, Postgres, SqlSafeStr, Statement,
+            TypeInfo,
+        };
 
         use super::{Job, claiming, interned, queue};
         use crate::live::postgres::{DIALECT, database};
+        use crate::live::rows::advisory::Plain;
+
+        /// The type of the `attempt` column the statement `sql` returns, as Postgres describes it.
+        async fn attempt_type(conn: &mut PgConnection, sql: &str) -> Result<String, Error> {
+            let statement = conn
+                .prepare(AssertSqlSafe(sql.to_owned()).into_sql_str())
+                .await?;
+            let attempt = statement
+                .columns()
+                .iter()
+                .find(|column| column.name() == "attempt")
+                .expect("the take returns the attempt");
+            Ok(attempt.type_info().name().to_owned())
+        }
+
+        // `plain_jobs` keeps its attempt as `smallint`, which the struct reads as `i16`: the
+        // take's read of the attempt as it was before its count keeps that type, for the struct
+        // and for a reader by role alike.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_take_reads_the_attempt_in_its_columns_own_type() -> Result<(), Error> {
+            let Some(db) = database().await else {
+                return Ok(());
+            };
+            db.plain(&[b"x".as_slice()]).await;
+            let id: i64 = sqlx::query_scalar("SELECT id FROM plain_jobs")
+                .fetch_one(&db.pool)
+                .await?;
+            let take = DIALECT
+                .take(&Plain::SPEC, ClaimShape::Rows)
+                .expect("Postgres takes");
+            let cx = claiming(queue(
+                &Plain::SPEC,
+                &Prepared {
+                    take: take.first().map(interned),
+                    ..Prepared::default()
+                },
+            ));
+            let mut conn = db.pool.acquire().await?;
+            let mut out = Vec::new();
+            assert!(<Plain as Events<Postgres>>::take(&mut conn, &cx, &id, &mut out).await?);
+            assert!(
+                matches!(out.as_slice(), [Claimed::Row(Plain { attempt: 1, .. })]),
+                "{out:?}"
+            );
+            assert_eq!(attempt_type(&mut conn, take[0].sql()).await?, "INT2");
+            let roles = DIALECT
+                .take(&Plain::SPEC, ClaimShape::Roles)
+                .expect("Postgres takes");
+            assert_eq!(attempt_type(&mut conn, roles[0].sql()).await?, "INT2");
+            drop(conn);
+            db.finish().await;
+            Ok(())
+        }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn a_session_takes_a_key_another_one_does_not_and_releases_it() -> Result<(), Error> {

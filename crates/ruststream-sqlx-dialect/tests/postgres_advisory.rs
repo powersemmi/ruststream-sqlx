@@ -131,7 +131,7 @@ fn the_take_counts_the_attempt_and_returns_the_row_as_it_was() -> Result<(), Sta
     assert_eq!(
         rows.iter().map(Statement::sql).collect::<Vec<_>>(),
         [
-            r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1 AND "name" = $2 AND "retry_after" <= $3 AND "processed_at" IS NULL RETURNING "job_id", "name", "retry_after", "attempt" - 1 AS "attempt", "processed_at", "payload""#,
+            r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1 AND "name" = $2 AND "retry_after" <= $3 AND "processed_at" IS NULL RETURNING "job_id", "name", "retry_after", "attempt" - 1::smallint AS "attempt", "processed_at", "payload""#,
         ]
     );
     assert_eq!(rows[0].params(), [Param::Id, Param::Group, Param::Now]);
@@ -146,7 +146,7 @@ fn the_take_counts_the_attempt_and_returns_the_row_as_it_was() -> Result<(), Sta
     assert_eq!(
         roles.iter().map(Statement::sql).collect::<Vec<_>>(),
         [
-            r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1 AND "name" = $2 AND "retry_after" <= $3 AND "processed_at" IS NULL RETURNING "job_id" AS "id", "attempt" - 1 AS "attempt", "payload" AS "payload""#,
+            r#"UPDATE "jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1 AND "name" = $2 AND "retry_after" <= $3 AND "processed_at" IS NULL RETURNING "job_id" AS "id", "attempt" - 1::smallint AS "attempt", "payload" AS "payload""#,
         ]
     );
     // `*` names no column, so the row returns with the attempt counted.

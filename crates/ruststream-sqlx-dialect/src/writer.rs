@@ -133,6 +133,10 @@ pub(crate) trait BuiltIn: Dialect {
     /// How the advisory claim leaves out the candidates whose key another session holds.
     const PROBE: Probe;
 
+    /// What a read of a row subtracts from the attempt its statement counted, so the attempt
+    /// reads as it was before, in the column's own type.
+    const UNCOUNT: &'static str = " - 1";
+
     /// The database's current time.
     fn database_now(&self) -> &'static str;
 
@@ -655,7 +659,7 @@ where
             }
             self.ident(column.name());
             if counted && role == Role::Attempt {
-                self.push(" - 1");
+                self.push(D::UNCOUNT);
             }
             self.push(" AS ").ident(role.attribute());
         }
@@ -676,7 +680,7 @@ where
             }
             self.ident(column.name());
             if attempt == Some(column.name()) {
-                self.push(" - 1 AS ").ident(column.name());
+                self.push(D::UNCOUNT).push(" AS ").ident(column.name());
             }
         }
         self
