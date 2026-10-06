@@ -11,8 +11,7 @@ use sqlx::any::AnyQueryResult;
 #[cfg(feature = "any")]
 use sqlx::{Any, AnyConnection};
 use sqlx::{
-    Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, FromRow, IntoArguments,
-    SqlStr, Type,
+    Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, IntoArguments, SqlStr, Type,
 };
 #[cfg(feature = "mysql")]
 use sqlx::{MySql, MySqlConnection};
@@ -21,8 +20,8 @@ use sqlx::{PgConnection, Postgres};
 #[cfg(feature = "sqlite")]
 use sqlx::{Sqlite, SqliteConnection};
 
-use super::QueueRow;
-use super::engine::{Claimed, IdAt};
+use super::engine::{Claimed, Events, IdAt};
+use super::queue::Queue;
 
 /// A sqlx database the inbox runs on: one that binds the text and the integers the queue's own
 /// statements bind, runs statements on a connection, and reports the rows a statement changed.
@@ -61,19 +60,26 @@ pub trait QueueDatabase: Database {
         arguments: Self::Arguments,
     ) -> impl Future<Output = Result<u64, Error>> + Send + 'c;
 
-    /// Runs a claim or a fetch of whole rows into `out`: a row its struct does not decode is
-    /// [`Claimed::Undecodable`], its id read alone at `id_at`. Machinery.
+    /// Runs a claim or a fetch of whole rows of `queue` into `out`: a row its struct does not
+    /// decode is [`Claimed::Undecodable`], its id read alone where the queue's select carries it
+    /// and its attempt as the struct reads it. Machinery.
     #[doc(hidden)]
     fn fetch_rows<'c, Row>(
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
-        id_at: IdAt,
+        queue: &'static Queue,
         out: &'c mut Vec<Claimed<Row>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'c
     where
-        Row: QueueRow + for<'r> FromRow<'r, Self::Row> + Unpin,
+        Row: Events<Self>,
         Row::Id: for<'r> Decode<'r, Self> + Type<Self>;
+
+    /// Reads the column `name` of `row` as a `T`. Machinery.
+    #[doc(hidden)]
+    fn column<T>(row: &Self::Row, name: &str) -> Result<T, Error>
+    where
+        T: for<'r> Decode<'r, Self> + Type<Self>;
 
     /// Runs a claim of ids. Machinery.
     #[doc(hidden)]
@@ -134,11 +140,11 @@ where
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
-        id_at: IdAt,
+        queue: &'static Queue,
         out: &'c mut Vec<Claimed<Row>>,
     ) -> Result<(), Error>
     where
-        Row: QueueRow + for<'r> FromRow<'r, Self::Row> + Unpin,
+        Row: Events<Self>,
         Row::Id: for<'r> Decode<'r, Self> + Type<Self>,
     {
         // The decode `query_as` runs, one row at a time, so a row that fails it fails alone.
@@ -148,14 +154,16 @@ where
                 Ok(row) => out.push(Claimed::Row(row)),
                 Err(error) => {
                     // Why the id alone: a row only its id can name is still a row the policy
-                    // settles, and nothing settles a row whose id does not decode either.
-                    let id = match id_at {
+                    // settles, and nothing settles a row whose id does not decode either. Its
+                    // attempt comes along, so the cap spends such a row as any other.
+                    let id = match queue.id_at {
                         IdAt::First => raw.try_get::<Row::Id, _>(0_usize),
                         IdAt::Named(name) => raw.try_get::<Row::Id, _>(name),
                     };
                     match id {
                         Ok(id) => out.push(Claimed::Undecodable {
                             id,
+                            attempt: Row::read_attempt(&raw, queue),
                             error: Box::new(error),
                         }),
                         Err(_) => return Err(error),
@@ -164,6 +172,13 @@ where
             }
         }
         Ok(())
+    }
+
+    fn column<T>(row: &Self::Row, name: &str) -> Result<T, Error>
+    where
+        T: for<'r> Decode<'r, Self> + Type<Self>,
+    {
+        row.try_get::<T, _>(name)
     }
 
     fn fetch_ids<'c, Id>(

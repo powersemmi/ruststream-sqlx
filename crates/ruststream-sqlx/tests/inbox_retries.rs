@@ -1,5 +1,5 @@
 //! What happens when a row's attempts are spent: the declared move, or the discard, run as an
-//! application against each stand and form.
+//! application against each stand and form, for rows that decode and rows that do not.
 
 #![cfg(all(
     feature = "inbox",
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ruststream::prelude::*;
-use ruststream::testing::TestApp;
+use ruststream::testing::{Outcome, TestApp};
 use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool};
@@ -30,6 +30,7 @@ live::matrix! {
             .poll_interval(Duration::from_millis(20))
             .route::<SendEmail>("emails")
             .route::<Plain>("plain")
+            .route::<Unreadable>("unreadable")
     }
 
     #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
@@ -143,6 +144,41 @@ live::matrix! {
             .subscriber("emails")
             .assert_called(2);
         assert_eq!(db.email_rows("email_jobs").await[0].0, "emails.dead");
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    #[subscriber(InboxQueue::<Unreadable>::new("unreadable"))]
+    async fn never_decoded(_task: &Task) -> HandlerOutcome {
+        // No row of the table decodes; reaching this would acknowledge instead.
+        HandlerOutcome::ack()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_row_that_does_not_decode_counts_its_attempts_to_the_cap() {
+        let Some(db) = database().await else { return };
+        let retries = FailurePolicies::default().with_decode(FailurePolicy::Retry);
+        let app =
+            RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
+                b.include(never_decoded.on_failure(retries))
+                    .max_attempts(nonzero!(2u32));
+            });
+        let tb = run(app, "unreadable").await;
+        let outcomes = tb
+            .broker::<SqlxBroker<Db>>()
+            .subscriber("unreadable")
+            .assert_called(2)
+            .outcomes();
+        assert_eq!(
+            outcomes,
+            [Outcome::DecodeFailed; 2],
+            "the decode policy settled both deliveries"
+        );
+        assert_eq!(
+            db.count("unreadable_jobs").await,
+            0,
+            "the second delivery spent the row's attempts, and the cap finished it"
+        );
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }

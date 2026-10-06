@@ -1,6 +1,7 @@
 //! What a subscription does when a statement fails: a failed claim reaches the stream and the next
 //! one waits a second; a failed settlement reports itself and returns its row. A claim that took
-//! no row reads none, so a fetch of the service's own is never handed an empty list.
+//! no row reads none, so a fetch of the service's own is never handed an empty list. A row read by
+//! name whose payload does not decode still reports its attempt.
 
 #![cfg(all(
     feature = "inbox",
@@ -17,9 +18,10 @@ use std::time::Duration;
 use futures::StreamExt;
 use ruststream::testing::InProcess;
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscribe, Subscriber,
+    SubscriptionSource,
 };
-use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
+use ruststream_sqlx::{InboxQueue, Publish, SqlxBroker, SqlxBrokerError};
 use tokio::time::Instant;
 
 live::matrix! {
@@ -150,6 +152,50 @@ live::matrix! {
             assert_eq!(again.payload(), b"a");
         }
         assert_eq!(db.fragile_rows().await, ["a"]);
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
+        db.finish().await;
+    }
+
+    // A bare name declares no cap, so the attempt a by-name delivery reports is what the runtime
+    // and the handler's `Ctx<Attempt>` read of the row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_by_name_row_that_does_not_decode_reports_its_attempt() {
+        let Some(db) = database().await else { return };
+        let mut conn = db.pool.acquire().await.expect("a connection");
+        <Unreadable as Publish<Db>>::publish(&mut conn, &OutgoingMessage::new("unreadable", b"{}"))
+            .await
+            .expect("the row writes");
+        drop(conn);
+        let connected = SqlxBroker::new(db.pool.clone())
+            .poll_interval(Duration::from_millis(20))
+            .route::<Unreadable>("unreadable")
+            .connect()
+            .await
+            .expect("the broker connects");
+        let mut subscriber = connected
+            .subscribe("unreadable")
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let first = deliveries
+                .next()
+                .await
+                .expect("the stream goes on")
+                .expect("the claim");
+            assert!(first.payload().is_empty(), "the payload does not decode");
+            assert_eq!(first.redelivery_count(), Some(1));
+            first.nack(true).await.expect("the row returns");
+            let second = deliveries
+                .next()
+                .await
+                .expect("the stream goes on")
+                .expect("the claim");
+            assert_eq!(second.redelivery_count(), Some(2), "the retry counted");
+            second.ack().await.expect("the row settles");
+        }
+        assert_eq!(db.count("unreadable_jobs").await, 0);
         drop(subscriber);
         connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;

@@ -15,6 +15,7 @@ use ruststream_sqlx_dialect::{Param, Statement, TableSpec};
 use sqlx::{Arguments, Database, Decode, Encode, Error, FromRow, Type};
 
 use super::QueueRow;
+use super::columns::AttemptColumn;
 use super::database::QueueDatabase;
 use super::kinds::Kinds;
 use super::queue::Queue;
@@ -51,6 +52,10 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
 
     /// The delivery's attempt: the `attempt` field's.
     fn attempt(&self) -> Option<u64>;
+
+    /// The attempt of a claimed `row` the struct could not decode, read alone the way the struct
+    /// reads it; `None` without an `attempt` column, or where that column does not decode either.
+    fn read_attempt(row: &DB::Row, queue: &'static Queue) -> Option<u64>;
 
     /// Binds one parameter of a default statement; `false` when the row has no value for it.
     ///
@@ -267,11 +272,13 @@ pub enum Claimed<Row: QueueRow> {
     Row(Row),
     /// The id; its delivery carries no payload and fails to decode.
     Missing(Row::Id),
-    /// The id of a row the struct could not decode, and why; its delivery carries no payload and
-    /// fails to decode.
+    /// The id of a row the struct could not decode, its attempt, and why; its delivery carries
+    /// no payload and fails to decode.
     Undecodable {
         /// The row's id, read alone.
         id: Row::Id,
+        /// The row's attempt, read alone: the attempt cap spends such a row as any other.
+        attempt: Option<u64>,
         /// The error of decoding the whole row.
         // Boxed: every delivery holds its `Claimed` inline, so the error would otherwise widen
         // the deliveries of rows that decode.
@@ -440,6 +447,23 @@ pub fn first_header(headers: &HeaderMap) -> Option<&str> {
     headers.iter().next().map(|(name, _)| name)
 }
 
+/// The attempt in the column `name` of a claimed `row` the struct could not decode.
+///
+/// It is read as the struct reads it: decoded as `Decoded`, then converted into the field's
+/// `Attempt`, the same type where the field names no `try_from`. `None` where that column does not
+/// decode either.
+pub fn attempt_in<DB, Decoded, Attempt>(row: &DB::Row, name: &str) -> Option<u64>
+where
+    DB: QueueDatabase,
+    Decoded: for<'r> Decode<'r, DB> + Type<DB>,
+    Attempt: AttemptColumn + TryFrom<Decoded>,
+{
+    let decoded = DB::column::<Decoded>(row, name).ok()?;
+    Attempt::try_from(decoded)
+        .ok()
+        .map(|attempt| attempt.attempt())
+}
+
 /// Binds `value`.
 ///
 /// # Errors
@@ -553,7 +577,7 @@ where
         statement,
         &Values::claiming(*cx, Event::Claim, lease.copied()),
     )?;
-    DB::fetch_rows(conn, statement.sql, arguments, cx.queue.id_at, out).await
+    DB::fetch_rows(conn, statement.sql, arguments, cx.queue, out).await
 }
 
 /// The default claim of ids, for a fetch of the service's own.
@@ -612,7 +636,7 @@ where
     };
     let arguments = arguments::<DB, Row>(statement, &values)?;
     let mut fetched = Vec::with_capacity(ids.len());
-    DB::fetch_rows(conn, statement.sql, arguments, cx.queue.id_at, &mut fetched).await?;
+    DB::fetch_rows(conn, statement.sql, arguments, cx.queue, &mut fetched).await?;
     Ok(fetched)
 }
 

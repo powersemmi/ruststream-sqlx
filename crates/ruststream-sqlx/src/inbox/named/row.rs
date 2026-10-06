@@ -17,9 +17,9 @@ use super::database::NamedDatabase;
 use crate::inbox::engine::{
     self, Claimed, Claiming, Event, Events, Now, Settled, Settling, Shape, Values,
 };
-use crate::inbox::kinds::Kinds;
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::kinds::{ClockKind, TimeKind};
+use crate::inbox::kinds::{IntKind, Kinds};
 use crate::inbox::queue::Queue;
 #[cfg(any(feature = "chrono", feature = "time"))]
 use crate::inbox::time::{QueueTime, SystemClock};
@@ -66,12 +66,25 @@ impl NamedRow {
             return Some(("partition_key", key.name()));
         }
         if let Some(attempt) = kinds.attempt
-            && self.fits.attempt & attempt.bit() == 0
+            && !attempt_fits(attempt, self.fits.attempt)
         {
             return Some(("attempt", attempt.name()));
         }
         None
     }
+
+    /// The row's attempt where its column holds the type the struct reads it as, as the struct's
+    /// own `FromRow` would read it.
+    fn fitting_attempt(&self, kinds: Kinds) -> Option<u64> {
+        let kind = kinds.attempt?;
+        self.attempt
+            .filter(|_| attempt_fits(kind, self.fits.attempt))
+    }
+}
+
+/// Whether an attempt column that holds the types `held` holds `kind`.
+const fn attempt_fits(kind: IntKind, held: u8) -> bool {
+    held & kind.bit() != 0
 }
 
 /// Holds a claimed row to the types its struct reads, as the struct's own `FromRow` would: a row
@@ -95,9 +108,11 @@ fn hold_to(kinds: Kinds, claimed: &mut Claimed<NamedRow>) -> Result<(), Error> {
         return Err(error);
     }
     // The row is dropped in place of its delivery; its id moves into the one that replaces it.
+    let attempt = row.fitting_attempt(kinds);
     let id = mem::replace(&mut row.id, NamedId::I64(0));
     *claimed = Claimed::Undecodable {
         id,
+        attempt,
         error: Box::new(error),
     };
     Ok(())
@@ -364,6 +379,17 @@ impl<DB: NamedDatabase> Events<DB> for NamedRow {
         self.attempt
     }
 
+    fn read_attempt(row: &DB::Row, queue: &'static Queue) -> Option<u64> {
+        // The alias `ClaimShape::Roles` gives the column, held to the type the struct reads it as.
+        let kind = queue.kinds?.attempt?;
+        let column = row
+            .columns()
+            .iter()
+            .find(|column| column.name() == "attempt")?;
+        let (attempt, held) = DB::attempt(DB::value(row, column.ordinal()).ok()?).ok()?;
+        attempt_fits(kind, held).then_some(attempt)
+    }
+
     fn bind(
         param: Param,
         arguments: &mut DB::Arguments,
@@ -560,13 +586,13 @@ mod tests {
         attempt: IntKind::I16.bit(),
     };
 
-    /// The column a held row names as not holding its struct's type.
-    fn unfit_column(claimed: &Claimed<NamedRow>) -> Option<String> {
+    /// The column a held row names as not holding its struct's type, and the attempt it keeps.
+    fn unfit_column(claimed: &Claimed<NamedRow>) -> Option<(String, Option<u64>)> {
         match claimed {
-            Claimed::Undecodable { id, error } => {
+            Claimed::Undecodable { id, attempt, error } => {
                 assert_eq!(id, &NamedId::I64(7), "the row keeps its id for the policy");
                 match &**error {
-                    Error::ColumnDecode { index, .. } => Some(index.clone()),
+                    Error::ColumnDecode { index, .. } => Some((index.clone(), *attempt)),
                     other => panic!("not a column's error: {other}"),
                 }
             }
@@ -647,14 +673,25 @@ mod tests {
             attempt: IntKind::I64.bit(),
             ..FITTING
         };
-        for (fits, column) in [
-            (text_payload, "\"payload\""),
-            (byte_key, "\"partition_key\""),
-            (wide_attempt, "\"attempt\""),
+        let text_payload_wide_attempt = Fits {
+            attempt: IntKind::I64.bit(),
+            ..text_payload
+        };
+        // The attempt goes along, so the cap spends the row, unless its own column is one the
+        // struct does not read: the struct's `FromRow` reads no attempt from it either.
+        for (fits, column, attempt) in [
+            (text_payload, "\"payload\"", Some(2)),
+            (byte_key, "\"partition_key\"", Some(2)),
+            (wide_attempt, "\"attempt\"", None),
+            (text_payload_wide_attempt, "\"payload\"", None),
         ] {
             let mut claimed = Claimed::Row(row(fits));
             hold_to(KINDS, &mut claimed)?;
-            assert_eq!(unfit_column(&claimed).as_deref(), Some(column));
+            assert_eq!(
+                unfit_column(&claimed),
+                Some((column.to_owned(), attempt)),
+                "{fits:?}"
+            );
         }
         Ok(())
     }
@@ -676,12 +713,14 @@ mod tests {
     fn a_row_already_undecodable_is_left_to_the_policy() -> Result<(), Error> {
         let mut claimed = Claimed::<NamedRow>::Undecodable {
             id: NamedId::I64(7),
+            attempt: Some(3),
             error: Box::new(Error::ColumnNotFound("payload".to_owned())),
         };
         hold_to(KINDS, &mut claimed)?;
         assert!(matches!(
             &claimed,
-            Claimed::Undecodable { error, .. } if matches!(**error, Error::ColumnNotFound(_))
+            Claimed::Undecodable { attempt: Some(3), error, .. }
+                if matches!(**error, Error::ColumnNotFound(_))
         ));
         Ok(())
     }

@@ -156,3 +156,11 @@ CREATE TABLE keyed_jobs (
     locked_until TEXT,
     payload      BLOB NOT NULL
 );
+
+-- A payload column of an integer, which a struct's bytes never read: its rows never decode.
+CREATE TABLE unreadable_jobs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    locked_until TEXT,
+    payload      INTEGER NOT NULL
+);

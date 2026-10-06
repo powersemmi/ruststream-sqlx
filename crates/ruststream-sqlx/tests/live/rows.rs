@@ -1,8 +1,23 @@
 //! The queue rows the suites read, a module per form of the queue table.
 //!
 //! The modules name their rows alike, over the same tables, so a test body reads the form its
-//! module imports. Every row writes a published message through its generated insert, on each
-//! database that insert serves.
+//! module imports. Every row but `Unreadable` writes a published message through its generated
+//! insert, on each database that insert serves; `Unreadable` writes a row that never decodes.
+
+use sqlx::{Database, Error, Executor};
+
+/// Writes a job of `unreadable_jobs`, whatever the message: an integer where its struct reads
+/// bytes, so the row never decodes.
+pub(crate) async fn unreadable<DB>(conn: &mut DB::Connection) -> Result<(), Error>
+where
+    DB: Database,
+    for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+{
+    sqlx::raw_sql("INSERT INTO unreadable_jobs (payload) VALUES (7)")
+        .execute(conn)
+        .await?;
+    Ok(())
+}
 
 /// A fetch of the service's own over `plain_jobs`, per database: the rows of `ids`, read with the
 /// columns a row's struct names.
@@ -97,7 +112,7 @@ pub(crate) mod row_lock {
     use ruststream::OutgoingMessage;
     use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
     use sqlx::types::Json;
-    use sqlx::{Error, FromRow};
+    use sqlx::{Error, Executor, FromRow};
     #[cfg(feature = "mysql")]
     use sqlx::{MySql, MySqlConnection};
     #[cfg(feature = "postgres")]
@@ -235,6 +250,29 @@ pub(crate) mod row_lock {
         }
     }
 
+    /// A job whose payload column holds an integer, which the struct's bytes never read: no row
+    /// of it decodes.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "unreadable_jobs")]
+    pub(crate) struct Unreadable {
+        #[field(id, generated)]
+        pub(crate) id: i64,
+        #[field(attempt, generated)]
+        pub(crate) attempt: i16,
+        #[field(payload)]
+        pub(crate) payload: Vec<u8>,
+    }
+
+    impl<DB> Publish<DB> for Unreadable
+    where
+        DB: QueueDatabase,
+        for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    {
+        async fn publish(conn: &mut DB::Connection, _: &OutgoingMessage<'_>) -> Result<(), Error> {
+            super::unreadable::<DB>(conn).await
+        }
+    }
+
     /// A job another table may point at: its acknowledgement fails while a reference stands.
     #[derive(Debug, Inbox, FromRow)]
     #[inbox(table = "fragile_jobs")]
@@ -349,7 +387,7 @@ pub(crate) mod lease {
     use ruststream::OutgoingMessage;
     use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
     use sqlx::types::Json;
-    use sqlx::{Error, FromRow};
+    use sqlx::{Error, Executor, FromRow};
     #[cfg(feature = "mysql")]
     use sqlx::{MySql, MySqlConnection};
     #[cfg(feature = "postgres")]
@@ -503,6 +541,31 @@ pub(crate) mod lease {
     impl Fetch<Sqlite> for Fetched {
         async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
             own_fetch::sqlite(conn, FETCHED, ids).await
+        }
+    }
+
+    /// A job whose payload column holds an integer, which the struct's bytes never read: no row
+    /// of it decodes.
+    #[derive(Debug, Inbox, FromRow)]
+    #[inbox(table = "unreadable_jobs")]
+    pub(crate) struct Unreadable {
+        #[field(id, generated)]
+        pub(crate) id: i64,
+        #[field(attempt, generated)]
+        pub(crate) attempt: i16,
+        #[field(locked_until)]
+        pub(crate) locked_until: Option<DateTime<Utc>>,
+        #[field(payload)]
+        pub(crate) payload: Vec<u8>,
+    }
+
+    impl<DB> Publish<DB> for Unreadable
+    where
+        DB: QueueDatabase,
+        for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+    {
+        async fn publish(conn: &mut DB::Connection, _: &OutgoingMessage<'_>) -> Result<(), Error> {
+            super::unreadable::<DB>(conn).await
         }
     }
 

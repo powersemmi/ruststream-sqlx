@@ -104,6 +104,10 @@ pub(crate) struct ColumnField {
     pub(crate) fifo: Option<Span>,
     /// `#[sqlx(json)]`: sqlx reads and writes the column through `Json`.
     pub(crate) json: bool,
+    /// `#[sqlx(try_from = "..")]`: the type sqlx decodes the column as, then converts into the
+    /// field's.
+    // Boxed: a type is large, and every field's storage would carry its size.
+    pub(crate) try_from: Option<Box<Type>>,
 }
 
 /// One field and where its value comes from.
@@ -285,6 +289,7 @@ struct SqlxField {
     skip: bool,
     flatten: bool,
     json: bool,
+    try_from: Option<Box<Type>>,
 }
 
 /// What `#[field(..)]` says about one field, with the span of each word for errors.
@@ -341,6 +346,7 @@ fn field(field: &syn::Field, rename_all: Option<RenameAll>) -> syn::Result<Field
             generated: marks.generated.is_some(),
             fifo: marks.fifo.and_then(|(fifo, span)| fifo.then_some(span)),
             json: sqlx.json,
+            try_from: sqlx.try_from,
         }),
     };
     Ok(Field {
@@ -384,6 +390,9 @@ fn sqlx_field(attrs: &[Attribute]) -> syn::Result<SqlxField> {
             } else if meta.path.is_ident("json") {
                 sqlx.json = true;
                 skip_value(meta.input)?;
+            } else if meta.path.is_ident("try_from") {
+                let decoded: LitStr = meta.value()?.parse()?;
+                sqlx.try_from = Some(Box::new(decoded.parse()?));
             } else {
                 skip_value(meta.input)?;
             }
@@ -447,7 +456,7 @@ fn role_list() -> String {
 }
 
 /// Consumes what follows a key of `#[sqlx(..)]` this derive does not read (`json(nullable)`,
-/// `try_from = "i64"`, `default`), so sqlx's own options pass through untouched.
+/// `default`), so sqlx's own options pass through untouched.
 fn skip_value(input: ParseStream<'_>) -> syn::Result<()> {
     while !input.is_empty() && !input.peek(Token![,]) {
         input.parse::<TokenTree>()?;
@@ -457,6 +466,7 @@ fn skip_value(input: ParseStream<'_>) -> syn::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use quote::ToTokens;
     use ruststream_sqlx_dialect::Role;
     use syn::{DeriveInput, parse_quote};
 
@@ -568,6 +578,12 @@ mod tests {
         assert!(matches!(inbox.fields[3].storage, Storage::Skipped));
         assert!(matches!(inbox.fields[4].storage, Storage::Flattened));
         assert!(inbox.flattens());
+        // The type sqlx decodes a column as before it converts it, for a column read alone.
+        let decoded = inbox.fields[5]
+            .column()
+            .and_then(|column| column.try_from.as_ref())
+            .map(|ty| ty.to_token_stream().to_string());
+        assert_eq!(decoded.as_deref(), Some("i64"));
         Ok(())
     }
 

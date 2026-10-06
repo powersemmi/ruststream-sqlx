@@ -139,3 +139,12 @@ CREATE TABLE keyed_jobs (
     locked_until TIMESTAMPTZ,
     payload      BYTEA NOT NULL
 );
+
+-- A payload column of an integer, which a struct's bytes never read: its rows never decode. Its
+-- lease form reads `locked_until`.
+CREATE TABLE unreadable_jobs (
+    id           BIGSERIAL PRIMARY KEY,
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until TIMESTAMPTZ,
+    payload      BIGINT NOT NULL
+);

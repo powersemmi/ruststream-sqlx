@@ -372,11 +372,13 @@ table cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempt
 A claimed row whose columns do not decode into the struct reaches the subscription's
 `on_failure(decode = ..)` policy, which settles it, and the subscription goes on with the next
 row. The default policy drops the row: it is deleted, or marked where the table has
-`processed_at`. Such a row reports no attempt, so `max_attempts(..)` never spends it: a policy
-that retries it keeps it in the queue until it decodes. A handler that takes the bytes themselves,
-through a `Deserialized` type, receives an empty payload for such a row. A row whose id does not
-decode fails the claim, and the error names the subscription and the table; every claim that
-reaches the row fails the same way until the row is fixed.
+`processed_at`. Such a row still reports its attempt: the claim reads the `attempt` column alone,
+as the struct reads it. So `max_attempts(..)` spends it like any other row, and a policy that
+retries it keeps it only up to the cap. When the `attempt` column itself does not decode, the row
+reports no attempt, and a policy that retries it keeps it in the queue until it decodes. A handler
+that takes the bytes themselves, through a `Deserialized` type, receives an empty payload for such
+a row. A row whose id does not decode fails the claim, and the error names the subscription and
+the table; every claim that reaches the row fails the same way until the row is fixed.
 
 # Batches
 

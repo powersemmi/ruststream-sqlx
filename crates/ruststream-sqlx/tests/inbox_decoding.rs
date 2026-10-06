@@ -1,5 +1,6 @@
 //! Rows whose columns do not decode into their struct: the decode-failure policy settles them and
-//! the claim loop goes on; an id that does not decode fails the claim.
+//! the claim loop goes on, and each reports its attempt as its struct reads it; an id that does
+//! not decode fails the claim.
 
 #![cfg(all(
     feature = "inbox",
@@ -17,12 +18,20 @@ use std::time::Duration;
 use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, TestApp};
-use ruststream::{ConnectedBroker, OutgoingMessage, Subscriber, SubscriptionSource};
-use ruststream_sqlx::{Claim, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerError};
+use ruststream::{
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber, SubscriptionSource,
+};
+use ruststream_sqlx::{
+    Claim, ConnectedSqlxBroker, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerError,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool, Postgres};
 
 use live::postgres::database;
+use live::rows::unreadable;
+
+/// The broker's connected form on the stand.
+type Connected = ConnectedSqlxBroker<Postgres>;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Task {
@@ -121,6 +130,126 @@ async fn a_row_that_does_not_decode_is_settled_by_the_decode_policy() {
         "the policy dropped both rows"
     );
     tb.shutdown().await.expect("the app stops");
+    db.finish().await;
+}
+
+/// `unreadable_jobs` read with an unsigned attempt, which sqlx converts from the column's
+/// `SMALLINT`; the payload column holds an integer, so no row decodes.
+#[derive(Debug, Inbox, sqlx::FromRow)]
+#[inbox(table = "unreadable_jobs")]
+struct Converted {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    #[sqlx(try_from = "i16")]
+    attempt: u16,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+impl Publish<Postgres> for Converted {
+    async fn publish(conn: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> {
+        unreadable::<Postgres>(conn).await
+    }
+}
+
+#[subscriber(InboxQueue::<Converted>::new("converted"))]
+async fn never_converted(_task: &Task) -> HandlerOutcome {
+    // No row of the table decodes; reaching this would acknowledge instead.
+    HandlerOutcome::ack()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_that_does_not_decode_reports_the_attempt_its_field_converts() {
+    let Some(db) = database().await else { return };
+    let broker = SqlxBroker::new(db.pool.clone())
+        .poll_interval(Duration::from_millis(20))
+        .route::<Converted>("converted");
+    let retries = FailurePolicies::default().with_decode(FailurePolicy::Retry);
+    let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
+        b.include(never_converted.on_failure(retries))
+            .max_attempts(nonzero!(2u32));
+    });
+    let tb = TestApp::start_live(app).await.expect("the app starts");
+    tb.broker::<SqlxBroker<Postgres>>()
+        .message(&Task { n: 0 })
+        .to("converted")
+        .publish()
+        .await
+        .expect("the publish settles");
+    tb.advance(Duration::from_millis(800))
+        .await
+        .expect("the retries settle");
+    // The attempt is read as the field reads it, through `try_from`, so the cap spends the row.
+    tb.broker::<SqlxBroker<Postgres>>()
+        .subscriber("converted")
+        .assert_called(2)
+        .assert_last_failed_to_decode();
+    assert_eq!(
+        rows(&db.pool, "unreadable_jobs").await,
+        0,
+        "the second delivery spent the row's attempts, and the cap finished it"
+    );
+    tb.shutdown().await.expect("the app stops");
+    db.finish().await;
+}
+
+/// `unreadable_jobs` read with a wider attempt than its `SMALLINT` column holds, which Postgres
+/// does not decode.
+#[derive(Debug, Inbox, sqlx::FromRow)]
+#[inbox(table = "unreadable_jobs")]
+struct Widened {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    attempt: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+/// The attempt of the first row `subscription` claims.
+async fn first_attempt<Row>(subscription: InboxQueue<Row>, connected: &Connected) -> Option<u64>
+where
+    InboxQueue<Row>: SubscriptionSource<Connected>,
+{
+    let mut subscriber = subscription
+        .subscribe(connected)
+        .await
+        .expect("the subscription opens");
+    let mut deliveries = pin!(subscriber.stream());
+    let delivery = deliveries
+        .next()
+        .await
+        .expect("the stream goes on")
+        .expect("the claim");
+    let attempt = delivery.redelivery_count();
+    delivery.ack().await.expect("the row settles");
+    attempt
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_row_whose_attempt_does_not_decode_either_reports_none() {
+    let Some(db) = database().await else { return };
+    let connected = SqlxBroker::new(db.pool.clone())
+        .connect()
+        .await
+        .expect("the broker connects");
+    // The column holds a `SMALLINT`, which the struct reads as an `i64`.
+    sqlx::query("INSERT INTO unreadable_jobs (attempt, payload) VALUES (1, 7)")
+        .execute(&db.pool)
+        .await
+        .expect("the row writes");
+    let widened = first_attempt(InboxQueue::<Widened>::new("widened"), &connected).await;
+    assert_eq!(widened, None, "the struct reads no attempt from the column");
+    // A negative attempt, which does not convert into the struct's `u16`.
+    sqlx::query("INSERT INTO unreadable_jobs (attempt, payload) VALUES (-1, 7)")
+        .execute(&db.pool)
+        .await
+        .expect("the row writes");
+    let converted = first_attempt(InboxQueue::<Converted>::new("converted"), &connected).await;
+    assert_eq!(converted, None, "the attempt does not convert");
+    assert_eq!(rows(&db.pool, "unreadable_jobs").await, 0);
+    connected.shutdown().await.expect("the broker shuts down");
     db.finish().await;
 }
 

@@ -31,9 +31,9 @@ pub mod __private {
 
     pub use crate::inbox::engine::{
         Claimed, Claiming, Event, Events, IdAt, Now, Prepared, Settled, Settling, Shape, Stmt,
-        TimeFor, Values, Via, ack, claim_ids, claim_rows, dead_letter, discard, expiry, extend,
-        fetch_by_ids, first_header, later, match_claimed, match_rows, micros, now, put, retry,
-        retry_after,
+        TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows, dead_letter, discard, expiry,
+        extend, fetch_by_ids, first_header, later, match_claimed, match_rows, micros, now, put,
+        retry, retry_after,
     };
     pub use crate::inbox::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{

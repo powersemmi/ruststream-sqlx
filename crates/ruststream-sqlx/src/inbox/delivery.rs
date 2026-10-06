@@ -286,13 +286,14 @@ impl<DB: QueueDatabase, Row: Events<DB> + PayloadRow> InboxDelivery<DB, Row> {
                 );
                 HeaderMap::new()
             }
-            Claimed::Undecodable { id, error } => {
+            Claimed::Undecodable { id, attempt, error } => {
                 tracing::warn!(
                     target: "ruststream_sqlx",
                     subscription = queue.name,
                     table = queue.table,
                     row = queue.row,
                     ?id,
+                    attempt,
                     %error,
                     "the row does not decode into its struct; its delivery carries no payload and \
                      the decode-failure policy settles it",
@@ -659,7 +660,8 @@ where
     fn redelivery_count(&self) -> Option<u64> {
         let carried = match &self.claimed {
             Claimed::Row(row) => Row::attempt(row),
-            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
+            Claimed::Undecodable { attempt, .. } => *attempt,
+            Claimed::Missing(_) => None,
         };
         // A claim that returns its rows after counting reports the attempt before its count.
         if self.queue.counted_attempt {

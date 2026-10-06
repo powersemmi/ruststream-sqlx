@@ -158,15 +158,50 @@ pub(crate) fn events(
             quote!(#r::KeyColumn::key(&self.#ident))
         },
     );
-    let attempt = playing(inbox, Role::Attempt).map_or_else(
-        || quote!(::core::option::Option::None),
-        |field| {
-            let column = via(field.ty);
-            predicates.push(parse_quote!(#column: #r::AttemptColumn));
-            let ident = field.ident;
-            quote!(::core::option::Option::Some(#r::AttemptColumn::attempt(&self.#ident)))
-        },
-    );
+    // A row that does not decode still reports its attempt: the column read alone, by its name,
+    // as the field's own type.
+    let (attempt, read_attempt) = inbox
+        .columns()
+        .find(|(_, column)| column.role == Some(Role::Attempt))
+        .map_or_else(
+            || {
+                (
+                    quote!(::core::option::Option::None),
+                    quote!({
+                        let _ = (row, queue);
+                        ::core::option::Option::None
+                    }),
+                )
+            },
+            |(field, column)| {
+                let name = &column.name;
+                let ty = field.ty;
+                // sqlx decodes the column as the `try_from` type where the field names one, and
+                // converts it into the field's.
+                let decoded = column.try_from.as_deref().unwrap_or(ty);
+                let attempt_ty = via(ty);
+                predicates.push(parse_quote!(#attempt_ty: #r::AttemptColumn));
+                // Written on the type itself, as the id's bound is: the two coincide where the id
+                // and the attempt share a type, and a bound through `Via` would then be a second,
+                // ambiguous way to prove the same one.
+                predicates.push(parse_quote!(
+                    #decoded: for<'__r> #p::sqlx::Decode<'__r, __DB> + #p::sqlx::Type<__DB>
+                ));
+                if column.try_from.is_some() {
+                    predicates.push(parse_quote!(
+                        #attempt_ty: ::core::convert::TryFrom<#decoded>
+                    ));
+                }
+                let ident = field.ident;
+                (
+                    quote!(::core::option::Option::Some(#r::AttemptColumn::attempt(&self.#ident))),
+                    quote!({
+                        let _ = queue;
+                        #p::attempt_in::<__DB, #decoded, #ty>(row, #name)
+                    }),
+                )
+            },
+        );
 
     let retry_after =
         playing(inbox, Role::RetryAfter).map(|field| TimeRole::new(field.ty, &mut predicates));
@@ -437,6 +472,13 @@ pub(crate) fn events(
 
             fn attempt(&self) -> ::core::option::Option<u64> {
                 #attempt
+            }
+
+            fn read_attempt(
+                row: &<__DB as #p::sqlx::Database>::Row,
+                queue: &'static #p::Queue,
+            ) -> ::core::option::Option<u64> {
+                #read_attempt
             }
 
             fn bind(
