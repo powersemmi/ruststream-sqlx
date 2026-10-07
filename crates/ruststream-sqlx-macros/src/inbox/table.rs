@@ -241,3 +241,114 @@ pub(crate) fn own_events(custom: Custom) -> Vec<TokenStream2> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use quote::format_ident;
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::inbox::tests::expanded;
+
+    #[test]
+    fn a_declared_opening_and_clock_reach_the_chain_and_the_type() -> syn::Result<()> {
+        let cases = [
+            ("isolation", "read_uncommitted", "ReadUncommitted"),
+            ("isolation", "read_committed", "ReadCommitted"),
+            ("isolation", "repeatable_read", "RepeatableRead"),
+            ("isolation", "serializable", "Serializable"),
+            ("mode", "deferred", "Deferred"),
+            ("mode", "immediate", "Immediate"),
+            ("mode", "exclusive", "Exclusive"),
+        ];
+        for (key, word, name) in cases {
+            let (key, word) = (format_ident!("{key}"), format_ident!("{word}"));
+            let input: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", #key = #word, clock = DatabaseClock)]
+                struct Job { #[field(id)] id: i64 }
+            };
+            let impls = expanded(&input)?;
+            let level = format!("::ruststream_sqlx::dialect::level::{name}");
+            for expected in [
+                format!(
+                    "typeTable=::ruststream_sqlx::InboxSpec<(::ruststream_sqlx::spec::Clock<DatabaseClock>,\
+                     ::ruststream_sqlx::spec::Opens<{level}>,)>;"
+                ),
+                format!(".clock::<DatabaseClock>().opens::<{level}>();"),
+            ] {
+                assert!(
+                    impls.contains(&expected),
+                    "{key} = {word}: {expected}\n{impls}"
+                );
+            }
+        }
+        // A table that names neither opens at its database's default on the crate's clock.
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let impls = expanded(&input)?;
+        assert!(
+            impls.contains("typeTable=::ruststream_sqlx::InboxSpec<()>;"),
+            "{impls}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_converted_attempt_names_the_type_its_column_decodes_as() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job {
+                #[field(id)] id: i64,
+                #[field(attempt)] #[sqlx(try_from = "i16")] attempt: u16,
+                #[field(processed_at)] done: Option<DateTime<Utc>>,
+                #[field(priority)] rank: i16,
+            }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "typeTable=::ruststream_sqlx::InboxSpec<(::ruststream_sqlx::spec::AttemptFrom<i16>,\
+             ::ruststream_sqlx::spec::ProcessedAt<Option<DateTime<Utc>>>,)>;",
+            ".priority(::ruststream_sqlx::dialect::Column::new(\"rank\"))\
+             .attempt_from::<i16>(::ruststream_sqlx::dialect::Column::new(\"attempt\"))\
+             .processed_at(::ruststream_sqlx::dialect::Column::new(\"done\"));",
+            "typeAttempt=u16;",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_advisory_lock_key_is_the_forms_setter() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "ledger", advisory_lock = "ledger-{account}")]
+            struct Entry { #[field(id)] id: i64, #[sqlx(rename = "acct")] account: String }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "typeTable=::ruststream_sqlx::InboxSpec<(::ruststream_sqlx::spec::Advisory,)>;",
+            ".advisory(&[::ruststream_sqlx::dialect::KeyPart::Literal(\"ledger-\"),\
+             ::ruststream_sqlx::dialect::KeyPart::Column(\"acct\")])",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_listed_lock_and_unlock_are_the_services_own_events() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "::ruststream_sqlx::spec::own::Lock,::ruststream_sqlx::spec::own::Unlock,)>;",
+            ".own::<::ruststream_sqlx::spec::own::Lock>().own::<::ruststream_sqlx::spec::own::Unlock>();",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        Ok(())
+    }
+}

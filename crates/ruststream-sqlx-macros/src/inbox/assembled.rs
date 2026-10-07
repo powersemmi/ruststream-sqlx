@@ -253,3 +253,111 @@ fn roles(
     );
     quote!(#key #attempt)
 }
+
+#[cfg(test)]
+mod tests {
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::inbox::tests::{errors, expanded};
+
+    #[test]
+    fn a_message_assembled_from_a_headers_struct_keeps_the_tables_parts_on_it() {
+        let cases: [(DeriveInput, &[&str]); 5] = [
+            (
+                parse_quote! { struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, #[field(id)] id: i64 } },
+                &[
+                    "`id` plays `id` beside the headers struct `Head`, which describes the queue table: \
+                   mark the field that plays `id` in `Head`",
+                ],
+            ),
+            (
+                parse_quote! { struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, #[field(payload)] body: Vec<u8> } },
+                &[
+                    "`body` plays `payload` beside the headers struct `Head`: a message assembled from a \
+                   headers struct is handed to its handler itself, as in row mode, so it holds no \
+                   payload; drop the role",
+                ],
+            ),
+            (
+                parse_quote! {
+                    #[inbox(table = "jobs", custom(fetch), advisory_lock = "jobs-{id}")]
+                    struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head }
+                },
+                &[
+                    "`table` describes the queue table, which the headers struct `Head` describes: \
+                     put it on `Head`'s `#[inbox(..)]`",
+                    "`advisory_lock` describes the queue table, which the headers struct `Head` \
+                     describes: put it on `Head`'s `#[inbox(..)]`",
+                ],
+            ),
+            (
+                parse_quote! {
+                    struct Job {
+                        #[field(headers)] #[sqlx(flatten)] headers: Head,
+                        #[field(headers)] #[sqlx(flatten)] more: Head,
+                        #[sqlx(flatten)] order: Order,
+                    }
+                },
+                &[
+                    "`more` flattens a second headers struct: a message is assembled from one, `Head`",
+                    "`order` flattens a struct whose columns the default fetch cannot name: list \
+                     `fetch` in `#[inbox(custom(..))]` and read the message in the service's own \
+                     `Fetch`",
+                ],
+            ),
+            (
+                parse_quote! {
+                    #[inbox(custom(lock))]
+                    struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head }
+                },
+                &[
+                    "`lock` is listed without `unlock`: the service's own lock is released by its own \
+                   unlock, so list both in `custom(..)`",
+                ],
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(errors(&input), expected, "{}", input.ident);
+        }
+    }
+
+    #[test]
+    fn a_message_assembled_from_a_headers_struct_extends_its_description() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, note: String, #[sqlx(skip)] cache: u8 }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "impl::ruststream_sqlx::InboxTableforJob",
+            "typeId=<Headas::ruststream_sqlx::InboxHeaders>::Id;",
+            "typeTable=::ruststream_sqlx::InboxSpec<<Headas::ruststream_sqlx::InboxHeaders>::Settings>;",
+            "constTABLE:Self::Table=<Headas::ruststream_sqlx::InboxHeaders>::TABLE\
+             .fetching(&[::ruststream_sqlx::dialect::Column::new(\"note\")]);",
+            "fnid(&self)->&Self::Id{<Headas::ruststream_sqlx::InboxHeaders>::id(&self.headers)}",
+            "impl::ruststream_sqlx::HeaderFieldsforJob",
+            "impl::ruststream_sqlx::__private::InputforJob",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        for machinery in ["Events", "QueueRow", "InboxRow", "LeaseRow"] {
+            assert!(!impls.contains(machinery), "{machinery}: {impls}");
+        }
+        // The service's own fetch reads the message wherever its columns live: the description
+        // stays the table's, and the message's own events join its settings.
+        let fetched: DeriveInput = parse_quote! {
+            #[inbox(custom(fetch, claim))]
+            struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, customer: String }
+        };
+        let impls = expanded(&fetched)?;
+        for expected in [
+            "typeTable=::ruststream_sqlx::InboxSpec<<<<Headas::ruststream_sqlx::InboxHeaders>::Settings\
+             as::ruststream_sqlx::spec::Push<::ruststream_sqlx::spec::own::Claim>>::Out\
+             as::ruststream_sqlx::spec::Push<::ruststream_sqlx::spec::own::Fetch>>::Out>;",
+            "constTABLE:Self::Table=<Headas::ruststream_sqlx::InboxHeaders>::TABLE\
+             .own::<::ruststream_sqlx::spec::own::Claim>().own::<::ruststream_sqlx::spec::own::Fetch>();",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        Ok(())
+    }
+}

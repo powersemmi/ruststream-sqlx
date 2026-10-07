@@ -87,3 +87,77 @@ fn skip_value(input: ParseStream<'_>) -> syn::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use quote::ToTokens;
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::parse::{Inbox, Storage, inbox};
+
+    fn columns(inbox: &Inbox<'_>) -> Vec<Option<String>> {
+        inbox
+            .fields
+            .iter()
+            .map(|field| field.column().map(|column| column.name.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn column_names_follow_sqlx() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "email_jobs")]
+            #[sqlx(rename_all = "camelCase")]
+            struct SendEmail {
+                #[field(id)]
+                job_id: i64,
+                #[sqlx(rename = "queue_name")]
+                #[field(group)]
+                group_name: String,
+                r#type: String,
+                #[sqlx(skip)]
+                cache: Vec<u8>,
+                #[sqlx(flatten)]
+                extra: Extra,
+                #[sqlx(json(nullable), try_from = "i64", default)]
+                attachments: Vec<String>,
+            }
+        };
+        assert_eq!(
+            columns(&inbox(&input)?),
+            [
+                Some("jobId".to_owned()),
+                Some("queue_name".to_owned()),
+                Some("type".to_owned()),
+                None,
+                None,
+                Some("attachments".to_owned()),
+            ]
+        );
+        let inbox = inbox(&input)?;
+        assert!(matches!(inbox.fields[3].storage, Storage::Skipped));
+        assert!(matches!(inbox.fields[4].storage, Storage::Flattened));
+        assert!(inbox.flattens());
+        // The type sqlx decodes a column as before it converts it, for a column read alone.
+        let decoded = inbox.fields[5]
+            .column()
+            .and_then(|column| column.try_from.as_ref())
+            .map(|ty| ty.to_token_stream().to_string());
+        assert_eq!(decoded.as_deref(), Some("i64"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_json_field_is_marked_for_the_insert() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64, #[sqlx(json(nullable))] body: Option<Body>, other: String }
+        };
+        let json: Vec<_> = inbox(&input)?
+            .columns()
+            .map(|(_, column)| column.json)
+            .collect();
+        assert_eq!(json, [false, true, false]);
+        Ok(())
+    }
+}

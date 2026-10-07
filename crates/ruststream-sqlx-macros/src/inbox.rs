@@ -106,4 +106,93 @@ pub(crate) fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Gene
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use syn::{DeriveInput, parse_quote};
+
+    use super::expand;
+
+    pub(super) fn errors(input: &DeriveInput) -> Vec<String> {
+        expand(input).map_or_else(
+            |error| error.into_iter().map(|error| error.to_string()).collect(),
+            |_| Vec::new(),
+        )
+    }
+
+    /// The expansion without whitespace, so a test reads it as the source would be written.
+    pub(super) fn expanded(input: &DeriveInput) -> syn::Result<String> {
+        Ok(expand(input)?.to_string().replace(' ', ""))
+    }
+
+    #[test]
+    fn a_flat_struct_expands_to_the_manual_form() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", schema = "app", custom(ack, retry))]
+            struct Job {
+                #[field(id, generated)] id: i64,
+                #[field(payload)] payload: Vec<u8>,
+                #[field(group, fifo = true)] name: String,
+                #[field(partition_key)] tenant: String,
+                #[field(attempt, generated)] attempt: i16,
+                #[field(locked_until)] locked_until: Option<DateTime<Utc>>,
+                #[field(retry_after)] retry_after: Option<DateTime<Utc>>,
+                note: String,
+            }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "impl::ruststream_sqlx::InboxTableforJob{typeId=i64;",
+            // The markers in the canonical order: the form, the roles, the clock and opening, the
+            // service's own events.
+            "typeTable=::ruststream_sqlx::InboxSpec<(\
+             ::ruststream_sqlx::spec::Lease<<Option<DateTime<Utc>>as::ruststream_sqlx::TimeColumn>::Time>,\
+             ::ruststream_sqlx::spec::Fifo,\
+             ::ruststream_sqlx::spec::Key,\
+             ::ruststream_sqlx::spec::RetryAfter<Option<DateTime<Utc>>>,\
+             ::ruststream_sqlx::spec::Attempt,\
+             ::ruststream_sqlx::spec::Payload,\
+             ::ruststream_sqlx::spec::own::Ack,\
+             ::ruststream_sqlx::spec::own::Retry,)>;",
+            "constTABLE:Self::Table=::ruststream_sqlx::InboxSpec::new(\"jobs\",\
+             ::ruststream_sqlx::dialect::Column::new(\"id\").generated()).within(\"app\")\
+             .lease(::ruststream_sqlx::dialect::Column::new(\"locked_until\"))\
+             .fifo_group(::ruststream_sqlx::dialect::Column::new(\"name\"))\
+             .partition_key(::ruststream_sqlx::dialect::Column::new(\"tenant\"))\
+             .retry_after(::ruststream_sqlx::dialect::Column::new(\"retry_after\"))\
+             .attempt(::ruststream_sqlx::dialect::Column::new(\"attempt\").generated())\
+             .payload(::ruststream_sqlx::dialect::Column::new(\"payload\"))\
+             .data(&[::ruststream_sqlx::dialect::Column::new(\"note\")])\
+             .own::<::ruststream_sqlx::spec::own::Ack>()\
+             .own::<::ruststream_sqlx::spec::own::Retry>();",
+            "fnid(&self)->&i64{&self.id}",
+            "impl::ruststream_sqlx::PayloadRowforJob{typeColumn=Vec<u8>;",
+            "impl::ruststream_sqlx::KeyRowforJobwherefor<'__c>String:::ruststream_sqlx::KeyColumn{typeKey=String;fnpartition_key(&self)->&String{&self.tenant}}",
+            "impl::ruststream_sqlx::AttemptRowforJobwherefor<'__c>i16:::ruststream_sqlx::AttemptColumn{typeAttempt=i16;fnattempt(&self)->&i16{&self.attempt}}",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        // The crate's blanket impls write the rest of the contract.
+        for machinery in ["Events", "QueueRow", "InboxRow", "LeaseRow", "Input"] {
+            assert!(!impls.contains(machinery), "{machinery}: {impls}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_generic_struct_holds_its_impls_where_its_settings_keep_the_rules() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", clock = Source)]
+            struct Job<Source> { #[field(id)] id: i64, #[sqlx(skip)] source: PhantomData<Source> }
+        };
+        let impls = expanded(&input)?;
+        let valid = "::ruststream_sqlx::InboxSpec<(::ruststream_sqlx::spec::Clock<Source>,)>:\
+                     ::ruststream_sqlx::spec::Valid";
+        for header in ["InboxTableforJob<Source>", "__private::InputforJob<Source>"] {
+            let at = impls
+                .find(header)
+                .ok_or_else(|| syn::Error::new(input.ident.span(), header))?;
+            let clause = &impls[at..at + impls[at..].find('{').unwrap_or_default()];
+            assert!(clause.contains(valid), "{header}: {clause}");
+        }
+        Ok(())
+    }
+}

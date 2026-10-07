@@ -127,3 +127,31 @@ pub(crate) fn carried(input: &DeriveInput, generics: &Generics) -> TokenStream2 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::inbox::tests::expanded;
+
+    #[test]
+    fn a_struct_without_a_payload_field_puts_its_row_on_the_carried_lane() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64, #[field(headers)] meta: Json<Map>, note: String }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "typeTable=::ruststream_sqlx::InboxSpec<(::ruststream_sqlx::spec::Headers,)>;",
+            "impl::ruststream_sqlx::__private::InputforJobwhereJob:::core::clone::Clone\
+             {typeAxis=::ruststream_sqlx::__private::SoloCarried<Self>;}",
+            "impl::ruststream_sqlx::HeaderRowforJobwherefor<'__c>Json<Map>:::ruststream_sqlx::HeaderColumn\
+             {typeColumn=Json<Map>;\
+             fnheaders_mut(&mutself)->&mutJson<Map>{&mutself.meta}}",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        assert!(!impls.contains("PayloadRow"), "{impls}");
+        Ok(())
+    }
+}

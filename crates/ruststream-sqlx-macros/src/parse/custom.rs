@@ -86,3 +86,72 @@ impl Custom {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use quote::format_ident;
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::parse::inbox;
+    use crate::parse::tests::error;
+
+    #[test]
+    fn custom_events_and_the_clock_are_read() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(fetch, dead_letter), clock = crate::Offset)]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let inbox = inbox(&input)?;
+        let custom = inbox.table.custom;
+        assert!(custom.fetch && custom.dead_letter);
+        assert!(custom.claim.is_none() && !custom.ack && !custom.retry);
+        assert!(!custom.retry_after && !custom.discard && custom.extend.is_none());
+        let leased: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(extend, claim))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let listed = self::inbox(&leased)?.table.custom;
+        assert!(listed.extend.is_some() && listed.claim.is_some());
+        let twice: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(extend, extend))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(error(&twice), "`extend` is listed twice");
+        let claimed_twice: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(claim, claim))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(error(&claimed_twice), "`claim` is listed twice");
+        let clock = inbox
+            .table
+            .clock
+            .map(|path| quote::quote!(#path).to_string());
+        assert_eq!(clock.as_deref(), Some("crate :: Offset"));
+        Ok(())
+    }
+
+    #[test]
+    fn the_lock_and_the_unlock_are_read_where_they_are_listed() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(unlock, lock))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let custom = inbox(&input)?.table.custom;
+        assert!(custom.lock.is_some() && custom.unlock.is_some());
+        let neither: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", custom(ack))]
+            struct Job { #[field(id)] id: i64 }
+        };
+        let custom = inbox(&neither)?.table.custom;
+        assert!(custom.lock.is_none() && custom.unlock.is_none());
+        for event in ["lock", "unlock"] {
+            let event = format_ident!("{event}");
+            let twice: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", custom(#event, #event))]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(error(&twice), format!("`{event}` is listed twice"));
+        }
+        Ok(())
+    }
+}
