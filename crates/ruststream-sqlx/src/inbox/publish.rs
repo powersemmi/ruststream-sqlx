@@ -19,11 +19,13 @@ use super::testing::{cancelled, off_clock};
 mod repository;
 mod routed;
 mod routes;
+mod wake;
 
 pub use repository::{Repository, RepositoryPublisher};
 pub use routed::{Routed, RoutedPublisher};
 use routes::Route;
 pub(crate) use routes::Routes;
+pub(crate) use wake::{TableWake, Wakes};
 
 /// The table `spec` describes, qualified with its schema, for messages.
 pub(crate) fn table_of(spec: &TableSpec<'_>) -> String {
@@ -109,11 +111,13 @@ where
         .map_err(|source| failed(message, &Row::SPEC, type_name::<Row>(), source))
 }
 
-/// Writes `message` through `route` on a connection of the pool, unless the broker is shut down:
-/// the route table's write, for the broker's publishes and the harness's injections alike.
+/// Writes `message` through `route` on a connection of the pool, unless the broker is shut down,
+/// then wakes the subscriptions `wake` holds for the message's group: the route table's write,
+/// for the broker's publishes and the harness's injections alike.
 pub(crate) async fn insert_routed<DB: QueueDatabase>(
     shared: &Shared<DB>,
     route: &dyn Route<DB>,
+    wake: &TableWake,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), SqlxBrokerError> {
     // Why a run-time check: the pool is the service's and outlives the broker, so only the
@@ -123,13 +127,17 @@ pub(crate) async fn insert_routed<DB: QueueDatabase>(
     }
     #[cfg(feature = "testing")]
     if shared.harness.in_process() {
-        return route.insert_in_process(shared, message).await;
+        route.insert_in_process(shared, message).await?;
+        wake.wake(message.name());
+        return Ok(());
     }
     let mut conn = shared.pool.acquire().await.map_err(|source| {
         let description = route.description();
         failed(message, &description.spec, description.row, source)
     })?;
-    route.insert(&mut conn, message).await
+    route.insert(&mut conn, message).await?;
+    wake.wake(message.name());
+    Ok(())
 }
 
 /// The insert of an in-process connection, off a paused clock.
@@ -155,9 +163,11 @@ where
     .unwrap_or_else(|| Err(cancelled()))
 }
 
-/// A publisher's write: the insert, then the harness's books of what the broker published.
+/// A publisher's write: the insert, the harness's books of what the broker published, then the
+/// wake-up of the subscriptions `wake` holds for the message's group once the row is written.
 async fn write<DB, Row>(
     shared: &Shared<DB>,
+    wake: &TableWake,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), SqlxBrokerError>
 where
@@ -171,6 +181,9 @@ where
     match &inserted {
         Ok(()) => shared.harness.published(message),
         Err(_) => shared.harness.refused(message.name()),
+    }
+    if inserted.is_ok() {
+        wake.wake(message.name());
     }
     inserted
 }

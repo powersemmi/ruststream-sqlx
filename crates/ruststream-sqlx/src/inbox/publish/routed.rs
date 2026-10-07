@@ -188,7 +188,7 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
         msg: OutgoingMessage<'_>,
         _options: Option<&()>,
     ) -> Result<(), SqlxBrokerError> {
-        let Some((route, _)) = self.shared.routes.find(msg.name()) else {
+        let Some((route, wake)) = self.shared.routes.find_with_wake(msg.name()) else {
             tracing::warn!(
                 target: "ruststream_sqlx",
                 name = msg.name(),
@@ -200,7 +200,7 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
         };
         #[cfg(feature = "testing")]
         self.shared.harness.expect(msg.name());
-        let inserted = insert_routed(&self.shared, route, &msg).await;
+        let inserted = insert_routed(&self.shared, route, wake, &msg).await;
         #[cfg(feature = "testing")]
         match &inserted {
             Ok(()) => self.shared.harness.published(&msg),

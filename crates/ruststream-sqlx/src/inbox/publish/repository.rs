@@ -10,7 +10,7 @@ use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::Database;
 
-use super::write;
+use super::{TableWake, write};
 use crate::inbox::broker::{ConnectedSqlxBroker, Shared};
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::Events;
@@ -120,6 +120,7 @@ where
     ) -> impl Future<Output = Result<Self::Live, PairError>> + Send {
         ready(Ok(RepositoryPublisher {
             shared: Arc::clone(&connected.shared),
+            wake: connected.shared.wakes.table(&Row::SPEC),
             _row: PhantomData,
         }))
     }
@@ -188,6 +189,8 @@ where
 /// ```
 pub struct RepositoryPublisher<DB: Database, Row> {
     shared: Arc<Shared<DB>>,
+    /// The subscriptions of `Row`'s table on the connection, woken after each write.
+    wake: &'static TableWake,
     _row: PhantomData<fn() -> Row>,
 }
 
@@ -211,6 +214,6 @@ where
         msg: OutgoingMessage<'_>,
         _options: Option<&()>,
     ) -> Result<(), SqlxBrokerError> {
-        write::<DB, Row>(&self.shared, &msg).await
+        write::<DB, Row>(&self.shared, self.wake, &msg).await
     }
 }

@@ -24,7 +24,7 @@ use crate::inbox::form::lease::{self, LeaseBook};
 use crate::inbox::form::row_lock::savepoint_of;
 use crate::inbox::named::kinds::Kinds;
 use crate::inbox::publish::table_of;
-use crate::inbox::subscriber::{Holding, InboxSubscriber};
+use crate::inbox::subscriber::{Holding, InboxSubscriber, Opened};
 use crate::inbox::transactional::{InboxMode, TxBook};
 
 /// One open subscription, interned for the life of the process: what its deliveries read to settle
@@ -344,14 +344,20 @@ where
     // A transactional delivery's transaction waits in the book while its handler does not hold it;
     // in the advisory lock form the lock book keeps the session that holds it.
     let lending = (Mode::TRANSACTIONAL && !description.advisory()).then(TxBook::leak);
+    // Per connection, not on the interned queue: a queue's description is shared by subscriptions
+    // of other connections, to other databases, that this connection's publishes do not reach.
+    let wake = shared.wakes.table(&description.spec).subscribe(name);
     Ok(InboxSubscriber::new(
         Arc::clone(shared),
-        queue,
-        holding,
-        registration,
-        keeper,
-        pool,
-        lending,
+        Opened {
+            queue,
+            holding,
+            registration,
+            keeper,
+            pool,
+            lending,
+            wake,
+        },
     ))
 }
 

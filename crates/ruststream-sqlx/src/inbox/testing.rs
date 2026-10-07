@@ -280,8 +280,8 @@ async fn inject<DB: QueueDatabase>(
     headers: HeaderMap,
 ) {
     let message = OutgoingMessage::new(name, payload).with_headers(headers);
-    let written = match shared.routes.find(name) {
-        Some((route, _)) => insert_routed(shared, route, &message).await,
+    let written = match shared.routes.find_with_wake(name) {
+        Some((route, wake)) => insert_routed(shared, route, wake, &message).await,
         None => Err(SqlxBrokerError::NoRoute {
             name: name.to_owned(),
         }),

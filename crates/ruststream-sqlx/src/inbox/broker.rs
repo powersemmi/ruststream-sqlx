@@ -37,7 +37,7 @@ use super::error::SqlxBrokerError;
 use super::events::Publish;
 use super::form::advisory::LockBook;
 use super::form::advisory::session::Closing;
-use super::publish::Routes;
+use super::publish::{Routes, TableWake, Wakes};
 use super::{FormDialect, FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
@@ -558,7 +558,9 @@ impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
 pub(crate) struct Shared<DB: Database> {
     pub(crate) pool: Pool<DB>,
     /// The routes, each with the form of its table on the connection's dialect.
-    pub(crate) routes: Routes<DB, FormDialect>,
+    pub(crate) routes: Routes<DB, FormDialect, &'static TableWake>,
+    /// The wake-ups of the subscriptions of each table the connection's publishers write.
+    pub(crate) wakes: Wakes,
     pub(crate) poll_interval: Duration,
     /// The lease a subscription in the lease form takes, unless it names its own.
     pub(crate) lease: Duration,
@@ -668,10 +670,16 @@ impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
     /// The connected form of `broker`, whose statements `dialect` builds and whose internal tasks
     /// run on `runtime`.
     pub(crate) fn new(broker: SqlxBroker<DB, D>, dialect: Arc<D>, runtime: Handle) -> Self {
+        let wakes = Wakes::default();
+        let routes = broker.routes.resolve(
+            |form_of| form_of(&dialect),
+            |route| wakes.table(&route.description().spec),
+        );
         Self {
             shared: Arc::new(Shared {
                 pool: broker.pool,
-                routes: broker.routes.resolve(|form_of| form_of(&dialect)),
+                routes,
+                wakes,
                 poll_interval: broker.poll_interval,
                 lease: broker.lease,
                 closing: Closing::leak(runtime.clone()),

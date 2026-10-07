@@ -10,6 +10,7 @@ use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
 use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
+use tokio::sync::Notify;
 use tokio_util::sync::DropGuard;
 
 use super::batch::{BatchClaim, BatchLane};
@@ -38,8 +39,11 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///
 /// The stream claims when it is polled: up to one row for a single-message handler, up to the
 /// batch size for a batch handler. After a claim that filled its limit the next one runs at once;
-/// after one that found fewer rows it waits the poll interval. A failed claim reaches the stream
-/// as an error item and the next claim waits one second. After `shutdown` the stream ends.
+/// after one that found fewer rows it waits the poll interval, or until a publisher of the same
+/// broker writes a row of its table and group (a row the service writes through its own SQL or a
+/// handler's transaction waits for the interval). A write that lands while the subscription
+/// claims ends its next wait at once. A failed claim reaches the stream as an error item and the
+/// next claim waits one second. After `shutdown` the stream ends.
 ///
 /// In the row lock form a message in work holds one connection, and a batch one for all its
 /// messages. A batch's settlements take effect together, when the last of its deliveries
@@ -135,11 +139,35 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     /// What the last claim took, its storage reused from claim to claim.
     claimed: ClaimBuffers<DB, Row>,
     /// What the next claim waits for first.
-    wait: Option<Duration>,
+    wait: Option<Wait>,
+    /// What the connection's publishers wake the subscription with after they write a row of its
+    /// table and group.
+    wake: &'static Notify,
     _registration: Registration<DB>,
     /// Stops the lease keeper when the subscriber drops; `None` outside the lease form.
     _keeper: Option<DropGuard>,
     _mode: PhantomData<fn() -> Mode>,
+}
+
+/// What a claim loop waits for before its next claim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wait {
+    /// The poll interval, or a publish of the connection into the subscription's group.
+    Interval,
+    /// A second after a failed claim, whatever is published meanwhile: a persistent failure
+    /// cannot spin the loop at the rate of the publishes.
+    Failed,
+}
+
+/// What opening a subscription made for its subscriber.
+pub(crate) struct Opened<DB: QueueDatabase, Row: Events<DB>> {
+    pub(crate) queue: &'static Queue,
+    pub(crate) holding: Holding<DB, Row>,
+    pub(crate) registration: Registration<DB>,
+    pub(crate) keeper: Option<DropGuard>,
+    pub(crate) pool: &'static Pool<DB>,
+    pub(crate) lending: Option<&'static TxBook<DB>>,
+    pub(crate) wake: &'static Notify,
 }
 
 /// How a subscription holds the rows it claimed until they settle.
@@ -224,25 +252,18 @@ where
     Row: Events<DB>,
     Mode: InboxMode,
 {
-    pub(crate) fn new(
-        shared: Arc<Shared<DB>>,
-        queue: &'static Queue,
-        holding: Holding<DB, Row>,
-        registration: Registration<DB>,
-        keeper: Option<DropGuard>,
-        pool: &'static Pool<DB>,
-        lending: Option<&'static TxBook<DB>>,
-    ) -> Self {
+    pub(crate) fn new(shared: Arc<Shared<DB>>, opened: Opened<DB, Row>) -> Self {
         Self {
             shared,
-            queue,
-            holding,
-            pool,
-            lending,
+            queue: opened.queue,
+            holding: opened.holding,
+            pool: opened.pool,
+            lending: opened.lending,
             claimed: ClaimBuffers::default(),
             wait: None,
-            _registration: registration,
-            _keeper: keeper,
+            wake: opened.wake,
+            _registration: opened.registration,
+            _keeper: opened.keeper,
             _mode: PhantomData,
         }
     }
@@ -264,11 +285,17 @@ where
         limit: usize,
     ) -> Option<Result<(Taken<DB, Row>, usize), SqlxBrokerError>> {
         loop {
-            if let Some(wait) = self.wait.take() {
-                tokio::select! {
-                    () = tokio::time::sleep(wait) => {}
+            match self.wait.take() {
+                Some(Wait::Interval) => tokio::select! {
+                    () = tokio::time::sleep(self.queue.poll_interval) => {}
+                    () = self.wake.notified() => {}
                     () = self.shared.stopping.cancelled() => return None,
-                }
+                },
+                Some(Wait::Failed) => tokio::select! {
+                    () = tokio::time::sleep(CLAIM_RETRY) => {}
+                    () = self.shared.stopping.cancelled() => return None,
+                },
+                None => {}
             }
             if self.shared.is_closed() {
                 return None;
@@ -277,14 +304,14 @@ where
             match claimed {
                 Ok((taken, 0)) => {
                     self.end_empty(taken).await;
-                    self.wait = Some(self.queue.poll_interval);
+                    self.wait = Some(Wait::Interval);
                 }
                 Ok((taken, count)) => {
-                    self.wait = (count < limit).then_some(self.queue.poll_interval);
+                    self.wait = (count < limit).then_some(Wait::Interval);
                     return Some(Ok((taken, count)));
                 }
                 Err(error) => {
-                    self.wait = Some(CLAIM_RETRY);
+                    self.wait = Some(Wait::Failed);
                     return Some(Err(error));
                 }
             }
