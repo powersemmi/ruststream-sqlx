@@ -14,6 +14,7 @@ pub mod keys;
 pub(crate) mod named;
 mod publish;
 pub(crate) mod queue;
+pub mod spec;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
@@ -45,6 +46,7 @@ pub use headers::{HeaderField, InboxHeaders};
 pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
+pub use spec::builder::{InboxSpec, InboxTable};
 pub use subscriber::InboxSubscriber;
 pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
 pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, TransactionalStep, Tx};

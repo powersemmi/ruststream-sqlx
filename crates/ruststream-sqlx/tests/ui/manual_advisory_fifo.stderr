@@ -1,0 +1,23 @@
+error[E0277]: a FIFO group does not combine with the advisory lock form, which keeps a group in order through its lock key
+  --> tests/ui/manual_advisory_fifo.rs:14:18
+   |
+14 |     type Table = InboxSpec<(Advisory, Fifo)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^ a FIFO group in the advisory lock form
+   |
+   = help: the trait `FifoOutsideAdvisory` is not implemented for `(Set<ruststream_sqlx::spec::Advisory>, Set<Fifo>)`
+   = note: drop `.fifo_group(..)` and `Fifo`, and put the group's column into the lock key
+help: the following other types implement trait `FifoOutsideAdvisory`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<FifoSlot> FifoOutsideAdvisory for (Unset, FifoSlot) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, FifoSlot)`
+   | impl<Time, FifoSlot> FifoOutsideAdvisory for (Set<Lease<Time>>, FifoSlot) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, FifoSlot)`
+   | impl FifoOutsideAdvisory for (Set<Advisory>, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Unset)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Advisory, Fifo)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`

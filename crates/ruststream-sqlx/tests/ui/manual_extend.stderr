@@ -1,0 +1,43 @@
+error[E0277]: `own::Extend` is an event of the lease form
+  --> tests/ui/manual_extend.rs:14:18
+   |
+14 |     type Table = InboxSpec<(own::Extend,)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Extend` outside the lease form
+   |
+   = help: the trait `ExtendInLease` is not implemented for `(Unset, Set<ruststream_sqlx::spec::own::Extend>)`
+   = note: set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` and `own::Extend`
+help: the following other types implement trait `ExtendInLease`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Form> ExtendInLease for (Form, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Form, Unset)`
+   | impl<Time> ExtendInLease for (Set<Lease<Time>>, Set<own::Extend>) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, Set<ruststream_sqlx::spec::own::Extend>)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::own::Extend,)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`
+
+error[E0277]: `own::Extend` is an event of the lease form
+  --> tests/ui/manual_extend.rs:29:18
+   |
+29 |     type Table = InboxSpec<(Advisory, own::Extend)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Extend` outside the lease form
+   |
+   = help: the trait `ExtendInLease` is not implemented for `(Set<ruststream_sqlx::spec::Advisory>, Set<ruststream_sqlx::spec::own::Extend>)`
+   = note: set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` and `own::Extend`
+help: the following other types implement trait `ExtendInLease`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Form> ExtendInLease for (Form, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Form, Unset)`
+   | impl<Time> ExtendInLease for (Set<Lease<Time>>, Set<own::Extend>) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, Set<ruststream_sqlx::spec::own::Extend>)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Advisory, ruststream_sqlx::spec::own::Extend)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`

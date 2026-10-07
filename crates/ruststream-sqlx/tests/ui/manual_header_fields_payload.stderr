@@ -1,0 +1,23 @@
+error[E0277]: a message assembled from header fields is handed to its handler itself, as in row mode, so it holds no payload
+  --> tests/ui/manual_header_fields_payload.rs:12:18
+   |
+12 |     type Table = InboxSpec<(HeaderFields, Payload)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Payload` beside `HeaderFields`
+   |
+   = help: the trait `PayloadOutsideHeaderFields` is not implemented for `(Set<ruststream_sqlx::spec::Payload>, Set<HeaderFields>)`
+   = note: drop `.payload(..)` and `Payload`
+help: the following other types implement trait `PayloadOutsideHeaderFields`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Layout> PayloadOutsideHeaderFields for (Unset, Layout) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, Layout)`
+   | impl PayloadOutsideHeaderFields for (Set<Payload>, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Payload>, Unset)`
+   | impl PayloadOutsideHeaderFields for (Set<Payload>, Set<Headers>) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Payload>, Set<ruststream_sqlx::spec::Headers>)`
+   = note: required for `InboxSpec<(HeaderFields, ruststream_sqlx::spec::Payload)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`

@@ -1,0 +1,65 @@
+error[E0277]: the service's own lock is released by its own unlock, so a table sets `own::Lock` and `own::Unlock` together
+  --> tests/ui/manual_lock.rs:14:18
+   |
+14 |     type Table = InboxSpec<(Advisory, own::Lock)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Lock` without `own::Unlock`, or the other way round
+   |
+   = help: the trait `LockWithUnlock` is not implemented for `(Set<ruststream_sqlx::spec::own::Lock>, Unset)`
+   = note: add the missing one with `.own::<..>()` and its marker in `type Table`, or drop the other
+help: the following other types implement trait `LockWithUnlock`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl LockWithUnlock for (Unset, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, Unset)`
+   | impl LockWithUnlock for (Set<own::Lock>, Set<own::Unlock>) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::own::Lock>, Set<ruststream_sqlx::spec::own::Unlock>)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Advisory, ruststream_sqlx::spec::own::Lock)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`
+
+error[E0277]: `own::Lock` and `own::Unlock` are events of the advisory lock form
+  --> tests/ui/manual_lock.rs:31:18
+   |
+31 |     type Table = InboxSpec<(own::Lock, own::Unlock)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Lock` or `own::Unlock` outside the advisory lock form
+   |
+   = help: the trait `LockInAdvisory` is not implemented for `(Unset, Set<ruststream_sqlx::spec::own::Lock>)`
+   = note: set the advisory lock form with `.advisory(..)` and `Advisory`, or drop `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers
+help: the following other types implement trait `LockInAdvisory`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Form> LockInAdvisory for (Form, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Form, Unset)`
+   | impl<Event> LockInAdvisory for (Set<Advisory>, Set<Event>) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Set<Event>)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::own::Lock, ruststream_sqlx::spec::own::Unlock)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`
+
+error[E0277]: `own::Lock` and `own::Unlock` are events of the advisory lock form
+  --> tests/ui/manual_lock.rs:31:18
+   |
+31 |     type Table = InboxSpec<(own::Lock, own::Unlock)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Lock` or `own::Unlock` outside the advisory lock form
+   |
+   = help: the trait `LockInAdvisory` is not implemented for `(Unset, Set<ruststream_sqlx::spec::own::Unlock>)`
+   = note: set the advisory lock form with `.advisory(..)` and `Advisory`, or drop `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers
+help: the following other types implement trait `LockInAdvisory`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Form> LockInAdvisory for (Form, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Form, Unset)`
+   | impl<Event> LockInAdvisory for (Set<Advisory>, Set<Event>) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Set<Event>)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::own::Lock, ruststream_sqlx::spec::own::Unlock)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`

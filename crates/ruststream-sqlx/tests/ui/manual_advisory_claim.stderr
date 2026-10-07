@@ -1,0 +1,23 @@
+error[E0277]: the advisory lock form selects its candidates with their keys itself, so it takes no claim of the service's own
+  --> tests/ui/manual_advisory_claim.rs:14:18
+   |
+14 |     type Table = InboxSpec<(Advisory, own::Claim)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Claim` in the advisory lock form
+   |
+   = help: the trait `ClaimOutsideAdvisory` is not implemented for `(Set<ruststream_sqlx::spec::Advisory>, Set<ruststream_sqlx::spec::own::Claim>)`
+   = note: drop `.own::<own::Claim>()` and `own::Claim`
+help: the following other types implement trait `ClaimOutsideAdvisory`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<ClaimSlot> ClaimOutsideAdvisory for (Unset, ClaimSlot) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, ClaimSlot)`
+   | impl<Time, ClaimSlot> ClaimOutsideAdvisory for (Set<Lease<Time>>, ClaimSlot) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, ClaimSlot)`
+   | impl ClaimOutsideAdvisory for (Set<Advisory>, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Unset)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Advisory, ruststream_sqlx::spec::own::Claim)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`

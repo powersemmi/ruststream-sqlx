@@ -50,16 +50,18 @@ pub use inbox::TransactionalStep;
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderField,
-    InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert,
-    KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow,
-    Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter,
-    Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
-    TimeSource, Transactional, Tx, Unlock,
+    InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSpec, InboxSubscriber,
+    InboxTable, Insert, KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime,
+    Notifies, PayloadRow, Plain, Publish, QueueDatabase, QueueTime, Repository,
+    RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, RowBatch, SqlxBroker,
+    SqlxBrokerError, SystemClock, TimeColumn, TimeSource, Transactional, Tx, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
 #[cfg(feature = "inbox")]
 pub use inbox::keys;
+#[cfg(feature = "inbox")]
+pub use inbox::spec;
 
 #[cfg(any(feature = "inbox", feature = "outbox"))]
 #[doc(hidden)]
