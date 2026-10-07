@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/ruststream-sqlx",
+    "crates/ruststream-sqlx-bench",
     "crates/ruststream-sqlx-dialect",
     "crates/ruststream-sqlx-macros",
     "examples/outbox",
