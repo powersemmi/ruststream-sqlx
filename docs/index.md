@@ -44,6 +44,12 @@ A subscription caps the deliveries of a message with `max_attempts(n)` and names
 `dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are
 declared together. With `max_attempts(1)`, every failure moves the row at once.
 
+The columns that run a queue each play a role, and each role turns on one behaviour: the group a
+subscription reads, the order rows are taken in, a key that keeps related rows in order, the delay
+before a retry, the attempt count, and a mark that keeps a processed row instead of deleting it. A
+table reads "now" from the host's clock by default. It can read the database's clock instead, so
+that every host reads the same time.
+
 The service describes a queue table with a derive on its struct, or by hand. By hand, the struct
 implements a trait, and a typed builder holds every setting of the table. The compiler checks that
 description as strictly as the derive's. Both forms give the same statements and cost the same per
