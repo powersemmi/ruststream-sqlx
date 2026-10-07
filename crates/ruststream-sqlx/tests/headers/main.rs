@@ -3,7 +3,8 @@
 //! assembled row; the delivery's headers hold the headers struct's fields without a role, built on
 //! the first read, in a single delivery and in a batch; the lease and the advisory lock hold the
 //! row as they hold a flat table's; a message column the table lacks stops the subscription at
-//! startup.
+//! startup. A fetch of the service's own joins other tables into the message, and a claimed id it
+//! finds no row for settles by the decode policy with empty headers.
 
 #![cfg(all(
     feature = "inbox",
@@ -16,6 +17,7 @@
 mod live;
 
 mod forms;
+mod joined;
 mod layout;
 mod lazy;
 

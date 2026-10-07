@@ -14,7 +14,7 @@ use sqlx::{MySql, MySqlConnection};
 #[cfg(feature = "postgres")]
 use sqlx::{PgConnection, Postgres};
 
-use super::{PUBLISHED_PRIORITY, mail_fetch, own_fetch};
+use super::{PUBLISHED_PRIORITY, mail_fetch, order_fetch, own_fetch};
 
 /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
 ///
@@ -569,4 +569,42 @@ pub(crate) struct MissingJob {
     #[sqlx(flatten)]
     pub(crate) headers: OrderHeaders,
     pub(crate) missing: String,
+}
+
+/// The message a handler takes from `headed_jobs` through a fetch of the service's own, which joins
+/// each job to its order in `customer_orders`: a job whose order is missing joins no row.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+#[inbox(custom(fetch))]
+pub(crate) struct OrderMail {
+    #[field(headers)]
+    #[sqlx(flatten)]
+    pub(crate) headers: OrderHeaders,
+    pub(crate) customer: String,
+    pub(crate) total: i64,
+}
+
+impl OrderMail {
+    /// `self` with what the claim that lent `lent` wrote into the row: nothing in this form, so the
+    /// order is lent as the tables hold it.
+    pub(crate) fn claimed_as(self, _lent: &Self) -> Self {
+        self
+    }
+}
+
+/// The columns `OrderMail` decodes, the job's as `j` and its order's as `o`.
+pub(crate) const ORDERED: &str =
+    "j.job_id, j.name, j.attempt, j.tenant, j.trace, j.order_id, o.customer, o.total";
+
+#[cfg(feature = "postgres")]
+impl Fetch<Postgres> for OrderMail {
+    async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        order_fetch::postgres(conn, ORDERED, ids).await
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl Fetch<MySql> for OrderMail {
+    async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        order_fetch::mysql(conn, ORDERED, ids).await
+    }
 }
