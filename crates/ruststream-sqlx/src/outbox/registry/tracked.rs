@@ -1,16 +1,17 @@
 //! Names tracked as types: a name tracked twice stops the build.
 
-use crate::outbox::error::OutboxError;
-use ruststream::runtime::{Context, Handler, HandlerOutcome};
-use ruststream::{Bytes, OutgoingMessage, Publisher};
-use sqlx::{Database, Pool};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::OnceLock;
 
-use super::list::{Nil, RecordList, RecordNames, Registered};
+use ruststream::runtime::{Context, Handler, HandlerOutcome};
+use ruststream::{Bytes, OutgoingMessage, Publisher};
+use sqlx::{Database, Pool};
 
-/// A name the outbox tracks, as a type: [`Outbox::track`] refuses a name tracked twice while the
+use super::list::{Nil, RecordList, RecordNames, Registered};
+use crate::outbox::error::OutboxError;
+
+/// A name the outbox tracks, as a type: [`Outbox::track`](super::Outbox::track) refuses a name tracked twice while the
 /// service compiles.
 ///
 /// # Examples
@@ -75,7 +76,7 @@ pub trait TrackedName: 'static {
 }
 
 /// A name tracked by type, kept in the registry's type for the compile-time check; it holds no
-/// record and forwards every call. Machinery behind [`Outbox::track`].
+/// record and forwards every call. Machinery behind [`Outbox::track`](super::Outbox::track).
 #[derive(Debug)]
 pub struct Checked<Name, Rest>(pub(super) Rest, pub(super) PhantomData<fn() -> Name>);
 

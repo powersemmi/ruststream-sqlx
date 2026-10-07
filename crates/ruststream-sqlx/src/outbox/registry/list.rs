@@ -1,6 +1,16 @@
 //! The type-level list of registrations: each node holds its name and its record's default
 //! statements, and a lookup walks the list comparing names.
 
+use std::any::type_name;
+use std::fmt;
+use std::future::{Future, ready};
+use std::marker::PhantomData;
+use std::sync::OnceLock;
+
+use ruststream::runtime::{Context, Handler, HandlerOutcome};
+use ruststream::{Bytes, OutgoingMessage, Publisher};
+use sqlx::{Database, Pool};
+
 use crate::outbox::database::{Defaults, OutboxDatabase};
 use crate::outbox::error::OutboxError;
 use crate::outbox::events::Tracked;
@@ -8,14 +18,6 @@ use crate::outbox::layer::deliver;
 use crate::outbox::publish::record;
 use crate::outbox::republish::recover_and_publish;
 use crate::outbox::spec::{Described, OutboxTable};
-use ruststream::runtime::{Context, Handler, HandlerOutcome};
-use ruststream::{Bytes, OutgoingMessage, Publisher};
-use sqlx::{Database, Pool};
-use std::any::type_name;
-use std::fmt;
-use std::future::{Future, ready};
-use std::marker::PhantomData;
-use std::sync::OnceLock;
 
 /// The end of the registrations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
