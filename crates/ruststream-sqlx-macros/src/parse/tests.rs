@@ -459,5 +459,14 @@ fn a_flattened_headers_field_holds_a_headers_struct() -> syn::Result<()> {
         fields[1].column().map(|column| column.name.as_str()),
         Some("note")
     );
+    let generated: DeriveInput = parse_quote! {
+        #[inbox(table = "jobs")]
+        struct Job { #[field(headers, generated)] #[sqlx(flatten)] headers: Headers }
+    };
+    assert_eq!(
+        error(&generated),
+        "`headers` holds a headers struct, which describes the queue table: mark its generated \
+         columns there"
+    );
     Ok(())
 }

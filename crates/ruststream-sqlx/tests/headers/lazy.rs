@@ -6,7 +6,7 @@
 use std::pin::pin;
 
 use futures::StreamExt;
-use ruststream::testing::TestApp;
+use ruststream::testing::{Outcome, TestApp};
 use ruststream::{BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, SubscriptionSource};
 use ruststream_sqlx::prelude::*;
 use serde::Deserialize;
@@ -100,10 +100,13 @@ live::matrix! {
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("the rows settle");
-        tb.broker::<SqlxBroker<Db>>()
+        // Each delivery's outcome, the traced one's and the untraced one's.
+        let outcomes = tb
+            .broker::<SqlxBroker<Db>>()
             .subscriber("orders")
             .assert_called(2)
-            .settled(HandlerOutcome::ack());
+            .outcomes();
+        assert_eq!(outcomes, [Outcome::Ack, Outcome::Ack]);
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }
