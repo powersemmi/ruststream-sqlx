@@ -5,7 +5,7 @@ use std::str::FromStr;
 
 use ruststream::HeaderMap;
 
-/// A record of an outbox table: a struct deriving [`Outbox`](crate::Outbox).
+/// A record of an outbox table: a struct deriving [`Outbox`](derive@crate::Outbox).
 ///
 /// The derive implements it from the fields' roles; a service names it only as a bound.
 #[diagnostic::on_unimplemented(
