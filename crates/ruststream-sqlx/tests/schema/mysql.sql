@@ -212,3 +212,22 @@ CREATE TABLE customer_orders (
     customer VARCHAR(255) NOT NULL,
     total    BIGINT NOT NULL
 );
+
+-- The outbox of a service: what it published, kept until a consumer has processed it.
+CREATE TABLE outbox (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name         VARCHAR(255) NOT NULL,
+    payload      LONGBLOB NOT NULL,
+    headers      JSON,
+    processed_at DATETIME(6)
+);
+
+-- An outbox without `processed_at`: a processed record is deleted. `retries` counts what a
+-- record's own retry event wrote, and refuses a second one, so a settlement can fail.
+CREATE TABLE outbox_plain (
+    id      BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name    VARCHAR(255) NOT NULL,
+    payload LONGBLOB NOT NULL,
+    headers JSON,
+    retries INT NOT NULL DEFAULT 0 CHECK (retries <= 1)
+);

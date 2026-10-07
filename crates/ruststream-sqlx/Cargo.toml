@@ -103,7 +103,7 @@ stackfuture = { workspace = true, optional = true }
 foldhash = { workspace = true, optional = true }
 
 [dev-dependencies]
-ruststream = { workspace = true, features = ["macros", "json", "testing", "conformance"] }
+ruststream = { workspace = true, features = ["macros", "json", "memory", "testing", "conformance"] }
 sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "json", "derive"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 chrono.workspace = true
