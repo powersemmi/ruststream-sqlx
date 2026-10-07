@@ -18,6 +18,7 @@ workspace = true
 [features]
 default = ["service"]
 service = [
+    "dep:async-trait",
     "dep:chrono",
     "dep:ruststream",
     "dep:ruststream-fred",
@@ -33,6 +34,10 @@ path = "src/main.rs"
 required-features = ["service"]
 
 [dependencies]
+# Not used directly: a floor for `fred`, which `ruststream-fred` pulls in and which asks for
+# `async-trait = "0.1"`, while async-trait 0.1.0 does not build. The minimal-versions check would
+# otherwise resolve it.
+async-trait = { version = "0.1.68", optional = true }
 chrono = { workspace = true, optional = true }
 ruststream = { workspace = true, optional = true, features = ["macros", "json"] }
 ruststream-fred = { version = "0.7", optional = true }
