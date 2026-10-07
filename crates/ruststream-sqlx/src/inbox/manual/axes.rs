@@ -9,8 +9,9 @@ use ruststream::HeaderMap;
 use ruststream_sqlx_dialect::Param;
 use sqlx::{Decode, Encode, Error, Type};
 
-use super::{AttemptRow, HeaderFields, HeaderRow, KeyRow};
+use super::{AttemptRow, HeaderFields, KeyRow};
 use crate::HeaderColumn;
+use crate::HeaderRow;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{self, Events, Leasing, Now, TimeFor, Values};
 use crate::inbox::form::{AdvisoryForm, LeaseForm, RowLockForm};

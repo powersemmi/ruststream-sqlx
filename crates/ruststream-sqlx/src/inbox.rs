@@ -44,7 +44,7 @@ pub use events::{
 };
 pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
 pub use headers::{HeaderField, InboxHeaders};
-pub use manual::{AttemptRow, HeaderFields, HeaderRow, KeyRow, put_header};
+pub use manual::{AttemptRow, HeaderFields, KeyRow, put_header};
 pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;

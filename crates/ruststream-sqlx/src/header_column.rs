@@ -231,14 +231,14 @@ pub trait HeaderColumn {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` names a headers column and does not implement `HeaderRow`",
-    label = "no `HeaderRow` for this record",
+    message = "`{Self}` sets a `headers` column and does not hand its header map over",
+    label = "no `HeaderRow` for this type",
     note = "implement `HeaderRow` for `{Self}`, handing out the field that holds the headers \
-            column, or drop `headers` from its description"
+            column, or drop `.headers(..)` and `Headers` from its description"
 )]
 pub trait HeaderRow {
     /// The column's type.
-    type Column: HeaderColumn;
+    type Column: HeaderColumn + 'static;
 
     /// The field holding the column, which the headers are taken out of.
     fn headers_mut(&mut self) -> &mut Self::Column;

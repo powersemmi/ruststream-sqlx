@@ -38,7 +38,6 @@ use super::queue::Queue;
 use super::spec::Declaration;
 use super::time::LeaseRow;
 use super::{InboxRow, InboxSpec, InboxTable, QueueRow};
-use crate::HeaderColumn;
 
 /// The row's partition key, which a table described by hand reads off its row where its
 /// description sets [`InboxSpec::partition_key`].
@@ -218,102 +217,6 @@ pub trait AttemptRow {
 
     /// The attempt field.
     fn attempt(&self) -> &Self::Attempt;
-}
-
-/// The row's header column, which a table described by hand takes the delivery's header map
-/// out of where its description sets [`InboxSpec::headers`].
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(all(feature = "sqlite", feature = "chrono", feature = "json"))]
-/// # mod demo {
-/// use std::collections::BTreeMap;
-///
-/// use chrono::{DateTime, Utc};
-/// use ruststream_sqlx::dialect::Column;
-/// use ruststream_sqlx::prelude::*;
-/// use ruststream_sqlx::spec::{Headers, Lease, Payload};
-/// use ruststream_sqlx::{HeaderRow, InboxSpec, InboxTable, PayloadRow};
-/// use serde::Deserialize;
-/// use sqlx::types::Json;
-/// use sqlx::{Sqlite, SqlitePool};
-///
-/// #[derive(sqlx::FromRow)]
-/// pub struct EmailJob {
-///     job_id: i64,
-///     meta: Option<Json<BTreeMap<String, String>>>,
-///     payload: Vec<u8>,
-/// }
-///
-/// impl InboxTable for EmailJob {
-///     type Id = i64;
-///     type Table = InboxSpec<(Lease<DateTime<Utc>>, Headers, Payload)>;
-///     const TABLE: Self::Table = InboxSpec::new("email_jobs", Column::new("job_id").generated())
-///         .lease(Column::new("locked_until"))
-///         .group(Column::new("name"))
-///         .headers(Column::new("meta"))
-///         .payload(Column::new("payload"));
-///
-///     fn id(&self) -> &i64 {
-///         &self.job_id
-///     }
-/// }
-///
-/// impl PayloadRow for EmailJob {
-///     type Column = Vec<u8>;
-///
-///     fn payload(&self) -> &[u8] {
-///         &self.payload
-///     }
-/// }
-///
-/// impl HeaderRow for EmailJob {
-///     type Column = Option<Json<BTreeMap<String, String>>>;
-///
-///     fn headers_mut(&mut self) -> &mut Self::Column {
-///         &mut self.meta
-///     }
-/// }
-///
-/// #[derive(Deserialize)]
-/// struct Email {
-///     to: String,
-/// }
-///
-/// // A mail a tenant wrote goes out; one without a tenant waits for an operator.
-/// #[subscriber(InboxQueue::<EmailJob>::new("emails"))]
-/// async fn send(_email: &Email, ctx: &mut Context<'_>) -> HandlerOutcome {
-///     if ctx.headers().get_str("tenant").is_some() {
-///         HandlerOutcome::ack()
-///     } else {
-///         HandlerOutcome::retry()
-///     }
-/// }
-///
-/// pub fn app(pool: SqlitePool) -> RustStream {
-///     RustStream::new(AppInfo::new("mailer", "1.0.0")).with_broker(
-///         SqlxBroker::<Sqlite>::new(pool),
-///         |b| {
-///             b.include(send);
-///         },
-///     )
-/// }
-/// # }
-/// # fn main() {}
-/// ```
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` sets a `headers` column and does not hand its header map over",
-    label = "no `HeaderRow` for this row",
-    note = "implement `HeaderRow` for `{Self}`, or drop `.headers(..)` and `Headers` from its \
-            description"
-)]
-pub trait HeaderRow {
-    /// The header column's type.
-    type Column: HeaderColumn + 'static;
-
-    /// The header field, which the delivery takes its header map out of.
-    fn headers_mut(&mut self) -> &mut Self::Column;
 }
 
 /// Header fields of the row: where its description sets [`InboxSpec::header_fields`], the
