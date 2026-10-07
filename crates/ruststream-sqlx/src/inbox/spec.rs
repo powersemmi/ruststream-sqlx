@@ -778,51 +778,743 @@ pub mod own {
     setting!(
         /// The service's own [`Claim`](crate::Claim): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Payload, own};
+        /// use ruststream_sqlx::{Claim, InboxSpec, InboxTable};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct Callout {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for Callout {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Payload, own::Claim)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("callouts", Column::new("id").generated())
+        ///         .group(Column::new("name"))
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Claim>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // The callouts of paying customers are claimed before the others.
+        /// impl Claim<Postgres> for Callout {
+        ///     async fn claim(
+        ///         conn: &mut PgConnection,
+        ///         queue: &str,
+        ///         limit: i64,
+        ///     ) -> Result<Vec<i64>, sqlx::Error> {
+        ///         sqlx::query_scalar(
+        ///             "SELECT c.id FROM callouts c JOIN customers u ON u.id = c.customer \
+        ///              WHERE c.name = $1 ORDER BY u.paying DESC, c.id LIMIT $2 FOR UPDATE OF c SKIP LOCKED",
+        ///         )
+        ///         .bind(queue)
+        ///         .bind(limit)
+        ///         .fetch_all(conn)
+        ///         .await
+        ///     }
+        /// }
+        /// # impl PayloadRow for Callout {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Call { phone: String }
+        /// # #[subscriber(InboxQueue::<Callout>::new("callouts"))]
+        /// # async fn dial(call: &Call) -> HandlerOutcome {
+        /// #     tracing::info!(phone = %call.phone, "dialing");
+        /// #     HandlerOutcome::ack()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("callouts", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(dial);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Claim, OwnClaim
     );
     setting!(
         /// The service's own [`Fetch`](crate::Fetch): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Payload, own};
+        /// use ruststream_sqlx::{Fetch, InboxSpec, InboxTable};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct RenderJob {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for RenderJob {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Payload, own::Fetch)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("render_jobs", Column::new("id").generated())
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Fetch>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // The job holds a document's id, and its message is that document's latest body.
+        /// impl Fetch<Postgres> for RenderJob {
+        ///     async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
+        ///         sqlx::query_as(
+        ///             "SELECT j.id, d.body AS payload FROM render_jobs j \
+        ///              JOIN documents d ON d.id = j.document WHERE j.id = ANY($1)",
+        ///         )
+        ///         .bind(ids)
+        ///         .fetch_all(conn)
+        ///         .await
+        ///     }
+        /// }
+        /// # impl PayloadRow for RenderJob {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Document { title: String }
+        /// # #[subscriber(InboxQueue::<RenderJob>::new("renders"))]
+        /// # async fn render(document: &Document) -> HandlerOutcome {
+        /// #     tracing::info!(title = %document.title, "rendering");
+        /// #     HandlerOutcome::ack()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("documents", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(render);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Fetch, OwnFetch
     );
     setting!(
         /// The service's own [`Ack`](crate::Ack): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Payload, own};
+        /// use ruststream_sqlx::{Ack, InboxSpec, InboxTable};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct UploadJob {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for UploadJob {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Payload, own::Ack)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("uploads", Column::new("id").generated())
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Ack>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // A finished upload leaves a line in `upload_log` as its row goes.
+        /// impl Ack<Postgres> for UploadJob {
+        ///     async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        ///         sqlx::query("INSERT INTO upload_log (upload, finished_at) VALUES ($1, now())")
+        ///             .bind(id)
+        ///             .execute(&mut *conn)
+        ///             .await?;
+        ///         sqlx::query("DELETE FROM uploads WHERE id = $1")
+        ///             .bind(id)
+        ///             .execute(conn)
+        ///             .await?;
+        ///         Ok(())
+        ///     }
+        /// }
+        /// # impl PayloadRow for UploadJob {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Upload { key: String }
+        /// # #[subscriber(InboxQueue::<UploadJob>::new("uploads"))]
+        /// # async fn store(upload: &Upload) -> HandlerOutcome {
+        /// #     tracing::info!(key = %upload.key, "storing");
+        /// #     HandlerOutcome::ack()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("uploads", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(store);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Ack, OwnAck
     );
     setting!(
         /// The service's own [`Retry`](crate::Retry): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Payload, own};
+        /// use ruststream_sqlx::{InboxSpec, InboxTable, Retry};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct CrawlJob {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for CrawlJob {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Payload, own::Retry)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("crawl_jobs", Column::new("id").generated())
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Retry>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // A retry records when the page last failed, for the crawler's dashboard.
+        /// impl Retry<Postgres> for CrawlJob {
+        ///     async fn retry(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        ///         sqlx::query("UPDATE crawl_jobs SET last_failure = now() WHERE id = $1")
+        ///             .bind(id)
+        ///             .execute(conn)
+        ///             .await?;
+        ///         Ok(())
+        ///     }
+        /// }
+        /// # impl PayloadRow for CrawlJob {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Page { url: String }
+        /// # #[subscriber(InboxQueue::<CrawlJob>::new("crawl"))]
+        /// # async fn crawl(page: &Page) -> HandlerOutcome {
+        /// #     tracing::info!(url = %page.url, "crawling");
+        /// #     HandlerOutcome::retry()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("crawler", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(crawl);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Retry, OwnRetry
     );
     setting!(
         /// The service's own [`RetryAfter`](crate::RetryAfter): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+        /// # mod demo {
+        /// use std::time::Duration;
+        ///
+        /// use chrono::{DateTime, Utc};
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{self, Payload, own};
+        /// use ruststream_sqlx::{InboxSpec, InboxTable, RetryAfter};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct QuoteJob {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for QuoteJob {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(spec::RetryAfter<DateTime<Utc>>, Payload, own::RetryAfter)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("quote_jobs", Column::new("id").generated())
+        ///         .retry_after(Column::new("retry_after").generated())
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::RetryAfter>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // The wait doubles with every delayed retry of the row, starting from the handler's delay.
+        /// impl RetryAfter<Postgres> for QuoteJob {
+        ///     async fn retry_after(
+        ///         conn: &mut PgConnection,
+        ///         id: &i64,
+        ///         delay: Duration,
+        ///     ) -> Result<(), sqlx::Error> {
+        ///         sqlx::query(
+        ///             "UPDATE quote_jobs SET delays = delays + 1, \
+        ///              retry_after = now() + make_interval(secs => $2 * power(2, delays)) WHERE id = $1",
+        ///         )
+        ///         .bind(id)
+        ///         .bind(delay.as_secs_f64())
+        ///         .execute(conn)
+        ///         .await?;
+        ///         Ok(())
+        ///     }
+        /// }
+        /// # impl PayloadRow for QuoteJob {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Quote { symbol: String }
+        /// # #[subscriber(InboxQueue::<QuoteJob>::new("quotes"))]
+        /// # async fn quote(job: &Quote) -> HandlerOutcome {
+        /// #     tracing::info!(symbol = %job.symbol, "quoting");
+        /// #     HandlerOutcome::retry_after(Duration::from_secs(10))
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("quotes", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(quote);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         RetryAfter, OwnRetryAfter
     );
     setting!(
         /// The service's own [`Discard`](crate::Discard): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Payload, own};
+        /// use ruststream_sqlx::{Discard, InboxSpec, InboxTable};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct Comment {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for Comment {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Payload, own::Discard)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("comments", Column::new("id").generated())
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Discard>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // A rejected comment moves to `rejected_comments`, stamped with the time of the rejection.
+        /// impl Discard<Postgres> for Comment {
+        ///     async fn discard(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        ///         sqlx::query(
+        ///             "WITH gone AS (DELETE FROM comments WHERE id = $1 RETURNING id, payload) \
+        ///              INSERT INTO rejected_comments (id, payload, rejected_at) \
+        ///              SELECT id, payload, now() FROM gone",
+        ///         )
+        ///         .bind(id)
+        ///         .execute(conn)
+        ///         .await?;
+        ///         Ok(())
+        ///     }
+        /// }
+        /// # impl PayloadRow for Comment {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Text { body: String }
+        /// # #[subscriber(InboxQueue::<Comment>::new("comments"))]
+        /// # async fn moderate(text: &Text) -> HandlerOutcome {
+        /// #     if text.body.is_empty() { HandlerOutcome::drop() } else { HandlerOutcome::ack() }
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("comments", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(moderate);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Discard, OwnDiscard
     );
     setting!(
         /// The service's own [`DeadLetter`](crate::DeadLetter): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Payload, own};
+        /// use ruststream_sqlx::{DeadLetter, InboxSpec, InboxTable};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct Charge {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for Charge {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Payload, own::DeadLetter)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("charges", Column::new("id").generated())
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::DeadLetter>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // Every queue of the service parks its spent rows in one `dead_letters` table.
+        /// impl DeadLetter<Postgres> for Charge {
+        ///     async fn dead_letter(
+        ///         conn: &mut PgConnection,
+        ///         id: &i64,
+        ///         destination: &str,
+        ///     ) -> Result<(), sqlx::Error> {
+        ///         sqlx::query(
+        ///             "WITH dead AS (DELETE FROM charges WHERE id = $1 RETURNING payload) \
+        ///              INSERT INTO dead_letters (source, destination, payload) \
+        ///              SELECT 'charges', $2, payload FROM dead",
+        ///         )
+        ///         .bind(id)
+        ///         .bind(destination)
+        ///         .execute(conn)
+        ///         .await?;
+        ///         Ok(())
+        ///     }
+        /// }
+        /// # impl PayloadRow for Charge {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Card { cents: i64 }
+        /// # #[subscriber(InboxQueue::<Charge>::new("charges"))]
+        /// # async fn charge(card: &Card) -> HandlerOutcome {
+        /// #     tracing::info!(cents = card.cents, "charging");
+        /// #     HandlerOutcome::retry()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("charges", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(charge);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         DeadLetter, OwnDeadLetter
     );
     setting!(
         /// The service's own [`Extend`](crate::Extend): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+        /// # mod demo {
+        /// use chrono::{DateTime, Utc};
+        /// use ruststream_sqlx::dialect::Column;
+        /// use ruststream_sqlx::spec::{Lease, Payload, own};
+        /// use ruststream_sqlx::{Extend, InboxSpec, InboxTable};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::PayloadRow;
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct Transcode {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for Transcode {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Lease<DateTime<Utc>>, Payload, own::Extend)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("transcodes", Column::new("id").generated())
+        ///         .lease(Column::new("locked_until"))
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Extend>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // Each extension also counts in `extensions`, which shows a transcode that runs too long.
+        /// impl Extend<Postgres> for Transcode {
+        ///     async fn extend(
+        ///         conn: &mut PgConnection,
+        ///         id: &i64,
+        ///         held: &DateTime<Utc>,
+        ///         until: &DateTime<Utc>,
+        ///     ) -> Result<bool, sqlx::Error> {
+        ///         let extended = sqlx::query(
+        ///             "UPDATE transcodes SET locked_until = $1, extensions = extensions + 1 \
+        ///              WHERE id = $2 AND locked_until = $3",
+        ///         )
+        ///         .bind(until)
+        ///         .bind(id)
+        ///         .bind(held)
+        ///         .execute(conn)
+        ///         .await?;
+        ///         Ok(extended.rows_affected() == 1)
+        ///     }
+        /// }
+        /// # impl PayloadRow for Transcode {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Video { file: String }
+        /// # #[subscriber(InboxQueue::<Transcode>::new("transcodes"))]
+        /// # async fn transcode(video: &Video) -> HandlerOutcome {
+        /// #     tracing::info!(file = %video.file, "transcoding");
+        /// #     HandlerOutcome::ack()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("video", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(transcode);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Extend, OwnExtend
     );
     setting!(
         /// The service's own [`Lock`](crate::Lock): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// The service's own lock comes with its own unlock, [`own::Unlock`](Unlock):
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::{Column, KeyPart};
+        /// use ruststream_sqlx::spec::{Advisory, Payload, own};
+        /// use ruststream_sqlx::{InboxSpec, InboxTable, Lock};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::{PayloadRow, Unlock};
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct Booking {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for Booking {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Advisory, Payload, own::Lock, own::Unlock)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("bookings", Column::new("id").generated())
+        ///         .advisory(&[KeyPart::Literal("room-"), KeyPart::Column("room")])
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Lock>()
+        ///         .own::<own::Unlock>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // The front desk application locks a room as `(42, hashtext(key))`, so the queue takes that lock.
+        /// impl Lock<Postgres> for Booking {
+        ///     async fn lock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+        ///         sqlx::query_scalar("SELECT pg_try_advisory_lock(42, hashtext($1))")
+        ///             .bind(key)
+        ///             .fetch_one(conn)
+        ///             .await
+        ///     }
+        /// }
+        /// # impl Unlock<Postgres> for Booking {
+        /// #     async fn unlock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+        /// #         sqlx::query_scalar("SELECT pg_advisory_unlock(42, hashtext($1))")
+        /// #             .bind(key)
+        /// #             .fetch_one(conn)
+        /// #             .await
+        /// #     }
+        /// # }
+        /// # impl PayloadRow for Booking {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Request { guest: String }
+        /// # #[subscriber(InboxQueue::<Booking>::new("bookings"))]
+        /// # async fn book(request: &Request) -> HandlerOutcome {
+        /// #     tracing::info!(guest = %request.guest, "booking");
+        /// #     HandlerOutcome::ack()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("hotel", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(book);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Lock, OwnLock
     );
     setting!(
         /// The service's own [`Unlock`](crate::Unlock): set by
         /// [`InboxSpec::own`](crate::InboxSpec::own).
+        ///
+        /// # Examples
+        ///
+        /// The service's own unlock releases what its own lock, [`own::Lock`](Lock), took:
+        ///
+        /// ```
+        /// # #[cfg(feature = "postgres")]
+        /// # mod demo {
+        /// use ruststream_sqlx::dialect::{Column, KeyPart};
+        /// use ruststream_sqlx::spec::{Advisory, Payload, own};
+        /// use ruststream_sqlx::{InboxSpec, InboxTable, Unlock};
+        /// use sqlx::{PgConnection, Postgres};
+        /// # use ruststream_sqlx::{Lock, PayloadRow};
+        /// # use ruststream_sqlx::prelude::*;
+        /// # use serde::Deserialize;
+        /// # use sqlx::PgPool;
+        ///
+        /// #[derive(sqlx::FromRow)]
+        /// pub struct Rebalance {
+        ///     id: i64,
+        ///     payload: Vec<u8>,
+        /// }
+        ///
+        /// impl InboxTable for Rebalance {
+        ///     type Id = i64;
+        ///     type Table = InboxSpec<(Advisory, Payload, own::Lock, own::Unlock)>;
+        ///     const TABLE: Self::Table = InboxSpec::new("rebalances", Column::new("id").generated())
+        ///         .advisory(&[KeyPart::Literal("portfolio-"), KeyPart::Column("portfolio")])
+        ///         .payload(Column::new("payload"))
+        ///         .own::<own::Lock>()
+        ///         .own::<own::Unlock>();
+        ///
+        ///     fn id(&self) -> &i64 {
+        ///         &self.id
+        ///     }
+        /// }
+        ///
+        /// // The trading desk locks a portfolio as `(7, hashtext(key))`, and the unlock releases that lock.
+        /// impl Unlock<Postgres> for Rebalance {
+        ///     async fn unlock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+        ///         sqlx::query_scalar("SELECT pg_advisory_unlock(7, hashtext($1))")
+        ///             .bind(key)
+        ///             .fetch_one(conn)
+        ///             .await
+        ///     }
+        /// }
+        /// # impl Lock<Postgres> for Rebalance {
+        /// #     async fn lock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+        /// #         sqlx::query_scalar("SELECT pg_try_advisory_lock(7, hashtext($1))")
+        /// #             .bind(key)
+        /// #             .fetch_one(conn)
+        /// #             .await
+        /// #     }
+        /// # }
+        /// # impl PayloadRow for Rebalance {
+        /// #     type Column = Vec<u8>;
+        /// #     fn payload(&self) -> &[u8] { &self.payload }
+        /// # }
+        /// # #[derive(Deserialize)]
+        /// # struct Target { equity: f64 }
+        /// # #[subscriber(InboxQueue::<Rebalance>::new("rebalances"))]
+        /// # async fn rebalance(target: &Target) -> HandlerOutcome {
+        /// #     tracing::info!(equity = target.equity, "rebalancing");
+        /// #     HandlerOutcome::ack()
+        /// # }
+        /// # pub fn app(pool: PgPool) -> RustStream {
+        /// #     RustStream::new(AppInfo::new("portfolios", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        /// #         b.include(rebalance);
+        /// #     })
+        /// # }
+        /// # }
+        /// # fn main() {}
+        /// ```
         Unlock, OwnUnlock
     );
 }
