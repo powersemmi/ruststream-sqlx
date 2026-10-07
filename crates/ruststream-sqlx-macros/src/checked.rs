@@ -977,7 +977,19 @@ mod tests {
 
     #[test]
     fn misuse_of_checked_is_reported() {
-        let cases: [(DeriveInput, &str); 7] = [
+        let cases: [(DeriveInput, &str); 10] = [
+            (
+                parse_quote! { #[inbox(table = "jobs", checked = true, db = postgres)] struct Job { #[field(id)] id: i64 } },
+                "`checked` takes no value: `#[inbox(checked, db = ..)]`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", checked, checked, db = postgres)] struct Job { #[field(id)] id: i64 } },
+                "`checked` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", checked, db = postgres, db = mysql)] struct Job { #[field(id)] id: i64 } },
+                "`db` is given twice",
+            ),
             (
                 parse_quote! { #[inbox(table = "jobs", checked)] struct Job { #[field(id)] id: i64 } },
                 "`checked` checks the table's statements against a database at compile time: \

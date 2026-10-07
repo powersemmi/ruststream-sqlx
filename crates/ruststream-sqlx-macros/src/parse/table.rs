@@ -97,6 +97,25 @@ fn word(meta: &ParseNestedMeta<'_>) -> syn::Result<(Option<String>, Option<Token
     Ok((word, (!value.is_empty()).then_some(value)))
 }
 
+/// Reads `checked` or `db = ..` into `request`, which holds what the attributes read before it.
+fn checked(key: &str, meta: &ParseNestedMeta<'_>, request: &mut Request) -> syn::Result<()> {
+    if key == "checked" {
+        if !meta.input.is_empty() && !meta.input.peek(Token![,]) {
+            return Err(meta.error("`checked` takes no value: `#[inbox(checked, db = ..)]`"));
+        }
+        if request.checked.replace(meta.path.span()).is_some() {
+            return Err(meta.error("`checked` is given twice"));
+        }
+        return Ok(());
+    }
+    let (word, value) = word(meta)?;
+    let span = value.map_or_else(|| meta.path.span(), |value| value.span());
+    if request.db.replace((word, span)).is_some() {
+        return Err(meta.error("`db` is given twice"));
+    }
+    Ok(())
+}
+
 pub(super) fn table(input: &DeriveInput, derive: &str) -> syn::Result<Table> {
     // A dot would read as a schema in one place and as part of a quoted name in another (a
     // dead-letter `TableName` splits on it), so `table` and `schema` each name one thing.
@@ -141,24 +160,8 @@ pub(super) fn table(input: &DeriveInput, derive: &str) -> syn::Result<Table> {
             if key == "isolation" || key == "mode" {
                 return self::opening(&key, &meta, &mut opening);
             }
-            if key == "checked" {
-                if !meta.input.is_empty() && !meta.input.peek(Token![,]) {
-                    return Err(
-                        meta.error("`checked` takes no value: `#[inbox(checked, db = ..)]`")
-                    );
-                }
-                if checked.checked.replace(meta.path.span()).is_some() {
-                    return Err(meta.error("`checked` is given twice"));
-                }
-                return Ok(());
-            }
-            if key == "db" {
-                let (word, value) = word(&meta)?;
-                let span = value.map_or_else(|| meta.path.span(), |value| value.span());
-                if checked.db.replace((word, span)).is_some() {
-                    return Err(meta.error("`db` is given twice"));
-                }
-                return Ok(());
+            if key == "checked" || key == "db" {
+                return self::checked(&key, &meta, &mut checked);
             }
             let (slot, dotted) = match key.as_str() {
                 "table" => (&mut name, Some(DOTTED_TABLE)),
