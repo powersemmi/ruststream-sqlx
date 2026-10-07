@@ -26,11 +26,10 @@ use super::time::LeaseRow;
 use super::transactional::{InboxMode, Plain, Transactional};
 use super::{FormOn, InboxRow};
 
+mod build;
 mod check;
 mod description;
 mod open;
-#[cfg(test)]
-mod tests;
 
 pub(crate) use description::{Description, Timing, refused_declaration};
 pub use open::Queue;
