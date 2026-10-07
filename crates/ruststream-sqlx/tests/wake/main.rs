@@ -11,6 +11,8 @@
 #[path = "../live/mod.rs"]
 mod live;
 
+#[cfg(feature = "postgres")]
+mod notify;
 mod same_process;
 
 use std::time::Duration;

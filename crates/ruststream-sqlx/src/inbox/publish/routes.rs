@@ -46,6 +46,7 @@ pub(crate) trait Route<DB: Database>: Send + Sync {
     fn insert_in_process<'a>(
         &'a self,
         shared: &'a Shared<DB>,
+        wake: &'static TableWake,
         message: &'a OutgoingMessage<'a>,
     ) -> BoxFuture<'a, Result<(), SqlxBrokerError>>;
 
@@ -85,9 +86,10 @@ where
     fn insert_in_process<'a>(
         &'a self,
         shared: &'a Shared<DB>,
+        wake: &'static TableWake,
         message: &'a OutgoingMessage<'a>,
     ) -> BoxFuture<'a, Result<(), SqlxBrokerError>> {
-        Box::pin(insert::<DB, Row>(shared, message))
+        Box::pin(insert::<DB, Row>(shared, wake, message))
     }
 
     fn description(&self) -> Description {

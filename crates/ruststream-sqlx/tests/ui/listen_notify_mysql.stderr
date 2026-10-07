@@ -1,0 +1,16 @@
+error[E0277]: `LISTEN/NOTIFY` is Postgres's: `sqlx::MySql` has no notifications
+ --> tests/ui/listen_notify_mysql.rs:5:27
+  |
+5 |     SqlxBroker::new(pool).listen_notify()
+  |                           ^^^^^^^^^^^^^ this database cannot listen
+  |
+  = help: the trait `Notifies` is not implemented for `sqlx::MySql`
+  = note: drop `.listen_notify()`: the subscriptions wake on the poll interval and on publishes from this process
+note: required by a bound in `SqlxBroker::<DB, D>::listen_notify`
+ --> src/inbox/broker.rs
+  |
+  |     pub fn listen_notify(mut self) -> Self
+  |            ------------- required by a bound in this associated function
+  |     where
+  |         DB: Notifies,
+  |             ^^^^^^^^ required by this bound in `SqlxBroker::<DB, D>::listen_notify`

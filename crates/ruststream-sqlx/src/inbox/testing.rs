@@ -218,7 +218,19 @@ impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
                 source: cancelled(),
             })
         })?;
-        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current());
+        let listening = match self.listen {
+            Some(start) => {
+                let pool = self.pool.clone();
+                Some(
+                    off_clock(start(pool))
+                        .await
+                        .unwrap_or_else(|| Err(cancelled()))
+                        .map_err(|source| SqlxBrokerError::Connect { source })?,
+                )
+            }
+            None => None,
+        };
+        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current(), listening);
         let _ = connected.shared.harness.clock.set(TestClock::start());
         connected.shared.closing.run_in_process();
         Ok(connected)

@@ -17,6 +17,7 @@ use super::description::{Description, Timing, refused_declaration, whole_seconds
 use crate::inbox::FormDialect;
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
+use crate::inbox::database::notify::listen;
 use crate::inbox::engine::{Events, IdAt, Prepared, intern, intern_name};
 use crate::inbox::error::SqlxBrokerError;
 use crate::inbox::form::advisory::LockBook;
@@ -296,6 +297,8 @@ where
     check(shared, form, &description.spec, &prepared)
         .await
         .map_err(|unchecked| unchecked.named(name, &table, row))?;
+    // Listened before the first claim, so a row announced after it still wakes the subscription.
+    listen(shared, shared.wakes.table(&description.spec), name, row).await?;
     let queue = Queue {
         name: intern_name(name),
         table: table_name,

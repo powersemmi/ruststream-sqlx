@@ -38,8 +38,8 @@ pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
     InboxDelivery, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert, KeyColumn,
-    LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Plain, Publish,
-    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
+    LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow, Plain,
+    Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
     RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
     Transactional, Tx, Unlock,
 };

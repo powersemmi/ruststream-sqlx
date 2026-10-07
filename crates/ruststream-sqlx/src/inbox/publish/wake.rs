@@ -77,7 +77,7 @@ impl TableWake {
 
     /// Wakes every subscription of the table: for a write whose group is not known.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "postgres")),
         expect(dead_code, reason = "the Postgres listener wakes every table")
     )]
     pub(crate) fn wake_all(&self) {
@@ -89,10 +89,6 @@ impl TableWake {
     }
 
     /// The table, qualified with its schema.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Postgres listener names its channels")
-    )]
     pub(crate) fn table(&self) -> &str {
         &self.table
     }
@@ -121,33 +117,6 @@ impl Wakes {
         }));
         tables.push(wake);
         wake
-    }
-
-    /// The wake-up of the qualified `table`, if a publisher or a subscription of the connection
-    /// reached it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Postgres listener wakes by channel")
-    )]
-    pub(crate) fn by_table(&self, table: &str) -> Option<&'static TableWake> {
-        self.tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .find(|wake| *wake.table == *table)
-            .copied()
-    }
-
-    /// Every table's wake-up.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the Postgres listener wakes every table")
-    )]
-    pub(crate) fn tables(&self) -> Vec<&'static TableWake> {
-        self.tables
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
     }
 }
 
@@ -207,21 +176,11 @@ mod tests {
     }
 
     #[test]
-    fn the_listener_finds_a_table_by_name_and_wakes_all_its_groups() {
+    fn the_listener_names_a_table_qualified_and_wakes_all_its_groups() {
         let wakes = Wakes::default();
         let grouped = wakes.table(&GROUPED);
-        let single = wakes.table(&SINGLE);
-        assert!(
-            wakes
-                .by_table("ops.plain")
-                .is_some_and(|found| ptr::eq(found, single))
-        );
-        assert!(
-            wakes.by_table("plain").is_none(),
-            "the name is qualified with its schema"
-        );
+        assert_eq!(wakes.table(&SINGLE).table(), "ops.plain");
         assert_eq!(grouped.table(), "jobs");
-        assert_eq!(wakes.tables().len(), 2);
         let (a, b) = (grouped.subscribe("a"), grouped.subscribe("b"));
         grouped.wake_all();
         assert!(woken(a) && woken(b));

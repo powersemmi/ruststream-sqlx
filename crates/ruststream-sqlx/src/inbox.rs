@@ -30,7 +30,9 @@ pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
 #[cfg(feature = "any")]
 pub use database::AnyDialect;
-pub use database::{BuiltIn, BuiltInDialect, InsertSql, OnConnection, QueueDatabase, no_insert};
+pub use database::{
+    BuiltIn, BuiltInDialect, InsertSql, Notifies, OnConnection, QueueDatabase, no_insert,
+};
 pub use delivery::InboxDelivery;
 pub use error::SqlxBrokerError;
 pub use events::{

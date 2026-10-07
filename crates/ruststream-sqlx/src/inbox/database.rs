@@ -17,11 +17,13 @@ use super::queue::Queue;
 mod any;
 pub(crate) mod built_in;
 mod insert;
+pub(crate) mod notify;
 
 #[cfg(feature = "any")]
 pub use any::AnyDialect;
 pub use built_in::{BuiltIn, BuiltInDialect};
 pub use insert::{InsertSql, OnConnection, no_insert};
+pub use notify::Notifies;
 
 /// A sqlx database the inbox runs on: one that binds and reads the values the queue's own
 /// statements use, runs statements on a connection, and reports the rows a statement changed.
