@@ -4,6 +4,7 @@ members = [
     "crates/ruststream-sqlx",
     "crates/ruststream-sqlx-dialect",
     "crates/ruststream-sqlx-macros",
+    "examples/outbox",
 ]
 
 [workspace.package]
