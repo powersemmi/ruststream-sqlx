@@ -1,0 +1,5 @@
+error: `db` names no built-in dialect: expected `postgres`, `mysql` or `sqlite`; a table served by a dialect of the service's own keeps the startup check, since a procedural macro cannot run that dialect
+ --> tests/ui/checked_db_unknown.rs:4:45
+  |
+4 | #[inbox(table = "email_jobs", checked, db = mssql)]
+  |                                             ^^^^^

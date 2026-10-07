@@ -273,7 +273,13 @@ fn claims(
     };
     match spec.form() {
         Form::RowLock => {
-            let row_lock = forms.row_lock.ok_or_else(|| lacks("row lock"))?;
+            let row_lock = forms.row_lock.ok_or_else(|| {
+                format!(
+                    "{}: claim them by lease, with a `#[field(locked_until)]` field, or by \
+                     advisory lock, with `advisory_lock = \"..\"`",
+                    lacks("row lock")
+                )
+            })?;
             if custom.claim.is_none() {
                 for shape in shapes {
                     out.push((
@@ -1012,7 +1018,9 @@ mod tests {
             ),
             (
                 parse_quote! { #[inbox(table = "jobs", checked, db = sqlite)] struct Job { #[field(id)] id: i64 } },
-                "the sqlite dialect claims no rows in the row lock form, which this table takes",
+                "the sqlite dialect claims no rows in the row lock form, which this table takes: \
+                 claim them by lease, with a `#[field(locked_until)]` field, or by advisory lock, \
+                 with `advisory_lock = \"..\"`",
             ),
         ];
         for (input, expected) in cases {

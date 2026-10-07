@@ -1,0 +1,5 @@
+error: `checked` checks the table's statements against a database at compile time: name it with `db = postgres`, `db = mysql` or `db = sqlite`
+ --> tests/ui/checked_without_db.rs:4:31
+  |
+4 | #[inbox(table = "email_jobs", checked)]
+  |                               ^^^^^^^

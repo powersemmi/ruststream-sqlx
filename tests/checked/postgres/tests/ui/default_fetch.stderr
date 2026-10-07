@@ -1,0 +1,16 @@
+error[E0080]: evaluation panicked: `OrderHeaders` is `checked`, and its statements claim ids alone: list `fetch` in `#[inbox(custom(..))]` on the message that flattens `OrderHeaders`, and read its rows in the service's own `Fetch`
+ --> $RUST/core/src/panic.rs
+  |
+  |         $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ruststream_sqlx_checked_postgres::_::<impl ruststream_sqlx_checked_postgres::OrderHeaders>::__RUSTSTREAM_SQLX_FETCH` failed here
+  |
+ ::: src/lib.rs
+  |
+  | #[inbox(table = "checked_orders", checked, db = postgres)]
+  |                                   ------- in this macro invocation
+
+note: erroneous constant encountered
+  --> tests/ui/default_fetch.rs:10:14
+   |
+10 |     headers: OrderHeaders,
+   |              ^^^^^^^^^^^^

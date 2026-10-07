@@ -1,0 +1,5 @@
+error: `db` names the database `checked` checks the statements against: write `#[inbox(checked, db = ..)]`, or drop `db`
+ --> tests/ui/checked_db_alone.rs:4:36
+  |
+4 | #[inbox(table = "email_jobs", db = postgres)]
+  |                                    ^^^^^^^^
