@@ -88,23 +88,48 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// # use ruststream_sqlx::Inbox;
-/// # #[derive(Inbox, sqlx::FromRow)]
-/// # #[inbox(table = "jobs")]
-/// # pub struct Job { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-/// use ruststream::IncomingMessage;
-/// use ruststream_sqlx::InboxDelivery;
+/// use std::time::Duration;
 ///
-/// // A delivery whose payload is not JSON goes back to the queue for a later attempt.
-/// pub async fn settle(delivery: InboxDelivery<sqlx::Postgres, Job>) -> Result<(), ruststream::AckError> {
-///     if serde_json::from_slice::<serde_json::Value>(delivery.payload()).is_ok() {
-///         delivery.ack().await
-///     } else {
-///         delivery.nack(true).await
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// # enum Sent { Yes, Later, Never }
+/// # async fn deliver(_: &Email) -> Sent { Sent::Yes }
+/// // Each claimed row reaches `send` as an `InboxDelivery<Postgres, SendEmail>`, and what the
+/// // handler returns settles it.
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     match deliver(email).await {
+///         Sent::Yes => HandlerOutcome::ack(),
+///         // The mail server asked to come back later: the row returns once the minute passed.
+///         Sent::Later => HandlerOutcome::retry_after(Duration::from_secs(60)),
+///         // The address does not exist: the row is finished without a send.
+///         Sent::Never => HandlerOutcome::drop(),
 ///     }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
 /// }
 /// # }
 /// # fn main() {}

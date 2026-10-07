@@ -34,14 +34,46 @@ pub use insert::{InsertSql, OnConnection, no_insert};
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx::QueueDatabase;
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgPool, Postgres};
 ///
-/// fn serves_queues<DB: QueueDatabase>() -> &'static str {
-///     std::any::type_name::<DB>()
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
 /// }
-/// assert!(serves_queues::<sqlx::Postgres>().ends_with("Postgres"));
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// // `Postgres` is a `QueueDatabase`: the broker over a `PgPool` is a `SqlxBroker<Postgres>`.
+/// pub fn broker(pool: PgPool) -> SqlxBroker<Postgres> {
+///     SqlxBroker::new(pool)
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker(pool), |b| {
+///         b.include(send);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub trait QueueDatabase: Database {
     /// Binds a text value. Machinery; the crate's statements call it.

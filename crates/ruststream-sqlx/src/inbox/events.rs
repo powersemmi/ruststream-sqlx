@@ -65,29 +65,6 @@ pub trait Claim<DB: Database>: InboxRow {
     /// # Errors
     ///
     /// The database's error; the subscription waits one second and claims again.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx::Claim;
-    /// use sqlx::{PgConnection, Postgres};
-    ///
-    /// // What the crate calls inside the claim's transaction.
-    /// async fn ids<Row: Claim<Postgres>>(
-    ///     conn: &mut PgConnection,
-    /// ) -> Result<Vec<Row::Id>, sqlx::Error> {
-    ///     Row::claim(conn, "emails", 10).await
-    /// }
-    /// # let _ = ids::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t", custom(claim))]
-    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-    /// # impl Claim<Postgres> for Never {
-    /// #     async fn claim(_: &mut PgConnection, _: &str, _: i64) -> Result<Vec<i64>, sqlx::Error> { Ok(Vec::new()) }
-    /// # }
-    /// # }
-    /// ```
     fn claim(
         conn: &mut DB::Connection,
         queue: &str,
@@ -149,30 +126,6 @@ pub trait Fetch<DB: Database>: InboxRow {
     /// # Errors
     ///
     /// The database's error; the claim fails and its rows return to the queue.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx::Fetch;
-    /// use sqlx::{PgConnection, Postgres};
-    ///
-    /// // What the crate calls after a claim of ids.
-    /// async fn rows<Row: Fetch<Postgres>>(
-    ///     conn: &mut PgConnection,
-    ///     ids: &[Row::Id],
-    /// ) -> Result<usize, sqlx::Error> {
-    ///     Ok(Row::fetch(conn, ids).await?.len())
-    /// }
-    /// # let _ = rows::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t", custom(fetch))]
-    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-    /// # impl Fetch<Postgres> for Never {
-    /// #     async fn fetch(_: &mut PgConnection, _: &[i64]) -> Result<Vec<Self>, sqlx::Error> { Ok(Vec::new()) }
-    /// # }
-    /// # }
-    /// ```
     fn fetch(
         conn: &mut DB::Connection,
         ids: &[Self::Id],
@@ -234,31 +187,6 @@ macro_rules! settle_event {
             #[doc = "# Errors"]
             #[doc = ""]
             #[doc = "The database's error; the transaction rolls back, and the row returns to the queue at once, or in the lease form once its lease runs out."]
-            #[doc = ""]
-            #[doc = "# Examples"]
-            #[doc = ""]
-            #[doc = "The trait's own example implements it; the crate calls it when the handler settles."]
-            #[doc = ""]
-            #[doc = "```"]
-            #[doc = "# #[cfg(feature = \"postgres\")] {"]
-            #[doc = "# #[allow(unused_imports)]"]
-            #[doc = "use std::time::Duration;"]
-            #[doc = ""]
-            #[doc = concat!("use ruststream_sqlx::", stringify!($trait), ";")]
-            #[doc = "use sqlx::{PgConnection, Postgres};"]
-            #[doc = ""]
-            #[doc = concat!("async fn settle<Row: ", stringify!($trait), "<Postgres>>(conn: &mut PgConnection, id: &Row::Id) -> Result<(), sqlx::Error> {")]
-            #[doc = concat!("    Row::", stringify!($method), "(conn, id" $(, ", ", $extra_value)?, ").await")]
-            #[doc = "}"]
-            #[doc = "# let _ = settle::<Never>;"]
-            #[doc = "# #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]"]
-            #[doc = concat!("# #[inbox(table = \"t\", custom(", $event, "))]")]
-            #[doc = "# struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }"]
-            #[doc = concat!("# impl ", stringify!($trait), "<Postgres> for Never {")]
-            #[doc = concat!("#     async fn ", stringify!($method), "(_: &mut PgConnection, _: &i64" $(, ", _: ", stringify!($extra_ty))?, ") -> Result<(), sqlx::Error> { Ok(()) }")]
-            #[doc = "# }"]
-            #[doc = "# }"]
-            #[doc = "```"]
             fn $method(
                 conn: &mut DB::Connection,
                 id: &Self::Id,
@@ -428,31 +356,6 @@ pub trait Extend<DB: Database>: LeaseRow {
     /// # Errors
     ///
     /// The database's error.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(all(feature = "postgres", feature = "chrono"))] {
-    /// use ruststream_sqlx::Extend;
-    /// use sqlx::{PgConnection, Postgres};
-    ///
-    /// // A confirmation that the delivery still holds its row: the lease written over itself.
-    /// async fn still_held<Row: Extend<Postgres>>(
-    ///     conn: &mut PgConnection,
-    ///     id: &Row::Id,
-    ///     held: &Row::Lease,
-    /// ) -> Result<bool, sqlx::Error> {
-    ///     Row::extend(conn, id, held, held).await
-    /// }
-    /// # let _ = still_held::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t", custom(extend))]
-    /// # struct Never { #[field(id)] id: i64, #[field(locked_until)] locked_until: Option<chrono::DateTime<chrono::Utc>>, #[field(payload)] payload: Vec<u8> }
-    /// # impl Extend<Postgres> for Never {
-    /// #     async fn extend(_: &mut PgConnection, _: &i64, _: &chrono::DateTime<chrono::Utc>, _: &chrono::DateTime<chrono::Utc>) -> Result<bool, sqlx::Error> { Ok(true) }
-    /// # }
-    /// # }
-    /// ```
     fn extend(
         conn: &mut DB::Connection,
         id: &Self::Id,
@@ -531,27 +434,6 @@ pub trait Lock<DB: Database>: InboxRow {
     ///
     /// The database's error; the claim fails, its connection closes, and the next claim waits one
     /// second.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx::Lock;
-    /// use sqlx::{PgConnection, Postgres};
-    ///
-    /// // What a claim calls on the connection that will hold the delivery.
-    /// async fn took<Row: Lock<Postgres>>(conn: &mut PgConnection) -> Result<bool, sqlx::Error> {
-    ///     Row::lock(conn, "jobs-42").await
-    /// }
-    /// # let _ = took::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t", advisory_lock = "t-{id}", custom(lock, unlock))]
-    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-    /// # impl Lock<Postgres> for Never {
-    /// #     async fn lock(_: &mut PgConnection, _: &str) -> Result<bool, sqlx::Error> { Ok(true) }
-    /// # }
-    /// # }
-    /// ```
     fn lock(
         conn: &mut DB::Connection,
         key: &str,
@@ -617,29 +499,6 @@ pub trait Unlock<DB: Database>: InboxRow {
     /// # Errors
     ///
     /// The database's error; the connection closes, which ends the session and its locks.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx::Unlock;
-    /// use sqlx::{PgConnection, Postgres};
-    ///
-    /// // What a settlement calls once its statement has run, on the delivery's connection.
-    /// async fn released<Row: Unlock<Postgres>>(
-    ///     conn: &mut PgConnection,
-    /// ) -> Result<bool, sqlx::Error> {
-    ///     Row::unlock(conn, "jobs-42").await
-    /// }
-    /// # let _ = released::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t", advisory_lock = "t-{id}", custom(lock, unlock))]
-    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-    /// # impl Unlock<Postgres> for Never {
-    /// #     async fn unlock(_: &mut PgConnection, _: &str) -> Result<bool, sqlx::Error> { Ok(true) }
-    /// # }
-    /// # }
-    /// ```
     fn unlock(
         conn: &mut DB::Connection,
         key: &str,
@@ -702,28 +561,6 @@ pub trait Publish<DB: Database>: InboxRow {
     /// # Errors
     ///
     /// The database's error, which the publish returns.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream::OutgoingMessage;
-    /// use ruststream_sqlx::Publish;
-    /// use sqlx::{PgConnection, Postgres};
-    ///
-    /// // What a repository publisher calls on a connection of the service's pool.
-    /// async fn write<Row: Publish<Postgres>>(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
-    ///     Row::publish(conn, &OutgoingMessage::new("emails", b"{}")).await
-    /// }
-    /// # let _ = write::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t")]
-    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-    /// # impl Publish<Postgres> for Never {
-    /// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
-    /// # }
-    /// # }
-    /// ```
     fn publish(
         conn: &mut DB::Connection,
         message: &OutgoingMessage<'_>,
@@ -793,25 +630,52 @@ pub trait Insert<Connection>: InboxRow {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx::Insert;
-    /// use sqlx::PgConnection;
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::{PgPool, Postgres};
     ///
-    /// // A batch of tasks written in one transaction of the service's own.
-    /// async fn schedule<Row: Insert<PgConnection>>(
-    ///     conn: &mut PgConnection,
-    ///     rows: &[Row],
-    /// ) -> Result<(), sqlx::Error> {
-    ///     for row in rows {
-    ///         row.insert(conn).await?;
-    ///     }
-    ///     Ok(())
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "signup_jobs")]
+    /// pub struct Signup {
+    ///     #[field(id, generated)]
+    ///     id: i64,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
     /// }
-    /// # let _ = schedule::<Never>;
-    /// # #[derive(ruststream_sqlx::Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "t")]
-    /// # struct Never { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
+    ///
+    /// /// A welcome mail to send, in row mode: the handler of `welcome_jobs` takes the row itself.
+    /// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "welcome_jobs")]
+    /// pub struct Welcome {
+    ///     #[field(id, generated)]
+    ///     id: i64,
+    ///     email: String,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Account {
+    ///     email: String,
+    /// }
+    ///
+    /// // The welcome row commits with the signup's acknowledgement, or neither does.
+    /// #[subscriber(InboxQueue::<Signup>::new("signups"))]
+    /// async fn open_account(account: &Account, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
+    ///     let welcome = Welcome { id: 0, email: account.email.clone() };
+    ///     match welcome.insert(&mut *tx).await {
+    ///         Ok(()) => HandlerOutcome::ack(),
+    ///         Err(_) => HandlerOutcome::retry(),
+    ///     }
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+    ///         b.include(open_account.transactional());
+    ///     })
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     fn insert<'c>(
         &'c self,

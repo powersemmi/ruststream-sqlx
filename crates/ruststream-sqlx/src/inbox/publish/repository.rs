@@ -134,23 +134,53 @@ where
 /// ```no_run
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// # use ruststream::OutgoingMessage;
-/// # use ruststream_sqlx::{Inbox, Publish};
-/// # use sqlx::{PgConnection, Postgres};
-/// # #[derive(Inbox, sqlx::FromRow)]
-/// # #[inbox(table = "jobs")]
-/// # pub struct Job { #[field(id, generated)] id: i64, #[field(payload)] payload: Vec<u8> }
-/// # impl Publish<Postgres> for Job {
-/// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
-/// # }
-/// use ruststream::{Broker, PublishPolicy, Publisher};
-/// use ruststream_sqlx::{Repository, SqlxBroker};
+/// use ruststream::OutgoingMessage;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Serialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// // A task scheduled from outside any handler: an HTTP endpoint of the service.
-/// pub async fn schedule(pool: sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
-///     let connected = SqlxBroker::new(pool).connect().await?;
-///     let jobs = Repository::<Job>::default().pair(&connected).await?;
-///     jobs.publish(OutgoingMessage::new("reports", b"{}"), None).await?;
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "report_jobs")]
+/// pub struct ReportJob {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Publish<Postgres> for ReportJob {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO report_jobs (payload) VALUES ($1)")
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "reports")]
+/// pub struct Report {
+///     month: u32,
+/// }
+///
+/// pub async fn run(pool: PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///     let broker = SqlxBroker::new(pool).bindable();
+///     let reports = broker.bind(Repository::<ReportJob>::default());
+///     let running = RustStream::new(AppInfo::new("reports", "0.1.0"))
+///         .with_broker(broker, |_b| {})
+///         .start()
+///         .await?;
+///
+///     // A task scheduled from outside any handler: the service's HTTP endpoint owns this
+///     // `RepositoryPublisher` and writes each request into `report_jobs`.
+///     let publisher = running.publisher(reports).await?;
+///     publisher.message(&Report { month: 10 }).publish().await?;
+///
+///     running.shutdown().await?;
 ///     Ok(())
 /// }
 /// # }

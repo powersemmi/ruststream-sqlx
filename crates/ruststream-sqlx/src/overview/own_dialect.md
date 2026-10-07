@@ -7,7 +7,8 @@ use std::num::NonZeroUsize;
 
 use ruststream::HeaderMap;
 use ruststream_sqlx::dialect::{
-    self, ClaimShape, Dialect, Param, RowLock, Statement, StatementError, TableName, TableSpec,
+    self, ClaimShape, Dialect, Opening, Param, RowLock, Statement, StatementError, TableName,
+    TableSpec,
 };
 use ruststream_sqlx::prelude::*;
 use ruststream_sqlx::{BuiltIn, ByName, NamedTime};
@@ -45,6 +46,17 @@ impl Dialect for Audited {
             ));
         }
         dialect::Postgres.ack(spec)
+    }
+
+    // The provided methods the built-in dialect overrides: its transactions' opening and the
+    // guard of a FIFO group. A wrapper of `dialect::MySql` delegates `server_version` and
+    // `check_server` too, and one that serves leases the `Lease` hooks.
+    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+        dialect::Postgres.begin(opening)
+    }
+
+    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        dialect::Postgres.fifo_guard(spec)
     }
 
     // Every other statement is the built-in dialect's.
@@ -127,7 +139,11 @@ A table in a form whose trait the dialect lacks does not compile, and neither do
 mount on a dialect without [`ByName`]; the error names the trait. A dialect that wraps a built-in
 one writes the statements it changes and delegates the rest: the statements to
 [`dialect::Postgres`], [`dialect::MySql`] or [`dialect::Sqlite`], the by-name binding to
-[`BuiltIn<DB>`](BuiltIn). Its statements are built once, when a subscription opens, so a message
-costs the same as through the built-in dialect. A test addresses the broker by its type,
+[`BuiltIn<DB>`](BuiltIn). It delegates the provided methods the wrapped dialect overrides as well
+(`begin`, `fifo_guard`, `server_version`, `check_server`, and on [`Lease`](dialect::Lease)
+`claim_writes_lease`, `claim_counts_attempt` and `begin_lease_claim`): a default left in their
+place drops the FIFO guard, MySQL's READ COMMITTED claims and its server version check. Its
+statements are built once, when a subscription opens, so a message costs the same as through the
+built-in dialect. A test addresses the broker by its type,
 `tb.broker::<SqlxBroker<Postgres, Audited>>()`.
 

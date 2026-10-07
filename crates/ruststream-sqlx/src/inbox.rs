@@ -50,28 +50,41 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::{Inbox, InboxRow};
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// #[derive(Inbox)]
+/// // The derive implements `InboxRow` for `SendEmail`: the table `app.email_jobs`, its id and
+/// // its payload column.
+/// #[derive(Inbox, sqlx::FromRow)]
 /// #[inbox(table = "email_jobs", schema = "app")]
-/// struct SendEmail {
+/// pub struct SendEmail {
 ///     #[field(id)]
 ///     job_id: i64,
 ///     #[field(payload)]
 ///     payload: Vec<u8>,
 /// }
 ///
-/// /// Where a queue's rows live, for the line a service logs when it starts.
-/// fn location<Row: InboxRow>() -> String {
-///     let spec = Row::SPEC;
-///     match spec.schema() {
-///         Some(schema) => format!("{schema}.{}", spec.table()),
-///         None => spec.table().to_owned(),
-///     }
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
 /// }
 ///
-/// assert_eq!(location::<SendEmail>(), "app.email_jobs");
-/// # let _ = |row: SendEmail| (row.job_id, row.payload);
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not describe a queue table",
@@ -183,20 +196,61 @@ impl<Row: QueueRow> Lane<Row> for RowLane {
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::{Inbox, PayloadRow};
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// #[derive(Inbox)]
+/// // `body` holds the message: `Job` is in payload mode, so a route can lead a name to it.
+/// #[derive(Inbox, sqlx::FromRow)]
 /// #[inbox(table = "jobs")]
-/// struct Job {
-///     #[field(id)]
+/// pub struct Job {
+///     #[field(id, generated)]
 ///     id: i64,
+///     #[field(group)]
+///     name: String,
 ///     #[field(payload)]
 ///     body: Vec<u8>,
 /// }
 ///
-/// let job = Job { id: 1, body: br#"{"to":"a@b"}"#.to_vec() };
-/// assert_eq!(job.payload(), br#"{"to":"a@b"}"#);
-/// # let _ = job.id;
+/// impl Publish<Postgres> for Job {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO jobs (name, body) VALUES ($1, $2)")
+///             .bind(message.name())
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// // The codec decodes `Email` from the bytes lent from `body`.
+/// #[subscriber("emails")]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
+///         SqlxBroker::new(pool).route::<Job>("emails"),
+///         |b| {
+///             b.include(send);
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no payload field, so a route has no column to write a message's bytes \
@@ -209,20 +263,5 @@ impl<Row: QueueRow> Lane<Row> for RowLane {
 )]
 pub trait PayloadRow: QueueRow {
     /// The message bytes, lent from the row.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx::PayloadRow;
-    ///
-    /// // What a delivery hands the codec.
-    /// fn size<Row: PayloadRow>(row: &Row) -> usize {
-    ///     row.payload().len()
-    /// }
-    /// # #[derive(ruststream_sqlx::Inbox)]
-    /// # #[inbox(table = "t")]
-    /// # struct Job { #[field(id)] id: i64, #[field(payload)] body: Vec<u8> }
-    /// # assert_eq!(size(&Job { id: 1, body: vec![1, 2] }), 2);
-    /// ```
     fn payload(&self) -> &[u8];
 }

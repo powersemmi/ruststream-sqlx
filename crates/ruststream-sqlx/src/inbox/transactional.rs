@@ -21,13 +21,16 @@ pub use tx::Tx;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx::{Inbox, InboxQueue, Plain};
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
 /// #[derive(Inbox, sqlx::FromRow)]
 /// #[inbox(table = "report_jobs")]
 /// pub struct Report {
-///     #[field(id)]
+///     #[field(id, generated)]
 ///     id: i64,
 ///     #[field(group)]
 ///     month: String,
@@ -35,12 +38,26 @@ pub use tx::Tx;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// /// The subscription to one month's reports, a group of its own.
-/// fn month(name: &'static str) -> InboxQueue<Report, Plain> {
-///     InboxQueue::new(name)
+/// #[derive(Deserialize)]
+/// struct Request {
+///     format: String,
 /// }
-/// # let _ = month("2026-10");
+///
+/// // `InboxQueue::<Report>::new(..)` is an `InboxQueue<Report, Plain>`: the claim settles the row,
+/// // and the handler writes through connections of its own.
+/// #[subscriber(InboxQueue::<Report>::new("2026-10"))]
+/// async fn render(request: &Request) -> HandlerOutcome {
+///     tracing::info!(format = %request.format, "rendering October");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(render);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Plain;

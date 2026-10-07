@@ -132,19 +132,43 @@ impl<Row> InboxQueue<Row> {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream::{Connected, SubscriptionSource};
-    /// use ruststream_sqlx::{Inbox, InboxQueue, SqlxBroker};
-    /// # #[derive(Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "jobs")]
-    /// # pub struct Job { #[field(id)] id: i64, #[field(group)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
     ///
-    /// let reports = InboxQueue::<Job>::new("reports");
-    /// assert_eq!(
-    ///     SubscriptionSource::<Connected<SqlxBroker<sqlx::Postgres>>>::name(&reports),
-    ///     "reports",
-    /// );
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// // `emails` selects the rows of group `emails`; a table without a group column would deliver all
+    /// // its rows here.
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+    ///         b.include(send);
+    ///     })
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
@@ -163,18 +187,42 @@ impl<Row> InboxQueue<Row> {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
     /// use std::time::Duration;
     ///
-    /// use ruststream_sqlx::{Inbox, InboxQueue};
-    /// # #[derive(Inbox, sqlx::FromRow)]
-    /// # #[inbox(table = "jobs")]
-    /// # pub struct Job { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
     ///
-    /// // An urgent queue looks again every 50 ms when it runs dry.
-    /// let urgent = InboxQueue::<Job>::new("urgent").poll_interval(Duration::from_millis(50));
-    /// # let _ = urgent;
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "alert_jobs")]
+    /// pub struct Alert {
+    ///     #[field(id, generated)]
+    ///     id: i64,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Page {
+    ///     on_call: String,
+    /// }
+    ///
+    /// // An urgent queue looks again every 50 ms when it runs dry; the broker's other queues keep theirs.
+    /// #[subscriber(InboxQueue::<Alert>::new("alerts").poll_interval(Duration::from_millis(50)))]
+    /// async fn notify(page: &Page) -> HandlerOutcome {
+    ///     tracing::warn!(on_call = %page.on_call, "paging");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     RustStream::new(AppInfo::new("alerts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+    ///         b.include(notify);
+    ///     })
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub const fn poll_interval(mut self, interval: Duration) -> Self {

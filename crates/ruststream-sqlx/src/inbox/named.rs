@@ -326,31 +326,66 @@ pub(crate) type ErasedStream =
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// # use ruststream::OutgoingMessage;
-/// # use ruststream_sqlx::{Inbox, Publish};
-/// # use sqlx::{PgConnection, Postgres};
-/// # #[derive(Inbox, sqlx::FromRow)]
-/// # #[inbox(table = "jobs")]
-/// # pub struct Job { #[field(id, generated)] id: i64, #[field(group)] name: String, #[field(payload)] payload: Vec<u8> }
-/// # impl Publish<Postgres> for Job {
-/// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
-/// # }
-/// use futures::StreamExt;
-/// use ruststream::{Broker, IncomingMessage, Subscribe, Subscriber};
-/// use ruststream_sqlx::SqlxBroker;
+/// use ruststream::OutgoingMessage;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// // What the runtime does for `#[subscriber("reports")]`, written out.
-/// pub async fn drain(pool: sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
-///     let connected = SqlxBroker::new(pool).route::<Job>("reports").connect().await?;
-///     let mut subscriber = connected.subscribe("reports").await?;
-///     let mut deliveries = std::pin::pin!(subscriber.stream());
-///     while let Some(delivery) = deliveries.next().await {
-///         delivery?.ack().await?;
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "report_jobs")]
+/// pub struct Report {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Publish<Postgres> for Report {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO report_jobs (name, payload) VALUES ($1, $2)")
+///             .bind(message.name())
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
 ///     }
-///     Ok(())
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Request {
+///     day: String,
+/// }
+///
+/// // Each by-name mount opens a `NamedSubscriber`; the route's prefix leads both names into
+/// // `report_jobs`, and each reads its own group.
+/// #[subscriber("reports.daily")]
+/// async fn daily(request: &Request) -> HandlerOutcome {
+///     tracing::info!(day = %request.day, "daily report");
+///     HandlerOutcome::ack()
+/// }
+///
+/// #[subscriber("reports.weekly")]
+/// async fn weekly(request: &Request) -> HandlerOutcome {
+///     tracing::info!(day = %request.day, "weekly report");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(
+///         SqlxBroker::new(pool).route::<Report>("reports.*"),
+///         |b| {
+///             b.include(daily);
+///             b.include(weekly);
+///         },
+///     )
 /// }
 /// # }
 /// # fn main() {}

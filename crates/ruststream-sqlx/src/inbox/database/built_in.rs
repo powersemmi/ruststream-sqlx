@@ -58,19 +58,48 @@ use super::any::AnyDialect;
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
-/// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
-/// use ruststream::Broker;
-/// use ruststream_sqlx::{BuiltIn, ConnectedSqlxBroker, SqlxBroker};
-/// use sqlx::Postgres;
+/// # mod demo {
+/// use ruststream_sqlx::BuiltIn;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgPool, Postgres};
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
 ///
 /// // `SqlxBroker<Postgres>` names the same type: the built-in dialect is the default.
-/// let broker: SqlxBroker<Postgres, BuiltIn<Postgres>> = SqlxBroker::new(pool);
-/// let connected: ConnectedSqlxBroker<Postgres> = broker.connect().await?;
-/// tracing::info!(?connected, "the inbox broker connected");
-/// # Ok(())
+/// pub fn broker(pool: PgPool) -> SqlxBroker<Postgres, BuiltIn<Postgres>> {
+///     SqlxBroker::new(pool)
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker(pool), |b| {
+///         b.include(send);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub struct BuiltIn<DB: BuiltInDialect>(DB::Picked);
 
@@ -325,20 +354,48 @@ impl Opens<level::Exclusive> for BuiltIn<Any> {}
 ///
 /// # Examples
 ///
-/// ```no_run
-/// # #[cfg(feature = "any")]
-/// # async fn run(pool: sqlx::AnyPool) -> Result<(), sqlx::Error> {
-/// use ruststream_sqlx::BuiltInDialect;
-/// use ruststream_sqlx::dialect::Dialect;
+/// ```
+/// # #[cfg(all(feature = "any", feature = "postgres", feature = "mysql"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::AnyPool;
 ///
-/// // The statements the broker builds for the database behind the pool.
-/// let conn = pool.acquire().await?;
-/// match <sqlx::Any as BuiltInDialect>::dialect(&conn) {
-///     Some(dialect) => tracing::info!(dialect = dialect.name(), "the inbox's statements"),
-///     None => tracing::warn!(backend = conn.backend_name(), "no built-in dialect"),
+/// // The columns `sqlx::Any` carries: integers, text and bytes, no time.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(attempt, generated)]
+///     attempt: i32,
+///     #[field(payload)]
+///     payload: Vec<u8>,
 /// }
-/// # Ok(())
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// // One build for every deployment: `Any` is a `BuiltInDialect`, and the broker takes the
+/// // dialect of the database the URL names, Postgres or MySQL, when it connects. `main` installs
+/// // sqlx's drivers (`sqlx::any::install_default_drivers`) before it builds the pool.
+/// pub fn app(pool: AnyPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no dialect built into the crate",
@@ -357,22 +414,6 @@ pub trait BuiltInDialect: QueueDatabase {
     ///
     /// Postgres, MySQL and SQLite answer without reading `conn`; the broker asks with the
     /// connection it checks when it connects.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx::BuiltInDialect;
-    /// use ruststream_sqlx::dialect::Dialect;
-    /// use sqlx::Pool;
-    ///
-    /// /// The dialect the broker builds statements with for the database `pool` reaches.
-    /// async fn dialect_of<DB: BuiltInDialect>(
-    ///     pool: &Pool<DB>,
-    /// ) -> Result<Option<&'static str>, sqlx::Error> {
-    ///     let conn = pool.acquire().await?;
-    ///     Ok(DB::dialect(&conn).map(|dialect| dialect.name()))
-    /// }
-    /// ```
     fn dialect(conn: &Self::Connection) -> Option<BuiltIn<Self>>;
 
     /// The name of the database `conn` reaches, which an error names when no built-in dialect

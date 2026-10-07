@@ -82,26 +82,42 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// # use ruststream_sqlx::Inbox;
-/// # #[derive(Inbox, sqlx::FromRow)]
-/// # #[inbox(table = "jobs")]
-/// # pub struct Job { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-/// use futures::StreamExt;
-/// use ruststream::{Broker, IncomingMessage, Subscriber, SubscriptionSource};
-/// use ruststream_sqlx::{InboxQueue, SqlxBroker};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// // What the runtime does for a mounted handler, written out.
-/// pub async fn drain(pool: sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
-///     let connected = SqlxBroker::new(pool).connect().await?;
-///     let mut subscriber = InboxQueue::<Job>::new("jobs").subscribe(&connected).await?;
-///     let mut deliveries = std::pin::pin!(subscriber.stream());
-///     while let Some(delivery) = deliveries.next().await {
-///         delivery?.ack().await?;
-///     }
-///     Ok(())
+/// /// Changes to push to a CRM, one group per customer, each group in order.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "crm_jobs")]
+/// pub struct SyncChange {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(group, fifo = true)]
+///     customer: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Change {
+///     field: String,
+/// }
+///
+/// // The mount's subscription is an `InboxSubscriber<Postgres, SyncChange>` reading group `acme`.
+/// #[subscriber(InboxQueue::<SyncChange>::new("acme"))]
+/// async fn push(change: &Change) -> HandlerOutcome {
+///     tracing::info!(field = %change.field, "pushing");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         // Four workers, and still one change of the group at a time, in order.
+///         b.include(push.workers(nonzero!(4)));
+///     })
 /// }
 /// # }
 /// # fn main() {}

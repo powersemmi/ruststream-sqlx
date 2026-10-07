@@ -111,17 +111,60 @@ impl<DB: QueueDatabase, D: Dialect + 'static> DefaultPublish for ConnectedSqlxBr
 ///
 /// ```no_run
 /// # #[cfg(feature = "postgres")]
-/// # async fn run(pool: sqlx::PgPool) -> Result<(), Box<dyn std::error::Error>> {
-/// use ruststream::{Broker, OutgoingMessage, PublishPolicy, Publisher};
-/// use ruststream_sqlx::{Routed, SqlxBroker, SqlxBrokerError};
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Serialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// let connected = SqlxBroker::new(pool).connect().await?;
-/// let publisher = Routed.pair(&connected).await?;
-/// // No route was recorded, so the publish says so instead of writing nowhere.
-/// let refused = publisher.publish(OutgoingMessage::new("orders", b"{}"), None).await;
-/// assert!(matches!(refused, Err(SqlxBrokerError::NoRoute { .. })));
-/// # Ok(())
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs")]
+/// pub struct Job {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Publish<Postgres> for Job {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO jobs (name, payload) VALUES ($1, $2)")
+///             .bind(message.name())
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "orders")]
+/// pub struct Order {
+///     id: u64,
+/// }
+///
+/// pub async fn run(pool: PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+///     let broker = SqlxBroker::new(pool).route::<Job>("orders").bindable();
+///     let orders = broker.bind(Routed);
+///     let running = RustStream::new(AppInfo::new("shop", "0.1.0"))
+///         .with_broker(broker, |_b| {})
+///         .start()
+///         .await?;
+///
+///     // The HTTP task owns this `RoutedPublisher`: each order becomes a row of `jobs`.
+///     let publisher = running.publisher(orders).await?;
+///     publisher.message(&Order { id: 7 }).publish().await?;
+///
+///     running.shutdown().await?;
+///     Ok(())
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub struct RoutedPublisher<DB: Database> {
     shared: Arc<Shared<DB>>,

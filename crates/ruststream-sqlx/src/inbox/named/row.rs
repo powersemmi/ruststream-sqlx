@@ -217,23 +217,88 @@ impl NamedBytes {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(all(feature = "postgres", feature = "chrono"))] {
-/// use ruststream_sqlx::NamedTime;
-/// use sqlx::postgres::PgArguments;
-/// use sqlx::{Arguments, Error};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream::OutgoingMessage;
+/// # use ruststream_sqlx::dialect::{self, ClaimShape, Dialect, Opening, RowLock, Statement, StatementError, TableName, TableSpec};
+/// # use sqlx::PgConnection;
+/// use ruststream::HeaderMap;
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::{BuiltIn, ByName, NamedTime};
+/// use serde::Deserialize;
+/// use sqlx::error::BoxDynError;
+/// use sqlx::postgres::{PgArguments, PgValueRef};
+/// use sqlx::{Arguments, PgPool, Postgres};
 ///
-/// // How a dialect over a driver that binds `chrono` times alone binds one.
-/// fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), Error> {
-///     match time {
-///         NamedTime::Chrono(at) => arguments.add(at).map_err(Error::Encode),
-///         _ => Err(Error::Configuration("this driver binds `chrono` times alone".into())),
+/// /// A dialect of the service's own over Postgres, whose tables keep `chrono` times.
+/// #[derive(Debug)]
+/// pub struct Audited;
+/// # impl Dialect for Audited {
+/// #     fn name(&self) -> &'static str { "audited" }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { dialect::Postgres.quote_into(ident, out) }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { dialect::Postgres.placeholder_into(index, out) }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { dialect::Postgres.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.insert(spec) }
+/// #     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> { dialect::Postgres.begin(opening) }
+/// #     fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.fifo_guard(spec) }
+/// # }
+/// # impl RowLock for Audited {
+/// #     fn lock_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { dialect::Postgres.lock_claim(spec, shape) }
+/// # }
+///
+/// impl ByName<Postgres> for Audited {
+///     fn headers(value: PgValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
+///         <BuiltIn<Postgres> as ByName<Postgres>>::headers(value)
+///     }
+///
+///     fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), sqlx::Error> {
+///         match time {
+///             NamedTime::Chrono(at) => arguments.add(at).map_err(sqlx::Error::Encode),
+///             _ => Err(sqlx::Error::Configuration("these tables keep `chrono` times".into())),
+///         }
 ///     }
 /// }
 ///
-/// let mut arguments = PgArguments::default();
-/// bind_time(&mut arguments, NamedTime::Chrono(chrono::Utc::now()))?;
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+/// # impl Publish<Postgres> for SendEmail {
+/// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
 /// # }
-/// # Ok::<(), sqlx::Error>(())
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber("emails")]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     let broker = SqlxBroker::with_dialect(pool, Audited).route::<SendEmail>("emails");
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
+///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

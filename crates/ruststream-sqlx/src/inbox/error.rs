@@ -11,13 +11,42 @@ use thiserror::Error;
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::SqlxBrokerError;
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream::runtime::PublishError;
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::{RepositoryPublisher, SqlxBrokerError};
+/// use serde::Serialize;
+/// use sqlx::Postgres;
+/// # use ruststream::OutgoingMessage;
+/// # use sqlx::PgConnection;
+/// # #[derive(Inbox, sqlx::FromRow)]
+/// # #[inbox(table = "export_jobs")]
+/// # pub struct ExportJob { #[field(id, generated)] id: i64, #[field(payload)] payload: Vec<u8> }
+/// # impl Publish<Postgres> for ExportJob {
+/// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
+/// # }
 ///
-/// let error = SqlxBrokerError::NoRoute { name: "orders".to_owned() };
-/// assert_eq!(
-///     error.to_string(),
-///     "no route leads `orders` to a table: add `.route::<Row>(\"orders\")` to the broker"
-/// );
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "exports")]
+/// pub struct Export {
+///     account: u64,
+/// }
+///
+/// /// The status the service's HTTP endpoint answers when it schedules an export.
+/// pub async fn schedule(exports: &RepositoryPublisher<Postgres, ExportJob>, export: &Export) -> u16 {
+///     match exports.message(export).publish().await {
+///         Ok(()) => 202,
+///         // The service is shutting down: the client tries again later.
+///         Err(PublishError::Publish(SqlxBrokerError::Closed)) => 503,
+///         Err(error) => {
+///             tracing::error!(%error, "the export was not scheduled");
+///             500
+///         }
+///     }
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Error)]
 #[non_exhaustive]

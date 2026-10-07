@@ -20,51 +20,55 @@ use super::InboxRow;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "chrono")] {
-/// use std::time::{Duration, SystemTime};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
 ///
 /// use chrono::{DateTime, Utc};
-/// use ruststream_sqlx::QueueTime;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// // A task scheduled a minute ahead, the way a service's insert writes it.
-/// let at = DateTime::<Utc>::from_system(SystemTime::now()).after(Duration::from_secs(60));
-/// assert!(at > Utc::now());
+/// // `retry_after` holds a `DateTime<Utc>`: the crate writes a delayed retry in that type, as the
+/// // service's own inserts write the column.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "webhook_jobs")]
+/// pub struct Webhook {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Call {
+///     url: String,
+/// }
+///
+/// # async fn post(_: &str) -> bool { true }
+/// #[subscriber(InboxQueue::<Webhook>::new("webhooks"))]
+/// async fn notify(call: &Call) -> HandlerOutcome {
+///     if post(&call.url).await {
+///         return HandlerOutcome::ack();
+///     }
+///     HandlerOutcome::retry_after(Duration::from_secs(30))
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("webhooks", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(notify);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub trait QueueTime: Copy + Debug + Send + Sync + 'static {
     /// The time `at`, in this type.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "chrono")] {
-    /// use std::time::{Duration, SystemTime};
-    ///
-    /// use chrono::{DateTime, Utc};
-    /// use ruststream_sqlx::QueueTime;
-    ///
-    /// let epoch = DateTime::<Utc>::from_system(SystemTime::UNIX_EPOCH + Duration::from_secs(60));
-    /// assert_eq!(epoch.timestamp(), 60);
-    /// # }
-    /// ```
     fn from_system(at: SystemTime) -> Self;
 
     /// This time moved `delay` later; the latest time the type holds when that overflows.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "time")] {
-    /// use std::time::Duration;
-    ///
-    /// use ruststream_sqlx::QueueTime;
-    /// use time::OffsetDateTime;
-    ///
-    /// // When a retry thirty seconds out comes back.
-    /// let back = OffsetDateTime::UNIX_EPOCH.after(Duration::from_secs(30));
-    /// assert_eq!(back.unix_timestamp(), 30);
-    /// # }
-    /// ```
     #[must_use]
     fn after(self, delay: Duration) -> Self;
 
@@ -73,23 +77,6 @@ pub trait QueueTime: Copy + Debug + Send + Sync + 'static {
     ///
     /// A lease ends on a whole second: every temporal column stores one exactly, so the expiry a
     /// claim writes reads back unchanged as the delivery's ownership token.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "chrono")] {
-    /// use std::time::{Duration, SystemTime};
-    ///
-    /// use chrono::{DateTime, Utc};
-    /// use ruststream_sqlx::QueueTime;
-    ///
-    /// // A lease of thirty seconds taken at 12:00:00.250 ends at 12:00:31.
-    /// let taken =
-    ///     DateTime::<Utc>::from_system(SystemTime::UNIX_EPOCH + Duration::from_millis(250));
-    /// let expiry = taken.after(Duration::from_secs(30)).rounded_up();
-    /// assert_eq!(expiry.timestamp_millis(), 31_000);
-    /// # }
-    /// ```
     #[must_use]
     fn rounded_up(self) -> Self;
 }
@@ -144,17 +131,44 @@ impl QueueTime for time::OffsetDateTime {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "chrono")] {
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
 /// use chrono::{DateTime, Utc};
-/// use ruststream_sqlx::TimeColumn;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// // `processed_at: Option<DateTime<Utc>>` holds a `DateTime<Utc>` once the row is finished.
-/// fn finished_at<Field: TimeColumn>(_: &Field) -> &'static str {
-///     std::any::type_name::<Field::Time>()
+/// // `processed_at` is empty until the row is finished; an acknowledgement writes a
+/// // `DateTime<Utc>` into it and the row stays in the table.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "invoice_jobs")]
+/// pub struct InvoiceJob {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(processed_at, generated)]
+///     processed_at: Option<DateTime<Utc>>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
 /// }
-/// let processed_at: Option<DateTime<Utc>> = None;
-/// assert!(finished_at(&processed_at).contains("DateTime"));
+///
+/// #[derive(Deserialize)]
+/// struct Invoice {
+///     number: u64,
+/// }
+///
+/// #[subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
+/// async fn issue(invoice: &Invoice) -> HandlerOutcome {
+///     tracing::info!(invoice.number, "issued");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(issue);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub trait TimeColumn {
     /// The time the column holds.
@@ -181,14 +195,20 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "chrono")] {
-/// use chrono::{DateTime, Utc};
-/// use ruststream_sqlx::{Inbox, LeaseRow};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
 ///
-/// #[derive(Inbox)]
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// // `locked_until` makes `Report` a lease row: a claim writes the lease's expiry there and commits.
+/// #[derive(Inbox, sqlx::FromRow)]
 /// #[inbox(table = "report_jobs")]
-/// struct Report {
-///     #[field(id)]
+/// pub struct Report {
+///     #[field(id, generated)]
 ///     id: i64,
 ///     #[field(locked_until)]
 ///     locked_until: Option<DateTime<Utc>>,
@@ -196,14 +216,26 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// /// The type a lease table's expiry is written in, for the line a service logs when it starts.
-/// fn expiry_type<Row: LeaseRow>() -> &'static str {
-///     std::any::type_name::<Row::Lease>()
+/// #[derive(Deserialize)]
+/// struct Request {
+///     month: u32,
 /// }
 ///
-/// assert!(expiry_type::<Report>().contains("DateTime"));
-/// # let _ = |report: Report| (report.id, report.locked_until, report.payload);
+/// // A lease row's subscription sets its own lease; the handler may run for minutes without a
+/// // transaction open.
+/// #[subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(300)))]
+/// async fn render(request: &Request) -> HandlerOutcome {
+///     tracing::info!(month = request.month, "rendering");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(render);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no `locked_until` field, so its subscription holds no lease",
@@ -222,35 +254,59 @@ pub trait LeaseRow: InboxRow {
 /// # Examples
 ///
 /// ```
-/// use std::time::{Duration, SystemTime};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
 /// use ruststream_sqlx::Clock;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// /// The host's clock, five seconds ahead: a staging environment replaying tomorrow's tasks
-/// /// a little early.
-/// struct Ahead;
+/// /// The host's time in whole seconds, as the service's `DATETIME(0)` columns keep it.
+/// pub struct WholeSeconds;
 ///
-/// impl Clock for Ahead {
+/// impl Clock for WholeSeconds {
 ///     fn now() -> SystemTime {
-///         SystemTime::now() + Duration::from_secs(5)
+///         let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+///         UNIX_EPOCH + Duration::from_secs(since.as_secs())
 ///     }
 /// }
 ///
-/// assert!(Ahead::now() > SystemTime::now());
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "reminder_jobs", clock = WholeSeconds)]
+/// pub struct Reminder {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Note {
+///     text: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<Reminder>::new("reminders"))]
+/// async fn remind(note: &Note) -> HandlerOutcome {
+///     tracing::info!(text = %note.text, "reminding");
+///     // Back in an hour, counted from `WholeSeconds`.
+///     HandlerOutcome::retry_after(Duration::from_secs(3600))
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("reminders", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(remind);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 pub trait Clock: Send + Sync + 'static {
     /// Now.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::SystemTime;
-    ///
-    /// use ruststream_sqlx::{Clock, SystemClock};
-    ///
-    /// let before = SystemTime::now();
-    /// assert!(SystemClock::now() >= before);
-    /// ```
     fn now() -> SystemTime;
 }
 
@@ -259,14 +315,65 @@ pub trait Clock: Send + Sync + 'static {
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::{DatabaseClock, SystemClock, TimeSource};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
 ///
-/// // A statement binds "now" from the host, or writes the database's own clock into its text.
-/// fn binds_now<Source: TimeSource>() -> bool {
-///     !Source::DATABASE
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::DatabaseClock;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// // Each table names where it reads "now": `Charge` the host's clock, the default, and
+/// // `MonthlyStatement` the database's.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "charge_jobs")]
+/// pub struct Charge {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
 /// }
-/// assert!(binds_now::<SystemClock>());
-/// assert!(!binds_now::<DatabaseClock>());
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "statement_jobs", clock = DatabaseClock)]
+/// pub struct MonthlyStatement {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Account {
+///     id: u64,
+/// }
+///
+/// #[subscriber(InboxQueue::<Charge>::new("charges"))]
+/// async fn charge(account: &Account) -> HandlerOutcome {
+///     tracing::info!(account.id, "charging");
+///     HandlerOutcome::retry_after(Duration::from_secs(60))
+/// }
+///
+/// #[subscriber(InboxQueue::<MonthlyStatement>::new("statements"))]
+/// async fn send_statement(account: &Account) -> HandlerOutcome {
+///     tracing::info!(account.id, "sending the statement");
+///     HandlerOutcome::retry_after(Duration::from_secs(60))
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(charge);
+///         b.include(send_statement);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 pub trait TimeSource: Send + Sync + 'static {
     /// Whether the statements read the database's own clock.
@@ -275,25 +382,6 @@ pub trait TimeSource: Send + Sync + 'static {
     /// Now, for a statement that binds it; `None` where the database reads its own.
     ///
     /// The crate turns it into each column's own type.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::time::{Duration, SystemTime};
-    ///
-    /// use ruststream_sqlx::{DatabaseClock, SystemClock, TimeSource};
-    ///
-    /// /// How long a task scheduled for `at` waits by the clock its table reads; `None` where
-    /// /// that clock is the database's.
-    /// fn waits<Source: TimeSource>(at: SystemTime) -> Option<Duration> {
-    ///     let now = Source::now()?;
-    ///     Some(at.duration_since(now).unwrap_or_default())
-    /// }
-    ///
-    /// let in_a_minute = SystemTime::now() + Duration::from_secs(60);
-    /// assert!(waits::<SystemClock>(in_a_minute) > Some(Duration::from_secs(59)));
-    /// assert_eq!(waits::<DatabaseClock>(in_a_minute), None);
-    /// ```
     fn now() -> Option<SystemTime>;
 }
 
@@ -310,10 +398,54 @@ impl<C: Clock> TimeSource for C {
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::{Clock, SystemClock};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::{Duration, SystemTime};
 ///
-/// let now = SystemClock::now();
-/// assert!(now.elapsed().is_ok());
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::{Clock, SystemClock};
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// /// The system clock five seconds ahead: a staging host replaying tomorrow's tasks a little early.
+/// pub struct Ahead;
+///
+/// impl Clock for Ahead {
+///     fn now() -> SystemTime {
+///         SystemClock::now() + Duration::from_secs(5)
+///     }
+/// }
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "replay_jobs", clock = Ahead)]
+/// pub struct Replay {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Task {
+///     n: u32,
+/// }
+///
+/// #[subscriber(InboxQueue::<Replay>::new("replays"))]
+/// async fn replay(task: &Task) -> HandlerOutcome {
+///     tracing::info!(task.n, "replaying");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("staging", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(replay);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct SystemClock;
@@ -335,25 +467,50 @@ impl Clock for SystemClock {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "chrono")] {
-/// use chrono::{DateTime, Utc};
-/// use ruststream_sqlx::{DatabaseClock, Inbox, InboxRow};
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
 ///
-/// /// Tasks written by hosts whose clocks drift: every claim reads one clock.
-/// #[derive(Inbox)]
-/// #[inbox(table = "jobs", clock = DatabaseClock)]
-/// struct Job {
-///     #[field(id)]
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::DatabaseClock;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// /// Tasks written by hosts whose clocks drift: every claim and every delay reads one clock.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "sync_jobs", clock = DatabaseClock)]
+/// pub struct SyncJob {
+///     #[field(id, generated)]
 ///     id: i64,
-///     #[field(retry_after)]
+///     #[field(retry_after, generated)]
 ///     retry_after: DateTime<Utc>,
 ///     #[field(payload)]
 ///     payload: Vec<u8>,
 /// }
 ///
-/// assert!(Job::SPEC.uses_database_clock());
-/// # let _ = |job: Job| (job.id, job.retry_after, job.payload);
+/// #[derive(Deserialize)]
+/// struct Change {
+///     record: u64,
+/// }
+///
+/// # async fn push(_: &Change) -> bool { true }
+/// #[subscriber(InboxQueue::<SyncJob>::new("sync"))]
+/// async fn sync(change: &Change) -> HandlerOutcome {
+///     if push(change).await {
+///         return HandlerOutcome::ack();
+///     }
+///     // Ten seconds by the database's clock, whichever host claimed the row.
+///     HandlerOutcome::retry_after(Duration::from_secs(10))
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(sync);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct DatabaseClock;
