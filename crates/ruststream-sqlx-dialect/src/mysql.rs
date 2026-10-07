@@ -103,61 +103,41 @@ const MARIADB_FLOOR: Floor = Floor {
 ///
 /// # Examples
 ///
+/// A subscription asks MySQL for the statements of its table, as `ruststream-sqlx` does when the
+/// subscription starts:
+///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, MySql, RowLock, TableSpec};
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Column, Form, Lease, MySql, Statement, StatementError, TableSpec,
+/// };
 ///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-///     .within("app")
-///     .priority(Column::new("priority"))
-///     .payload(Column::new("payload"));
-///
-/// let claim = MySql.lock_claim(&JOBS, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     "SELECT `job_id`, `priority`, `payload` FROM `app`.`jobs` ORDER BY `priority`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
+/// // The jobs table as `#[derive(Inbox)]` describes it, with a `#[field(locked_until)]` field.
+/// const JOBS: TableSpec<'static> = TableSpec::new(
+///     "jobs",
+///     Column::new("job_id"),
+///     Form::Lease(Column::new("locked_until")),
 /// );
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
 ///
-/// In the lease form the claim only selects, and its transaction stamps each row it took:
-///
-/// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Lease, MySql, Param, TableSpec};
-///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .attempt(Column::new("attempt"));
-///
-/// // What a broker prepares to claim leased rows: the select, and the stamp it runs per row.
-/// let mut claiming = vec![MySql.lease_claim(&JOBS, ClaimShape::Rows)?];
-/// if !MySql.claim_writes_lease() {
-///     claiming.push(MySql.stamp(&JOBS)?);
+/// // What a subscription to a lease table prepares: the claim, and the stamp where the claim
+/// // only selects its rows.
+/// fn lease_statements(
+///     dialect: &impl Lease,
+///     spec: &TableSpec<'_>,
+/// ) -> Result<Vec<Statement>, StatementError> {
+///     let mut statements = vec![dialect.lease_claim(spec, ClaimShape::Rows)?];
+///     if !dialect.claim_writes_lease() {
+///         statements.push(dialect.stamp(spec)?);
+///     }
+///     Ok(statements)
 /// }
-/// assert_eq!(
-///     claiming[1].sql(),
-///     "UPDATE `jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` = ? AND (`locked_until` IS NULL OR `locked_until` <= ?)",
-/// );
-/// assert_eq!(claiming[1].params(), [Param::Lease, Param::Id, Param::LeaseNow]);
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
 ///
-/// A subscription that starts on an older server stops and names the version it needs:
-///
-/// ```
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, MySql, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
-///
-/// // The broker reads the version with `MySql.server_version()` and checks the answer.
-/// let checked = MySql
-///     .check_server(&JOBS, "10.5.23-MariaDB")
-///     .map_err(|refused| refused.to_string());
-/// assert_eq!(
-///     checked,
-///     Err("the mysql dialect needs MariaDB 10.6 or later for this form; the server reports \
-///          `10.5.23-MariaDB`"
-///         .to_owned()),
-/// );
+/// fn main() -> Result<(), StatementError> {
+///     // MySQL's claim selects the rows, and each row it took is stamped with its lease before
+///     // the claim's transaction commits.
+///     let statements = lease_statements(&MySql, &JOBS)?;
+///     assert_eq!(statements.len(), 2);
+///     Ok(())
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct MySql;

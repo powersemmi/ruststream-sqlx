@@ -1,4 +1,21 @@
 #![doc = include_str!("README.md")]
+#![doc = include_str!("overview/row_mode.md")]
+// The compile errors of row mode need the inbox and a driver: without them each example would fail
+// for that reason alone. They render where both are on, as on docs.rs.
+#![cfg_attr(
+    all(feature = "inbox", feature = "postgres"),
+    doc = include_str!("overview/row_mode_errors.md")
+)]
+#![doc = include_str!("overview/forms.md")]
+#![doc = include_str!("overview/transactional.md")]
+#![doc = include_str!("overview/isolation.md")]
+#![doc = include_str!("overview/fifo.md")]
+#![doc = include_str!("overview/databases.md")]
+#![doc = include_str!("overview/own_dialect.md")]
+#![doc = include_str!("overview/decoding.md")]
+#![doc = include_str!("overview/batches.md")]
+#![doc = include_str!("overview/names.md")]
+#![doc = include_str!("overview/testing.md")]
 #![forbid(unsafe_code)]
 
 pub use ruststream_sqlx_dialect as dialect;
@@ -8,6 +25,10 @@ mod inbox;
 #[cfg(feature = "inbox")]
 pub mod prelude;
 
+/// Machinery behind [`RowBatch`]'s deliveries; a service never names it.
+#[cfg(feature = "inbox")]
+#[doc(hidden)]
+pub use inbox::RowDeliveries;
 /// Machinery behind [`InboxSettings::transactional`]; a service never names it.
 #[cfg(feature = "inbox")]
 #[doc(hidden)]
@@ -19,7 +40,7 @@ pub use inbox::{
     InboxDelivery, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert, KeyColumn,
     LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Plain, Publish,
     QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
-    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
     Transactional, Tx, Unlock,
 };
 
@@ -31,24 +52,28 @@ pub use inbox::keys;
 #[doc(hidden)]
 pub mod __private {
     pub use ruststream::HeaderMap;
+    pub use ruststream::runtime::{Input, SoloCarried};
     pub use ruststream_sqlx_dialect::Param;
     pub use sqlx;
 
     #[cfg(feature = "any")]
     pub use crate::inbox::AnyDialect;
+    pub use crate::inbox::batch::{BatchClaim, BatchLane};
     pub use crate::inbox::engine::{
-        Candidates, Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint,
-        Settled, Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, candidates,
-        claim_ids, claim_rows, dead_letter, discard, extend, fetch_by_ids, first_header, later,
-        lease, lock, match_claimed, match_rows, match_taken, micros, no_lease, now, put, retry,
-        retry_after, take, take_id, unlock,
+        Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
+        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
+        dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, match_claimed,
+        match_rows, micros, no_lease, now, put, retry, retry_after,
     };
-    pub use crate::inbox::kinds::{Kinds, KindsOf};
+    pub use crate::inbox::form::advisory::events::{
+        Candidates, candidates, lock, match_taken, take, take_id, unlock,
+    };
+    pub use crate::inbox::named::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
     pub use crate::inbox::queue::Queue;
     pub use crate::inbox::{
-        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, LeaseForm, OnConnection,
-        QueueDatabase, QueueRow, RowLockForm, no_insert,
+        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, Lane, LeaseForm, OnConnection,
+        PayloadLane, QueueDatabase, QueueRow, RowLane, RowLockForm, no_insert,
     };
 }
 
@@ -60,31 +85,47 @@ pub mod __private {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx::dialect::{ClaimShape, Postgres, RowLock};
-/// use ruststream_sqlx::{Inbox, InboxRow};
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// #[derive(Inbox)]
+/// // app.email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, attempt SMALLINT DEFAULT 1,
+/// // payload BYTEA
+/// #[derive(Inbox, sqlx::FromRow)]
 /// #[inbox(table = "email_jobs", schema = "app")]
-/// struct SendEmail {
+/// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
 ///     #[field(group)]
 ///     name: String,
-///     #[field(attempt)]
+///     #[field(attempt, generated)]
 ///     attempt: i16,
 ///     #[field(payload)]
 ///     payload: Vec<u8>,
 /// }
 ///
-/// // The statement a subscription to `SendEmail` claims its rows with.
-/// let claim = Postgres.lock_claim(&SendEmail::SPEC, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     r#"SELECT "job_id", "name", "attempt", "payload" FROM "app"."email_jobs" WHERE "name" = $1 ORDER BY "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED"#,
-/// );
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// // The subscription claims the rows of group `emails`, oldest first, and skips the rows
+/// // another worker holds.
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
+/// }
 /// # }
-/// # Ok::<(), ruststream_sqlx::dialect::StatementError>(())
+/// # fn main() {}
 /// ```
 ///
 /// # The table
@@ -110,24 +151,49 @@ pub mod __private {
 /// lends its handler in transactional mode, in every form.
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx::dialect::{Dialect, Postgres};
-/// use ruststream_sqlx::{Inbox, InboxRow};
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgPool, Postgres};
 ///
-/// #[derive(Inbox)]
-/// #[inbox(table = "ledger_jobs", isolation = repeatable_read)]
-/// struct Posting {
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "ledger_jobs", advisory_lock = "ledger-{id}", isolation = repeatable_read)]
+/// pub struct Posting {
 ///     #[field(id)]
 ///     id: i64,
 ///     #[field(payload)]
 ///     payload: Vec<u8>,
 /// }
 ///
-/// // The statement a subscription to `Posting` opens its claims with on Postgres.
-/// let begin = Postgres.begin(Posting::SPEC.opening())?;
-/// assert_eq!(begin, Some("BEGIN ISOLATION LEVEL REPEATABLE READ"));
+/// #[derive(Deserialize)]
+/// struct Entry {
+///     account: String,
+///     cents: i64,
+/// }
+///
+/// // The handler's transaction opens with `BEGIN ISOLATION LEVEL REPEATABLE READ`: the balance it
+/// // checks stays as its first statement read it.
+/// #[subscriber(InboxQueue::<Posting>::new("postings"))]
+/// async fn post(entry: &Entry, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
+///     let posted = sqlx::query(
+///         "INSERT INTO ledger (account, cents) SELECT $1, $2 \
+///          WHERE (SELECT sum(cents) FROM ledger WHERE account = $1) + $2 >= 0",
+///     )
+///     .bind(&entry.account)
+///     .bind(entry.cents)
+///     .execute(&mut *tx)
+///     .await;
+///     if posted.is_ok() { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(post.transactional());
+///     })
+/// }
 /// # }
-/// # Ok::<(), ruststream_sqlx::dialect::StatementError>(())
+/// # fn main() {}
 /// ```
 ///
 /// The broker's dialect opens what its database keeps: Postgres `read_committed`,
@@ -158,8 +224,14 @@ pub mod __private {
 ///
 /// `generated`, alone or beside a role, marks a column the database fills in.
 ///
+/// A struct with a `payload` field is in payload mode: its handler takes the payload, decoded by a
+/// codec. A struct without one is in row mode: its handler takes the struct itself, as the driver
+/// read it. A struct in row mode derives `Clone`, because the test harness keeps a copy of each
+/// value. It does not derive `Deserialize`: a type that deserializes rides the codec.
+///
 /// A generic struct keeps its parameters: the impl requires `Send + Sync + 'static` of the struct
-/// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type.
+/// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type. In row mode a handler
+/// takes it where its parameters make it `Clone`.
 ///
 /// # Column names
 ///
@@ -181,5 +253,41 @@ pub mod __private {
 /// without `locked_until`, `lock` or `unlock` in `custom(..)` without `advisory_lock` or without
 /// each other, `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in
 /// `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
+///
+/// A struct in row mode without `Clone` does not compile. The error points at its name and
+/// suggests the derive:
+///
+/// ```compile_fail,E0277
+/// use ruststream_sqlx::Inbox;
+///
+/// #[derive(Inbox)]
+/// #[inbox(table = "email_jobs")]
+/// struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     to: String,
+/// }
+/// ```
+///
+/// A struct in row mode that derives `Deserialize` does not compile either. Such a type rides the
+/// codec, and rustc reports conflicting implementations of
+/// [`Input`](ruststream::runtime::Input):
+///
+/// ```compile_fail,E0119
+/// use ruststream_sqlx::Inbox;
+/// use serde::Deserialize;
+///
+/// #[derive(Inbox, Clone, Deserialize)]
+/// #[inbox(table = "email_jobs")]
+/// struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     to: String,
+/// }
+/// ```
+///
+/// A handler that does not fit its table's mode meets the core's errors at the mount site: a
+/// handler of rows on a table in payload mode, a batch handler of rows with a reply or `Out`
+/// slots. [Row mode](crate#row-mode) shows both.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;

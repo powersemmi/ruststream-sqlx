@@ -25,36 +25,85 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 ///
 /// # Examples
 ///
+/// A dialect for a database without a built-in one builds the advisory lock form itself. On SQL
+/// Server an application lock the delivery's session owns holds the row:
+///
 /// ```
-/// # #[cfg(all(feature = "postgres", feature = "sqlite"))] {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     Advisory, ClaimShape, Column, Form, KeyPart, Postgres, Sqlite, Statement, StatementError,
-///     TableSpec,
+///     Advisory, ClaimShape, Dialect, Param, Statement, StatementError, TableSpec,
 /// };
 ///
-/// const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY))
-///     .attempt(Column::new("attempt"))
-///     .payload(Column::new("payload"));
+/// /// SQL Server, a database without a built-in dialect.
+/// #[derive(Debug)]
+/// pub struct Mssql;
 ///
-/// // What a subscription to an advisory table prepares when it starts.
-/// fn advising(
-///     dialect: &dyn Advisory,
-///     spec: &TableSpec<'_>,
-/// ) -> Result<Vec<Statement>, StatementError> {
-///     let mut statements = vec![dialect.advisory_claim(spec)?];
-///     statements.extend(dialect.lock());
-///     statements.extend(dialect.unlock());
-///     statements.extend(dialect.take(spec, ClaimShape::Rows)?);
-///     Ok(statements)
+/// // A table with `advisory_lock` mounts on `Mssql`.
+/// impl Advisory for Mssql {
+///     // The candidates of `email_jobs` (`advisory_lock = "email-{job_id}"`) in id order, each
+///     // with its key. `APPLOCK_TEST` leaves out the keys another session holds.
+///     fn advisory_claim(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Ok(Statement::new(
+///             "SELECT TOP (@p1) [job_id], CONCAT(N'email-', [job_id]) AS [__lock] \
+///              FROM [email_jobs] \
+///              WHERE APPLOCK_TEST('public', CONCAT(N'email-', [job_id]), \
+///              'Exclusive', 'Session') = 1 \
+///              ORDER BY [job_id]",
+///             [Param::Limit],
+///         ))
+///     }
+///
+///     // An application lock the session owns, tried without waiting: `sp_getapplock` answers
+///     // zero or more when it granted the lock.
+///     fn lock(&self) -> Option<Statement> {
+///         Some(Statement::new(
+///             "DECLARE @result int; \
+///              EXEC @result = sp_getapplock @Resource = @p1, @LockMode = 'Exclusive', \
+///              @LockOwner = 'Session', @LockTimeout = 0; \
+///              SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bigint)",
+///             [Param::Key],
+///         ))
+///     }
+///
+///     // The release of the session's lock. A key the session does not hold answers zero, as
+///     // `sp_releaseapplock` would raise an error for it.
+///     fn unlock(&self) -> Option<Statement> {
+///         Some(Statement::new(
+///             "IF APPLOCK_MODE('public', @p1, 'Session') = 'NoLock' SELECT CAST(0 AS bigint) \
+///              ELSE BEGIN DECLARE @result int; \
+///              EXEC @result = sp_releaseapplock @Resource = @p1, @LockOwner = 'Session'; \
+///              SELECT CAST(CASE WHEN @result = 0 THEN 1 ELSE 0 END AS bigint) END",
+///             [Param::Key],
+///         ))
+///     }
+///
+///     fn take(
+///         &self,
+///         _spec: &TableSpec<'_>,
+///         _shape: ClaimShape,
+///     ) -> Result<Vec<Statement>, StatementError> {
+///         Ok(vec![Statement::new(
+///             "UPDATE [email_jobs] SET [attempt] = [attempt] + 1 \
+///              OUTPUT deleted.[job_id], deleted.[attempt], deleted.[payload] \
+///              WHERE [job_id] = @p1",
+///             [Param::Id],
+///         )])
+///     }
 /// }
-///
-/// // Postgres: the candidates, the lock, the unlock and a take of one statement. SQLite keeps
-/// // its locks in the process: the candidates and the take.
-/// assert_eq!(advising(&Postgres, &JOBS)?.len(), 4);
-/// assert_eq!(advising(&Sqlite, &JOBS)?.len(), 2);
+/// # impl Dialect for Mssql {
+/// #     fn name(&self) -> &'static str { "mssql" }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
 /// ```
 #[diagnostic::on_unimplemented(
     message = "the `{Self}` dialect takes no advisory locks, so a table on it cannot take its rows \
@@ -80,24 +129,46 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Advisory, Column, Form, KeyPart, Param, Postgres, TableSpec};
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Advisory, ClaimShape, Dialect, Param, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY))
-    ///         .group(Column::new("name"))
-    ///         .payload(Column::new("payload"));
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
     ///
-    /// // Postgres probes each key in claim order, and only as far as the limit reaches.
-    /// let claim = Postgres.advisory_claim(&JOBS)?;
-    /// assert_eq!(
-    ///     claim.sql(),
-    ///     r#"SELECT "job_id", "__lock" FROM (SELECT "job_id", concat('jobs-', "job_id") AS "__lock" FROM "jobs" WHERE "name" = $1 ORDER BY "job_id" OFFSET 0) AS __candidates WHERE pg_try_advisory_xact_lock_shared(hashtextextended("__lock", 0)) LIMIT $2"#,
-    /// );
-    /// assert_eq!(claim.params(), [Param::Group, Param::Limit]);
+    /// impl Advisory for Mssql {
+    ///     // The candidates of `email_jobs` (`advisory_lock = "email-{job_id}"`) in id order, each
+    ///     // with its key. `APPLOCK_TEST` leaves out the keys another session holds.
+    ///     fn advisory_claim(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+    ///         Ok(Statement::new(
+    ///             "SELECT TOP (@p1) [job_id], CONCAT(N'email-', [job_id]) AS [__lock] \
+    ///              FROM [email_jobs] \
+    ///              WHERE APPLOCK_TEST('public', CONCAT(N'email-', [job_id]), \
+    ///              'Exclusive', 'Session') = 1 \
+    ///              ORDER BY [job_id]",
+    ///             [Param::Limit],
+    ///         ))
+    ///     }
+    /// #     fn lock(&self) -> Option<Statement> { Some(Statement::new("DECLARE @result int; EXEC @result = sp_getapplock @Resource = @p1, @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bigint)", [Param::Key])) }
+    /// #     fn unlock(&self) -> Option<Statement> { Some(Statement::new("IF APPLOCK_MODE('public', @p1, 'Session') = 'NoLock' SELECT CAST(0 AS bigint) ELSE BEGIN DECLARE @result int; EXEC @result = sp_releaseapplock @Resource = @p1, @LockOwner = 'Session'; SELECT CAST(CASE WHEN @result = 0 THEN 1 ELSE 0 END AS bigint) END", [Param::Key])) }
+    /// #     fn take(&self, _spec: &TableSpec<'_>, _shape: ClaimShape) -> Result<Vec<Statement>, StatementError> { Ok(vec![Statement::new("UPDATE [email_jobs] SET [attempt] = [attempt] + 1 OUTPUT deleted.[job_id], deleted.[attempt], deleted.[payload] WHERE [job_id] = @p1", [Param::Id])]) }
+    /// }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
     /// ```
     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 
@@ -108,21 +179,44 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(all(feature = "mysql", feature = "sqlite"))] {
-    /// use ruststream_sqlx_dialect::{Advisory, MySql, Param, Sqlite, Statement};
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Advisory, ClaimShape, Dialect, Param, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// // Where a broker holds the keys in work: in the database's locks, or in the process.
-    /// fn held_by_the_database(dialect: &dyn Advisory) -> bool {
-    ///     dialect.lock().is_some()
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl Advisory for Mssql {
+    ///     // An application lock the session owns, tried without waiting: `sp_getapplock` answers
+    ///     // zero or more when it granted the lock.
+    ///     fn lock(&self) -> Option<Statement> {
+    ///         Some(Statement::new(
+    ///             "DECLARE @result int; \
+    ///              EXEC @result = sp_getapplock @Resource = @p1, @LockMode = 'Exclusive', \
+    ///              @LockOwner = 'Session', @LockTimeout = 0; \
+    ///              SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bigint)",
+    ///             [Param::Key],
+    ///         ))
+    ///     }
+    /// #     fn advisory_claim(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Ok(Statement::new("SELECT TOP (@p1) [job_id], CONCAT(N'email-', [job_id]) AS [__lock] FROM [email_jobs] WHERE APPLOCK_TEST('public', CONCAT(N'email-', [job_id]), 'Exclusive', 'Session') = 1 ORDER BY [job_id]", [Param::Limit])) }
+    /// #     fn unlock(&self) -> Option<Statement> { Some(Statement::new("IF APPLOCK_MODE('public', @p1, 'Session') = 'NoLock' SELECT CAST(0 AS bigint) ELSE BEGIN DECLARE @result int; EXEC @result = sp_releaseapplock @Resource = @p1, @LockOwner = 'Session'; SELECT CAST(CASE WHEN @result = 0 THEN 1 ELSE 0 END AS bigint) END", [Param::Key])) }
+    /// #     fn take(&self, _spec: &TableSpec<'_>, _shape: ClaimShape) -> Result<Vec<Statement>, StatementError> { Ok(vec![Statement::new("UPDATE [email_jobs] SET [attempt] = [attempt] + 1 OUTPUT deleted.[job_id], deleted.[attempt], deleted.[payload] WHERE [job_id] = @p1", [Param::Id])]) }
     /// }
-    ///
-    /// let lock = MySql.lock();
-    /// assert_eq!(
-    ///     lock.as_ref().map(Statement::sql),
-    ///     Some("SELECT CAST(COALESCE(GET_LOCK(?, 0), 0) AS SIGNED)"),
-    /// );
-    /// assert_eq!(lock.as_ref().map(Statement::params), Some([Param::Key].as_slice()));
-    /// assert!(!held_by_the_database(&Sqlite));
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
     /// ```
     fn lock(&self) -> Option<Statement>;
@@ -133,19 +227,45 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # use std::error::Error;
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Advisory, Param, Postgres};
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Advisory, ClaimShape, Dialect, Param, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// // A settlement runs its step, then this, on the session that holds the key.
-    /// let unlock = Postgres.unlock().ok_or("postgres keeps its locks in the database")?;
-    /// assert_eq!(
-    ///     unlock.sql(),
-    ///     "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::bigint",
-    /// );
-    /// assert_eq!(unlock.params(), [Param::Key]);
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl Advisory for Mssql {
+    ///     // The release of the session's lock. A key the session does not hold answers zero, as
+    ///     // `sp_releaseapplock` would raise an error for it.
+    ///     fn unlock(&self) -> Option<Statement> {
+    ///         Some(Statement::new(
+    ///             "IF APPLOCK_MODE('public', @p1, 'Session') = 'NoLock' SELECT CAST(0 AS bigint) \
+    ///              ELSE BEGIN DECLARE @result int; \
+    ///              EXEC @result = sp_releaseapplock @Resource = @p1, @LockOwner = 'Session'; \
+    ///              SELECT CAST(CASE WHEN @result = 0 THEN 1 ELSE 0 END AS bigint) END",
+    ///             [Param::Key],
+    ///         ))
+    ///     }
+    /// #     fn advisory_claim(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Ok(Statement::new("SELECT TOP (@p1) [job_id], CONCAT(N'email-', [job_id]) AS [__lock] FROM [email_jobs] WHERE APPLOCK_TEST('public', CONCAT(N'email-', [job_id]), 'Exclusive', 'Session') = 1 ORDER BY [job_id]", [Param::Limit])) }
+    /// #     fn lock(&self) -> Option<Statement> { Some(Statement::new("DECLARE @result int; EXEC @result = sp_getapplock @Resource = @p1, @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bigint)", [Param::Key])) }
+    /// #     fn take(&self, _spec: &TableSpec<'_>, _shape: ClaimShape) -> Result<Vec<Statement>, StatementError> { Ok(vec![Statement::new("UPDATE [email_jobs] SET [attempt] = [attempt] + 1 OUTPUT deleted.[job_id], deleted.[attempt], deleted.[payload] WHERE [job_id] = @p1", [Param::Id])]) }
+    /// }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # Ok::<(), Box<dyn Error>>(())
     /// ```
     fn unlock(&self) -> Option<Statement>;
 
@@ -166,29 +286,58 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "mysql")] {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     Advisory, ClaimShape, Column, Form, KeyPart, MySql, Param, Statement, TableSpec,
+    ///     Advisory, ClaimShape, Dialect, Param, Statement, StatementError, TableSpec,
     /// };
     ///
-    /// const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY))
-    ///         .attempt(Column::new("attempt"))
-    ///         .payload(Column::new("payload"));
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
     ///
-    /// // An update returns no rows on MySQL, so the take counts the attempt, then reads the row.
-    /// let take = MySql.take(&JOBS, ClaimShape::Rows)?;
-    /// assert_eq!(
-    ///     take.iter().map(Statement::sql).collect::<Vec<_>>(),
-    ///     [
-    ///         "UPDATE `jobs` SET `attempt` = `attempt` + 1 WHERE `job_id` = ?",
-    ///         "SELECT `job_id`, `attempt` - 1 AS `attempt`, `payload` FROM `jobs` WHERE `job_id` = ?",
-    ///     ],
-    /// );
-    /// assert_eq!(take[1].params(), [Param::Id]);
+    /// impl Advisory for Mssql {
+    ///     // Taking an email also records when. `email_jobs` keeps no finished rows and no delays,
+    ///     // so a row that is still there is claimable; `deleted` returns it as it was before the
+    ///     // count.
+    ///     fn take(
+    ///         &self,
+    ///         _spec: &TableSpec<'_>,
+    ///         shape: ClaimShape,
+    ///     ) -> Result<Vec<Statement>, StatementError> {
+    ///         let returned = match shape {
+    ///             ClaimShape::Rows => "deleted.[job_id], deleted.[attempt], deleted.[payload]",
+    ///             ClaimShape::Ids => "deleted.[job_id]",
+    ///             ClaimShape::Roles => {
+    ///                 "deleted.[job_id] AS [id], deleted.[attempt] AS [attempt], \
+    ///                  deleted.[payload] AS [payload]"
+    ///             }
+    ///         };
+    ///         Ok(vec![Statement::new(
+    ///             format!(
+    ///                 "UPDATE [email_jobs] SET [attempt] = [attempt] + 1, [taken_at] = @p1 \
+    ///                  OUTPUT {returned} WHERE [job_id] = @p2"
+    ///             ),
+    ///             [Param::Now, Param::Id],
+    ///         )])
+    ///     }
+    /// #     fn advisory_claim(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Ok(Statement::new("SELECT TOP (@p1) [job_id], CONCAT(N'email-', [job_id]) AS [__lock] FROM [email_jobs] WHERE APPLOCK_TEST('public', CONCAT(N'email-', [job_id]), 'Exclusive', 'Session') = 1 ORDER BY [job_id]", [Param::Limit])) }
+    /// #     fn lock(&self) -> Option<Statement> { Some(Statement::new("DECLARE @result int; EXEC @result = sp_getapplock @Resource = @p1, @LockMode = 'Exclusive', @LockOwner = 'Session', @LockTimeout = 0; SELECT CAST(CASE WHEN @result >= 0 THEN 1 ELSE 0 END AS bigint)", [Param::Key])) }
+    /// #     fn unlock(&self) -> Option<Statement> { Some(Statement::new("IF APPLOCK_MODE('public', @p1, 'Session') = 'NoLock' SELECT CAST(0 AS bigint) ELSE BEGIN DECLARE @result int; EXEC @result = sp_releaseapplock @Resource = @p1, @LockOwner = 'Session'; SELECT CAST(CASE WHEN @result = 0 THEN 1 ELSE 0 END AS bigint) END", [Param::Key])) }
+    /// }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
     /// ```
     fn take(
         &self,

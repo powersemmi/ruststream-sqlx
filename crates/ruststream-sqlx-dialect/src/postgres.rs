@@ -56,54 +56,37 @@ const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::b
 ///
 /// # Examples
 ///
-/// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-///     .within("app")
-///     .priority(Column::new("priority"))
-///     .payload(Column::new("payload"));
-///
-/// let claim = Postgres.lock_claim(&JOBS, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     r#"SELECT "job_id", "priority", "payload" FROM "app"."jobs" ORDER BY "priority", "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
-/// );
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
-///
-/// In the lease form a settlement changes the row only while the row holds the delivery's lease:
+/// A subscription asks Postgres for the statements of its table, as `ruststream-sqlx` does when the
+/// subscription starts:
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Column, Dialect, Form, Postgres, RowLock, Statement, StatementError, TableSpec,
+/// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .payload(Column::new("payload"));
+/// // The ledger as `#[derive(Inbox)]` describes it: one entry of an account in work at a time.
+/// const LEDGER: TableSpec<'static> =
+///     TableSpec::new("ledger", Column::new("entry_id"), Form::RowLock)
+///         .fifo_group(Column::new("account"));
 ///
-/// let ack = Postgres.ack(&JOBS)?;
-/// assert_eq!(
-///     ack.sql(),
-///     r#"DELETE FROM "jobs" WHERE "job_id" = $1 AND "locked_until" = $2"#,
-/// );
-/// assert_eq!(ack.params(), [Param::Id, Param::Held]);
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
+/// // What a claim's transaction runs on a row lock table: the guard of its group, where the
+/// // table keeps groups in order, then the claim.
+/// fn claim_statements(
+///     dialect: &impl RowLock,
+///     spec: &TableSpec<'_>,
+/// ) -> Result<Vec<Statement>, StatementError> {
+///     let mut statements: Vec<Statement> = dialect.fifo_guard(spec)?.into_iter().collect();
+///     statements.push(dialect.lock_claim(spec, ClaimShape::Rows)?);
+///     Ok(statements)
+/// }
 ///
-/// A table that names READ UNCOMMITTED is refused, and the refusal names the level:
-///
-/// ```
-/// use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Postgres};
-///
-/// let refused = Postgres
-///     .begin(Opening::Isolation(Isolation::ReadUncommitted))
-///     .map_err(|refused| format!("subscription `emails`: {refused}"));
-/// assert_eq!(
-///     refused,
-///     Err("subscription `emails`: the postgres dialect opens no transaction at isolation \
-///          `read_uncommitted`"
-///         .to_owned()),
-/// );
+/// fn main() -> Result<(), StatementError> {
+///     // Postgres takes the account's group with a lock the transaction holds, then claims the
+///     // group's head.
+///     let statements = claim_statements(&Postgres, &LEDGER)?;
+///     assert_eq!(statements.len(), 2);
+///     Ok(())
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Postgres;

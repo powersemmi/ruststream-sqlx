@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::str;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
@@ -12,7 +13,7 @@ use sqlx::{PgConnection, Postgres};
 #[cfg(feature = "sqlite")]
 use sqlx::{Sqlite, SqliteConnection};
 
-use super::{PUBLISHED_PRIORITY, own_fetch};
+use super::{PUBLISHED_PRIORITY, mail_fetch, own_fetch};
 
 /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
 ///
@@ -391,5 +392,156 @@ where
             payload: message.payload().to_vec(),
         };
         job.insert(conn).await
+    }
+}
+
+/// A mail to send, which its handler takes as the row itself: no payload field, so the table is in
+/// row mode. A group per name, an attempt, headers, and the mail's own columns; each mail is locked
+/// by its id.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+#[inbox(table = "mail_jobs", advisory_lock = "mail-{job_id}")]
+pub(crate) struct Mail {
+    #[field(id, generated)]
+    pub(crate) job_id: i64,
+    #[field(group)]
+    pub(crate) name: String,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    #[field(headers)]
+    pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
+    pub(crate) recipient: String,
+    pub(crate) subject: Option<String>,
+}
+
+impl Mail {
+    /// A mail of the queue `name` to `recipient`, as a producer writes it.
+    pub(crate) fn queued(name: &str, recipient: &str, subject: Option<&str>) -> Self {
+        Self {
+            job_id: 0,
+            name: name.to_owned(),
+            attempt: 1,
+            meta: None,
+            recipient: recipient.to_owned(),
+            subject: subject.map(str::to_owned),
+        }
+    }
+
+    /// `self` with the lease of the claim that lent `lent`: none in this form, whose take reads the
+    /// row before it counts the attempt, so the row is lent as the table held it.
+    pub(crate) fn leased_as(self, _lent: &Self) -> Self {
+        self
+    }
+}
+
+/// A published message becomes a mail of the group it names, to the recipient its bytes spell:
+/// the service's own wire for its row-mode table, written through the generated insert.
+impl<DB> Publish<DB> for Mail
+where
+    DB: QueueDatabase,
+    Self: Insert<DB::Connection>,
+{
+    async fn publish(
+        conn: &mut DB::Connection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), Error> {
+        let recipient =
+            str::from_utf8(message.payload()).map_err(|error| Error::Encode(Box::new(error)))?;
+        Self::queued(message.name(), recipient, None)
+            .insert(conn)
+            .await
+    }
+}
+
+/// The mail queue read as what its producer wrote: two mails are equal when they go to the same
+/// recipient with the same subject, whatever id, attempt or lease the table gave them. The core's
+/// carried suites compare what a delivery lends with what they published, and only these fields
+/// are theirs.
+#[derive(Debug, Clone, Inbox, FromRow)]
+#[inbox(table = "mail_jobs", advisory_lock = "mail-{job_id}")]
+pub(crate) struct WrittenMail {
+    #[field(id, generated)]
+    pub(crate) job_id: i64,
+    #[field(group)]
+    pub(crate) name: String,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    #[field(headers)]
+    pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
+    pub(crate) recipient: String,
+    pub(crate) subject: Option<String>,
+}
+
+impl WrittenMail {
+    /// A mail of the queue `name` to `recipient`, as a producer writes it.
+    pub(crate) fn queued(name: &str, recipient: &str, subject: Option<&str>) -> Self {
+        Self {
+            job_id: 0,
+            name: name.to_owned(),
+            attempt: 1,
+            meta: None,
+            recipient: recipient.to_owned(),
+            subject: subject.map(str::to_owned),
+        }
+    }
+}
+
+impl PartialEq for WrittenMail {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.recipient, &self.subject) == (&other.recipient, &other.subject)
+    }
+}
+
+/// The mail queue read by a fetch of the service's own, which leaves out a mail whose subject is
+/// `gone`: the crate takes each id, the service's fetch reads its row.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+#[inbox(table = "mail_jobs", advisory_lock = "mail-{job_id}", custom(fetch))]
+pub(crate) struct FetchedMail {
+    #[field(id, generated)]
+    pub(crate) job_id: i64,
+    #[field(group)]
+    pub(crate) name: String,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    #[field(headers)]
+    pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
+    pub(crate) recipient: String,
+    pub(crate) subject: Option<String>,
+}
+
+impl FetchedMail {
+    /// A mail of the queue `name` to `recipient`, as a producer writes it.
+    pub(crate) fn queued(name: &str, recipient: &str, subject: Option<&str>) -> Self {
+        Self {
+            job_id: 0,
+            name: name.to_owned(),
+            attempt: 1,
+            meta: None,
+            recipient: recipient.to_owned(),
+            subject: subject.map(str::to_owned),
+        }
+    }
+}
+
+/// The columns `FetchedMail` decodes.
+const MAILED: &str = "job_id, name, attempt, meta, recipient, subject";
+
+#[cfg(feature = "postgres")]
+impl Fetch<Postgres> for FetchedMail {
+    async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        mail_fetch::postgres(conn, MAILED, ids).await
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl Fetch<MySql> for FetchedMail {
+    async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        mail_fetch::mysql(conn, MAILED, ids).await
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl Fetch<Sqlite> for FetchedMail {
+    async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        mail_fetch::sqlite(conn, MAILED, ids).await
     }
 }

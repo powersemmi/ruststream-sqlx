@@ -8,7 +8,7 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect builds no row lock claim, so a
    = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
    = note: a dialect of the service's own serves the row lock form by implementing `RowLock`, where its database locks rows
 help: the following other types implement trait `ruststream_sqlx::ruststream_sqlx_dialect::RowLock`
-  --> src/inbox/built_in.rs
+  --> src/inbox/database/built_in.rs
    |
    | impl RowLock for BuiltIn<Postgres> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<sqlx::Postgres>`
@@ -31,7 +31,7 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect builds no row lock claim, so a
    = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
    = note: a dialect of the service's own serves the row lock form by implementing `RowLock`, where its database locks rows
 help: the following other types implement trait `ruststream_sqlx::ruststream_sqlx_dialect::RowLock`
-  --> src/inbox/built_in.rs
+  --> src/inbox/database/built_in.rs
    |
    | impl RowLock for BuiltIn<Postgres> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<sqlx::Postgres>`
@@ -58,7 +58,7 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect builds no row lock claim, so a
    = note: declare `#[field(locked_until)]` (the lease form) or `#[inbox(advisory_lock = "..")]` (the advisory lock form) on the struct
    = note: a dialect of the service's own serves the row lock form by implementing `RowLock`, where its database locks rows
 help: the following other types implement trait `ruststream_sqlx::ruststream_sqlx_dialect::RowLock`
-  --> src/inbox/built_in.rs
+  --> src/inbox/database/built_in.rs
    |
    | impl RowLock for BuiltIn<Postgres> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<sqlx::Postgres>`

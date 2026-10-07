@@ -17,8 +17,8 @@
 //! the tables in its own SQL; a row module holds the queue rows of one form under the names every
 //! form shares.
 
-// Each live suite is its own test binary and uses the part of this module its topic needs, so
-// what one of them leaves alone, a macro included, is not dead code.
+// Each test target is its own binary and uses the part of this module its suites need, so what
+// one of them leaves alone, a macro included, is not dead code.
 #![allow(dead_code, unused_macros)]
 
 use std::future::Future;

@@ -2,84 +2,41 @@
 
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
-use ruststream::{AckError, HeaderMap, IncomingMessage};
+use ruststream::codec::CodecError;
+use ruststream::{AckError, Carries, HeaderMap, IncomingMessage};
 use sqlx::Pool;
-use sqlx_core::transaction::TransactionManager;
 use sync_wrapper::SyncWrapper;
+use thiserror::Error;
 use tokio::runtime::Handle;
-use tokio::sync::Mutex;
 
-use super::PayloadRow;
-use super::advisory::{LockHold, Locked, Unlent};
 #[cfg(feature = "testing")]
 use super::broker::Shared;
 use super::database::QueueDatabase;
-use super::engine::{Claimed, Events, Now, Settled, Settling, Shape};
-use super::error::SqlxBrokerError;
-use super::lease::{LeaseBook, Slot};
-use super::queue::Queue;
-use super::session::Session;
+use super::engine::{Claimed, Events, Now};
+use super::form::advisory::LockHold;
+use super::form::lease::settle::release;
 #[cfg(feature = "testing")]
-use super::testing::{off_clock, returns_after};
+use super::form::lease::settle::release_in_process;
+use super::form::lease::{LeaseBook, Slot};
+use super::form::row_lock::BatchTx;
+use super::queue::Queue;
+#[cfg(feature = "testing")]
+use super::testing::off_clock;
 use super::transactional::{InboxMode, Plain, TxHold};
 use super::tx::PoolTx;
+use super::{Lane, QueueRow, RowLane};
 
-mod leased;
-mod lent;
+pub(crate) mod settle;
 
-#[cfg(feature = "testing")]
-use leased::release_in_process;
-use leased::{release, settle_leased};
-use lent::{settle_in_session, settle_leased_lent, settle_lent, transaction_held};
-
-/// What a handler's outcome asks of the row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Outcome {
-    Ack,
-    Discard,
-    Retry,
-    RetryAfter(Duration),
-}
-
-/// The statement an outcome runs, once the cap is read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Step {
-    Ack,
-    Discard,
-    Retry,
-    RetryAfter(Duration),
-    DeadLetter(&'static str),
-}
-
-impl Step {
-    const fn event(self) -> &'static str {
-        match self {
-            Self::Ack => "ack",
-            Self::Discard => "discard",
-            Self::Retry => "retry",
-            Self::RetryAfter(_) => "retry_after",
-            Self::DeadLetter(_) => "dead_letter",
-        }
-    }
-
-    /// Whether the service implements the event this step runs.
-    const fn overridden(self, shape: Shape) -> bool {
-        match self {
-            Self::Ack => shape.custom_ack,
-            Self::Discard => shape.custom_discard,
-            Self::Retry => shape.custom_retry,
-            Self::RetryAfter(_) => shape.custom_retry_after,
-            Self::DeadLetter(_) => shape.custom_dead_letter,
-        }
-    }
-}
+use settle::Outcome;
 
 /// What holds a delivery's row until it settles.
-enum Hold<DB: QueueDatabase, Row: Events<DB>> {
+pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
     /// The delivery's own transaction: one claim, one row.
     Own(SyncWrapper<PoolTx<DB>>),
     /// A batch's transaction: one claim, its rows sharing the transaction.
@@ -99,131 +56,21 @@ enum Hold<DB: QueueDatabase, Row: Events<DB>> {
     Lent(TxHold<DB>),
 }
 
-/// The transaction a batch's deliveries share: each settles its own row on it, and the last one to
-/// finish ends it. The settlements become durable together: a statement that fails rolls the
-/// whole batch back.
-pub(crate) struct BatchTx<DB: QueueDatabase> {
-    tx: Mutex<Option<PoolTx<DB>>>,
-    open: AtomicUsize,
-    /// The settlements that wrote something for the commit to keep.
-    written: AtomicUsize,
-    /// Set by the first statement that fails: the transaction can only roll back from then on.
-    failed: AtomicBool,
-}
-
-impl<DB: QueueDatabase> BatchTx<DB> {
-    pub(crate) fn new(tx: PoolTx<DB>, deliveries: usize) -> Arc<Self> {
-        Arc::new(Self {
-            tx: Mutex::new(Some(tx)),
-            open: AtomicUsize::new(deliveries),
-            written: AtomicUsize::new(0),
-            failed: AtomicBool::new(false),
-        })
-    }
-
-    /// Marks one delivery finished; the last one commits what the batch wrote, or rolls back a
-    /// batch that wrote nothing or failed.
-    async fn finish(&self, wrote: bool, queue: &'static Queue) -> Result<(), sqlx::Error> {
-        if wrote {
-            self.written.fetch_add(1, Ordering::AcqRel);
-        }
-        if self.open.fetch_sub(1, Ordering::AcqRel) != 1 {
-            return Ok(());
-        }
-        let Some(tx) = self.tx.lock().await.take() else {
-            return Ok(());
-        };
-        if self.failed.load(Ordering::Acquire) {
-            self.undone(queue);
-            return tx.rollback().await;
-        }
-        if self.written.load(Ordering::Acquire) > 0 {
-            tx.commit().await
-        } else {
-            tx.rollback().await
-        }
-    }
-
-    /// Marks one delivery dropped unsettled: its row stays in the table, and the last delivery
-    /// to finish still commits what the others wrote.
-    fn release(self: Arc<Self>, queue: &'static Queue) {
-        if self.open.fetch_sub(1, Ordering::AcqRel) != 1 {
-            return;
-        }
-        // Every other delivery has finished, so nothing else holds the lock.
-        let Ok(mut held) = self.tx.try_lock() else {
-            return;
-        };
-        let Some(tx) = held.take() else {
-            return;
-        };
-        drop(held);
-        let failed = self.failed.load(Ordering::Acquire);
-        if failed {
-            self.undone(queue);
-        }
-        let commit = !failed && self.written.load(Ordering::Acquire) > 0;
-        // Without a runtime the transaction drops here: its connection closes, and the server rolls
-        // it back.
-        if let Ok(runtime) = Handle::try_current() {
-            runtime.spawn(async move {
-                let ended = if commit {
-                    tx.commit().await
-                } else {
-                    tx.rollback().await
-                };
-                if let Err(error) = ended {
-                    tracing::warn!(
-                        target: "ruststream_sqlx",
-                        subscription = queue.name,
-                        table = queue.table,
-                        row = queue.row,
-                        commit,
-                        %error,
-                        "a batch's transaction failed to end after a delivery was dropped \
-                         unsettled; its connection closes",
-                    );
-                }
-            });
-        }
-    }
-
-    /// Says how many settlements of a failed batch its rollback undoes.
-    fn undone(&self, queue: &'static Queue) {
-        let undone = self.written.load(Ordering::Acquire);
-        if undone > 0 {
-            tracing::warn!(
-                target: "ruststream_sqlx",
-                subscription = queue.name,
-                table = queue.table,
-                row = queue.row,
-                undone,
-                "a settlement of the batch failed, so the batch rolls back: settlements that \
-                 succeeded are undone and their rows return",
-            );
-        }
-    }
-
-    /// Records that a statement failed; the transaction can only roll back now.
-    fn fail(&self) {
-        self.failed.store(true, Ordering::Release);
-    }
-
-    fn has_failed(&self) -> bool {
-        self.failed.load(Ordering::Acquire)
-    }
-}
-
 /// One claimed row in a handler's hands.
 ///
-/// The payload is lent from the row, without a copy. In the row lock form the delivery holds the
-/// claim's transaction: settling it runs one statement and commits, and dropping it unsettled
-/// rolls the transaction back, which returns the row to the queue at once. In the lease form the
-/// delivery holds the lease its claim wrote, which its subscription extends each half lease:
-/// settling it runs one statement on a connection of its own, which takes effect only while the
-/// row still holds that lease. A lease delivery dropped unsettled releases its row at once, on the
-/// runtime the broker connected on; with that runtime gone, the row returns once the lease runs
-/// out.
+/// In payload mode the payload is lent from the row, without a copy. In row mode the delivery
+/// lends its handler the row itself, as the driver read it, with no codec in between. A `headers`
+/// column becomes the delivery's headers, and the row it lends holds that column empty. A claimed
+/// id without a row, and a row the driver could not read, lend no row: the runtime settles them by
+/// the decode policy.
+///
+/// In the row lock form the delivery holds the claim's
+/// transaction: settling it runs one statement and commits, and dropping it unsettled rolls the
+/// transaction back, which returns the row to the queue at once. In the lease form the delivery
+/// holds the lease its claim wrote, which its subscription extends each half lease: settling it
+/// runs one statement on a connection of its own, which takes effect only while the row still
+/// holds that lease. A lease delivery dropped unsettled releases its row at once, on the runtime
+/// the broker connected on; with that runtime gone, the row returns once the lease runs out.
 ///
 /// In the advisory lock form the delivery holds a connection whose session holds the lock on the
 /// row's key: settling it runs one statement on that connection, then releases the lock and
@@ -231,7 +78,7 @@ impl<DB: QueueDatabase> BatchTx<DB> {
 /// runtime the broker connected on, after releasing the lock, and its row returns at once; with
 /// that runtime gone the connection closes as it drops, and the server ends its session and its
 /// lock. A settlement after [`shutdown`](ruststream::ConnectedBroker::shutdown) released its lock
-/// fails with [`SqlxBrokerError::Closed`].
+/// fails with [`SqlxBrokerError::Closed`](crate::SqlxBrokerError::Closed).
 ///
 /// In transactional mode the delivery lends its handler the transaction it settles in, and the
 /// handler's writes go with the settlement: acknowledgement runs its statement and commits them
@@ -239,29 +86,97 @@ impl<DB: QueueDatabase> BatchTx<DB> {
 /// transactional mode. A statement that fails rolls the whole transaction back, and the row
 /// returns at once. In the lease form the acknowledgement runs in the delivery's own transaction by
 /// the lease it holds: a lease lost meanwhile rolls everything back and the settlement fails with
-/// [`SqlxBrokerError::LeaseLost`]. In the advisory lock form the transaction runs on the session
-/// that holds the key, and ends before the key's release. A delivery dropped unsettled closes its
-/// transaction's connection, and the server rolls the transaction back.
+/// [`SqlxBrokerError::LeaseLost`](crate::SqlxBrokerError::LeaseLost). In the advisory lock form
+/// the transaction runs on the session that holds the key, and ends before the key's release. A
+/// delivery dropped unsettled closes its transaction's connection, and the server rolls the
+/// transaction back.
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
-/// # use ruststream_sqlx::Inbox;
-/// # #[derive(Inbox, sqlx::FromRow)]
-/// # #[inbox(table = "jobs")]
-/// # pub struct Job { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
-/// use ruststream::IncomingMessage;
-/// use ruststream_sqlx::InboxDelivery;
+/// use std::time::Duration;
 ///
-/// // A delivery whose payload is not JSON goes back to the queue for a later attempt.
-/// pub async fn settle(delivery: InboxDelivery<sqlx::Postgres, Job>) -> Result<(), ruststream::AckError> {
-///     if serde_json::from_slice::<serde_json::Value>(delivery.payload()).is_ok() {
-///         delivery.ack().await
-///     } else {
-///         delivery.nack(true).await
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// # enum Sent { Yes, Later, Never }
+/// # async fn deliver(_: &Email) -> Sent { Sent::Yes }
+/// // Each claimed row reaches `send` as an `InboxDelivery<Postgres, SendEmail>`, and what the
+/// // handler returns settles it.
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     match deliver(email).await {
+///         Sent::Yes => HandlerOutcome::ack(),
+///         // The mail server asked to come back later: the row returns once the minute passed.
+///         Sent::Later => HandlerOutcome::retry_after(Duration::from_secs(60)),
+///         // The address does not exist: the row is finished without a send.
+///         Sent::Never => HandlerOutcome::drop(),
 ///     }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// In row mode the handler borrows the row the delivery holds, beside what it reads off the
+/// delivery:
+///
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use sqlx::PgPool;
+///
+/// /// A mail to send: the table has no payload column, so a handler takes the row itself.
+/// #[derive(Inbox, sqlx::FromRow, Clone)]
+/// #[inbox(table = "mail_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     to: String,
+/// }
+///
+/// # async fn deliver(_: &str) -> bool { true }
+/// // The delivery lends `send` its row and reports the attempt the table counted.
+/// #[subscriber(InboxQueue::<SendEmail>::new("mail"))]
+/// async fn send(email: &SendEmail, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
+///     if deliver(&email.to).await {
+///         HandlerOutcome::ack()
+///     } else if attempt < Some(3) {
+///         HandlerOutcome::retry()
+///     } else {
+///         HandlerOutcome::drop()
+///     }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
 /// }
 /// # }
 /// # fn main() {}
@@ -269,14 +184,61 @@ impl<DB: QueueDatabase> BatchTx<DB> {
 pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     claimed: Claimed<Row>,
     headers: HeaderMap,
-    hold: Option<Hold<DB, Row>>,
+    pub(super) hold: Option<Hold<DB, Row>>,
     queue: &'static Queue,
     /// The subscription's handle on the pool, which the delivery lends its handler.
-    pool: &'static Pool<DB>,
+    pub(super) pool: &'static Pool<DB>,
+    /// In row mode, whether the handler borrowed the row; nothing in payload mode.
+    row_lent: <Row::Lane as Lane<Row>>::Lent,
     /// The connection of a delivery claimed in process: its settlement keeps the harness's books.
     #[cfg(feature = "testing")]
     in_process: Option<Arc<Shared<DB>>>,
     _mode: PhantomData<fn() -> Mode>,
+}
+
+/// What a delivery of a claimed id without a row reports: the row is gone.
+static ROW_GONE: LazyLock<CodecError> = LazyLock::new(|| CodecError::Decode(Box::new(RowGone)));
+
+/// The row of a claimed id was gone when the claim read it: the fetch returned no row for the id.
+#[derive(Debug, Error)]
+#[error("the claimed row is gone: the fetch returned no row for its id")]
+struct RowGone;
+
+/// What a subscription to a table in row mode logs when a handler reads a payload from a delivery
+/// whose row it never borrowed: a handler that decodes a payload, mounted where `row`, the struct
+/// that describes the table, is what a handler takes.
+fn unlent_payload(row: &str) -> String {
+    format!(
+        "the table is in row mode: its deliveries lend the row itself and carry no payload, so a \
+         handler that decodes one fails each delivery by the decode policy; take `&{row}` as the \
+         handler's input, `&[{row}]` in a batch"
+    )
+}
+
+/// The subscriptions that logged [`unlent_payload`], by their interned queue: each logs it once.
+static UNLENT_LOGGED: Mutex<Vec<&'static Queue>> = Mutex::new(Vec::new());
+
+/// Logs [`unlent_payload`], once per subscription.
+// Why a runtime warning: the core's codec lane accepts a handler on any subscription, so a handler
+// that decodes a payload mounts on a table in row mode; refusing it at compile time needs a hook
+// in the core. Out of line and cold, as only such a handler reaches it, and the lock with it.
+#[cold]
+#[inline(never)]
+fn read_unlent(queue: &'static Queue) {
+    let mut logged = UNLENT_LOGGED.lock().unwrap_or_else(PoisonError::into_inner);
+    if logged.iter().any(|seen| ptr::eq(*seen, queue)) {
+        return;
+    }
+    logged.push(queue);
+    drop(logged);
+    tracing::warn!(
+        target: "ruststream_sqlx",
+        subscription = queue.name,
+        table = queue.table,
+        row = queue.row,
+        "{}",
+        unlent_payload(queue.row),
+    );
 }
 
 impl<DB: QueueDatabase, Row: Events<DB>, Mode> Debug for InboxDelivery<DB, Row, Mode> {
@@ -291,7 +253,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Debug for InboxDelivery<DB, Row, 
 impl<DB, Row, Mode> InboxDelivery<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     /// A delivery that owns its claim's transaction.
@@ -361,6 +323,9 @@ where
         queue: &'static Queue,
         pool: &'static Pool<DB>,
     ) -> Self {
+        // A row's headers move into the delivery in both modes: in row mode the row a handler
+        // borrows holds its headers column empty, and middleware reads the headers off the
+        // delivery.
         let headers = match &mut claimed {
             Claimed::Row(row) => Row::take_headers(row),
             Claimed::Missing(id) => {
@@ -370,8 +335,8 @@ where
                     table = queue.table,
                     row = queue.row,
                     ?id,
-                    "the fetch returned no row for a claimed id; its delivery carries no payload \
-                     and fails to decode",
+                    "the fetch returned no row for a claimed id; the decode-failure policy settles \
+                     its delivery",
                 );
                 HeaderMap::new()
             }
@@ -384,8 +349,8 @@ where
                     ?id,
                     attempt,
                     %error,
-                    "the row does not decode into its struct; its delivery carries no payload and \
-                     the decode-failure policy settles it",
+                    "the row does not decode into its struct; the decode-failure policy settles \
+                     its delivery",
                 );
                 HeaderMap::new()
             }
@@ -396,6 +361,7 @@ where
             hold: Some(hold),
             queue,
             pool,
+            row_lent: Default::default(),
             #[cfg(feature = "testing")]
             in_process: None,
             _mode: PhantomData,
@@ -411,376 +377,83 @@ where
             .then(|| Arc::clone(connection));
         self
     }
-
-    /// The declared destination, where the row's `attempt` has reached the declared cap.
-    fn spent(&self) -> Option<&'static str> {
-        let attempt = self.redelivery_count()?;
-        self.queue
-            .cap
-            .filter(|cap| attempt >= u64::from(cap.attempts.get()))
-            .map(|cap| cap.dead_letter)
-    }
-
-    /// What `outcome` runs: its own statement, or the declared move once the attempts are spent.
-    fn step(&self, outcome: Outcome) -> Step {
-        let asked = match outcome {
-            Outcome::Ack => return Step::Ack,
-            Outcome::Discard => return Step::Discard,
-            Outcome::Retry => Step::Retry,
-            Outcome::RetryAfter(delay) => Step::RetryAfter(delay),
-        };
-        let Some(dead_letter) = self.spent() else {
-            return asked;
-        };
-        tracing::warn!(
-            target: "ruststream_sqlx",
-            subscription = self.queue.name,
-            table = self.queue.table,
-            row = self.queue.row,
-            id = ?self.claimed.id::<DB>(),
-            attempt = self.redelivery_count(),
-            dead_letter,
-            "the row's attempts are spent",
-        );
-        Step::DeadLetter(dead_letter)
-    }
-
-    async fn settle(self, outcome: Outcome) -> Result<(), AckError> {
-        let step = self.step(outcome);
-        #[cfg(feature = "testing")]
-        if let Some(connection) = self.in_process.clone() {
-            return self.settle_in_process(connection, step).await;
-        }
-        self.run(step, Now::default()).await
-    }
-
-    /// The settlement of an in-process delivery: on the test's clock, off a paused one, and in
-    /// the harness's books.
-    #[cfg(feature = "testing")]
-    async fn settle_in_process(
-        self,
-        connection: Arc<Shared<DB>>,
-        step: Step,
-    ) -> Result<(), AckError> {
-        let harness = &connection.harness;
-        let name = self.queue.name;
-        let leased = matches!(self.hold, Some(Hold::Lease { .. }));
-        let advised = matches!(self.hold, Some(Hold::Advisory(_)));
-        // A retry's row is counted again before the statement that returns it, so a claim that
-        // takes it at once finds it counted.
-        if step == Step::Retry {
-            harness.expect(name);
-        }
-        let settled = off_clock(self.run(step, harness.now()))
-            .await
-            .unwrap_or_else(|| Err(AckError::Broker(Box::new(SqlxBrokerError::Closed))));
-        match step {
-            // A retry of a row lock delivery returns the row whatever its statement did, through
-            // the rollback, and an advisory one through the unlock or the close of its session; a
-            // leased row comes back only from a release that took effect, and a row whose session
-            // `shutdown` released never comes back to this connection.
-            Step::Retry if (leased || (advised && is_closed(&settled))) && settled.is_err() => {
-                harness.refused(name);
-            }
-            // The row comes back once its delay runs out, which `TestApp::advance` fires.
-            Step::RetryAfter(delay) if settled.is_ok() => returns_after(&connection, name, delay),
-            _ => {}
-        }
-        harness.released();
-        settled
-    }
-
-    /// Runs the statement of `step` and ends the transaction it ran on.
-    async fn run(mut self, step: Step, now: Now) -> Result<(), AckError> {
-        // A delivery holds its transaction until it settles, and settling consumes it.
-        let Some(hold) = self.hold.take() else {
-            return Ok(());
-        };
-        let queue = self.queue;
-        let failed = |source: sqlx::Error| {
-            AckError::Broker(Box::new(SqlxBrokerError::Sqlx {
-                subscription: queue.name.to_owned(),
-                table: queue.table.to_owned(),
-                row: queue.row,
-                statement: step.event(),
-                source: Box::new(source),
-            }))
-        };
-        let cx = Settling { queue, now };
-        let id = self.claimed.id::<DB>();
-        let settled = match hold {
-            Hold::Own(tx) => settle_own::<DB, Row>(tx.into_inner(), &cx, id, step).await,
-            Hold::Lent(hold) => {
-                let Some(returned) = hold.settle() else {
-                    // Why a runtime error: the framework hands a handler its `Ctx` values owned
-                    // and `'static`, so a handler may move its `Tx` somewhere that outlives it.
-                    return Err(transaction_held(queue, id));
-                };
-                settle_lent::<DB, Row>(returned, &cx, id, step).await
-            }
-            Hold::Lease {
-                book,
-                slot,
-                tx: None,
-            } => settle_leased::<DB, Row>(book, slot, &cx, id, step).await,
-            Hold::Lease {
-                book,
-                slot,
-                tx: Some(hold),
-            } => {
-                let Some(returned) = hold.settle() else {
-                    // Why a runtime error: as in the row lock form, a handler may move its `Tx`
-                    // somewhere that outlives it. The row goes back once its lease runs out, which
-                    // the keeper extends no more; nothing here waits for an extension the kept
-                    // transaction may hold up.
-                    let _ = book.take_ahead(slot);
-                    return Err(transaction_held(queue, id));
-                };
-                settle_leased_lent::<DB, Row>(book, slot, returned, &cx, id, step).await
-            }
-            Hold::Advisory(hold) => match hold.lend() {
-                Ok((lent, panicked)) => {
-                    settle_advised::<DB, Row>(hold, lent, panicked, &cx, id, step).await
-                }
-                // Why a runtime error: `shutdown` releases the lock of a delivery whose handler
-                // still works, a race between two tasks no type can order.
-                Err(Unlent::Released) => {
-                    return Err(AckError::Broker(Box::new(SqlxBrokerError::Closed)));
-                }
-                // Why a runtime error: as in the row lock form, a handler may move its `Tx`
-                // somewhere that outlives it. The slot waits for the session the handler kept, and
-                // ends it when it comes back.
-                Err(Unlent::Borrowed) => return Err(transaction_held(queue, id)),
-            },
-            Hold::Batch(batch) => {
-                let outcome = if batch.has_failed() {
-                    // The transaction is aborted: a statement now would only fail too.
-                    None
-                } else {
-                    let mut guard = batch.tx.lock().await;
-                    Some(match guard.as_mut() {
-                        Some(tx) => run_step::<DB, Row>(tx, &cx, id, None, step).await,
-                        None => Err(sqlx::Error::Protocol(
-                            "the batch's transaction ended before this delivery settled".to_owned(),
-                        )),
-                    })
-                };
-                if matches!(outcome, Some(Err(_))) {
-                    batch.fail();
-                }
-                // The batch counts this delivery finished whatever its statement did, so the last
-                // one still ends the transaction.
-                let wrote = matches!(outcome, Some(Ok(Settled::Written)));
-                let finished = batch.finish(wrote, queue).await;
-                let Some(outcome) = outcome else {
-                    return Err(AckError::Broker(Box::new(
-                        SqlxBrokerError::BatchRolledBack {
-                            subscription: queue.name.to_owned(),
-                            table: queue.table.to_owned(),
-                            row: queue.row,
-                        },
-                    )));
-                };
-                outcome.and_then(|settled| finished.map(|()| settled))
-            }
-        };
-        match settled.map_err(failed)? {
-            Settled::Written | Settled::Untouched => Ok(()),
-            Settled::Lost => Err(lease_lost(queue, id)),
-        }
-    }
 }
 
-/// Settles a delivery of the row `id` in the claim's transaction `tx`, which it owns: the
-/// statement of `step`, then the commit, or the rollback where the statement wrote nothing the
-/// commit should keep.
-///
-/// A statement that fails rolls the transaction back, and the row returns at once; a rollback that
-/// fails leaves the transaction to its drop, which closes the connection.
-async fn settle_own<DB, Row>(
-    mut tx: PoolTx<DB>,
-    cx: &Settling,
-    id: &Row::Id,
-    step: Step,
-) -> Result<Settled, sqlx::Error>
+impl<DB, Row> InboxDelivery<DB, Row>
 where
     DB: QueueDatabase,
-    Row: Events<DB>,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
 {
-    let settled = match run_step::<DB, Row>(&mut tx, cx, id, None, step).await {
-        Ok(settled) => settled,
-        Err(error) => {
-            let _ = tx.rollback().await;
-            return Err(error);
+    /// The delivery of a row a [`RowBatch`](crate::RowBatch) lent its handler, held by `hold`:
+    /// `headers` were taken from the row when the batch was built, and the row counts as lent.
+    pub(super) fn of_batch(
+        row: Row,
+        headers: HeaderMap,
+        hold: Hold<DB, Row>,
+        queue: &'static Queue,
+        pool: &'static Pool<DB>,
+    ) -> Self {
+        Self {
+            claimed: Claimed::Row(row),
+            headers,
+            hold: Some(hold),
+            queue,
+            pool,
+            row_lent: AtomicBool::new(true),
+            #[cfg(feature = "testing")]
+            in_process: None,
+            _mode: PhantomData,
         }
-    };
-    match settled {
-        Settled::Written => tx.commit().await?,
-        Settled::Untouched | Settled::Lost => tx.rollback().await?,
     }
-    Ok(settled)
 }
 
-/// The error of a settlement that found its row under another lease.
-fn lease_lost<Id: Debug>(queue: &Queue, id: &Id) -> AckError {
-    AckError::Broker(Box::new(SqlxBrokerError::LeaseLost {
-        subscription: queue.name.to_owned(),
-        table: queue.table.to_owned(),
-        row: queue.row,
-        id: format!("{id:?}"),
-    }))
-}
-
-/// Settles the delivery of `hold` on its `lent` session, which holds the lock on its row's key: the
-/// statement of `step`, then the release of the key, never before the statement returned, on the
-/// same session. The session then goes back to the pool, or closes where the database did not
-/// confirm the release, and the delivery leaves the book. Dropped midway, the settlement closes
-/// the session after an unlock of the key.
-///
-/// In transactional mode the step settles in the transaction the handler wrote in, which ends
-/// before the release: committed by an acknowledgement, rolled back first by any other step, and
-/// by any step after a handler that `panicked`.
-///
-/// A step that changes no row has still settled: the lock, not a token, holds the row.
-async fn settle_advised<DB, Row>(
-    hold: LockHold<DB>,
-    mut lent: Locked<'static, DB>,
-    panicked: bool,
-    cx: &Settling,
-    id: &Row::Id,
-    step: Step,
-) -> Result<Settled, sqlx::Error>
+impl<DB, Row, Mode> Carries<Row> for InboxDelivery<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB>,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
+    Mode: InboxMode,
 {
-    let settled = if cx.queue.prepared.transactional {
-        settle_in_session::<DB, Row>(lent.session(), cx, id, step, panicked).await
-    } else {
-        run_advised::<DB, Row>(lent.session(), cx, id, step).await
-    };
-    if hold.book().process() {
-        lent.session().free_in_process();
-    } else {
-        let unlocked = {
-            let (conn, key) = lent.conn_and_key();
-            Row::unlock(conn, cx, key).await
-        };
-        let key = lent.key();
-        match unlocked {
-            Ok(true) => lent.session().set_locked(false),
-            Ok(false) => tracing::warn!(
-                target: "ruststream_sqlx",
-                subscription = cx.queue.name,
-                table = cx.queue.table,
-                row = cx.queue.row,
-                ?id,
-                key,
-                "a settlement's unlock found the session not holding the row's key; the session \
-                 closes",
-            ),
-            Err(error) => tracing::warn!(
-                target: "ruststream_sqlx",
-                subscription = cx.queue.name,
-                table = cx.queue.table,
-                row = cx.queue.row,
-                ?id,
-                key,
-                %error,
-                "a settlement's unlock failed; the session closes, which ends its lock",
-            ),
-        }
-    }
-    let (session, key) = lent.into_parts();
-    session.release();
-    hold.leave(key.into_owned());
-    settled
-}
-
-/// Runs the statement of `step` for the row `id` on an advisory delivery's `session`. A dead letter
-/// the dialect splits in two runs in one transaction on the session, so a half-moved row never
-/// shows.
-async fn run_advised<DB, Row>(
-    session: &mut Session<DB>,
-    cx: &Settling,
-    id: &Row::Id,
-    step: Step,
-) -> Result<Settled, sqlx::Error>
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-{
-    let split = matches!(step, Step::DeadLetter(_)) && cx.queue.prepared.dead_letter_then.is_some();
-    if !split {
-        return run_step::<DB, Row>(session.conn(), cx, id, None, step).await;
-    }
-    // Open before the statement leaves: a begin dropped midway may have started the transaction,
-    // and a session that may hold one closes instead of going back to the pool.
-    session.set_open(true);
-    DB::TransactionManager::begin(session.conn(), None).await?;
-    match run_step::<DB, Row>(session.conn(), cx, id, None, step).await {
-        Ok(settled) => {
-            DB::TransactionManager::commit(session.conn()).await?;
-            session.set_open(false);
-            Ok(settled)
-        }
-        Err(error) => {
-            // A rollback that fails leaves the transaction open, and the session closes.
-            if DB::TransactionManager::rollback(session.conn())
-                .await
-                .is_ok()
-            {
-                session.set_open(false);
+    fn carried(&self) -> Option<&Row> {
+        match &self.claimed {
+            Claimed::Row(row) => {
+                // Relaxed: one task handles a delivery, and its own `payload` alone reads the flag.
+                self.row_lent.store(true, Ordering::Relaxed);
+                Some(row)
             }
-            Err(error)
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
         }
-    }
-}
-
-/// Whether a settlement failed because the broker shut down.
-#[cfg(feature = "testing")]
-fn is_closed(settled: &Result<(), AckError>) -> bool {
-    matches!(settled, Err(AckError::Broker(source))
-        if matches!(source.downcast_ref::<SqlxBrokerError>(), Some(SqlxBrokerError::Closed)))
-}
-
-/// Runs the statement of `step` for the row `id` on `conn`; `held` is the delivery's lease in the
-/// lease form.
-async fn run_step<DB, Row>(
-    conn: &mut DB::Connection,
-    cx: &Settling,
-    id: &Row::Id,
-    held: Option<&Row::Token>,
-    step: Step,
-) -> Result<Settled, sqlx::Error>
-where
-    DB: QueueDatabase,
-    Row: Events<DB>,
-{
-    match step {
-        Step::Ack => Row::ack(conn, cx, id, held).await,
-        Step::Discard => Row::discard(conn, cx, id, held).await,
-        Step::Retry => Row::retry(conn, cx, id, held).await,
-        Step::RetryAfter(delay) => Row::retry_after(conn, cx, id, held, delay).await,
-        Step::DeadLetter(destination) => Row::dead_letter(conn, cx, id, held, destination).await,
     }
 }
 
 impl<DB, Row, Mode> IncomingMessage for InboxDelivery<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     fn payload(&self) -> &[u8] {
         match &self.claimed {
-            Claimed::Row(row) => row.payload(),
+            Claimed::Row(row) => {
+                // A constant `false` in payload mode, where the check folds away.
+                if <Row::Lane as Lane<Row>>::unlent(&self.row_lent) {
+                    read_unlent(self.queue);
+                }
+                <Row::Lane as Lane<Row>>::payload(row)
+            }
             Claimed::Missing(_) | Claimed::Undecodable { .. } => &[],
         }
     }
 
     fn headers(&self) -> &HeaderMap {
         &self.headers
+    }
+
+    fn decode_error(&self) -> Option<&CodecError> {
+        match &self.claimed {
+            Claimed::Row(_) => None,
+            Claimed::Missing(_) => Some(LazyLock::force(&ROW_GONE)),
+            Claimed::Undecodable { error, .. } => Some(error),
+        }
     }
 
     fn partition_key(&self) -> Option<&[u8]> {
@@ -899,5 +572,20 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
         if let Some(connection) = in_process {
             connection.harness.returned(self.queue.name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unlent_payload;
+
+    #[test]
+    fn a_payload_read_from_a_row_mode_delivery_names_the_row_to_take() {
+        assert_eq!(
+            unlent_payload("app::SendEmail"),
+            "the table is in row mode: its deliveries lend the row itself and carry no payload, so \
+             a handler that decodes one fails each delivery by the decode policy; take \
+             `&app::SendEmail` as the handler's input, `&[app::SendEmail]` in a batch",
+        );
     }
 }

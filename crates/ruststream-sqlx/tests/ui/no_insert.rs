@@ -1,12 +1,12 @@
 use ruststream_sqlx::{Inbox, Insert};
 use sqlx::PgConnection;
 
-#[derive(sqlx::FromRow)]
+#[derive(sqlx::FromRow, Clone)]
 struct Envelope {
     subject: String,
 }
 
-#[derive(Inbox, sqlx::FromRow)]
+#[derive(Inbox, sqlx::FromRow, Clone)]
 #[inbox(table = "jobs")]
 struct Flattening {
     #[field(id, generated)]

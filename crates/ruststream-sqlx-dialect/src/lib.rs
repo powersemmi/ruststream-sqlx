@@ -51,27 +51,93 @@
 //! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
 //! `sqlite` features. [`Postgres`] and [`MySql`] implement [`RowLock`], [`Lease`] and
 //! [`Advisory`], and [`MySql`] serves MariaDB too; [`Sqlite`] implements [`Lease`] and
-//! [`Advisory`]. A database without a built-in dialect, or a service that writes a statement its
-//! own way, takes a type of the service's own: it implements [`Dialect`], the trait of each form
-//! it builds and [`Opens`] for each level it opens, with each statement its own or delegated to a
-//! built-in dialect it wraps.
+//! [`Advisory`]. A database without a built-in dialect takes a type of the service's own: it
+//! implements [`Dialect`], the trait of each form it builds and [`Opens`] for each level it opens,
+//! and writes every statement in its database's SQL. A service on a built-in dialect that writes
+//! one statement its own way writes it as an event of its inbox: `#[inbox(custom(ack))]` and an
+//! `Ack` implementation of its own, in
+//! [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#an-event-of-the-services-own).
 //!
 //! # Examples
 //!
+//! A dialect for SQL Server, a database without a built-in one, in the row lock form. The service
+//! mounts it with `SqlxBroker::with_dialect`, as the [`ruststream-sqlx`
+//! overview](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/#a-dialect-of-the-services-own)
+//! shows.
+//!
 //! ```
-//! # #[cfg(feature = "postgres")] {
-//! use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
+//! # use std::num::NonZeroUsize;
+//! use ruststream_sqlx_dialect::{
+//!     ClaimShape, Dialect, Opening, Param, RowLock, Statement, StatementError, TableSpec,
+//! };
+//! # use ruststream_sqlx_dialect::TableName;
 //!
-//! const JOBS: TableSpec<'static> =
-//!     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("payload"));
+//! /// SQL Server: bracket-quoted names, `@p1` placeholders, rows claimed under an update lock that
+//! /// skips the rows another claim holds.
+//! #[derive(Debug)]
+//! pub struct Mssql;
 //!
-//! let claim = Postgres.lock_claim(&JOBS, ClaimShape::Rows)?;
-//! assert_eq!(
-//!     claim.sql(),
-//!     r#"SELECT "job_id", "payload" FROM "jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
-//! );
-//! # }
-//! # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+//! impl Dialect for Mssql {
+//!     fn name(&self) -> &'static str {
+//!         "mssql"
+//!     }
+//!
+//!     fn quote_into(&self, ident: &str, out: &mut String) {
+//!         out.push('[');
+//!         out.push_str(&ident.replace(']', "]]"));
+//!         out.push(']');
+//!     }
+//!
+//!     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) {
+//!         out.push_str("@p");
+//!         out.push_str(&index.to_string());
+//!     }
+//!
+//!     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+//!         let mut sql = String::from("DELETE FROM ");
+//!         self.quote_into(spec.table(), &mut sql);
+//!         sql.push_str(" WHERE ");
+//!         self.quote_into(spec.id().name(), &mut sql);
+//!         sql.push_str(" = ");
+//!         self.placeholder_into(NonZeroUsize::MIN, &mut sql);
+//!         Ok(Statement::new(sql, [Param::Id]))
+//!     }
+//!
+//!     // SQL Server starts a transaction with `BEGIN TRANSACTION`.
+//!     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+//!         match opening {
+//!             Opening::Default => Ok(Some("BEGIN TRANSACTION")),
+//!             other => Err(StatementError::UnsupportedOpening {
+//!                 dialect: self.name(),
+//!                 opening: other.name(),
+//!             }),
+//!         }
+//!     }
+//!
+//!     // The statements this service never runs refuse the table.
+//! #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+//! #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+//! #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+//! #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+//! #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+//! #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+//! #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+//! }
+//!
+//! // The row lock form, which the service's `email_jobs` table takes.
+//! impl RowLock for Mssql {
+//!     fn lock_claim(
+//!         &self,
+//!         _spec: &TableSpec<'_>,
+//!         _shape: ClaimShape,
+//!     ) -> Result<Statement, StatementError> {
+//!         Ok(Statement::new(
+//!             "SELECT TOP (@p1) [job_id], [payload] FROM [email_jobs] \
+//!              WITH (UPDLOCK, READPAST, ROWLOCK) ORDER BY [job_id]",
+//!             [Param::Limit],
+//!         ))
+//!     }
+//! }
 //! ```
 
 #![forbid(unsafe_code)]

@@ -57,21 +57,37 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 ///
 /// # Examples
 ///
+/// A subscription asks SQLite for the statements of its table, as `ruststream-sqlx` does when the
+/// subscription starts:
+///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Lease, Param, Sqlite, TableSpec};
+/// use ruststream_sqlx_dialect::{
+///     Advisory, Column, Form, KeyPart, Sqlite, Statement, StatementError, TableSpec,
+/// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .attempt(Column::new("attempt"))
-///         .payload(Column::new("payload"));
-///
-/// let claim = Sqlite.lease_claim(&JOBS, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     "UPDATE `jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `jobs` WHERE (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `job_id` LIMIT ?) RETURNING `job_id`, `attempt` - 1 AS `attempt`, `locked_until`, `payload`",
+/// // The jobs table as `#[derive(Inbox)]` describes it, with `advisory_lock = "jobs-{job_id}"`.
+/// const JOBS: TableSpec<'static> = TableSpec::new(
+///     "jobs",
+///     Column::new("job_id"),
+///     Form::Advisory(&[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")]),
 /// );
-/// assert_eq!(claim.params(), [Param::Lease, Param::LeaseNow, Param::Limit]);
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+///
+/// // What a subscription to an advisory lock table prepares: the claim of candidates, and the
+/// // lock on a key where the database keeps locks; without one the broker keeps the keys in work
+/// // in the process.
+/// fn advisory_statements(
+///     dialect: &impl Advisory,
+///     spec: &TableSpec<'_>,
+/// ) -> Result<(Statement, Option<Statement>), StatementError> {
+///     Ok((dialect.advisory_claim(spec)?, dialect.lock()))
+/// }
+///
+/// fn main() -> Result<(), StatementError> {
+///     // SQLite keeps no locks a session holds, so the process keeps the keys in work.
+///     let (_claim, lock) = advisory_statements(&Sqlite, &JOBS)?;
+///     assert!(lock.is_none());
+///     Ok(())
+/// }
 /// ```
 ///
 /// A table in the row lock form finds no claim here, so a subscription to one does not compile:
@@ -89,20 +105,6 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// }
 ///
 /// let claim = claims_its_rows(&Sqlite);
-/// ```
-///
-/// and its settlements are refused, naming the form:
-///
-/// ```
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Sqlite, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
-///
-/// let refused = Sqlite.ack(&JOBS).map_err(|refused| format!("table `jobs`: {refused}"));
-/// assert_eq!(
-///     refused,
-///     Err("table `jobs`: the sqlite dialect has no statements for the row lock form".to_owned()),
-/// );
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Sqlite;

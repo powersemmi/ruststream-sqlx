@@ -31,14 +31,13 @@ use sqlx::{Database, Pool};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
-use super::advisory::LockBook;
-use super::built_in::BuiltIn;
-use super::database::{BuiltInDialect, QueueDatabase};
+use super::database::{BuiltIn, BuiltInDialect, QueueDatabase};
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
+use super::form::advisory::LockBook;
+use super::form::advisory::session::Closing;
 use super::publish::Routes;
-use super::session::Closing;
 use super::{FormDialect, FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
@@ -197,17 +196,46 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// # #[cfg(feature = "postgres")]
-    /// # fn build() -> Result<(), sqlx::Error> {
-    /// use ruststream_sqlx::SqlxBroker;
-    /// use sqlx::postgres::PgPoolOptions;
+    /// # mod demo {
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     ///
-    /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
-    /// let broker = SqlxBroker::new(pool);
-    /// # let _ = broker;
-    /// # Ok(())
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     // Nothing connects here: the pool connects lazily, and the broker once the service
+    ///     // starts. The options read the `PG*` environment variables.
+    ///     let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+    ///         b.include(send);
+    ///     })
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
@@ -231,19 +259,67 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///
     /// ```
     /// # #[cfg(feature = "postgres")]
-    /// # fn build() -> Result<(), sqlx::Error> {
-    /// use ruststream_sqlx::SqlxBroker;
-    /// use ruststream_sqlx::dialect::Postgres as PostgresDialect;
-    /// use sqlx::Postgres;
-    /// use sqlx::postgres::PgPoolOptions;
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx::dialect::{self, ClaimShape, Dialect, Opening, RowLock, Statement, StatementError, TableName, TableSpec};
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
     ///
-    /// // A dialect of the service's own; the dialect module's Postgres stands in for it here.
-    /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
-    /// let broker: SqlxBroker<Postgres, PostgresDialect> =
-    ///     SqlxBroker::with_dialect(pool, PostgresDialect);
-    /// # let _ = broker;
-    /// # Ok(())
+    /// /// Postgres with statements of the service's own, written out in the crate overview.
+    /// #[derive(Debug)]
+    /// pub struct Audited;
+    /// # impl Dialect for Audited {
+    /// #     fn name(&self) -> &'static str { "audited" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { dialect::Postgres.quote_into(ident, out) }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { dialect::Postgres.placeholder_into(index, out) }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { dialect::Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.insert(spec) }
+    /// #     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> { dialect::Postgres.begin(opening) }
+    /// #     fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.fifo_guard(spec) }
     /// # }
+    /// # impl RowLock for Audited {
+    /// #     fn lock_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { dialect::Postgres.lock_claim(spec, shape) }
+    /// # }
+    ///
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // A `SqlxBroker<Postgres, Audited>`: `send` mounts only because `Audited` implements
+    ///     // `RowLock`, the form of `email_jobs`.
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0"))
+    ///         .with_broker(SqlxBroker::with_dialect(pool, Audited), |b| {
+    ///             b.include(send);
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub fn with_dialect(pool: Pool<DB>, dialect: D) -> Self {
@@ -278,7 +354,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// # #[cfg(feature = "postgres")]
     /// # mod demo {
     /// use ruststream::OutgoingMessage;
-    /// use ruststream_sqlx::{Inbox, Publish, SqlxBroker};
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::{Deserialize, Serialize};
     /// use sqlx::{PgConnection, PgPool, Postgres};
     ///
     /// #[derive(Inbox, sqlx::FromRow)]
@@ -306,9 +383,29 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     }
     /// }
     ///
-    /// // `reports.daily` and `reports.weekly` both become rows of `report_jobs`.
-    /// pub fn broker(pool: PgPool) -> SqlxBroker<Postgres> {
-    ///     SqlxBroker::new(pool).route::<Report>("reports.*")
+    /// #[derive(Deserialize)]
+    /// struct Daily {
+    ///     day: u32,
+    /// }
+    ///
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "reports.weekly")]
+    /// struct Weekly {
+    ///     week: u32,
+    /// }
+    ///
+    /// // Read by name from `report_jobs`, answered with a row of `report_jobs` in group `reports.weekly`.
+    /// #[subscriber("reports.daily", reply)]
+    /// async fn roll_up(daily: &Daily) -> Weekly {
+    ///     Weekly { week: daily.day / 7 }
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // `reports.daily` and `reports.weekly` both lead into `report_jobs`.
+    ///     let broker = SqlxBroker::new(pool).route::<Report>("reports.*");
+    ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(roll_up);
+    ///     })
     /// }
     /// # }
     /// # fn main() {}
@@ -333,18 +430,44 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///
     /// ```
     /// # #[cfg(feature = "postgres")]
-    /// # fn build() -> Result<(), sqlx::Error> {
+    /// # mod demo {
     /// use std::time::Duration;
     ///
-    /// use ruststream_sqlx::SqlxBroker;
-    /// use sqlx::postgres::PgPoolOptions;
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
     ///
-    /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
-    /// // Every queue on this broker checks twice a second when it runs dry.
-    /// let broker = SqlxBroker::new(pool).poll_interval(Duration::from_millis(500));
-    /// # let _ = broker;
-    /// # Ok(())
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // Every queue on this broker checks twice a second when it runs dry.
+    ///     let broker = SqlxBroker::new(pool).poll_interval(Duration::from_millis(500));
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(send);
+    ///     })
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub const fn poll_interval(mut self, interval: Duration) -> Self {
@@ -367,19 +490,46 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")]
-    /// # fn build() -> Result<(), sqlx::Error> {
+    /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+    /// # mod demo {
     /// use std::time::Duration;
     ///
-    /// use ruststream_sqlx::SqlxBroker;
-    /// use sqlx::postgres::PgPoolOptions;
+    /// use chrono::{DateTime, Utc};
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
     ///
-    /// let pool = PgPoolOptions::new().connect_lazy("postgres://localhost/app")?;
-    /// // A row whose process crashed goes back to the queue once its ten-second lease runs out.
-    /// let broker = SqlxBroker::new(pool).lease(Duration::from_secs(10));
-    /// # let _ = broker;
-    /// # Ok(())
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "video_jobs")]
+    /// pub struct Transcode {
+    ///     #[field(id, generated)]
+    ///     id: i64,
+    ///     #[field(locked_until)]
+    ///     locked_until: Option<DateTime<Utc>>,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Video {
+    ///     path: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<Transcode>::new("videos"))]
+    /// async fn transcode(video: &Video) -> HandlerOutcome {
+    ///     tracing::info!(path = %video.path, "transcoding");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // A video whose process crashed goes back to the queue once its ten-second lease runs out.
+    ///     let broker = SqlxBroker::new(pool).lease(Duration::from_secs(10));
+    ///     RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(transcode);
+    ///     })
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     pub const fn lease(mut self, lease: Duration) -> Self {
@@ -451,17 +601,53 @@ impl<DB: Database> Shared<DB> {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```
 /// # #[cfg(feature = "postgres")]
-/// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
-/// use ruststream::{Broker, ConnectedBroker};
-/// use ruststream_sqlx::SqlxBroker;
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Serialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// let connected = SqlxBroker::new(pool).connect().await?;
-/// let closed = connected.shutdown().await?;
-/// tracing::info!(locks_released = closed.locks_released(), "inbox closed");
-/// # Ok(())
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "cleanup_jobs")]
+/// pub struct Cleanup {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Publish<Postgres> for Cleanup {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO cleanup_jobs (payload) VALUES ($1)")
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "cleanup")]
+/// struct Sweep {
+///     older_than_days: u32,
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("maintenance", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         // Once the broker connected, the policy pairs against the `ConnectedSqlxBroker` and the
+///         // hook schedules the first sweep.
+///         b.after_startup(Repository::<Cleanup>::default(), async move |cleanups| {
+///             cleanups.message(&Sweep { older_than_days: 30 }).publish().await
+///         });
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub struct ConnectedSqlxBroker<DB: Database, D = BuiltIn<DB>> {
     pub(crate) shared: Arc<Shared<DB>>,

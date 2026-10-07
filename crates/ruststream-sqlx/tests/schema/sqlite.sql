@@ -189,6 +189,19 @@ CREATE TABLE unreadable_jobs_dead (
     payload      INTEGER NOT NULL
 );
 
+-- Mails a handler takes as rows: no payload column, the recipient and the subject in columns of
+-- their own. A recipient may hold bytes that are not text, which a struct that reads it as text
+-- cannot read.
+CREATE TABLE mail_jobs (
+    job_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    locked_until TEXT,
+    meta         TEXT,
+    recipient    TEXT,
+    subject      TEXT
+);
+
 -- What a handler writes beside its job, in the delivery's transaction or through the pool: one
 -- row per write, its note naming the write.
 CREATE TABLE audit (

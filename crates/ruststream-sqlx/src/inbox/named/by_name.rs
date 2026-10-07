@@ -67,12 +67,17 @@ use crate::inbox::HeaderColumn;
 /// ```
 /// # #[cfg(feature = "postgres")]
 /// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream::OutgoingMessage;
+/// # use ruststream_sqlx::dialect::{self, ClaimShape, Dialect, Opening, RowLock, Statement, StatementError, TableName, TableSpec};
+/// # use sqlx::PgConnection;
 /// use ruststream::HeaderMap;
-/// use ruststream_sqlx::dialect::{self, Dialect};
+/// use ruststream_sqlx::prelude::*;
 /// use ruststream_sqlx::{BuiltIn, ByName, NamedTime};
-/// use sqlx::Postgres;
+/// use serde::Deserialize;
 /// use sqlx::error::BoxDynError;
 /// use sqlx::postgres::{PgArguments, PgValueRef};
+/// use sqlx::{PgPool, Postgres};
 ///
 /// /// A dialect of the service's own over Postgres.
 /// #[derive(Debug)]
@@ -80,18 +85,24 @@ use crate::inbox::HeaderColumn;
 /// # impl Dialect for Audited {
 /// #     fn name(&self) -> &'static str { "audited" }
 /// #     fn quote_into(&self, ident: &str, out: &mut String) { dialect::Postgres.quote_into(ident, out) }
-/// #     fn placeholder_into(&self, index: std::num::NonZeroUsize, out: &mut String) { dialect::Postgres.placeholder_into(index, out) }
-/// #     fn fetch(&self, spec: &dialect::TableSpec<'_>) -> Result<dialect::Statement, dialect::StatementError> { dialect::Postgres.fetch(spec) }
-/// #     fn ack(&self, spec: &dialect::TableSpec<'_>) -> Result<dialect::Statement, dialect::StatementError> { dialect::Postgres.ack(spec) }
-/// #     fn retry(&self, spec: &dialect::TableSpec<'_>) -> Result<Option<dialect::Statement>, dialect::StatementError> { dialect::Postgres.retry(spec) }
-/// #     fn retry_after(&self, spec: &dialect::TableSpec<'_>) -> Result<dialect::Statement, dialect::StatementError> { dialect::Postgres.retry_after(spec) }
-/// #     fn discard(&self, spec: &dialect::TableSpec<'_>) -> Result<dialect::Statement, dialect::StatementError> { dialect::Postgres.discard(spec) }
-/// #     fn dead_letter_group(&self, spec: &dialect::TableSpec<'_>) -> Result<dialect::Statement, dialect::StatementError> { dialect::Postgres.dead_letter_group(spec) }
-/// #     fn dead_letter_table(&self, spec: &dialect::TableSpec<'_>, target: dialect::TableName<'_>) -> Result<Vec<dialect::Statement>, dialect::StatementError> { dialect::Postgres.dead_letter_table(spec, target) }
-/// #     fn insert(&self, spec: &dialect::TableSpec<'_>) -> Result<dialect::Statement, dialect::StatementError> { dialect::Postgres.insert(spec) }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { dialect::Postgres.placeholder_into(index, out) }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { dialect::Postgres.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.insert(spec) }
+/// #     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> { dialect::Postgres.begin(opening) }
+/// #     fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.fifo_guard(spec) }
+/// # }
+/// # impl RowLock for Audited {
+/// #     fn lock_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { dialect::Postgres.lock_claim(spec, shape) }
 /// # }
 ///
-/// // Its rows keep their headers and times as the built-in dialect reads them.
+/// // Its rows keep their headers and times as the built-in dialect reads them, so
+/// // `#[subscriber("emails")]` mounts on it.
 /// impl ByName<Postgres> for Audited {
 ///     fn headers(value: PgValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
 ///         <BuiltIn<Postgres> as ByName<Postgres>>::headers(value)
@@ -100,6 +111,38 @@ use crate::inbox::HeaderColumn;
 ///     fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), sqlx::Error> {
 ///         <BuiltIn<Postgres> as ByName<Postgres>>::bind_time(arguments, time)
 ///     }
+/// }
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+/// # impl Publish<Postgres> for SendEmail {
+/// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
+/// # }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber("emails")]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     let broker = SqlxBroker::with_dialect(pool, Audited).route::<SendEmail>("emails");
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
+///         b.include(send);
+///     })
 /// }
 /// # }
 /// # fn main() {}
@@ -116,23 +159,6 @@ pub trait ByName<DB: Database>: Dialect {
     /// # Errors
     ///
     /// A column that holds no JSON, or the driver's decoding error.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream::HeaderMap;
-    /// use ruststream_sqlx::ByName;
-    /// use sqlx::error::BoxDynError;
-    /// use sqlx::postgres::PgRow;
-    /// use sqlx::{Postgres, Row};
-    ///
-    /// /// The headers of a row a dialect reads by name, from its `meta` column.
-    /// fn headers_of<D: ByName<Postgres>>(row: &PgRow) -> Result<HeaderMap, BoxDynError> {
-    ///     D::headers(row.try_get_raw("meta")?)
-    /// }
-    /// # }
-    /// ```
     fn headers(value: DB::ValueRef<'_>) -> Result<HeaderMap, BoxDynError>;
 
     /// Binds `time`: the current time, a delayed retry's, or a lease's expiry.
@@ -140,22 +166,6 @@ pub trait ByName<DB: Database>: Dialect {
     /// # Errors
     ///
     /// The driver's encoding error, or a time of a type the database does not bind.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(all(feature = "postgres", feature = "chrono"))] {
-    /// use ruststream_sqlx::{BuiltIn, ByName, NamedTime};
-    /// use sqlx::Postgres;
-    /// use sqlx::postgres::PgArguments;
-    ///
-    /// // The arguments of a statement that releases a row an hour from now.
-    /// let mut arguments = PgArguments::default();
-    /// let later = chrono::Utc::now() + chrono::Duration::hours(1);
-    /// <BuiltIn<Postgres> as ByName<Postgres>>::bind_time(&mut arguments, NamedTime::Chrono(later))?;
-    /// # }
-    /// # Ok::<(), sqlx::Error>(())
-    /// ```
     fn bind_time(arguments: &mut DB::Arguments, time: NamedTime) -> Result<(), Error>;
 }
 

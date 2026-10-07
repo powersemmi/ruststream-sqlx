@@ -24,7 +24,7 @@ help: the following other types implement trait `ruststream_sqlx::ruststream_sql
    | impl Advisory for MySql {
    | ^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::MySql`
    |
-  ::: src/inbox/built_in.rs
+  ::: src/inbox/database/built_in.rs
    |
    | impl<DB: BuiltInDialect> Advisory for BuiltIn<DB> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `BuiltIn<DB>`

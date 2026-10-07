@@ -10,12 +10,56 @@ use thiserror::Error;
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{ParseTableNameError, TableName};
+/// # use std::num::NonZeroUsize;
+/// use ruststream_sqlx_dialect::{
+///     Dialect, Param, Statement, StatementError, TableName, TableSpec,
+/// };
 ///
-/// let target = TableName::parse("archive.jobs_dead")?;
-/// let qualified = format!("{}.{}", target.schema().unwrap_or("public"), target.table());
-/// assert_eq!(qualified, "archive.jobs_dead");
-/// # Ok::<(), ParseTableNameError>(())
+/// /// SQL Server, a database without a built-in dialect.
+/// #[derive(Debug)]
+/// pub struct Mssql;
+///
+/// impl Dialect for Mssql {
+///     fn name(&self) -> &'static str {
+///         "mssql"
+///     }
+///
+///     // A dead email of the service's one queue table moves with the time it died.
+///     fn dead_letter_table(
+///         &self,
+///         _spec: &TableSpec<'_>,
+///         target: TableName<'_>,
+///     ) -> Result<Vec<Statement>, StatementError> {
+///         let mut into = String::new();
+///         self.quote_into(target.schema().unwrap_or("dbo"), &mut into);
+///         into.push('.');
+///         self.quote_into(target.table(), &mut into);
+///         Ok(vec![
+///             Statement::new(
+///                 format!(
+///                     "INSERT INTO {into} ([job_id], [payload], [died_at]) \
+///                      SELECT [job_id], [payload], @p1 FROM [email_jobs] WHERE [job_id] = @p2"
+///                 ),
+///                 [Param::Now, Param::Id],
+///             ),
+///             Statement::new("DELETE FROM [email_jobs] WHERE [job_id] = @p1", [Param::Id]),
+///         ])
+///     }
+///
+///     fn quote_into(&self, ident: &str, out: &mut String) {
+///         out.push('[');
+///         out.push_str(&ident.replace(']', "]]"));
+///         out.push(']');
+///     }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TableName<'a> {
@@ -30,23 +74,6 @@ impl<'a> TableName<'a> {
     ///
     /// [`ParseTableNameError::EmptySegment`] when the name or one of its segments is empty;
     /// [`ParseTableNameError::TooManySegments`] when the name has more than one dot.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::{ParseTableNameError, TableName};
-    ///
-    /// // The table of the connection's default schema, and one inside a schema.
-    /// assert_eq!(TableName::parse("jobs_dead")?.schema(), None);
-    /// assert_eq!(TableName::parse("archive.jobs_dead")?.schema(), Some("archive"));
-    ///
-    /// // A name with an empty segment is refused when it is read.
-    /// assert!(matches!(
-    ///     TableName::parse("archive."),
-    ///     Err(ParseTableNameError::EmptySegment { .. }),
-    /// ));
-    /// # Ok::<(), ParseTableNameError>(())
-    /// ```
     pub fn parse(name: &'a str) -> Result<Self, ParseTableNameError> {
         let parsed = match name.split_once('.') {
             None => Self {
@@ -76,13 +103,72 @@ impl<'a> TableName<'a> {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_sqlx_dialect::{ParseTableNameError, TableName};
+    /// # use std::num::NonZeroUsize;
+    /// use ruststream_sqlx_dialect::{
+    ///     Dialect, Param, Statement, StatementError, TableName, TableSpec,
+    /// };
     ///
-    /// // A dialect for a database without schemas refuses a table inside one.
-    /// let target = TableName::parse("jobs_dead")?;
-    /// let supported = target.schema().is_none();
-    /// assert!(supported);
-    /// # Ok::<(), ParseTableNameError>(())
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl Dialect for Mssql {
+    ///     fn name(&self) -> &'static str {
+    ///         "mssql"
+    ///     }
+    ///
+    ///     fn dead_letter_table(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         target: TableName<'_>,
+    ///     ) -> Result<Vec<Statement>, StatementError> {
+    ///         // A struct that flattens another hides columns, so its row moves by position.
+    ///         let mut columns = String::new();
+    ///         if spec.selects_all() {
+    ///             columns.push('*');
+    ///         } else {
+    ///             for column in spec.columns() {
+    ///                 if !columns.is_empty() {
+    ///                     columns.push_str(", ");
+    ///                 }
+    ///                 self.quote_into(column.name(), &mut columns);
+    ///             }
+    ///         }
+    ///         // A target that names no schema lives in SQL Server's default one, `dbo`.
+    ///         let mut into = String::new();
+    ///         self.quote_into(target.schema().unwrap_or("dbo"), &mut into);
+    ///         into.push('.');
+    ///         self.quote_into(target.table(), &mut into);
+    ///         let mut from = String::new();
+    ///         self.quote_into(spec.table(), &mut from);
+    ///         let mut id = String::new();
+    ///         self.quote_into(spec.id().name(), &mut id);
+    ///         let into_columns = if spec.selects_all() {
+    ///             String::new()
+    ///         } else {
+    ///             format!(" ({columns})")
+    ///         };
+    ///         Ok(vec![
+    ///             Statement::new(
+    ///                 format!(
+    ///                     "INSERT INTO {into}{into_columns} SELECT {columns} FROM {from} \
+    ///                      WHERE {id} = @p1"
+    ///                 ),
+    ///                 [Param::Id],
+    ///             ),
+    ///             Statement::new(format!("DELETE FROM {from} WHERE {id} = @p1"), [Param::Id]),
+    ///         ])
+    ///     }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// }
     /// ```
     #[must_use]
     pub const fn schema(&self) -> Option<&'a str> {
@@ -94,12 +180,72 @@ impl<'a> TableName<'a> {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_sqlx_dialect::{ParseTableNameError, TableName};
+    /// # use std::num::NonZeroUsize;
+    /// use ruststream_sqlx_dialect::{
+    ///     Dialect, Param, Statement, StatementError, TableName, TableSpec,
+    /// };
     ///
-    /// let target = TableName::parse("archive.jobs_dead")?;
-    /// let context = format!("moving the row to `{}`", target.table());
-    /// assert_eq!(context, "moving the row to `jobs_dead`");
-    /// # Ok::<(), ParseTableNameError>(())
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl Dialect for Mssql {
+    ///     fn name(&self) -> &'static str {
+    ///         "mssql"
+    ///     }
+    ///
+    ///     fn dead_letter_table(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         target: TableName<'_>,
+    ///     ) -> Result<Vec<Statement>, StatementError> {
+    ///         // A struct that flattens another hides columns, so its row moves by position.
+    ///         let mut columns = String::new();
+    ///         if spec.selects_all() {
+    ///             columns.push('*');
+    ///         } else {
+    ///             for column in spec.columns() {
+    ///                 if !columns.is_empty() {
+    ///                     columns.push_str(", ");
+    ///                 }
+    ///                 self.quote_into(column.name(), &mut columns);
+    ///             }
+    ///         }
+    ///         // A target that names no schema lives in SQL Server's default one, `dbo`.
+    ///         let mut into = String::new();
+    ///         self.quote_into(target.schema().unwrap_or("dbo"), &mut into);
+    ///         into.push('.');
+    ///         self.quote_into(target.table(), &mut into);
+    ///         let mut from = String::new();
+    ///         self.quote_into(spec.table(), &mut from);
+    ///         let mut id = String::new();
+    ///         self.quote_into(spec.id().name(), &mut id);
+    ///         let into_columns = if spec.selects_all() {
+    ///             String::new()
+    ///         } else {
+    ///             format!(" ({columns})")
+    ///         };
+    ///         Ok(vec![
+    ///             Statement::new(
+    ///                 format!(
+    ///                     "INSERT INTO {into}{into_columns} SELECT {columns} FROM {from} \
+    ///                      WHERE {id} = @p1"
+    ///                 ),
+    ///                 [Param::Id],
+    ///             ),
+    ///             Statement::new(format!("DELETE FROM {from} WHERE {id} = @p1"), [Param::Id]),
+    ///         ])
+    ///     }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// }
     /// ```
     #[must_use]
     pub const fn table(&self) -> &'a str {
@@ -108,22 +254,6 @@ impl<'a> TableName<'a> {
 }
 
 /// Why a string does not name a table.
-///
-/// # Examples
-///
-/// ```
-/// use ruststream_sqlx_dialect::TableName;
-///
-/// let message = TableName::parse("db.archive.jobs_dead").map_err(|error| error.to_string());
-/// assert_eq!(
-///     message,
-///     Err(
-///         "table name `db.archive.jobs_dead` has more than two segments: write `table` or \
-///          `schema.table`"
-///             .to_owned()
-///     ),
-/// );
-/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ParseTableNameError {

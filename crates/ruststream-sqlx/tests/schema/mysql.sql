@@ -174,6 +174,18 @@ CREATE TABLE unreadable_jobs (
 -- Where spent jobs of `unreadable_jobs` go.
 CREATE TABLE unreadable_jobs_dead LIKE unreadable_jobs;
 
+-- Mails a handler takes as rows: no payload column, the recipient and the subject in columns of
+-- their own. A recipient may be NULL, which a struct that reads it as text cannot read.
+CREATE TABLE mail_jobs (
+    job_id       BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name         VARCHAR(255) NOT NULL,
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until DATETIME,
+    meta         JSON,
+    recipient    VARCHAR(255),
+    subject      VARCHAR(255)
+);
+
 -- What a handler writes beside its job, in the delivery's transaction or through the pool: one
 -- row per write, its note naming the write.
 CREATE TABLE audit (

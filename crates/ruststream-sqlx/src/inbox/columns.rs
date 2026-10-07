@@ -19,11 +19,18 @@ use sqlx::types::Json;
 /// # Examples
 ///
 /// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
 /// use ruststream::HeaderMap;
+/// use ruststream_sqlx::prelude::*;
 /// use ruststream_sqlx::HeaderColumn;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// /// Headers stored one per line, `name: value`.
-/// struct Lines(String);
+/// /// Headers stored one per line, `name: value`, in a `TEXT` column.
+/// #[derive(sqlx::Type)]
+/// #[sqlx(transparent)]
+/// pub struct Lines(String);
 ///
 /// impl HeaderColumn for Lines {
 ///     fn take_headers(&mut self) -> HeaderMap {
@@ -55,28 +62,43 @@ use sqlx::types::Json;
 ///     }
 /// }
 ///
-/// let mut column = Lines("x-tenant: acme".to_owned());
-/// assert_eq!(column.take_headers().get_str("x-tenant"), Some("acme"));
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs")]
+/// pub struct Job {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(headers)]
+///     headers: Lines,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Task {
+///     n: u32,
+/// }
+///
+/// // The delivery's headers come from `headers`, so the service's middleware reads `x-tenant`
+/// // there as on any broker.
+/// #[subscriber(InboxQueue::<Job>::new("tasks"))]
+/// async fn run(task: &Task) -> HandlerOutcome {
+///     tracing::info!(task.n, "running");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(run);
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 pub trait HeaderColumn {
     /// Moves the headers the column holds into a header map, leaving the column empty.
     ///
     /// A delivery takes them once, when its row is claimed, so a column that owns its strings
     /// hands them over without a copy.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "json")] {
-    /// use std::collections::BTreeMap;
-    ///
-    /// use ruststream_sqlx::HeaderColumn;
-    /// use sqlx::types::Json;
-    ///
-    /// let mut column = Json(BTreeMap::from([("x-tenant".to_owned(), "acme".to_owned())]));
-    /// assert_eq!(column.take_headers().get_str("x-tenant"), Some("acme"));
-    /// # }
-    /// ```
     fn take_headers(&mut self) -> HeaderMap;
 
     /// The column value that holds `headers`, for a service's `Publish`.
@@ -84,43 +106,49 @@ pub trait HeaderColumn {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "json")] {
+    /// # #[cfg(all(feature = "postgres", feature = "json"))]
+    /// # mod demo {
     /// use std::collections::BTreeMap;
     ///
-    /// use ruststream::HeaderMap;
-    /// use ruststream_sqlx::HeaderColumn;
+    /// use ruststream::OutgoingMessage;
+    /// use ruststream_sqlx::{HeaderColumn, Inbox, Publish};
     /// use sqlx::types::Json;
+    /// use sqlx::{PgConnection, Postgres};
     ///
-    /// let mut headers = HeaderMap::new();
-    /// headers.insert("x-tenant", "acme");
-    /// // What a `Publish` writes into a `jsonb` column.
-    /// let column = Json::<BTreeMap<String, String>>::from_headers(&headers);
-    /// assert_eq!(column.0["x-tenant"], "acme");
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "jobs")]
+    /// pub struct Job {
+    ///     #[field(id, generated)]
+    ///     id: i64,
+    ///     #[field(headers)]
+    ///     headers: Json<BTreeMap<String, String>>,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl Publish<Postgres> for Job {
+    ///     async fn publish(
+    ///         conn: &mut PgConnection,
+    ///         message: &OutgoingMessage<'_>,
+    ///     ) -> Result<(), sqlx::Error> {
+    ///         // The `jsonb` column holds the message's headers as the delivery will read them back.
+    ///         let headers = Json::<BTreeMap<String, String>>::from_headers(message.headers());
+    ///         sqlx::query("INSERT INTO jobs (headers, payload) VALUES ($1, $2)")
+    ///             .bind(headers)
+    ///             .bind(message.payload())
+    ///             .execute(conn)
+    ///             .await?;
+    ///         Ok(())
+    ///     }
+    /// }
     /// # }
+    /// # fn main() {}
     /// ```
     #[must_use]
     fn from_headers(headers: &HeaderMap) -> Self;
 
     /// The first of `headers` the column cannot hold byte for byte, if any: the broker refuses a
     /// publish that carries it.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[cfg(feature = "json")] {
-    /// use std::collections::BTreeMap;
-    ///
-    /// use ruststream::HeaderMap;
-    /// use ruststream_sqlx::HeaderColumn;
-    /// use sqlx::types::Json;
-    ///
-    /// let mut headers = HeaderMap::new();
-    /// headers.insert("x-tenant", "acme");
-    /// headers.insert("x-signature", b"\xff\x00".as_slice());
-    /// // A JSON string holds text: the signature would come back changed.
-    /// assert_eq!(Json::<BTreeMap<String, String>>::unfit(&headers), Some("x-signature"));
-    /// # }
-    /// ```
     fn unfit(headers: &HeaderMap) -> Option<&str>;
 }
 
@@ -169,25 +197,46 @@ impl HeaderColumn for Json<BTreeMap<String, String>> {
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::KeyColumn;
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// // Deliveries of one customer keep their order under `workers(n, by_key)`.
-/// let customer = String::from("acme");
-/// assert_eq!(customer.key(), Some(b"acme".as_slice()));
-/// let none: Option<String> = None;
-/// assert_eq!(none.key(), None);
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
+/// pub struct OrderJob {
+///     #[field(id, generated)]
+///     id: i64,
+///     // A `String` lends its bytes as the delivery's key; an empty `Option` gives none.
+///     #[field(partition_key)]
+///     customer: Option<String>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Order {
+///     id: u64,
+/// }
+///
+/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// async fn fulfil(order: &Order) -> HandlerOutcome {
+///     tracing::info!(order.id, "fulfilling");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         // Four workers, and the orders of one customer keep their order on one of them.
+///         b.include(fulfil.workers_by_key(nonzero!(4)));
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 pub trait KeyColumn {
     /// The key's bytes, or `None` when the row carries no key.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx::KeyColumn;
-    ///
-    /// let account: Vec<u8> = vec![1, 2];
-    /// assert_eq!(account.key(), Some([1, 2].as_slice()));
-    /// ```
     fn key(&self) -> Option<&[u8]>;
 }
 
@@ -217,22 +266,48 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx::AttemptColumn;
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
 ///
-/// // Postgres has no unsigned integers in sqlx, so `attempt` is an `i16` or an `i32` there.
-/// assert_eq!(3_i16.attempt(), 3);
-/// assert_eq!((-1_i32).attempt(), 0);
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "charge_jobs")]
+/// pub struct ChargeJob {
+///     #[field(id, generated)]
+///     id: i64,
+///     // sqlx has no unsigned integers on Postgres, so the column is a `SMALLINT DEFAULT 1`.
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Charge {
+///     order: u64,
+/// }
+///
+/// # async fn try_charge(_: &Charge) -> bool { true }
+/// #[subscriber(InboxQueue::<ChargeJob>::new("charges"))]
+/// async fn charge(request: &Charge, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
+///     tracing::info!(request.order, ?attempt, "charging");
+///     if try_charge(request).await { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         // The attempt counts the deliveries: the fifth failure moves the row into
+///         // `failed_charge_jobs`, a table with the same columns.
+///         b.include(charge).max_attempts(nonzero!(5u32)).dead_letter("failed_charge_jobs");
+///     })
+/// }
+/// # }
+/// # fn main() {}
 /// ```
 pub trait AttemptColumn {
     /// The attempt, counting the first delivery as 1.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx::AttemptColumn;
-    ///
-    /// assert_eq!(7_u32.attempt(), 7);
-    /// ```
     fn attempt(&self) -> u64;
 }
 

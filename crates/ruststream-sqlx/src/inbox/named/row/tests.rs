@@ -3,11 +3,12 @@
 use std::marker::PhantomData;
 
 use ruststream::HeaderMap;
+use ruststream::codec::CodecError;
 use sqlx::Error;
 
 use super::{Fits, NamedBytes, NamedId, NamedRow, hold_to};
-use crate::inbox::engine::Claimed;
-use crate::inbox::kinds::{BytesKind, ClockKind, IdKind, IntKind, Kinds};
+use crate::inbox::engine::{Claimed, undecodable};
+use crate::inbox::named::kinds::{BytesKind, ClockKind, IdKind, IntKind, Kinds};
 
 /// A struct of an `i64` id, a byte payload, a text key and an `i16` attempt.
 const KINDS: Kinds = Kinds {
@@ -41,14 +42,22 @@ const FITTING: Fits = Fits {
     attempt: IntKind::I16.bit(),
 };
 
+/// The driver's error a delivery of an undecodable row reports.
+fn driver_error(error: &CodecError) -> Option<&Error> {
+    match error {
+        CodecError::Decode(source) => source.downcast_ref::<Error>(),
+        _ => None,
+    }
+}
+
 /// The column a held row names as not holding its struct's type, and the attempt it keeps.
 fn unfit_column(claimed: &Claimed<NamedRow<()>>) -> Option<(String, Option<u64>)> {
     match claimed {
         Claimed::Undecodable { id, attempt, error } => {
             assert_eq!(id, &NamedId::I64(7), "the row keeps its id for the policy");
-            match &**error {
-                Error::ColumnDecode { index, .. } => Some((index.clone(), *attempt)),
-                other => panic!("not a column's error: {other}"),
+            match driver_error(error) {
+                Some(Error::ColumnDecode { index, .. }) => Some((index.clone(), *attempt)),
+                other => panic!("not a column's error: {other:?}"),
             }
         }
         Claimed::Row(_) | Claimed::Missing(_) => None,
@@ -168,13 +177,13 @@ fn a_row_already_undecodable_is_left_to_the_policy() -> Result<(), Error> {
     let mut claimed = Claimed::<NamedRow<()>>::Undecodable {
         id: NamedId::I64(7),
         attempt: Some(3),
-        error: Box::new(Error::ColumnNotFound("payload".to_owned())),
+        error: Box::new(undecodable(Error::ColumnNotFound("payload".to_owned()))),
     };
     hold_to(KINDS, &mut claimed)?;
     assert!(matches!(
         &claimed,
         Claimed::Undecodable { attempt: Some(3), error, .. }
-            if matches!(**error, Error::ColumnNotFound(_))
+            if matches!(driver_error(error), Some(Error::ColumnNotFound(_)))
     ));
     Ok(())
 }
@@ -192,7 +201,7 @@ mod on_postgres {
     use super::super::{NamedId, NamedRow, NamedTime};
     use super::{FITTING, KINDS, row};
     use crate::inbox::engine::{Event, Events, IdAt, Leasing, Now, Prepared, Shape, Values};
-    use crate::inbox::kinds::{ClockKind, Kinds, TimeKind};
+    use crate::inbox::named::kinds::{ClockKind, Kinds, TimeKind};
     use crate::inbox::queue::Queue;
     use crate::inbox::time::QueueTime;
     use crate::inbox::{BuiltIn, PayloadRow};

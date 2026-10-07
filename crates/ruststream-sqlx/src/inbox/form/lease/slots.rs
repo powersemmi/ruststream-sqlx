@@ -1,0 +1,367 @@
+//! The slots of a lease book: where each delivery's lease stands, so that a settlement and the
+//! keeper's extension of the same lease never run at once.
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+use tokio::sync::Notify;
+use tokio::sync::futures::Notified;
+
+use super::{LeaseGone, Slot};
+
+/// The slots of one book, and the settlements that wait on its keeper.
+pub(crate) struct Leases<Id, Token> {
+    slots: Mutex<Slots<Id, Token>>,
+    /// Wakes the settlements that wait for an extension, once a round has resolved its slots.
+    extended: Notify,
+}
+
+/// Every slot the book has held, and which of them are free.
+struct Slots<Id, Token> {
+    entries: Vec<Entry<Id, Token>>,
+    /// The free slots, by index; a claim takes one of them before it adds a slot.
+    free: Vec<usize>,
+}
+
+/// One slot: the id of its delivery's row, and where its lease stands.
+struct Entry<Id, Token> {
+    /// The row's id. A free slot keeps the last one, so the next delivery copies its id into the
+    /// same storage.
+    id: Option<Id>,
+    standing: Standing<Token>,
+}
+
+/// Where a delivery's lease stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing<Token> {
+    /// No delivery holds the slot.
+    Free,
+    /// A delivery in work holds the lease; the keeper extends it.
+    Held(Token),
+    /// The keeper extends the lease from `held` to `next`; `awaits` takes the outcome.
+    Extending {
+        held: Token,
+        next: Token,
+        awaits: Awaits,
+    },
+    /// The lease an extension left a settlement that waited for it; the keeper extends it no more.
+    Settling(Token),
+    /// The keeper found the row no longer under the delivery's lease.
+    Lost,
+}
+
+/// Who takes the outcome of an extension in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Awaits {
+    /// The keeper: the delivery goes on holding the lease the extension leaves.
+    Keeper,
+    /// The delivery's settlement, which waits for it.
+    Settlement,
+    /// Nobody: an acknowledgement took the lease ahead of the extension, which the round then
+    /// skips, and the slot leaves the book once the round resolves it.
+    Nobody,
+}
+
+/// What one extension did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Extended {
+    /// The row holds the new lease.
+    Written,
+    /// The row no longer held the delivery's lease.
+    Lost,
+    /// The statement failed; whether it took effect is unknown.
+    Failed,
+}
+
+/// The deliveries one round extends, kept from round to round, so each id is copied into the
+/// storage the round before left.
+pub(crate) struct Round<Id, Token> {
+    targets: Vec<Target<Id, Token>>,
+    /// How many of `targets` this round extends; the rest keep their storage for a later round.
+    marked: usize,
+}
+
+/// One delivery a round extends.
+pub(super) struct Target<Id, Token> {
+    pub(super) slot: usize,
+    pub(super) id: Id,
+    pub(super) held: Token,
+    /// What its extension did; `None` until it ran.
+    pub(super) outcome: Option<Extended>,
+}
+
+/// Resolves the slots a round marked when it drops: when the round ends, and when it is dropped
+/// midway, so no settlement waits on an extension that never finishes.
+pub(super) struct Resolving<'a, Id, Token: Copy> {
+    pub(super) leases: &'a Leases<Id, Token>,
+    pub(super) round: &'a mut Round<Id, Token>,
+}
+
+impl<Id, Token: Copy> Drop for Resolving<'_, Id, Token> {
+    fn drop(&mut self) {
+        self.leases.resolve(self.round);
+    }
+}
+
+/// A settlement's hold on its slot while it waits for an extension. Dropped with the settlement,
+/// it takes the slot out of the book, so the keeper keeps no lease of a delivery that is gone.
+struct Waiting<'a, Id, Token> {
+    leases: &'a Leases<Id, Token>,
+    /// The slot, until the settlement has its lease.
+    slot: Option<usize>,
+}
+
+impl<Id, Token> Drop for Waiting<'_, Id, Token> {
+    fn drop(&mut self) {
+        let Some(index) = self.slot.take() else {
+            return;
+        };
+        let mut slots = self.leases.slots();
+        // A slot still being extended leaves the book now; the round's resolution passes over it.
+        if !matches!(slots.entries[index].standing, Standing::Free) {
+            slots.release(index);
+        }
+    }
+}
+
+/// What a settlement finds in its slot.
+enum Found<'a, Token> {
+    /// The lease, or that it is gone; the slot has left the book.
+    Done(Result<Token, LeaseGone>),
+    /// An extension in flight, whose end this wakes.
+    Wait(Notified<'a>),
+}
+
+impl<Id, Token> Default for Leases<Id, Token> {
+    fn default() -> Self {
+        Self {
+            slots: Mutex::new(Slots {
+                entries: Vec::new(),
+                free: Vec::new(),
+            }),
+            extended: Notify::new(),
+        }
+    }
+}
+
+impl<Id, Token> Default for Round<Id, Token> {
+    fn default() -> Self {
+        Self {
+            targets: Vec::new(),
+            marked: 0,
+        }
+    }
+}
+
+impl<Id, Token> Round<Id, Token> {
+    pub(super) fn marked_mut(&mut self) -> &mut [Target<Id, Token>] {
+        &mut self.targets[..self.marked]
+    }
+}
+
+impl<Id, Token> Slots<Id, Token> {
+    /// Frees the slot at `index` for the next delivery.
+    fn release(&mut self, index: usize) {
+        self.entries[index].standing = Standing::Free;
+        self.free.push(index);
+    }
+}
+
+impl<Id, Token> Leases<Id, Token> {
+    fn slots(&self) -> MutexGuard<'_, Slots<Id, Token>> {
+        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<Id: Clone, Token: Copy> Leases<Id, Token> {
+    /// Enters a delivery of the row `id` that holds `lease`.
+    pub(super) fn enter(&self, id: &Id, lease: Token) -> Slot {
+        let mut slots = self.slots();
+        let Some(index) = slots.free.pop() else {
+            slots.entries.push(Entry {
+                id: Some(id.clone()),
+                standing: Standing::Held(lease),
+            });
+            let index = slots.entries.len() - 1;
+            drop(slots);
+            return Slot(index);
+        };
+        let entry = &mut slots.entries[index];
+        // Into the storage the slot's last id left: an id with storage of its own costs no
+        // allocation once its slot has held one as long.
+        match &mut entry.id {
+            Some(kept) => kept.clone_from(id),
+            empty => *empty = Some(id.clone()),
+        }
+        entry.standing = Standing::Held(lease);
+        drop(slots);
+        Slot(index)
+    }
+
+    /// Takes the delivery in `slot` out of the book, with its lease, once no extension of it is in
+    /// flight.
+    pub(super) async fn settling(&self, slot: Slot) -> Result<Token, LeaseGone> {
+        let Slot(index) = slot;
+        let mut waiting = Waiting {
+            leases: self,
+            slot: Some(index),
+        };
+        loop {
+            match self.find(index) {
+                Found::Done(lease) => {
+                    waiting.slot = None;
+                    return lease;
+                }
+                Found::Wait(extended) => extended.await,
+            }
+        }
+    }
+
+    /// What the settlement of the slot at `index` finds there, under one lock.
+    fn find(&self, index: usize) -> Found<'_, Token> {
+        let mut slots = self.slots();
+        let found = match slots.entries[index].standing {
+            Standing::Held(lease) | Standing::Settling(lease) => {
+                slots.release(index);
+                Found::Done(Ok(lease))
+            }
+            Standing::Lost => {
+                slots.release(index);
+                Found::Done(Err(LeaseGone))
+            }
+            Standing::Extending { held, next, .. } => {
+                slots.entries[index].standing = Standing::Extending {
+                    held,
+                    next,
+                    awaits: Awaits::Settlement,
+                };
+                // Created under the lock the keeper resolves the slot under: a `Notified` hears
+                // every `notify_waiters` after its creation, so the resolution cannot slip past.
+                Found::Wait(self.extended.notified())
+            }
+            // Unreachable: a slot settles once, for `Slot` is neither `Clone` nor `Copy`.
+            Standing::Free => Found::Done(Err(LeaseGone)),
+        };
+        drop(slots);
+        found
+    }
+
+    /// Takes the delivery in `slot` out of the book at once, with the lease it holds; one whose
+    /// extension is in flight hands back the lease it held before, and leaves the slot to the
+    /// round, which skips the extension where it has not run and frees the slot when it resolves.
+    pub(super) fn take_ahead(&self, slot: Slot) -> Result<Token, LeaseGone> {
+        let index = slot.into_index();
+        let mut slots = self.slots();
+        let taken = match slots.entries[index].standing {
+            Standing::Held(lease) | Standing::Settling(lease) => {
+                slots.release(index);
+                Ok(lease)
+            }
+            Standing::Lost => {
+                slots.release(index);
+                Err(LeaseGone)
+            }
+            Standing::Extending { held, next, .. } => {
+                slots.entries[index].standing = Standing::Extending {
+                    held,
+                    next,
+                    awaits: Awaits::Nobody,
+                };
+                Ok(held)
+            }
+            // Unreachable: a slot settles once, for `Slot` is neither `Clone` nor `Copy`.
+            Standing::Free => Err(LeaseGone),
+        };
+        drop(slots);
+        taken
+    }
+
+    /// Whether an acknowledgement took the lease of the slot at `index` ahead of its extension.
+    pub(super) fn taken_ahead(&self, index: usize) -> bool {
+        matches!(
+            self.slots().entries[index].standing,
+            Standing::Extending {
+                awaits: Awaits::Nobody,
+                ..
+            }
+        )
+    }
+
+    /// Whether any delivery holds a lease the keeper extends.
+    pub(super) fn any_held(&self) -> bool {
+        self.slots()
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.standing, Standing::Held(_)))
+    }
+
+    /// Starts a round: every delivery that holds a lease is now being extended to `next`, and
+    /// `round` lists them. Returns how many it lists.
+    pub(super) fn mark(&self, next: Token, round: &mut Round<Id, Token>) -> usize {
+        round.marked = 0;
+        let mut slots = self.slots();
+        for (slot, entry) in slots.entries.iter_mut().enumerate() {
+            let (Standing::Held(held), Some(id)) = (entry.standing, &entry.id) else {
+                continue;
+            };
+            entry.standing = Standing::Extending {
+                held,
+                next,
+                awaits: Awaits::Keeper,
+            };
+            match round.targets.get_mut(round.marked) {
+                Some(target) => {
+                    target.slot = slot;
+                    target.id.clone_from(id);
+                    target.held = held;
+                    target.outcome = None;
+                }
+                None => round.targets.push(Target {
+                    slot,
+                    id: id.clone(),
+                    held,
+                    outcome: None,
+                }),
+            }
+            round.marked += 1;
+        }
+        drop(slots);
+        round.marked
+    }
+}
+
+impl<Id, Token: Copy> Leases<Id, Token> {
+    /// Ends a round: each slot it marked holds what its extension left, and the settlements that
+    /// waited for it wake.
+    fn resolve(&self, round: &Round<Id, Token>) {
+        let mut slots = self.slots();
+        for target in &round.targets[..round.marked] {
+            let Standing::Extending { held, next, awaits } = slots.entries[target.slot].standing
+            else {
+                // The delivery left the book while its lease was extended; the slot may hold
+                // another one by now.
+                continue;
+            };
+            let standing = match (target.outcome, awaits) {
+                // The acknowledgement that took the lease ahead has the delivery: the slot frees.
+                (_, Awaits::Nobody) => Standing::Free,
+                (Some(Extended::Lost), _) => Standing::Lost,
+                (Some(Extended::Written), Awaits::Keeper) => Standing::Held(next),
+                (Some(Extended::Written), Awaits::Settlement) => Standing::Settling(next),
+                // Whether a failed or unfinished extension took effect is unknown: the delivery
+                // keeps the lease it held.
+                (Some(Extended::Failed) | None, Awaits::Keeper) => Standing::Held(held),
+                (Some(Extended::Failed) | None, Awaits::Settlement) => Standing::Settling(held),
+            };
+            if matches!(standing, Standing::Free) {
+                slots.release(target.slot);
+            } else {
+                slots.entries[target.slot].standing = standing;
+            }
+        }
+        drop(slots);
+        self.extended.notify_waiters();
+    }
+}
+
+#[cfg(test)]
+mod tests;

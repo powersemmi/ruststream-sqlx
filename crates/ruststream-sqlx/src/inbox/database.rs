@@ -3,28 +3,25 @@
 use std::future::Future;
 
 use futures::TryStreamExt;
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
-use ruststream_sqlx_dialect as dialect;
-use ruststream_sqlx_dialect::{Advisory, Lease};
 use sqlx::Row as _;
 use sqlx::any::AnyQueryResult;
-#[cfg(feature = "any")]
-use sqlx::{Any, AnyConnection};
 use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, IntoArguments, SqlStr, Type,
 };
-#[cfg(feature = "mysql")]
-use sqlx::{MySql, MySqlConnection};
-#[cfg(feature = "postgres")]
-use sqlx::{PgConnection, Postgres};
-#[cfg(feature = "sqlite")]
-use sqlx::{Sqlite, SqliteConnection};
+
+use super::engine::{Claimed, Events, IdAt, undecodable};
+use super::form::advisory::events::Candidates;
+use super::queue::Queue;
 
 #[cfg(feature = "any")]
-use super::built_in::AnyDialect;
-use super::built_in::BuiltIn;
-use super::engine::{Candidates, Claimed, Events, IdAt};
-use super::queue::Queue;
+mod any;
+pub(crate) mod built_in;
+mod insert;
+
+#[cfg(feature = "any")]
+pub use any::AnyDialect;
+pub use built_in::{BuiltIn, BuiltInDialect};
+pub use insert::{InsertSql, OnConnection, no_insert};
 
 /// A sqlx database the inbox runs on: one that binds and reads the values the queue's own
 /// statements use, runs statements on a connection, and reports the rows a statement changed.
@@ -37,14 +34,46 @@ use super::queue::Queue;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx::QueueDatabase;
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgPool, Postgres};
 ///
-/// fn serves_queues<DB: QueueDatabase>() -> &'static str {
-///     std::any::type_name::<DB>()
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
 /// }
-/// assert!(serves_queues::<sqlx::Postgres>().ends_with("Postgres"));
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// // `Postgres` is a `QueueDatabase`: the broker over a `PgPool` is a `SqlxBroker<Postgres>`.
+/// pub fn broker(pool: PgPool) -> SqlxBroker<Postgres> {
+///     SqlxBroker::new(pool)
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker(pool), |b| {
+///         b.include(send);
+///     })
+/// }
 /// # }
+/// # fn main() {}
 /// ```
 pub trait QueueDatabase: Database {
     /// Binds a text value. Machinery; the crate's statements call it.
@@ -213,7 +242,7 @@ where
                         Ok(id) => out.push(Claimed::Undecodable {
                             id,
                             attempt: Row::read_attempt(&raw, queue),
-                            error: Box::new(error),
+                            error: Box::new(undecodable(error)),
                         }),
                         Err(_) => return Err(error),
                     }
@@ -294,264 +323,5 @@ where
             found = true;
         }
         Ok(found)
-    }
-}
-
-/// A database whose dialect is built into this crate, so `SqlxBroker::new` needs no dialect of
-/// the service's own.
-///
-/// Postgres (feature `postgres`), MySQL with MariaDB (feature `mysql`) and SQLite (feature
-/// `sqlite`) have one, [`BuiltIn<DB>`](BuiltIn). `Any` (feature `any`) takes the dialect of the
-/// database its pool reaches, among those whose features are on, and the broker picks it when it
-/// connects. A row on an `AnyPool` holds only the types `sqlx::Any` carries, and no time is among
-/// them, so a table with `locked_until`, `retry_after` or `processed_at` is out of its reach.
-///
-/// # Examples
-///
-/// ```no_run
-/// # #[cfg(feature = "any")]
-/// # async fn run(pool: sqlx::AnyPool) -> Result<(), sqlx::Error> {
-/// use ruststream_sqlx::BuiltInDialect;
-/// use ruststream_sqlx::dialect::Dialect;
-///
-/// // The statements the broker builds for the database behind the pool.
-/// let conn = pool.acquire().await?;
-/// match <sqlx::Any as BuiltInDialect>::dialect(&conn) {
-///     Some(dialect) => tracing::info!(dialect = dialect.name(), "the inbox's statements"),
-///     None => tracing::warn!(backend = conn.backend_name(), "no built-in dialect"),
-/// }
-/// # Ok(())
-/// # }
-/// ```
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has no dialect built into the crate",
-    label = "no built-in dialect for this database",
-    note = "build the broker with a dialect of the service's own: \
-            `SqlxBroker::with_dialect(pool, dialect)`, a `SqlxBroker<{Self}, YourDialect>`"
-)]
-pub trait BuiltInDialect: QueueDatabase {
-    /// The dialect of the crate's `dialect` module that builds the database's statements.
-    /// Machinery; [`BuiltIn`] holds it.
-    #[doc(hidden)]
-    type Picked: Lease + Advisory + Copy + 'static;
-
-    /// The dialect that builds the statements of the database `conn` reaches, or `None` when no
-    /// built-in dialect serves it: an `AnyPool`'s backend whose feature is off.
-    ///
-    /// Postgres, MySQL and SQLite answer without reading `conn`; the broker asks with the
-    /// connection it checks when it connects.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx::BuiltInDialect;
-    /// use ruststream_sqlx::dialect::Dialect;
-    /// use sqlx::Pool;
-    ///
-    /// /// The dialect the broker builds statements with for the database `pool` reaches.
-    /// async fn dialect_of<DB: BuiltInDialect>(
-    ///     pool: &Pool<DB>,
-    /// ) -> Result<Option<&'static str>, sqlx::Error> {
-    ///     let conn = pool.acquire().await?;
-    ///     Ok(DB::dialect(&conn).map(|dialect| dialect.name()))
-    /// }
-    /// ```
-    fn dialect(conn: &Self::Connection) -> Option<BuiltIn<Self>>;
-
-    /// The name of the database `conn` reaches, which an error names when no built-in dialect
-    /// serves it. Machinery; the broker calls it.
-    #[doc(hidden)]
-    fn backend(conn: &Self::Connection) -> &str {
-        let _ = conn;
-        Self::NAME
-    }
-}
-
-#[cfg(feature = "postgres")]
-impl BuiltInDialect for Postgres {
-    type Picked = dialect::Postgres;
-
-    fn dialect(_: &PgConnection) -> Option<BuiltIn<Self>> {
-        Some(BuiltIn::new(dialect::Postgres))
-    }
-}
-
-#[cfg(feature = "mysql")]
-impl BuiltInDialect for MySql {
-    type Picked = dialect::MySql;
-
-    fn dialect(_: &MySqlConnection) -> Option<BuiltIn<Self>> {
-        Some(BuiltIn::new(dialect::MySql))
-    }
-}
-
-#[cfg(feature = "sqlite")]
-impl BuiltInDialect for Sqlite {
-    type Picked = dialect::Sqlite;
-
-    fn dialect(_: &SqliteConnection) -> Option<BuiltIn<Self>> {
-        Some(BuiltIn::new(dialect::Sqlite))
-    }
-}
-
-#[cfg(feature = "any")]
-impl BuiltInDialect for Any {
-    type Picked = AnyDialect;
-
-    fn dialect(conn: &AnyConnection) -> Option<BuiltIn<Self>> {
-        AnyDialect::of(conn.backend_name()).map(BuiltIn::new)
-    }
-
-    fn backend(conn: &AnyConnection) -> &str {
-        conn.backend_name()
-    }
-}
-
-/// The name an `AnyConnection` reports for a Postgres backend: its sqlx driver's
-/// `Database::NAME`.
-#[cfg(feature = "any")]
-pub(crate) const POSTGRES_BACKEND: &str = "PostgreSQL";
-
-/// The name an `AnyConnection` reports for a MySQL or MariaDB backend.
-#[cfg(feature = "any")]
-pub(crate) const MYSQL_BACKEND: &str = "MySQL";
-
-/// The name an `AnyConnection` reports for a SQLite backend.
-#[cfg(feature = "any")]
-pub(crate) const SQLITE_BACKEND: &str = "SQLite";
-
-/// The inserts the derive builds at compile time, one per built-in dialect it was built with.
-/// Machinery; the derive writes it, never a service.
-#[doc(hidden)]
-#[derive(Debug, Clone, Copy)]
-pub struct InsertSql<'s> {
-    /// The Postgres insert.
-    pub postgres: Option<&'s str>,
-    /// The MySQL and MariaDB insert.
-    pub mysql: Option<&'s str>,
-    /// The SQLite insert.
-    pub sqlite: Option<&'s str>,
-}
-
-#[cfg(feature = "any")]
-impl<'s> InsertSql<'s> {
-    /// The insert of the database behind the `AnyPool` backend named `backend`.
-    fn for_backend(&self, backend: &str) -> Option<&'s str> {
-        match backend {
-            POSTGRES_BACKEND => self.postgres,
-            MYSQL_BACKEND => self.mysql,
-            SQLITE_BACKEND => self.sqlite,
-            _ => None,
-        }
-    }
-}
-
-/// A connection the inserts the derive builds at compile time run on: its database, and which
-/// of the derive's statements it runs. Machinery; never named directly.
-#[doc(hidden)]
-pub trait OnConnection: Send {
-    /// The database the connection reaches.
-    type Database: QueueDatabase;
-
-    /// The connection itself.
-    fn connection(&mut self) -> &mut <Self::Database as Database>::Connection;
-
-    /// The insert of this connection's database among `sql`, or `None` when the derive built none
-    /// for it.
-    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str>;
-}
-
-#[cfg(feature = "postgres")]
-impl OnConnection for PgConnection {
-    type Database = Postgres;
-
-    fn connection(&mut self) -> &mut Self {
-        self
-    }
-
-    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
-        sql.postgres
-    }
-}
-
-#[cfg(feature = "mysql")]
-impl OnConnection for MySqlConnection {
-    type Database = MySql;
-
-    fn connection(&mut self) -> &mut Self {
-        self
-    }
-
-    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
-        sql.mysql
-    }
-}
-
-#[cfg(feature = "sqlite")]
-impl OnConnection for SqliteConnection {
-    type Database = Sqlite;
-
-    fn connection(&mut self) -> &mut Self {
-        self
-    }
-
-    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
-        sql.sqlite
-    }
-}
-
-#[cfg(feature = "any")]
-impl OnConnection for AnyConnection {
-    type Database = Any;
-
-    fn connection(&mut self) -> &mut Self {
-        self
-    }
-
-    /// The insert of the database the connection reaches: `Any` passes a statement to its
-    /// backend as written.
-    fn insert_sql<'s>(&self, sql: &InsertSql<'s>) -> Option<&'s str> {
-        sql.for_backend(self.backend_name())
-    }
-}
-
-/// The error of a generated insert on a connection whose database the derive built no statement
-/// for. Machinery; the derive calls it.
-#[doc(hidden)]
-#[must_use]
-pub fn no_insert(row: &'static str) -> Error {
-    Error::Configuration(
-        format!("`{row}` has no generated insert for this connection's database").into(),
-    )
-}
-
-#[cfg(all(test, feature = "any"))]
-mod tests {
-    use sqlx::Database;
-
-    use super::{InsertSql, MYSQL_BACKEND, POSTGRES_BACKEND, SQLITE_BACKEND};
-
-    #[test]
-    fn the_backend_names_are_those_sqlx_reports() {
-        assert_eq!(POSTGRES_BACKEND, <sqlx::Postgres as Database>::NAME);
-        assert_eq!(MYSQL_BACKEND, <sqlx::MySql as Database>::NAME);
-        assert_eq!(SQLITE_BACKEND, <sqlx::Sqlite as Database>::NAME);
-    }
-
-    #[test]
-    fn an_any_backend_runs_the_insert_of_its_database() {
-        let sql = InsertSql {
-            postgres: Some("INSERT .. ($1)"),
-            mysql: Some("INSERT .. (?)"),
-            sqlite: None,
-        };
-        assert_eq!(sql.for_backend(POSTGRES_BACKEND), Some("INSERT .. ($1)"));
-        assert_eq!(sql.for_backend(MYSQL_BACKEND), Some("INSERT .. (?)"));
-        assert_eq!(
-            sql.for_backend(SQLITE_BACKEND),
-            None,
-            "the derive was built without that dialect"
-        );
-        assert_eq!(sql.for_backend("MSSQL"), None);
     }
 }
