@@ -1,6 +1,6 @@
 //! Row mode: a table without a payload field hands its handler the row itself, `&Row`, on every
-//! stand and in every form, transactional mode included, and a delivery with no row to lend
-//! settles by the decode policy.
+//! stand and in every form, transactional mode included, or a batch of them as one slice,
+//! `&[Row]`; a delivery with no row to lend settles by the decode policy.
 
 #![cfg(all(
     feature = "inbox",
@@ -9,6 +9,7 @@
     feature = "testing"
 ))]
 
+mod batch;
 mod refused;
 mod single;
 mod transactional;

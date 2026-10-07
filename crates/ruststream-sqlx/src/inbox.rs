@@ -1,5 +1,6 @@
 //! The inbox: task queues in tables a service describes with its own structs.
 
+pub(crate) mod batch;
 mod broker;
 mod columns;
 mod database;
@@ -24,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ruststream_sqlx_dialect::TableSpec;
 
+pub use batch::{RowBatch, RowDeliveries};
 pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
 pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
 #[cfg(feature = "any")]

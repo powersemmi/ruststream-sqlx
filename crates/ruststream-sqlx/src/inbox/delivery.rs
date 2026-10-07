@@ -3,7 +3,7 @@
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 use std::ptr;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -304,6 +304,34 @@ where
             .in_process()
             .then(|| Arc::clone(connection));
         self
+    }
+}
+
+impl<DB, Row> InboxDelivery<DB, Row>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
+{
+    /// The delivery of a row a [`RowBatch`](crate::RowBatch) lent its handler, held by `hold`:
+    /// `headers` were taken from the row when the batch was built, and the row counts as lent.
+    pub(super) fn of_batch(
+        row: Row,
+        headers: HeaderMap,
+        hold: Hold<DB, Row>,
+        queue: &'static Queue,
+        pool: &'static Pool<DB>,
+    ) -> Self {
+        Self {
+            claimed: Claimed::Row(row),
+            headers,
+            hold: Some(hold),
+            queue,
+            pool,
+            row_lent: AtomicBool::new(true),
+            #[cfg(feature = "testing")]
+            in_process: None,
+            _mode: PhantomData,
+        }
     }
 }
 

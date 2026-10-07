@@ -18,6 +18,10 @@ mod inbox;
 #[cfg(feature = "inbox")]
 pub mod prelude;
 
+/// Machinery behind [`RowBatch`]'s deliveries; a service never names it.
+#[cfg(feature = "inbox")]
+#[doc(hidden)]
+pub use inbox::RowDeliveries;
 /// Machinery behind [`InboxSettings::transactional`]; a service never names it.
 #[cfg(feature = "inbox")]
 #[doc(hidden)]
@@ -29,7 +33,7 @@ pub use inbox::{
     InboxDelivery, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert, KeyColumn,
     LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Plain, Publish,
     QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
-    RoutedPublisher, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
     Transactional, Tx, Unlock,
 };
 
@@ -47,6 +51,7 @@ pub mod __private {
 
     #[cfg(feature = "any")]
     pub use crate::inbox::AnyDialect;
+    pub use crate::inbox::batch::{BatchClaim, BatchLane};
     pub use crate::inbox::engine::{
         Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
         Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,

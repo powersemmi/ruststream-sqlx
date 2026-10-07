@@ -12,7 +12,7 @@ use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
 use tokio_util::sync::DropGuard;
 
-use super::PayloadRow;
+use super::batch::{BatchClaim, BatchLane};
 use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
@@ -22,7 +22,7 @@ use super::form::advisory::claim::{Advised, claim_advised};
 use super::form::advisory::{LockBook, LockHold};
 use super::form::lease::LeaseBook;
 use super::form::lease::claim::{begin_work, claim_leased};
-use super::form::row_lock::{BatchTx, claim_locked};
+use super::form::row_lock::claim_locked;
 use super::queue::{Queue, Registration};
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
@@ -328,7 +328,9 @@ where
     }
 
     /// The deliveries of the last advisory claim, oldest first, each with its place in the book.
-    fn take_advised(&mut self) -> impl Iterator<Item = (Claimed<Row>, LockHold<DB>)> + '_ {
+    pub(crate) fn take_advised(
+        &mut self,
+    ) -> impl Iterator<Item = (Claimed<Row>, LockHold<DB>)> + '_ {
         let ClaimBuffers { rows, advised, .. } = &mut self.claimed;
         let holds = advised
             .as_deref_mut()
@@ -338,6 +340,11 @@ where
 
     pub(crate) const fn queue(&self) -> &'static Queue {
         self.queue
+    }
+
+    /// The subscription's handle on the pool, which its deliveries lend their handlers.
+    pub(crate) const fn pool(&self) -> &'static Pool<DB> {
+        self.pool
     }
 
     async fn next_one(&mut self) -> Option<Result<InboxDelivery<DB, Row, Mode>, SqlxBrokerError>> {
@@ -494,13 +501,15 @@ where
 }
 
 // Transactional mode serves single deliveries: a batch handler reads no delivery's context, so
-// it could take no delivery's transaction. A batch of a payload-mode table is its deliveries.
+// it could take no delivery's transaction. The table's mode picks the batch: a payload-mode
+// table's is its deliveries, a row-mode table's lends its rows as one slice.
 impl<DB, Row> BatchSubscriber for InboxSubscriber<DB, Row, Plain>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
+    Row::Lane: BatchLane<DB, Row>,
 {
-    type Batch = Vec<InboxDelivery<DB, Row>>;
+    type Batch = <Row::Lane as BatchLane<DB, Row>>::Batch;
 
     fn batches(
         &mut self,
@@ -511,45 +520,9 @@ where
                 Ok(claimed) => claimed,
                 Err(error) => return Some((Err(error), subscriber)),
             };
-            let (queue, pool) = (subscriber.queue(), subscriber.pool);
-            #[cfg(feature = "testing")]
-            let shared = Arc::clone(&subscriber.shared);
-            let on = |delivery: InboxDelivery<DB, Row>| {
-                #[cfg(feature = "testing")]
-                let delivery = delivery.on(&shared);
-                delivery
-            };
-            let deliveries = match taken {
-                Taken::Locked(tx) => {
-                    let batch = BatchTx::new(tx, count);
-                    subscriber
-                        .take_rows()
-                        .map(|claimed| {
-                            on(InboxDelivery::batched(
-                                claimed,
-                                Arc::clone(&batch),
-                                queue,
-                                pool,
-                            ))
-                        })
-                        .collect()
-                }
-                // Each delivery of a leased batch holds its own lease and settles on its own.
-                Taken::Leased(book, lease) => subscriber
-                    .take_rows()
-                    .map(|claimed| {
-                        on(InboxDelivery::leased(
-                            claimed, book, lease, None, queue, pool,
-                        ))
-                    })
-                    .collect(),
-                // Each delivery of an advisory batch holds its own session and settles on its own.
-                Taken::Advised => subscriber
-                    .take_advised()
-                    .map(|(claimed, hold)| on(InboxDelivery::advised(claimed, hold, queue, pool)))
-                    .collect(),
-            };
-            Some((Ok(deliveries), subscriber))
+            let batch =
+                <Row::Lane as BatchLane<DB, Row>>::batch(BatchClaim::new(subscriber, taken, count));
+            Some((Ok(batch), subscriber))
         })
     }
 }
