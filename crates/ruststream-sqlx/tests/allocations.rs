@@ -1,6 +1,7 @@
-//! What a message costs in allocations on the paths that look a name up at run time: a by-name
-//! subscription allocates what a typed one does, in both forms and whatever its ids hold, and a
-//! `Routed` publish what a `Repository` one does.
+//! What a message costs in allocations on the paths that look a name up at run time and in row
+//! mode: a by-name subscription allocates what a typed one does, in both forms and whatever its ids
+//! hold, a `Routed` publish what a `Repository` one does, and a row-mode subscription, single or
+//! batched, what a payload-mode one over the same table does.
 
 #![cfg(all(
     feature = "inbox",
@@ -11,14 +12,15 @@
 
 mod live;
 
+use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use futures::{Stream, StreamExt};
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, Lend, OutgoingMessage, PublishPolicy, Publisher,
-    Subscribe, Subscriber, SubscriptionSource,
+    BatchSubscriber, Broker, Carries, CarriesBatch, ConnectedBroker, IncomingMessage, Lend,
+    OutgoingMessage, PublishPolicy, Publisher, Subscribe, Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_sqlx::{
     ConnectedSqlxBroker, Inbox, InboxQueue, Publish, Repository, Routed, SqlxBroker,
@@ -70,6 +72,34 @@ impl Publish<Postgres> for Keyed {
     }
 }
 
+/// `plain_jobs` in row mode: the payload column is a data field of the same type, so a row costs
+/// the driver's decode of the same columns as `Plain`'s.
+#[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+#[inbox(table = "plain_jobs")]
+struct PlainAsRow {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    attempt: i16,
+    payload: Vec<u8>,
+}
+
+/// `plain_jobs` in row mode, in the lease form.
+#[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+#[inbox(table = "plain_jobs")]
+struct LeasedAsRow {
+    #[field(id, generated)]
+    id: i64,
+    #[field(attempt, generated)]
+    attempt: i16,
+    #[field(locked_until)]
+    locked_until: Option<DateTime<Utc>>,
+    payload: Vec<u8>,
+}
+
+/// How many rows a measured batch claims.
+const BATCH: NonZeroUsize = nonzero!(10usize);
+
 /// Every allocation of the process so far.
 fn blocks() -> u64 {
     dhat::HeapStats::get().total_blocks
@@ -119,9 +149,9 @@ async fn fill_keyed(pool: &PgPool, count: u64) {
     .expect("the rows write");
 }
 
-/// Allocations per message to claim and acknowledge `MESSAGES` rows from `deliveries`, after
-/// `WARMUP` of them.
-async fn claim_and_ack<Message, Deliveries>(deliveries: Deliveries) -> u64
+/// Allocations per message to claim, `read` and acknowledge `MESSAGES` rows from `deliveries`,
+/// after `WARMUP` of them.
+async fn claim_and_ack<Message, Deliveries>(deliveries: Deliveries, read: fn(&Message)) -> u64
 where
     Message: IncomingMessage,
     Deliveries: Stream<Item = Result<Message, SqlxBrokerError>>,
@@ -133,9 +163,90 @@ where
             start = blocks();
         }
         let delivery = deliveries.next().await.expect("a row").expect("a claim");
+        read(&delivery);
         delivery.ack().await.expect("the ack");
     }
     (blocks() - start) / MESSAGES
+}
+
+/// What a codec reads of a payload-mode delivery.
+fn read_payload<Message: IncomingMessage>(delivery: &Message) {
+    assert!(
+        !delivery.payload().is_empty(),
+        "a payload-mode delivery lends its payload"
+    );
+}
+
+/// What a `&Row` handler reads of a row-mode delivery.
+fn read_row<Row, Message: Carries<Row>>(delivery: &Message) {
+    assert!(
+        delivery.carried().is_some(),
+        "a row-mode delivery lends its row"
+    );
+}
+
+/// Allocations per message of a typed subscription through `source`, reading each delivery as
+/// `read` does, over `WARMUP + MESSAGES` rows.
+async fn typed_subscription_cost<Source>(
+    connected: &ConnectedSqlxBroker<Postgres>,
+    source: Source,
+    read: fn(&<Source::Subscriber as Subscriber>::Message),
+) -> u64
+where
+    Source: SubscriptionSource<ConnectedSqlxBroker<Postgres>>,
+    Source::Subscriber: Subscriber<Error = SqlxBrokerError>,
+{
+    let mut subscriber = source
+        .subscribe(connected)
+        .await
+        .expect("the typed subscription opens");
+    claim_and_ack(subscriber.stream(), read).await
+}
+
+/// Allocations per batch to claim, `read` and acknowledge `MESSAGES` rows in batches of `BATCH`
+/// through `source`, after `WARMUP` rows of them.
+async fn batch_cost<Source>(
+    connected: &ConnectedSqlxBroker<Postgres>,
+    source: Source,
+    read: fn(&<Source::Subscriber as BatchSubscriber>::Batch),
+) -> u64
+where
+    Source: SubscriptionSource<ConnectedSqlxBroker<Postgres>>,
+    Source::Subscriber: BatchSubscriber<Error = SqlxBrokerError>,
+    <Source::Subscriber as BatchSubscriber>::Batch:
+        IntoIterator<Item = <Source::Subscriber as Subscriber>::Message>,
+{
+    let mut subscriber = source
+        .subscribe(connected)
+        .await
+        .expect("the batch subscription opens");
+    let mut batches = pin!(subscriber.batches(BATCH));
+    let size = BATCH.get() as u64;
+    let mut start = 0;
+    for batch in 0..(WARMUP + MESSAGES) / size {
+        if batch == WARMUP / size {
+            start = blocks();
+        }
+        let batch = batches.next().await.expect("a batch").expect("a claim");
+        read(&batch);
+        let mut count = 0;
+        for delivery in batch {
+            delivery.ack().await.expect("the ack");
+            count += 1;
+        }
+        assert_eq!(count, size, "a full batch");
+    }
+    (blocks() - start) / (MESSAGES / size)
+}
+
+/// What a codec reads of a payload-mode batch.
+fn read_payloads<Message: IncomingMessage>(batch: &[Message]) {
+    assert!(batch.iter().all(|delivery| !delivery.payload().is_empty()));
+}
+
+/// What a `&[Row]` handler reads of a row-mode batch.
+fn read_rows<Row, Batch: CarriesBatch<Row>>(batch: &Batch) {
+    assert_eq!(batch.carried().len(), BATCH.get(), "a row per delivery");
 }
 
 /// Allocations per message of a subscription through `typed`, then of a by-name subscription to
@@ -153,13 +264,13 @@ where
         .subscribe(connected)
         .await
         .expect("the typed subscription opens");
-    let typed_cost = claim_and_ack(subscriber.stream()).await;
+    let typed_cost = claim_and_ack(subscriber.stream(), read_payload).await;
     drop(subscriber);
     let mut named = connected
         .subscribe(&name)
         .await
         .expect("the by-name subscription opens");
-    let named_cost = claim_and_ack(named.stream()).await;
+    let named_cost = claim_and_ack(named.stream(), read_payload).await;
     drop(named);
     (typed_cost, named_cost)
 }
@@ -185,7 +296,7 @@ where
 
 // One test in this binary: dhat's testing profiler is one per process.
 #[tokio::test(flavor = "current_thread")]
-async fn named_paths_allocate_what_typed_paths_do() {
+async fn named_and_row_paths_allocate_what_typed_payload_paths_do() {
     let Some(db) = database().await else { return };
     let pool = quiet_pool(&db).await;
     fill(&db.pool, 2 * (WARMUP + MESSAGES)).await;
@@ -207,6 +318,32 @@ async fn named_paths_allocate_what_typed_paths_do() {
         subscription_costs(&connected, InboxQueue::<Plain>::new("plain")).await;
     dhat::assert_eq!(named_cost, typed_cost);
 
+    // Row mode over the same table: the driver decodes the same columns, and the delivery lends
+    // the row it decoded where payload mode lends one of its columns.
+    fill(&db.pool, WARMUP + MESSAGES).await;
+    let row_cost = typed_subscription_cost(
+        &connected,
+        InboxQueue::<PlainAsRow>::new("plain"),
+        read_row::<PlainAsRow, _>,
+    )
+    .await;
+    dhat::assert_eq!(row_cost, typed_cost);
+
+    // A batch: payload mode hands over its deliveries, row mode its rows as one slice beside the
+    // claim, and each costs the same per batch in this form.
+    fill(&db.pool, 2 * (WARMUP + MESSAGES)).await;
+    let payload_batch = batch_cost(&connected, InboxQueue::<Plain>::new("plain"), |batch| {
+        read_payloads(batch);
+    })
+    .await;
+    let row_batch = batch_cost(
+        &connected,
+        InboxQueue::<PlainAsRow>::new("plain"),
+        read_rows::<PlainAsRow, _>,
+    )
+    .await;
+    dhat::assert_eq!(row_batch, payload_batch);
+
     // The lease form: each delivery enters its subscription's lease book and settles by its lease.
     // The lease is long enough that no round of extensions falls inside the measure.
     let leased = SqlxBroker::new(pool)
@@ -220,6 +357,14 @@ async fn named_paths_allocate_what_typed_paths_do() {
     let (leased_typed, leased_named) =
         subscription_costs(&leased, InboxQueue::<lease::Plain>::new("plain")).await;
     dhat::assert_eq!(leased_named, leased_typed);
+    fill(&db.pool, WARMUP + MESSAGES).await;
+    let leased_row = typed_subscription_cost(
+        &leased,
+        InboxQueue::<LeasedAsRow>::new("plain"),
+        read_row::<LeasedAsRow, _>,
+    )
+    .await;
+    dhat::assert_eq!(leased_row, leased_typed);
     // Ids with storage of their own: a text id costs its decode alone, for the book copies each
     // into the storage the id before it left.
     fill_keyed(&db.pool, 2 * (WARMUP + MESSAGES)).await;

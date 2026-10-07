@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::str;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
@@ -431,6 +432,67 @@ impl Mail {
             locked_until: lent.locked_until,
             ..self
         }
+    }
+}
+
+/// A published message becomes a mail of the group it names, to the recipient its bytes spell:
+/// the service's own wire for its row-mode table, written through the generated insert.
+impl<DB> Publish<DB> for Mail
+where
+    DB: QueueDatabase,
+    Self: Insert<DB::Connection>,
+{
+    async fn publish(
+        conn: &mut DB::Connection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), Error> {
+        let recipient =
+            str::from_utf8(message.payload()).map_err(|error| Error::Encode(Box::new(error)))?;
+        Self::queued(message.name(), recipient, None)
+            .insert(conn)
+            .await
+    }
+}
+
+/// The mail queue read as what its producer wrote: two mails are equal when they go to the same
+/// recipient with the same subject, whatever id, attempt or lease the table gave them. The core's
+/// carried suites compare what a delivery lends with what they published, and only these fields
+/// are theirs.
+#[derive(Debug, Clone, Inbox, FromRow)]
+#[inbox(table = "mail_jobs")]
+pub(crate) struct WrittenMail {
+    #[field(id, generated)]
+    pub(crate) job_id: i64,
+    #[field(group)]
+    pub(crate) name: String,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    #[field(locked_until)]
+    pub(crate) locked_until: Option<DateTime<Utc>>,
+    #[field(headers)]
+    pub(crate) meta: Option<Json<BTreeMap<String, String>>>,
+    pub(crate) recipient: String,
+    pub(crate) subject: Option<String>,
+}
+
+impl WrittenMail {
+    /// A mail of the queue `name` to `recipient`, as a producer writes it.
+    pub(crate) fn queued(name: &str, recipient: &str, subject: Option<&str>) -> Self {
+        Self {
+            job_id: 0,
+            name: name.to_owned(),
+            attempt: 1,
+            locked_until: None,
+            meta: None,
+            recipient: recipient.to_owned(),
+            subject: subject.map(str::to_owned),
+        }
+    }
+}
+
+impl PartialEq for WrittenMail {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.recipient, &self.subject) == (&other.recipient, &other.subject)
     }
 }
 
