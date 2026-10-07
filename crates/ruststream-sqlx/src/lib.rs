@@ -48,13 +48,14 @@ pub use inbox::RowDeliveries;
 pub use inbox::TransactionalStep;
 #[cfg(feature = "inbox")]
 pub use inbox::{
-    Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
-    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderField,
-    InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSpec, InboxSubscriber,
-    InboxTable, Insert, KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime,
-    Notifies, PayloadRow, Plain, Publish, QueueDatabase, QueueTime, Repository,
-    RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher, RowBatch, SqlxBroker,
-    SqlxBrokerError, SystemClock, TimeColumn, TimeSource, Transactional, Tx, Unlock,
+    Ack, AttemptColumn, AttemptRow, BuiltIn, BuiltInDialect, ByName, Claim, Clock,
+    ClosedSqlxBroker, ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch,
+    HeaderField, HeaderFields, HeaderRow, InboxDelivery, InboxHeaders, InboxQueue, InboxRow,
+    InboxSettings, InboxSpec, InboxSubscriber, InboxTable, Insert, KeyColumn, KeyRow, LeaseRow,
+    Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow, Plain, Publish,
+    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
+    RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    Transactional, Tx, Unlock, put_header,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -96,6 +97,12 @@ pub mod __private {
         pub use crate::inbox::headers::{
             Assembled, HeaderCell, HeadersLease, HeadersRow, LazyHeaders, OwnClaim, OwnExtend,
             OwnLock, put_header, unnamed_header,
+        };
+        pub use crate::inbox::manual::{
+            AckAxis, AttemptAxis, Axes, ClaimAxes, ClockAxis, DeadLetterAxis, DiscardAxis,
+            ExtendAxis, FormAxis, FormBind, HeadersAxis, KeyAxis, LeaseAxis, LockAxis,
+            ManualHeaders, MessageAxis, Named, OpeningAxis, RetryAfterAxis, RetryAxis, TimeAxis,
+            UnlockAxis,
         };
         pub use crate::inbox::named::kinds::{Kinds, KindsOf};
         pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};

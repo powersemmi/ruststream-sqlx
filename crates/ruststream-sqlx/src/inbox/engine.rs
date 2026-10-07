@@ -39,6 +39,13 @@ pub use values::Values;
 
 /// A row's whole contract with the broker. Machinery; the derive implements it, a service never
 /// names it.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` does not run on `{DB}`: an event it names as its own, or a role it reads \
+               off its row, is not implemented",
+    label = "not a queue table on `{DB}`",
+    note = "implement each event `{Self}` names in `custom(..)` (by hand: with `.own::<..>()`) \
+            for `{DB}`, and each accessor trait of the roles it sets"
+)]
 pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + Unpin {
     /// Which events the service implements itself.
     const SHAPE: Shape;

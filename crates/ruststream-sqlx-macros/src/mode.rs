@@ -48,10 +48,13 @@ fn payload_row(input: &DeriveInput, generics: &Generics, field: &Field<'_>) -> T
     let ident = field.ident;
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let ty = field.ty;
     let bytes =
         quote_spanned!(field.ty.span()=> ::core::convert::AsRef::<[u8]>::as_ref(&self.#ident));
     quote! {
         impl #impl_generics ::ruststream_sqlx::PayloadRow for #name #ty_generics #where_clause {
+            type Column = #ty;
+
             fn payload(&self) -> &[u8] {
                 #bytes
             }

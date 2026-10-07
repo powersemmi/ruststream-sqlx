@@ -10,7 +10,7 @@ error[E0277]: `Locked` has no `locked_until` field, so its subscription holds no
 27 |     let _ = InboxQueue::<Locked>::new("jobs").lease(Duration::from_secs(30));
    |                                               ^^^^^ unsatisfied trait bound
    |
-help: the trait `LeaseRow` is not implemented for `Locked`
+help: the trait `InboxTable` is not implemented for `Locked`
   --> tests/ui/lease.rs:8:1
    |
  8 | struct Locked {
@@ -21,6 +21,7 @@ help: the trait `LeaseRow` is implemented for `OnDatabaseTime`
    |
 15 | #[derive(Debug, Inbox, sqlx::FromRow)]
    |                 ^^^^^
+   = note: required for `Locked` to implement `LeaseRow`
 note: required by a bound in `InboxQueue::<Row>::lease`
   --> src/inbox/queue.rs
    |

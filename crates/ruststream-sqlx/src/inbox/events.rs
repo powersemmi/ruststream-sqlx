@@ -55,9 +55,9 @@ use super::time::LeaseRow;
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `claim` in `#[inbox(custom(..))]` and does not implement `Claim<{DB}>`",
+    message = "`{Self}` runs its own `claim` (`custom(claim)` in `#[inbox(..)]`, or `own::Claim` in its `InboxSpec`) and does not implement `Claim<{DB}>`",
     label = "the service's own claim is missing",
-    note = "implement `Claim<{DB}>` for `{Self}`, or drop `claim` from `custom(..)`"
+    note = "implement `Claim<{DB}>` for `{Self}`, or drop `claim` from `custom(..)` (by hand: `.own::<own::Claim>()` and `own::Claim` in `type Table`)"
 )]
 pub trait Claim<DB: Database>: InboxRow {
     /// Claims up to `limit` rows and returns their ids.
@@ -117,9 +117,9 @@ pub trait Claim<DB: Database>: InboxRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `fetch` in `#[inbox(custom(..))]` and does not implement `Fetch<{DB}>`",
+    message = "`{Self}` runs its own `fetch` (`custom(fetch)` in `#[inbox(..)]`, or `own::Fetch` in its `InboxSpec`) and does not implement `Fetch<{DB}>`",
     label = "the service's own fetch is missing",
-    note = "implement `Fetch<{DB}>` for `{Self}`, or drop `fetch` from `custom(..)`"
+    note = "implement `Fetch<{DB}>` for `{Self}`, or drop `fetch` from `custom(..)` (by hand: `.own::<own::Fetch>()` and `own::Fetch` in `type Table`)"
 )]
 pub trait Fetch<DB: Database>: InboxRow {
     /// The rows of `ids`, in any order.
@@ -213,8 +213,8 @@ settle_event!(
         .bind(id)
         .execute(conn)
         .await?;",
-    message = "`{Self}` lists `ack` in `#[inbox(custom(..))]` and does not implement `Ack<{DB}>`",
-    note = "implement `Ack<{DB}>` for `{Self}`, or drop `ack` from `custom(..)`"
+    message = "`{Self}` runs its own `ack` (`custom(ack)` in `#[inbox(..)]`, or `own::Ack` in its `InboxSpec`) and does not implement `Ack<{DB}>`",
+    note = "implement `Ack<{DB}>` for `{Self}`, or drop `ack` from `custom(..)` (by hand: `.own::<own::Ack>()` and `own::Ack` in `type Table`)"
 );
 
 settle_event!(
@@ -230,8 +230,8 @@ settle_event!(
             .bind(id)
             .execute(conn)
             .await?;",
-    message = "`{Self}` lists `retry` in `#[inbox(custom(..))]` and does not implement `Retry<{DB}>`",
-    note = "implement `Retry<{DB}>` for `{Self}`, or drop `retry` from `custom(..)`"
+    message = "`{Self}` runs its own `retry` (`custom(retry)` in `#[inbox(..)]`, or `own::Retry` in its `InboxSpec`) and does not implement `Retry<{DB}>`",
+    note = "implement `Retry<{DB}>` for `{Self}`, or drop `retry` from `custom(..)` (by hand: `.own::<own::Retry>()` and `own::Retry` in `type Table`)"
 );
 
 settle_event!(
@@ -253,8 +253,8 @@ settle_event!(
         .bind(delay.as_secs_f64())
         .execute(conn)
         .await?;",
-    message = "`{Self}` lists `retry_after` in `#[inbox(custom(..))]` and does not implement `RetryAfter<{DB}>`",
-    note = "implement `RetryAfter<{DB}>` for `{Self}`, or drop `retry_after` from `custom(..)`",
+    message = "`{Self}` runs its own `retry_after` (`custom(retry_after)` in `#[inbox(..)]`, or `own::RetryAfter` in its `InboxSpec`) and does not implement `RetryAfter<{DB}>`",
+    note = "implement `RetryAfter<{DB}>` for `{Self}`, or drop `retry_after` from `custom(..)` (by hand: `.own::<own::RetryAfter>()` and `own::RetryAfter` in `type Table`)",
     delay: Duration = "Duration::from_secs(30)"
 );
 
@@ -269,8 +269,8 @@ settle_event!(
             .bind(id)
             .execute(conn)
             .await?;",
-    message = "`{Self}` lists `discard` in `#[inbox(custom(..))]` and does not implement `Discard<{DB}>`",
-    note = "implement `Discard<{DB}>` for `{Self}`, or drop `discard` from `custom(..)`"
+    message = "`{Self}` runs its own `discard` (`custom(discard)` in `#[inbox(..)]`, or `own::Discard` in its `InboxSpec`) and does not implement `Discard<{DB}>`",
+    note = "implement `Discard<{DB}>` for `{Self}`, or drop `discard` from `custom(..)` (by hand: `.own::<own::Discard>()` and `own::Discard` in `type Table`)"
 );
 
 settle_event!(
@@ -290,8 +290,8 @@ settle_event!(
         .execute(conn)
         .await?;
         tracing::warn!(id, destination, \"a job's attempts are spent\");",
-    message = "`{Self}` lists `dead_letter` in `#[inbox(custom(..))]` and does not implement `DeadLetter<{DB}>`",
-    note = "implement `DeadLetter<{DB}>` for `{Self}`, or drop `dead_letter` from `custom(..)`",
+    message = "`{Self}` runs its own `dead_letter` (`custom(dead_letter)` in `#[inbox(..)]`, or `own::DeadLetter` in its `InboxSpec`) and does not implement `DeadLetter<{DB}>`",
+    note = "implement `DeadLetter<{DB}>` for `{Self}`, or drop `dead_letter` from `custom(..)` (by hand: `.own::<own::DeadLetter>()` and `own::DeadLetter` in `type Table`)",
     destination: &str = "\"jobs.dead\""
 );
 
@@ -346,9 +346,9 @@ settle_event!(
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `extend` in `#[inbox(custom(..))]` and does not implement `Extend<{DB}>`",
+    message = "`{Self}` runs its own `extend` (`custom(extend)` in `#[inbox(..)]`, or `own::Extend` in its `InboxSpec`) and does not implement `Extend<{DB}>`",
     label = "the service's own extension is missing",
-    note = "implement `Extend<{DB}>` for `{Self}`, or drop `extend` from `custom(..)`"
+    note = "implement `Extend<{DB}>` for `{Self}`, or drop `extend` from `custom(..)` (by hand: `.own::<own::Extend>()` and `own::Extend` in `type Table`)"
 )]
 pub trait Extend<DB: Database>: LeaseRow {
     /// Writes `until` into the lease of the row `id` while it still holds `held`; `true` when it
@@ -423,9 +423,9 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `lock` in `#[inbox(custom(..))]` and does not implement `Lock<{DB}>`",
+    message = "`{Self}` runs its own `lock` (`custom(lock)` in `#[inbox(..)]`, or `own::Lock` in its `InboxSpec`) and does not implement `Lock<{DB}>`",
     label = "the service's own lock is missing",
-    note = "implement `Lock<{DB}>` for `{Self}`, or drop `lock` from `custom(..)`"
+    note = "implement `Lock<{DB}>` for `{Self}`, or drop `lock` from `custom(..)` (by hand: `.own::<own::Lock>()` and `own::Lock` in `type Table`)"
 )]
 pub trait Lock<DB: Database>: InboxRow {
     /// Tries the advisory lock on `key` for the session of `conn`, without waiting: `true` when it
@@ -489,9 +489,9 @@ pub trait Lock<DB: Database>: InboxRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `unlock` in `#[inbox(custom(..))]` and does not implement `Unlock<{DB}>`",
+    message = "`{Self}` runs its own `unlock` (`custom(unlock)` in `#[inbox(..)]`, or `own::Unlock` in its `InboxSpec`) and does not implement `Unlock<{DB}>`",
     label = "the service's own unlock is missing",
-    note = "implement `Unlock<{DB}>` for `{Self}`, or drop `unlock` from `custom(..)`"
+    note = "implement `Unlock<{DB}>` for `{Self}`, or drop `unlock` from `custom(..)` (by hand: `.own::<own::Unlock>()` and `own::Unlock` in `type Table`)"
 )]
 pub trait Unlock<DB: Database>: InboxRow {
     /// Releases the advisory lock on `key` the session of `conn` holds: `true` when the session

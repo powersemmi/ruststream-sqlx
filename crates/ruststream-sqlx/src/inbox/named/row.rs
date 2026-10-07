@@ -395,6 +395,8 @@ impl<D: 'static> QueueRow for NamedRow<D> {
 }
 
 impl<D: 'static> PayloadRow for NamedRow<D> {
+    type Column = NamedBytes;
+
     fn payload(&self) -> &[u8] {
         self.payload.as_bytes()
     }

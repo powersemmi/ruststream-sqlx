@@ -1,8 +1,8 @@
-error[E0277]: `NoPayload` has no payload field, so a route has no column to write a message's bytes into
+error[E0277]: `NoPayload` lends no payload, so no column holds a message's bytes
   --> tests/ui/mount.rs:36:35
    |
 36 |     SqlxBroker::new(pool).route::<NoPayload>("jobs")
-   |                           -----   ^^^^^^^^^ a table in row mode
+   |                           -----   ^^^^^^^^^ no `PayloadRow` for this row
    |                           |
    |                           required by a bound introduced by this call
    |
@@ -11,8 +11,9 @@ help: the trait `PayloadRow` is not implemented for `NoPayload`
    |
 13 | struct NoPayload {
    | ^^^^^^^^^^^^^^^^
-   = note: write a row of a row-mode table with the derive's `insert`, or with `Repository` over a `Publish` of the service's own
+   = note: a table in row mode: write its rows with the derive's `insert`, or with `Repository` over a `Publish` of the service's own
    = note: a route and a by-name subscription read a table whose `#[field(payload)]` field holds the message
+   = note: a table described by hand that sets `.payload(..)` implements `PayloadRow` for the field the column decodes into
 help: the trait `PayloadRow` is implemented for `Unacked`
   --> tests/ui/mount.rs:25:10
    |
@@ -28,45 +29,29 @@ note: required by a bound in `SqlxBroker::<DB, D>::route`
    |                                         ^^^^^^^^^^ required by this bound in `SqlxBroker::<DB, D>::route`
    = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: `Unacked` lists `ack` in `#[inbox(custom(..))]` and does not implement `Ack<sqlx::Postgres>`
+error[E0277]: `Unacked` does not run on `sqlx::Postgres`: an event it names as its own, or a role it reads off its row, is not implemented
   --> tests/ui/mount.rs:40:16
    |
 40 |     subscribes(InboxQueue::<Unacked>::new("jobs"));
-   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the service's own event is missing
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a queue table on `sqlx::Postgres`
    |     |
    |     required by a bound introduced by this call
    |
-help: the trait `ruststream_sqlx::Ack<sqlx::Postgres>` is not implemented for `Unacked`
+help: the trait `ruststream_sqlx::__private::Events<sqlx::Postgres>` is not implemented for `Unacked`
   --> tests/ui/mount.rs:27:1
    |
 27 | struct Unacked {
    | ^^^^^^^^^^^^^^
-   = note: implement `Ack<sqlx::Postgres>` for `Unacked`, or drop `ack` from `custom(..)`
-help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
-  --> src/inbox/queue.rs
-   |
-   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
-   | | where
-   | |     DB: QueueDatabase,
-   | |     D: Dialect + Opens<Row::Opening> + 'static,
-   | |     Row: InboxRow + Events<DB>,
-   | |                     ---------- unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
-   | |     Row::Form: FormOn<D>,
-   | |     Mode: InboxMode,
-   | |____________________^
-note: required for `Unacked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
-  --> tests/ui/mount.rs:27:8
+   = note: implement each event `Unacked` names in `custom(..)` (by hand: with `.own::<..>()`) for `sqlx::Postgres`, and each accessor trait of the roles it sets
+help: the trait `ruststream_sqlx::__private::Events<__DB>` is conditionally implemented for `Unacked`
+  --> tests/ui/mount.rs:25:10
    |
 25 | #[derive(Inbox, sqlx::FromRow)]
-   |          ----- type parameter would need to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
-26 | #[inbox(table = "jobs", custom(ack))]
-27 | struct Unacked {
-   |        ^^^^^^^
-   = help: consider manually implementing `ruststream_sqlx::__private::Events<sqlx::Postgres>` to avoid undesired bounds caused by "imperfect derives"
-   = note: to learn more, visit <https://github.com/rust-lang/rust/issues/26925>
+   |          ^^^^^ unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::Ack<sqlx::Postgres>`
    = note: required for `InboxQueue<Unacked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres>>`
 note: required by a bound in `subscribes`
   --> tests/ui/mount.rs:6:23
    |
  6 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Postgres>>>>(source: Source) {
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
+   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)

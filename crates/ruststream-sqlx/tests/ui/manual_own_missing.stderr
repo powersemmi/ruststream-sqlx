@@ -1,0 +1,34 @@
+error[E0277]: `Unacked` runs its own `ack` (`custom(ack)` in `#[inbox(..)]`, or `own::Ack` in its `InboxSpec`) and does not implement `Ack<sqlx::Sqlite>`
+  --> tests/ui/manual_own_missing.rs:42:16
+   |
+42 |     subscribes(InboxQueue::<Unacked>::new("jobs"));
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the service's own event is missing
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `ruststream_sqlx::Ack<sqlx::Sqlite>` is not implemented for `Unacked`
+  --> tests/ui/manual_own_missing.rs:15:1
+   |
+15 | struct Unacked {
+   | ^^^^^^^^^^^^^^
+   = note: implement `Ack<sqlx::Sqlite>` for `Unacked`, or drop `ack` from `custom(..)` (by hand: `.own::<own::Ack>()` and `own::Ack` in `type Table`)
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
+  --> src/inbox/queue.rs
+   |
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     D: Dialect + Opens<Row::Opening> + 'static,
+   | |     Row: InboxRow + Events<DB>,
+   | |                     ---------- unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Sqlite>`
+   | |     Row::Form: FormOn<D>,
+   | |     Mode: InboxMode,
+   | |____________________^
+   = note: required for `Set<ruststream_sqlx::spec::own::Ack>` to implement `ruststream_sqlx::__private::AckAxis<sqlx::Sqlite, Unacked>`
+   = note: required for `Unacked` to implement `ruststream_sqlx::__private::Events<sqlx::Sqlite>`
+   = note: required for `InboxQueue<Unacked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Sqlite>>`
+note: required by a bound in `subscribes`
+  --> tests/ui/manual_own_missing.rs:9:23
+   |
+ 9 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Sqlite>>>>(source: Source) {
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
