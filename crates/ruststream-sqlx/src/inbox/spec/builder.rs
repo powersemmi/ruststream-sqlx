@@ -779,6 +779,62 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table in the lease form: a claim sets `column`, the lease's expiry in `Time`, and
     /// commits. Adds [`Lease<Time>`](Lease).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+    /// # mod demo {
+    /// use chrono::{DateTime, Utc};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::{Lease, Payload};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // report_jobs: id BIGSERIAL PRIMARY KEY, locked_until TIMESTAMPTZ NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct ReportJob {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for ReportJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Lease<DateTime<Utc>>, Payload)>;
+    ///     // A render that takes minutes holds its row by `locked_until`, not by an open transaction.
+    ///     const TABLE: Self::Table = InboxSpec::new("report_jobs", Column::new("id").generated())
+    ///         .lease(Column::new("locked_until"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for ReportJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Report { month: String }
+    /// # #[subscriber(InboxQueue::<ReportJob>::new("reports"))]
+    /// # async fn render(report: &Report) -> HandlerOutcome {
+    /// #     tracing::info!(month = %report.month, "rendering");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("reports", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(render);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn lease<Time>(
         self,
@@ -793,6 +849,61 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table in the advisory lock form: a session lock on the key these parts build from
     /// the row holds the row. Adds [`Advisory`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::{Column, KeyPart};
+    /// use ruststream_sqlx::spec::{Advisory, Payload};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // postings: id BIGSERIAL PRIMARY KEY, account TEXT NOT NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct Posting {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for Posting {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Advisory, Payload)>;
+    ///     // One account's postings run one at a time across every process: the key is `ledger-<account>`.
+    ///     const TABLE: Self::Table = InboxSpec::new("postings", Column::new("id").generated())
+    ///         .advisory(&[KeyPart::Literal("ledger-"), KeyPart::Column("account")])
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for Posting {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Entry { amount: i64 }
+    /// # #[subscriber(InboxQueue::<Posting>::new("ledger"))]
+    /// # async fn post(entry: &Entry) -> HandlerOutcome {
+    /// #     tracing::info!(amount = entry.amount, "posting");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("ledger", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(post);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn advisory(
         self,
@@ -806,6 +917,63 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table in payload mode, the message's bytes read from `column`. Adds [`Payload`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "mysql")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::Payload;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::{MySql, MySqlPool};
+    ///
+    /// // audit_events: id BIGINT AUTO_INCREMENT PRIMARY KEY, body TEXT NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct AuditEvent {
+    ///     id: i64,
+    ///     body: String,
+    /// }
+    ///
+    /// impl InboxTable for AuditEvent {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload,)>;
+    ///     // The message is the JSON text in `body`, which the subscription's codec decodes.
+    ///     const TABLE: Self::Table = InboxSpec::new("audit_events", Column::new("id").generated())
+    ///         .payload(Column::new("body"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for AuditEvent {
+    ///     type Column = String;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         self.body.as_bytes()
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Login { user: String }
+    /// # #[subscriber(InboxQueue::<AuditEvent>::new("logins"))]
+    /// # async fn record(login: &Login) -> HandlerOutcome {
+    /// #     tracing::info!(user = %login.user, "logged in");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: MySqlPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("audit", "1.0.0")).with_broker(
+    /// #         SqlxBroker::<MySql>::new(pool),
+    /// #         |b| {
+    /// #             b.include(record);
+    /// #         },
+    /// #     )
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn payload(
         self,
@@ -819,6 +987,70 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table, with the delivery's partition key read from `column`. Adds [`Key`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::{Key, Payload};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, KeyRow, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // export_jobs: id BIGSERIAL PRIMARY KEY, customer TEXT NOT NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct ExportJob {
+    ///     id: i64,
+    ///     customer: String,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for ExportJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Key, Payload)>;
+    ///     // Each delivery carries its customer as the partition key, which the dispatch keeps in order.
+    ///     const TABLE: Self::Table = InboxSpec::new("export_jobs", Column::new("id").generated())
+    ///         .partition_key(Column::new("customer"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl KeyRow for ExportJob {
+    ///     type Key = String;
+    ///
+    ///     fn partition_key(&self) -> &String {
+    ///         &self.customer
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for ExportJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Export { file: String }
+    /// # #[subscriber(InboxQueue::<ExportJob>::new("exports"))]
+    /// # async fn export(job: &Export) -> HandlerOutcome {
+    /// #     tracing::info!(file = %job.file, "exporting");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("exports", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(export);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn partition_key(
         self,
@@ -832,6 +1064,81 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table, counting a row's attempts in `column`. Adds [`Attempt`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::spec::{Attempt, Payload};
+    /// use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable, PayloadRow};
+    /// use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // downloads: id BIGSERIAL PRIMARY KEY, tries INT NOT NULL DEFAULT 1, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct Download {
+    ///     id: i64,
+    ///     tries: i32,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for Download {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Attempt, Payload)>;
+    ///     // A retry counts in `tries`, and the handler reads the count.
+    ///     const TABLE: Self::Table = InboxSpec::new("downloads", Column::new("id").generated())
+    ///         .attempt(Column::new("tries").generated())
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl AttemptRow for Download {
+    ///     type Attempt = i32;
+    ///
+    ///     fn attempt(&self) -> &i32 {
+    ///         &self.tries
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for Download {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Image {
+    ///     url: String,
+    /// }
+    ///
+    /// # async fn fetch(_: &str) -> bool { true }
+    /// // An image the fifth attempt cannot fetch is given up.
+    /// #[subscriber(InboxQueue::<Download>::new("images"))]
+    /// async fn download(image: &Image, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
+    ///     if fetch(&image.url).await {
+    ///         HandlerOutcome::ack()
+    ///     } else if attempt.unwrap_or(1) >= 5 {
+    ///         HandlerOutcome::drop()
+    ///     } else {
+    ///         HandlerOutcome::retry()
+    ///     }
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("images", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(download);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn attempt(
         self,
@@ -861,6 +1168,78 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table, with the delivery's headers read from `column`. Adds [`Headers`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "json"))]
+    /// # mod demo {
+    /// use std::collections::BTreeMap;
+    ///
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::spec::{Headers, Payload};
+    /// use ruststream_sqlx::{HeaderRow, InboxSpec, InboxTable, PayloadRow};
+    /// use serde::Deserialize;
+    /// use sqlx::types::Json;
+    /// # use sqlx::PgPool;
+    ///
+    /// // pushes: id BIGSERIAL PRIMARY KEY, meta JSONB NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct PushJob {
+    ///     id: i64,
+    ///     meta: Option<Json<BTreeMap<String, String>>>,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for PushJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Headers, Payload)>;
+    ///     // The JSON object in `meta` becomes the delivery's headers.
+    ///     const TABLE: Self::Table = InboxSpec::new("pushes", Column::new("id").generated())
+    ///         .headers(Column::new("meta"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl HeaderRow for PushJob {
+    ///     type Column = Option<Json<BTreeMap<String, String>>>;
+    ///
+    ///     fn headers_mut(&mut self) -> &mut Self::Column {
+    ///         &mut self.meta
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for PushJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Notification {
+    ///     title: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<PushJob>::new("pushes"))]
+    /// async fn push(note: &Notification, ctx: &mut Context<'_>) -> HandlerOutcome {
+    ///     let device = ctx.headers().get_str("device").unwrap_or("all");
+    ///     tracing::info!(title = %note.title, device, "pushing");
+    ///     HandlerOutcome::ack()
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("push", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(push);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn headers(
         self,
@@ -876,6 +1255,70 @@ impl<Settings> InboxSpec<Settings> {
     /// The same table, with the delivery's headers built from the row's header fields, whose
     /// columns [`data`](Self::data) and [`fetching`](Self::fetching) name. Adds
     /// [`HeaderFields`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream::HeaderMap;
+    /// use ruststream::runtime::{Input, SoloCarried};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::spec;
+    /// use ruststream_sqlx::{HeaderFields, InboxSpec, InboxTable, put_header};
+    /// # use sqlx::PgPool;
+    ///
+    /// // sms_jobs: id BIGSERIAL PRIMARY KEY, phone TEXT NOT NULL, locale TEXT NOT NULL, text TEXT NOT NULL
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// pub struct Sms {
+    ///     id: i64,
+    ///     phone: String,
+    ///     locale: String,
+    ///     text: String,
+    /// }
+    ///
+    /// impl InboxTable for Sms {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(spec::HeaderFields,)>;
+    ///     // The `locale` column reads as a header, as it would on any other broker.
+    ///     const TABLE: Self::Table = InboxSpec::new("sms_jobs", Column::new("id").generated())
+    ///         .data(&[Column::new("phone"), Column::new("locale"), Column::new("text")])
+    ///         .header_fields();
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl Input for Sms {
+    ///     type Axis = SoloCarried<Self>;
+    /// }
+    ///
+    /// impl HeaderFields for Sms {
+    ///     const NAMES: &'static [&'static str] = &["locale"];
+    ///
+    ///     fn header_map(&self) -> HeaderMap {
+    ///         let mut headers = HeaderMap::with_capacity(Self::NAMES.len());
+    ///         put_header(&mut headers, "locale", &self.locale);
+    ///         headers
+    ///     }
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<Sms>::new("sms"))]
+    /// async fn send(sms: &Sms, ctx: &mut Context<'_>) -> HandlerOutcome {
+    ///     let locale = ctx.headers().get_str("locale").unwrap_or("en");
+    ///     tracing::info!(phone = %sms.phone, locale, len = sms.text.len(), "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("sms", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(send);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn header_fields(self) -> InboxSpec<<Settings as Push<HeaderFields>>::Out>
     where
@@ -887,6 +1330,73 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, with the time a retried row is due in `column`, in `Time`. Adds
     /// [`RetryAfter<Time>`](RetryAfter).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use chrono::{DateTime, Utc};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::spec::{Payload, RetryAfter};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // crm_pushes: id BIGSERIAL PRIMARY KEY, due TIMESTAMPTZ NOT NULL DEFAULT now(),
+    /// // payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct CrmPush {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for CrmPush {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(RetryAfter<DateTime<Utc>>, Payload)>;
+    ///     // A row is claimed once `due` has passed, so a delayed retry waits in the table.
+    ///     const TABLE: Self::Table = InboxSpec::new("crm_pushes", Column::new("id").generated())
+    ///         .retry_after(Column::new("due").generated())
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for CrmPush {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Contact {
+    ///     email: String,
+    /// }
+    ///
+    /// # async fn upsert(_: &str) -> Result<(), Duration> { Ok(()) }
+    /// #[subscriber(InboxQueue::<CrmPush>::new("crm"))]
+    /// async fn sync(contact: &Contact) -> HandlerOutcome {
+    ///     match upsert(&contact.email).await {
+    ///         Ok(()) => HandlerOutcome::ack(),
+    ///         // The CRM's rate limit says how long to wait.
+    ///         Err(wait) => HandlerOutcome::retry_after(wait),
+    ///     }
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("crm", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(sync);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn retry_after<Time>(
         self,
@@ -901,6 +1411,62 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, with the time a row was processed written into `column`, in `Time`, so a
     /// processed row stays in the table. Adds [`ProcessedAt<Time>`](ProcessedAt).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "time"))]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::{Payload, ProcessedAt};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// use time::OffsetDateTime;
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // payments: id BIGSERIAL PRIMARY KEY, processed_at TIMESTAMPTZ NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct PaymentJob {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for PaymentJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(ProcessedAt<OffsetDateTime>, Payload)>;
+    ///     // A settled payment stays in the table for the auditors, stamped in `processed_at`.
+    ///     const TABLE: Self::Table = InboxSpec::new("payments", Column::new("id").generated())
+    ///         .processed_at(Column::new("processed_at").generated())
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for PaymentJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Payment { cents: i64 }
+    /// # #[subscriber(InboxQueue::<PaymentJob>::new("payments"))]
+    /// # async fn settle(payment: &Payment) -> HandlerOutcome {
+    /// #     tracing::info!(cents = payment.cents, "settling");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("payments", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(settle);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn processed_at<Time>(
         self,
@@ -915,6 +1481,66 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, split into groups by `column`, with each group in order: at most one row
     /// of a group is in work, taken in claim order. Adds [`Fifo`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::spec::{Fifo, Payload};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // stock_updates: id BIGSERIAL PRIMARY KEY, warehouse TEXT NOT NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct StockUpdate {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for StockUpdate {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Fifo, Payload)>;
+    ///     // Each warehouse is a group, and its updates arrive one at a time, in the order written.
+    ///     const TABLE: Self::Table = InboxSpec::new("stock_updates", Column::new("id").generated())
+    ///         .fifo_group(Column::new("warehouse"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for StockUpdate {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Level {
+    ///     sku: String,
+    ///     count: i64,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<StockUpdate>::new("berlin"))]
+    /// async fn berlin(level: &Level) -> HandlerOutcome {
+    ///     tracing::info!(sku = %level.sku, level.count, "berlin stock");
+    ///     HandlerOutcome::ack()
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("stock", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(berlin);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn fifo_group(
         self,
@@ -930,6 +1556,65 @@ impl<Settings> InboxSpec<Settings> {
     /// The same table, reading now from `Source`: the statements read the database's own clock
     /// where `Source` is [`DatabaseClock`](crate::DatabaseClock). Adds
     /// [`Clock<Source>`](Clock).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+    /// # mod demo {
+    /// use chrono::{DateTime, Utc};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::{Clock, Payload, RetryAfter};
+    /// use ruststream_sqlx::{DatabaseClock, InboxSpec, InboxTable, PayloadRow};
+    /// # use std::time::Duration;
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // reminders: id BIGSERIAL PRIMARY KEY, retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
+    /// // payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct Reminder {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for Reminder {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Clock<DatabaseClock>, RetryAfter<DateTime<Utc>>, Payload)>;
+    ///     // Due times count from the database's `now()`, so hosts whose clocks drift still agree.
+    ///     const TABLE: Self::Table = InboxSpec::new("reminders", Column::new("id").generated())
+    ///         .clock::<DatabaseClock>()
+    ///         .retry_after(Column::new("retry_after").generated())
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for Reminder {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Note { text: String }
+    /// # #[subscriber(InboxQueue::<Reminder>::new("reminders"))]
+    /// # async fn remind(note: &Note) -> HandlerOutcome {
+    /// #     tracing::info!(text = %note.text, "reminding");
+    /// #     HandlerOutcome::retry_after(Duration::from_secs(3600))
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("reminders", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(remind);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn clock<Source: TimeSource>(
         self,
@@ -947,6 +1632,60 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, with its transactions opened at `Level`, an isolation level or a SQLite
     /// mode. Adds [`Opens<Level>`](Opens).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::{Column, level};
+    /// use ruststream_sqlx::spec::{Opens, Payload};
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct PayoutJob {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for PayoutJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Opens<level::ReadCommitted>, Payload)>;
+    ///     // The claim's transaction runs at READ COMMITTED on a database whose default is SERIALIZABLE.
+    ///     const TABLE: Self::Table = InboxSpec::new("payout_jobs", Column::new("id").generated())
+    ///         .opens::<level::ReadCommitted>()
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for PayoutJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Payout { cents: i64 }
+    /// # #[subscriber(InboxQueue::<PayoutJob>::new("payouts"))]
+    /// # async fn pay(payout: &Payout) -> HandlerOutcome {
+    /// #     tracing::info!(cents = payout.cents, "paying out");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("payouts", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(pay);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn opens<Level: OpeningLevel>(
         self,
@@ -960,6 +1699,72 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, with `Event` written by the service itself: the row implements the
     /// event's trait. Adds `Event`, a marker of [`own`](super::own).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::{Payload, own};
+    /// use ruststream_sqlx::{Discard, InboxSpec, InboxTable, PayloadRow};
+    /// use sqlx::{PgConnection, Postgres};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // signups: id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct Signup {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for Signup {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload, own::Discard)>;
+    ///     const TABLE: Self::Table = InboxSpec::new("signups", Column::new("id").generated())
+    ///         .group(Column::new("name"))
+    ///         .payload(Column::new("payload"))
+    ///         .own::<own::Discard>();
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for Signup {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// // A dropped signup moves to the `rejected` group, where support reviews it.
+    /// impl Discard<Postgres> for Signup {
+    ///     async fn discard(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+    ///         sqlx::query("UPDATE signups SET name = 'rejected' WHERE id = $1")
+    ///             .bind(id)
+    ///             .execute(conn)
+    ///             .await?;
+    ///         Ok(())
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Form { email: String }
+    /// # #[subscriber(InboxQueue::<Signup>::new("signups"))]
+    /// # async fn check(form: &Form) -> HandlerOutcome {
+    /// #     if form.email.contains('@') { HandlerOutcome::ack() } else { HandlerOutcome::drop() }
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("signup", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(check);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn own<Event: OwnEvent>(self) -> InboxSpec<<Settings as Push<Event>>::Out>
     where
