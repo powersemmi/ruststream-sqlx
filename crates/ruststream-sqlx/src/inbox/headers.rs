@@ -5,8 +5,12 @@
 
 use std::fmt::Debug;
 use std::io::Write;
+#[cfg(any(feature = "chrono", feature = "time"))]
+use std::io::{self, Cursor};
 use std::sync::OnceLock;
 
+#[cfg(feature = "chrono")]
+use chrono::format::{Fixed, Item};
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 use ruststream::{HeaderMap, Str};
@@ -315,18 +319,40 @@ impl<T: HeaderField> HeaderField for Option<T> {
     }
 }
 
+/// The longest RFC 3339 text of a time: a six-digit year with its sign, nanoseconds and an offset.
+#[cfg(any(feature = "chrono", feature = "time"))]
+const TIME_TEXT: usize = 48;
+
+/// The text `write` puts into a buffer on the stack, copied into a `Vec` of its own length: a
+/// formatter's `String` keeps spare capacity, which costs the map one more allocation as the
+/// value turns into `Bytes`. `None` where the text does not fit or the formatter fails.
+#[cfg(any(feature = "chrono", feature = "time"))]
+fn exact_text(
+    write: impl FnOnce(&mut Cursor<[u8; TIME_TEXT]>) -> io::Result<()>,
+) -> Option<Vec<u8>> {
+    let mut text = Cursor::new([0_u8; TIME_TEXT]);
+    write(&mut text).ok()?;
+    let written = usize::try_from(text.position()).ok()?;
+    Some(text.get_ref()[..written].to_vec())
+}
+
 #[cfg(feature = "chrono")]
 impl HeaderField for DateTime<Utc> {
     fn header(&self) -> Option<Vec<u8>> {
-        Some(self.to_rfc3339().into_bytes())
+        // The items `to_rfc3339` writes, into a buffer of the text's own length.
+        let rfc3339 = [Item::Fixed(Fixed::RFC3339)];
+        exact_text(|text| write!(text, "{}", self.format_with_items(rfc3339.iter())))
     }
 }
 
 #[cfg(feature = "time")]
 impl HeaderField for OffsetDateTime {
     fn header(&self) -> Option<Vec<u8>> {
-        // The `time` feature turns on sqlx's `time`, which formats with the crate's `formatting`.
-        self.format(&Rfc3339).ok().map(String::into_bytes)
+        exact_text(|text| {
+            self.format_into(text, &Rfc3339)
+                .map(drop)
+                .map_err(io::Error::other)
+        })
     }
 }
 
