@@ -117,11 +117,98 @@ same record again; a consumer that must not process a message twice checks that 
 [`#[derive(Outbox)]`](derive@Outbox) describes the table: `id`, `name` and `payload` are required
 roles, `headers` and `processed_at` are optional. The service writes the record itself, in
 [`outbox::Publish`], because its statement decides how the name, the payload and the headers are
-laid out. The derive writes the other events.
+laid out. The registry runs the other events from statements it builds when the record type is
+registered, from the table's description and the database's built-in dialect.
+
+The same record may be described by hand, and registered under a name that is a type:
+
+```
+# #[cfg(all(feature = "outbox", feature = "postgres"))]
+# mod demo {
+# use ruststream::OutgoingMessage;
+# use ruststream::memory::prelude::*;
+# use serde::{Deserialize, Serialize};
+# use sqlx::postgres::{PgConnection, PgPool, Postgres};
+use ruststream_sqlx::dialect::Column;
+use ruststream_sqlx::outbox::spec::ProcessedAt;
+use ruststream_sqlx::outbox::{self, Outbox, OutboxSpec, OutboxTable, TrackedName};
+
+#[derive(sqlx::FromRow)]
+struct OrderOutbox {
+    id: i64,
+    name: String,
+    payload: Vec<u8>,
+}
+
+impl OutboxTable for OrderOutbox {
+    type Id = i64;
+    type Table = OutboxSpec<(ProcessedAt,)>;
+    const TABLE: Self::Table = OutboxSpec::new(
+        "outbox",
+        Column::new("id"),
+        Column::new("name"),
+        Column::new("payload"),
+    )
+    .processed_at(Column::new("processed_at"));
+
+    fn id(&self) -> &i64 {
+        &self.id
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+# impl outbox::Publish<Postgres> for OrderOutbox {
+#     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+#         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+#             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+#     }
+# }
+# #[derive(Deserialize)] struct PlaceOrder { id: u64 }
+# #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] struct OrderPlaced { id: u64 }
+# #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+# #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+
+/// The name `OrderPlaced` is published under.
+struct Orders;
+
+impl TrackedName for Orders {
+    const NAME: &'static str = "orders";
+}
+
+pub fn app(pool: PgPool) -> impl App {
+    let tracking = Outbox::new(pool).track::<OrderOutbox, Orders>();
+    RustStream::new(AppInfo::new("orders", "0.1.0"))
+        .layer(tracking.layer())
+        .publish_layer(tracking.publish_layer())
+        .with_broker(MemoryBroker::new(), |b| {
+            b.include(place).out_reply(Publish);
+            b.include(fulfil);
+            b.after_startup(Publish, tracking.republish());
+        })
+}
+# }
+# fn main() {}
+```
+
+A record described by hand implements [`OutboxTable`]. [`OutboxSpec::new`] takes the table and
+its three required columns, and `type Table` lists the typed settings in the order the chain sets
+them: [`Headers`](outbox::spec::Headers), [`ProcessedAt`](outbox::spec::ProcessedAt) and the
+events of [`outbox::spec::own`]. A record with `Headers` implements [`HeaderRow`] for the field
+that holds the column. `processed_at` takes no time type, because the outbox writes it from the
+database's clock.
 
 [`outbox!`] registers record types under the names they track, and a name written twice does not
-compile. [`Outbox::register`] does the same at run time and panics on a repeated name. One record
-type may track several names; each registration republishes only its own records.
+compile. [`Outbox::track`] registers one under a name that is a type, a
+[`TrackedName`](outbox::TrackedName), and a name tracked twice stops the build. [`Outbox::register`]
+takes the name as a string, for a name read from configuration, and panics on a repeated name when
+the app is built. One record type may track several names; each registration republishes only its
+own records.
 
 ## The two middlewares
 
@@ -206,10 +293,12 @@ handlers have finished and the brokers have stopped.
 
 ## Events of the service's own
 
-`#[outbox(custom(fetch, ack, retry, discard, recover))]` lists the events the service writes
-itself; it implements each one's trait. The example service in `examples/outbox` takes its
-records with a fetch of its own that also stamps `taken_at`. A record type that lacks an event
-does not register, and the error names the missing trait.
+A record names the events it writes itself: `#[outbox(custom(fetch, ack, retry, discard,
+recover))]` on the derive, or `.own::<own::Ack>()` and the others by hand, each with its marker of
+[`outbox::spec::own`] in the type. It implements each named event's trait, and the registry runs
+it in place of the default. The example service in `examples/outbox` takes its records with a
+fetch of its own that also stamps `taken_at`. A record type that names an event and lacks its
+trait does not register, and the error names the missing trait.
 
 ## Testing
 

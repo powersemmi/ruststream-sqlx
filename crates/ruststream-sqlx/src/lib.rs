@@ -1,4 +1,5 @@
 #![doc = include_str!("README.md")]
+#![doc = include_str!("overview/manual.md")]
 #![doc = include_str!("overview/row_mode.md")]
 // The compile errors of row mode need the inbox and a driver: without them each example would fail
 // for that reason alone. They render where both are on, as on docs.rs.
@@ -106,10 +107,12 @@ pub mod __private {
     }
 }
 
-/// Describes a queue table with a struct and implements [`InboxRow`] for it.
+/// Describes a queue table with a struct: writes its [`InboxTable`] impl, the description a table
+/// described by hand writes, and the traits its roles need.
 ///
 /// The struct is an ordinary sqlx struct: `#[inbox(..)]` names the table, sqlx's own
-/// attributes name the columns, and `#[field(..)]` marks the columns that run the queue.
+/// attributes name the columns, and `#[field(..)]` marks the columns that run the queue. The
+/// [macro or manual](crate#macro-or-manual) section shows the same table written by hand.
 ///
 /// # Examples
 ///

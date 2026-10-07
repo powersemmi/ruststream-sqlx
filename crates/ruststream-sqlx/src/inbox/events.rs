@@ -1,5 +1,6 @@
-//! One trait per event of the queue: what a service implements when it lists the event in
-//! `#[inbox(custom(..))]`, and `Publish`, which has no default.
+//! One trait per event of the queue: what a service implements when its table names the event as
+//! its own, in `#[inbox(custom(..))]` or with `InboxSpec::own`, and `Publish`, which has no
+//! default.
 
 use std::future::Future;
 use std::time::Duration;
@@ -13,8 +14,9 @@ use super::time::LeaseRow;
 /// Claims up to `limit` rows of the queue `queue` and returns their ids, inside the claim's
 /// transaction.
 ///
-/// The derive builds it from the roles; a service lists `claim` in `custom(..)` to take it over,
-/// for a database without a built-in dialect or a claim of its own. The crate then reads the
+/// The dialect builds it from the table's description; a table names `claim` as its own to take it
+/// over (`custom(claim)`, or [`own::Claim`](crate::spec::own::Claim) by hand), for a database
+/// without a built-in dialect or a claim of its own. The crate then reads the
 /// rows with the service's [`Fetch`], or with its own fetch by a list of ids, which Postgres
 /// alone runs: on MySQL and SQLite a claim of the service's own comes with a `Fetch` of its own,
 /// and a subscription without one stops at startup. In the lease form the crate also leases each
@@ -74,8 +76,9 @@ pub trait Claim<DB: Database>: InboxRow {
 
 /// Reads the rows of claimed ids, on the claim's connection.
 ///
-/// The derive builds it, for a flat table and for a message assembled from a headers struct; a
-/// service lists `fetch` in `custom(..)` to assemble messages itself, from other tables
+/// The dialect builds it, for a flat table and for a message assembled from header fields; a table
+/// names `fetch` as its own (`custom(fetch)`, or [`own::Fetch`](crate::spec::own::Fetch) by hand)
+/// to assemble messages itself, from other tables
 /// ([a fetch over a join](crate#a-fetch-over-a-join)). Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row settles by the decode-failure policy before its handler runs, and the
 /// log names the id. It runs inside the claim's transaction, or right after a lease claim that
@@ -198,7 +201,7 @@ macro_rules! settle_event {
 }
 
 settle_event!(
-    /// Acknowledges a row: the derive deletes it, or sets `processed_at`.
+    /// Acknowledges a row: by default it deletes the row, or sets `processed_at`.
     ///
     /// The service's own acknowledgement takes the row out of what the claim selects: it deletes
     /// the row, moves it, or marks it in a column the claim passes over. A row left claimable is
@@ -218,7 +221,7 @@ settle_event!(
 );
 
 settle_event!(
-    /// Releases a row for another attempt at once: the derive counts the attempt, or leaves the
+    /// Releases a row for another attempt at once: by default it counts the attempt, or leaves the
     /// row for the rollback to release; in the lease form it clears the lease.
     ///
     /// In the lease form the row comes back once `locked_until` no longer holds it: the service's
@@ -235,7 +238,7 @@ settle_event!(
 );
 
 settle_event!(
-    /// Releases a row for another attempt after `delay`: the derive sets `retry_after`.
+    /// Releases a row for another attempt after `delay`: by default it sets `retry_after`.
     ///
     /// A row with this event, or a `retry_after` field, is redelivered by the database's own
     /// clock. The service's own event delays a row only where the claim passes over it until
@@ -259,7 +262,7 @@ settle_event!(
 );
 
 settle_event!(
-    /// Drops a row: the derive deletes it, or sets `processed_at`.
+    /// Drops a row: by default it deletes the row, or sets `processed_at`.
     ///
     /// The service's own drop takes the row out of what the claim selects, as an acknowledgement
     /// does.
@@ -274,8 +277,8 @@ settle_event!(
 );
 
 settle_event!(
-    /// Moves a row whose attempts are spent to `destination`: the derive moves it to that group
-    /// (with a `group` field) or into that table.
+    /// Moves a row whose attempts are spent to `destination`: by default it moves the row to that
+    /// group (on a table with a `group` column) or into that table.
     ///
     /// The service's own move takes the row out of what the claim selects; a row copied and left
     /// behind is moved again at every delivery.
@@ -298,8 +301,9 @@ settle_event!(
 /// Extends the lease on a row: writes `until` into `locked_until` while the row still holds
 /// `held`, and says whether it did.
 ///
-/// The derive builds it for every table with a `#[field(locked_until)]` field; a service lists
-/// `extend` in `custom(..)` to take it over, for a database without a built-in dialect. A
+/// The dialect builds it for every table in the lease form; a table names `extend` as its own
+/// (`custom(extend)`, or [`own::Extend`](crate::spec::own::Extend) by hand) to take it over, for a
+/// database without a built-in dialect. A
 /// subscription runs it each half lease for every delivery in work, on one connection. The crate
 /// also runs it with `until` equal to `held` to confirm a delivery's lease, inside the transaction
 /// where an event of the service's own then runs.
@@ -369,8 +373,9 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// waiting: the `lock` event of the advisory lock form.
 ///
 /// The dialect takes the lock itself on Postgres and MySQL, and the process keeps the keys in work
-/// on SQLite. A table lists `lock` and `unlock` in `custom(..)` together to run the service's own
-/// SQL for them instead, as a database without a built-in dialect does, MSSQL with
+/// on SQLite. A table names `lock` and `unlock` as its own together (`custom(lock, unlock)`, or
+/// [`own::Lock`](crate::spec::own::Lock) and [`own::Unlock`](crate::spec::own::Unlock) by hand) to
+/// run the service's own SQL for them instead, as a database without a built-in dialect does, MSSQL with
 /// `sp_getapplock` and `sp_releaseapplock`; the dialect still selects the candidates and takes
 /// each row. A claim calls it once per candidate with the key the template renders, on the
 /// connection that holds the delivery; [`Unlock`] releases the lock when the delivery settles,
@@ -442,7 +447,7 @@ pub trait Lock<DB: Database>: InboxRow {
 }
 
 /// Releases the advisory lock on a delivery's key: the `unlock` event of the advisory lock form,
-/// which a table lists in `custom(..)` beside [`Lock`].
+/// which a table names as its own beside [`Lock`].
 ///
 /// A settlement calls it after its statement, on the connection that holds the delivery, and the
 /// connection goes back to the pool once it answered `true`. An unlock that answers `false` or
@@ -577,6 +582,9 @@ pub trait Publish<DB: Database>: InboxRow {
 /// [`InboxHeaders`](derive@crate::InboxHeaders): the queue table's columns.
 /// A struct with a `#[sqlx(flatten)]` field gets none: the derive cannot see the nested struct's
 /// columns, so the service writes that insert itself.
+/// A table described by hand implements it over the text
+/// [`dialect::insert`](crate::dialect::insert) renders from its description, binding the columns
+/// in the description's order; [row mode](crate#row-mode) shows one.
 ///
 /// # Examples
 ///

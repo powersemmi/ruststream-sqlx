@@ -40,11 +40,66 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
+By hand, `.opens::<Level>()` takes a marker of [`dialect::level`], and `Opens<Level>` goes into
+the type:
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::dialect::{Column, level};
+use ruststream_sqlx::spec::{Opens, Payload};
+use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+# use ruststream_sqlx::prelude::*;
+# use serde::Deserialize;
+# use sqlx::PgPool;
+
+#[derive(sqlx::FromRow)]
+pub struct SendPayout {
+    id: i64,
+    payload: Vec<u8>,
+}
+
+impl InboxTable for SendPayout {
+    type Id = i64;
+    type Table = InboxSpec<(Opens<level::ReadCommitted>, Payload)>;
+    const TABLE: Self::Table = InboxSpec::new("payout_jobs", Column::new("id").generated())
+        .opens::<level::ReadCommitted>()
+        .payload(Column::new("payload"));
+
+    fn id(&self) -> &i64 {
+        &self.id
+    }
+}
+
+impl PayloadRow for SendPayout {
+    type Column = Vec<u8>;
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+# #[derive(Deserialize)]
+# pub struct Payout { account: String }
+# #[subscriber(InboxQueue::<SendPayout>::new("payouts"))]
+# async fn pay(payout: &Payout) -> HandlerOutcome {
+#     let _ = &payout.account;
+#     HandlerOutcome::ack()
+# }
+# pub fn app(pool: PgPool) -> RustStream {
+#     RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+#         b.include(pay);
+#     })
+# }
+# }
+# fn main() {}
+```
+
 `isolation = <level>` in `#[inbox(..)]` declares an isolation level: `read_uncommitted`,
-`read_committed`, `repeatable_read` or `serializable`. A SQLite table declares a mode instead, as
-in `#[inbox(mode = immediate)]`: `deferred`, `immediate` or `exclusive`. SQLite runs every
-transaction serializable. Its mode decides when a transaction takes the write lock
-([`Mode`](dialect::Mode)).
+`read_committed`, `repeatable_read` or `serializable`. A SQLite table declares a mode instead, as in
+`#[inbox(mode = immediate)]`: `deferred`, `immediate` or `exclusive`. SQLite runs every transaction
+serializable. Its mode decides when a transaction takes the write lock ([`Mode`](dialect::Mode)). By
+hand, the levels and the modes are the markers of [`dialect::level`], and a table opens at one of
+them at most.
 
 The declaration governs the transactions the crate opens for a delivery's work. In the row lock
 form that is the claim's transaction: it holds the rows while their handler runs, and their

@@ -38,8 +38,8 @@ async fn thumbnail(image: &Image) -> HandlerOutcome {
     }
 }
 
-// The same struct serves a `PgPool` and a `MySqlPool` too: the derive builds each dialect's
-// statements, and the broker takes the dialect of its pool.
+// The same struct serves a `PgPool` and a `MySqlPool` too: the broker takes the dialect of its
+// pool, which builds its statements from the table's description.
 pub fn app(pool: SqlitePool) -> RustStream {
     RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
         b.include(thumbnail);
@@ -49,12 +49,12 @@ pub fn app(pool: SqlitePool) -> RustStream {
 # fn main() {}
 ```
 
-A built-in dialect builds a subscription's statements once, when it opens; the derive builds the
-insert of every enabled dialect at compile time. A database whose sqlx driver lives outside sqlx
-is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a type that
-implements [`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock),
-[`Lease`](dialect::Lease) and [`Advisory`](dialect::Advisory) for the forms it serves, and
-[`ByName`] for subscriptions by name.
+A built-in dialect builds a subscription's statements once, when it opens, from the table's
+description. The insert of every enabled dialect is rendered at compile time, by the derive or by
+[`dialect::insert`] for a table described by hand. A database whose sqlx driver lives outside sqlx
+is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a type that implements
+[`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock), [`Lease`](dialect::Lease) and
+[`Advisory`](dialect::Advisory) for the forms it serves, and [`ByName`] for subscriptions by name.
 
 ## Postgres
 

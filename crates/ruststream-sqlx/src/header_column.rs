@@ -155,11 +155,87 @@ pub trait HeaderColumn {
 /// A record or a row whose headers live in one column: the field holding the column, which the
 /// table's description names with its `headers` setter.
 ///
-/// `#[derive(Outbox)]` implements it for the field playing `headers`; a record described by hand
-/// implements it where its `OutboxSpec` sets `outbox::spec::Headers`, and a
-/// republished record carries the headers it took out of the field.
+/// `#[derive(Inbox)]` and `#[derive(Outbox)]` implement it for the field playing `headers`. A queue
+/// table described by hand implements it where its `InboxSpec` sets `spec::Headers`: a delivery
+/// takes the header map out of the field when its row is claimed, so the row a handler reads holds
+/// the column empty. A record described by hand implements it where its `OutboxSpec` sets
+/// `outbox::spec::Headers`, and a republished record carries the headers it took out of the field.
 ///
 /// # Examples
+///
+/// A queue table whose headers live in a `jsonb` column:
+///
+/// ```
+/// # #[cfg(all(feature = "inbox", feature = "json", feature = "postgres"))]
+/// # mod demo {
+/// use std::collections::BTreeMap;
+///
+/// use ruststream_sqlx::dialect::Column;
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::spec::{Headers, Payload};
+/// use ruststream_sqlx::{HeaderRow, InboxSpec, InboxTable, PayloadRow};
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+/// use sqlx::types::Json;
+///
+/// #[derive(sqlx::FromRow)]
+/// pub struct Job {
+///     id: i64,
+///     headers: Json<BTreeMap<String, String>>,
+///     payload: Vec<u8>,
+/// }
+///
+/// impl InboxTable for Job {
+///     type Id = i64;
+///     type Table = InboxSpec<(Headers, Payload)>;
+///     const TABLE: Self::Table = InboxSpec::new("jobs", Column::new("id").generated())
+///         .headers(Column::new("headers"))
+///         .payload(Column::new("payload"));
+///
+///     fn id(&self) -> &i64 {
+///         &self.id
+///     }
+/// }
+///
+/// impl HeaderRow for Job {
+///     type Column = Json<BTreeMap<String, String>>;
+///
+///     fn headers_mut(&mut self) -> &mut Self::Column {
+///         &mut self.headers
+///     }
+/// }
+///
+/// impl PayloadRow for Job {
+///     type Column = Vec<u8>;
+///
+///     fn payload(&self) -> &[u8] {
+///         &self.payload
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Task {
+///     n: u32,
+/// }
+///
+/// // The delivery's headers come from the `headers` column, as on any broker.
+/// #[subscriber(InboxQueue::<Job>::new("tasks"))]
+/// async fn run(task: &Task, ctx: &mut Context<'_>) -> HandlerOutcome {
+///     let tenant = ctx.headers().get_str("x-tenant").unwrap_or_default();
+///     tracing::info!(task.n, tenant, "running");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(run);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// An outbox record that keeps the headers a message carried:
 ///
 /// ```
 /// # #[cfg(all(feature = "outbox", feature = "json", feature = "postgres"))]

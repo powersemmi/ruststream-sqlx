@@ -48,24 +48,90 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-A table takes its rows in one of three forms, and its struct decides which.
+By hand, `.lease(..)` selects the form, and `Lease<Time>` in the type gives the lease's time type:
 
-Without `locked_until` or `advisory_lock` a claim takes its rows by row lock. It locks each row
-with `FOR UPDATE SKIP LOCKED` in a transaction that stays open while the handler runs, and the
-settlement's statement commits that transaction. A row and its outcome change together, and the
-rows of a crashed process return at once, when the database rolls its transactions back. The
-price is a connection of the pool per message in work, held for the whole handler.
+```no_run
+# #[cfg(all(feature = "postgres", feature = "chrono"))]
+# mod demo {
+use chrono::{DateTime, Utc};
+use ruststream_sqlx::dialect::Column;
+use ruststream_sqlx::spec::{Attempt, Lease, Payload};
+use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable, PayloadRow};
+# use std::time::Duration;
+# use ruststream_sqlx::prelude::*;
+# use serde::Deserialize;
+# use sqlx::PgPool;
 
-A `#[field(locked_until)]` field selects the lease form ([`LeaseRow`]). The claim writes a lease
-into each row and commits at once, so the handler runs with no transaction open and no
-connection held. Declare it for handlers that run long and for a pool that cannot spare a
-connection per message in work.
+#[derive(sqlx::FromRow)]
+pub struct RenderReport {
+    id: i64,
+    attempt: i16,
+    payload: Vec<u8>,
+}
 
-`advisory_lock = ".."` in `#[inbox(..)]` selects the advisory lock form. A lock on each row's
-key holds the row. The connection that holds the delivery keeps that lock, and no transaction
-stays open. Rows that share a key go into work one at a time. The locks of a crashed process end
-with its connections, and its rows return. The price is a connection of the pool per message in
-work, as in the row lock form.
+impl InboxTable for RenderReport {
+    type Id = i64;
+    type Table = InboxSpec<(Attempt, Lease<DateTime<Utc>>, Payload)>;
+    const TABLE: Self::Table = InboxSpec::new("report_jobs", Column::new("id").generated())
+        .attempt(Column::new("attempt").generated())
+        .lease(Column::new("locked_until"))
+        .payload(Column::new("payload"));
+
+    fn id(&self) -> &i64 {
+        &self.id
+    }
+}
+
+impl AttemptRow for RenderReport {
+    type Attempt = i16;
+
+    fn attempt(&self) -> &i16 {
+        &self.attempt
+    }
+}
+
+impl PayloadRow for RenderReport {
+    type Column = Vec<u8>;
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+# #[derive(Deserialize)]
+# pub struct Report { id: u64 }
+# #[subscriber(InboxQueue::<RenderReport>::new("reports").lease(Duration::from_secs(60)))]
+# async fn handle(report: &Report) -> HandlerOutcome {
+#     let _ = report.id;
+#     HandlerOutcome::ack()
+# }
+# pub fn app(pool: PgPool) -> RustStream {
+#     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+#         b.include(handle);
+#     })
+# }
+# }
+# fn main() {}
+```
+
+A table takes its rows in one of three forms, and its description decides which.
+
+A table with no form set takes its rows by row lock: no `locked_until` or `advisory_lock` on the
+derive, no `.lease(..)` or `.advisory(..)` by hand. A claim locks each row with `FOR UPDATE SKIP
+LOCKED` in a transaction that stays open while the handler runs, and the settlement's statement
+commits that transaction. A row and its outcome change together, and the rows of a crashed process
+return at once, when the database rolls its transactions back. The price is a connection of the pool
+per message in work, held for the whole handler.
+
+A `#[field(locked_until)]` field, or `.lease(..)` by hand, selects the lease form ([`LeaseRow`]).
+The claim writes a lease into each row and commits at once, so the handler runs with no transaction
+open and no connection held. Declare it for handlers that run long and for a pool that cannot spare
+a connection per message in work.
+
+`advisory_lock = ".."` in `#[inbox(..)]`, or `.advisory(..)` by hand, selects the advisory lock
+form. A lock on each row's key holds the row. The connection that holds the delivery keeps that
+lock, and no transaction stays open. Rows that share a key go into work one at a time. The locks of
+a crashed process end with its connections, and its rows return. The price is a connection of the
+pool per message in work, as in the row lock form.
 
 SQLite has no row locks, so a SQLite table takes the lease or the advisory lock form.
 
@@ -100,7 +166,8 @@ transaction its handler writes through, in every form.
 - The claim counts the attempt, so a crash spends one too. A delivery reports the attempt as it
   stood before its claim, so the first delivery reads 1, as in the row lock form.
 - The crate computes the expiry on the host, because every settlement names the expiry its claim
-  wrote: a struct with `locked_until` on `clock = DatabaseClock` does not compile.
+  wrote: a struct with `locked_until` on `clock = DatabaseClock` does not compile, and neither does
+  a description with `Lease<Time>` beside `Clock<DatabaseClock>`.
 - After the broker shuts down, a delivery in work keeps its lease and settles as before; the lease
   is no longer extended.
 
@@ -152,12 +219,76 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
+By hand, `.advisory(..)` takes the key as its parts, text and columns:
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::dialect::{Column, KeyPart};
+use ruststream_sqlx::spec::{Advisory, Attempt, Payload};
+use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable, PayloadRow};
+# use ruststream_sqlx::prelude::*;
+# use serde::Deserialize;
+# use sqlx::PgPool;
+
+#[derive(sqlx::FromRow)]
+pub struct Transcode {
+    job_id: i64,
+    attempt: i16,
+    payload: Vec<u8>,
+}
+
+impl InboxTable for Transcode {
+    type Id = i64;
+    type Table = InboxSpec<(Advisory, Attempt, Payload)>;
+    const TABLE: Self::Table = InboxSpec::new("jobs", Column::new("job_id").generated())
+        .advisory(&[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")])
+        .attempt(Column::new("attempt").generated())
+        .payload(Column::new("payload"));
+
+    fn id(&self) -> &i64 {
+        &self.job_id
+    }
+}
+
+impl AttemptRow for Transcode {
+    type Attempt = i16;
+
+    fn attempt(&self) -> &i16 {
+        &self.attempt
+    }
+}
+
+impl PayloadRow for Transcode {
+    type Column = Vec<u8>;
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+# #[derive(Deserialize)]
+# pub struct Video { path: String }
+# #[subscriber(InboxQueue::<Transcode>::new("videos"))]
+# async fn transcode(video: &Video) -> HandlerOutcome {
+#     let _ = &video.path;
+#     HandlerOutcome::ack()
+# }
+# pub fn app(pool: PgPool) -> RustStream {
+#     RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+#         b.include(transcode);
+#     })
+# }
+# }
+# fn main() {}
+```
+
 `advisory_lock = "jobs-{job_id}"` names each row's lock key. A placeholder names a field, the key
-reads its column, and the database renders the key as text. Rows whose keys match go into work
-one at a time. A key on the row's id holds each row alone. A key on another column, as in
-`advisory_lock = "accounts-{account}"`, keeps the rows of an account in work one at a time. A key
-belongs to the database, not to its table. Two tables whose keys match wait for each other, and a
-key that starts with its table's name keeps them apart.
+reads its column, and the database renders the key as text. By hand, `KeyPart::Column` names the
+column itself, and a column the table lacks stops the subscription at startup, when its statements
+are prepared. Rows whose keys match go into work one at a time. A key on the row's id holds each row
+alone. A key on another column, as in `advisory_lock = "accounts-{account}"`, keeps the rows of an
+account in work one at a time. A key belongs to the database, not to its table. Two tables whose
+keys match wait for each other, and a key that starts with its table's name keeps them apart.
 
 A claim selects candidates: as many due rows of the queue as it may take, in claim order, each
 with its key. It locks each candidate's key on a connection of its own, without waiting, and
@@ -275,15 +406,17 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-`custom(lock, unlock)` in `#[inbox(..)]` hands the lock and the release of each key to the
-service: the struct implements [`Lock`] and [`Unlock`] for its database. The two are listed
-together, and only beside `advisory_lock`. The dialect still selects the candidates and takes each
-row. The lock tries without waiting and answers whether it took the key. The release answers
-whether the session held the key, and one that answers `false` or fails closes the connection.
-The process keeps no registry of keys for such a table, on SQLite too. The dialect's select leaves
-out only the keys its own locks hold, so a claim reads the first due rows alone and takes nothing
-while their keys are held. A handler of single messages therefore has one delivery in work at a
-time, and with `workers(n)` each next row waits up to a poll interval.
+`custom(lock, unlock)` in `#[inbox(..)]` hands the lock and the release of each key to the service:
+the struct implements [`Lock`] and [`Unlock`] for its database. By hand, the chain adds
+`.own::<own::Lock>()` and `.own::<own::Unlock>()`, and the type lists `own::Lock` and `own::Unlock`
+beside `Advisory`. The two come together, and only in the advisory lock form; a description that
+breaks either rule does not compile. The dialect still selects the candidates and takes each row.
+The lock tries without waiting and answers whether it took the key. The release answers whether the
+session held the key, and one that answers `false` or fails closes the connection. The process keeps
+no registry of keys for such a table, on SQLite too. The dialect's select leaves out only the keys
+its own locks hold, so a claim reads the first due rows alone and takes nothing while their keys are
+held. A handler of single messages therefore has one delivery in work at a time, and with
+`workers(n)` each next row waits up to a poll interval.
 
 A database the crate builds no dialect for takes the form through a dialect of the service's own
 that implements [`Advisory`](dialect::Advisory): the claim of candidates, the lock, the release

@@ -90,9 +90,9 @@ of its own group alone, and the others keep their interval. In a table without g
 every subscription of the table. A subscription busy with a claim keeps the wake-up for later, so
 its next wait returns at once.
 
-A row the service writes itself wakes nobody: the derive's [`insert`](Insert::insert), a
-statement of the service's own, a write through a handler's [`Tx`]. Such a row waits for the poll
-interval, or for a notification the service sends.
+A row the service writes itself wakes nobody: an [`insert`](Insert::insert), a statement of the
+service's own, a write through a handler's [`Tx`]. Such a row waits for the poll interval, or for a
+notification the service sends.
 
 The wake-up costs a publish one atomic operation per subscription it wakes. A subscription pays
 nothing per message for it.
@@ -102,7 +102,7 @@ nothing per message for it.
 [`listen_notify`](SqlxBroker::listen_notify) turns notifications on for a broker on Postgres. The
 broker listens on one connection of the pool, taken at `connect` and kept until `shutdown`. Each
 subscription listens on its table's channel before its first claim. The channel is the table's
-name, qualified with its schema where the struct names one (`app.jobs`). The payload is the
+name, qualified with its schema where the table has one (`app.jobs`). The payload is the
 group. A notification with an empty payload wakes every subscription of the table.
 
 Each publish of the broker announces its row: `SELECT pg_notify(channel, group)` runs on the
