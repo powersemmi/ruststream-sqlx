@@ -135,3 +135,44 @@ where
         }
     }
 }
+
+#[cfg(all(test, feature = "postgres"))]
+mod tests {
+    use crate::column::Column;
+    use crate::dialect::Dialect;
+    use crate::form::Form;
+    use crate::postgres::Postgres;
+    use crate::row_lock::RowLock;
+    use crate::spec::TableSpec;
+    use crate::statement::{ClaimShape, StatementError};
+
+    /// The queue table of a message assembled from it: the headers struct's columns, then the
+    /// message's own.
+    const ASSEMBLED: TableSpec<'static> =
+        TableSpec::new("order_jobs", Column::new("job_id"), Form::RowLock)
+            .group(Column::new("name"))
+            .data(&[Column::new("tenant")])
+            .fetching(&[Column::new("note")]);
+
+    #[test]
+    fn a_claim_and_a_fetch_name_the_messages_columns_after_the_headers()
+    -> Result<(), StatementError> {
+        let claim = Postgres.lock_claim(&ASSEMBLED, ClaimShape::Rows)?;
+        assert!(
+            claim
+                .sql()
+                .starts_with(r#"SELECT "job_id", "name", "tenant", "note" FROM "order_jobs""#),
+            "{}",
+            claim.sql()
+        );
+        let fetch = Postgres.fetch(&ASSEMBLED)?;
+        assert!(
+            fetch
+                .sql()
+                .starts_with(r#"SELECT "job_id", "name", "tenant", "note" FROM "order_jobs""#),
+            "{}",
+            fetch.sql()
+        );
+        Ok(())
+    }
+}

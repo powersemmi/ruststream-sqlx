@@ -40,11 +40,13 @@ where
     }
 }
 
-/// Claims up to `cx.limit` rows of a row lock subscription into `rows`, in a transaction of `pool`
+/// Claims up to `cx.limit` rows of a row lock subscription into `rows` (a claim of ids reads them
+/// into `ids`), in a transaction of `pool`
 /// it returns open: the transaction holds the rows until they settle.
 pub(crate) async fn claim_locked<DB, Row>(
     pool: &Pool<DB>,
     cx: &Claiming,
+    ids: &mut Row::Ids,
     rows: &mut Vec<Claimed<Row>>,
 ) -> Result<PoolTx<DB>, Failed>
 where
@@ -61,7 +63,7 @@ where
         // The transaction keeps the group until the delivery settles. A claim that finds
         // it kept takes nothing, and the claim loop ends its transaction.
         if take_group::<DB, Row>(&mut tx, cx, None).await? {
-            Row::claim(&mut tx, cx, None, rows)
+            Row::claim(&mut tx, cx, None, ids, rows)
                 .await
                 .map_err(claim_failed)?;
         }

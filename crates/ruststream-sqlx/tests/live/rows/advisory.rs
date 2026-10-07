@@ -3,7 +3,7 @@ use std::str;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
-use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, Insert, Publish, QueueDatabase};
+use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, InboxHeaders, Insert, Publish, QueueDatabase};
 use sqlx::types::Json;
 use sqlx::{Error, Executor, FromRow};
 #[cfg(feature = "mysql")]
@@ -13,7 +13,7 @@ use sqlx::{PgConnection, Postgres};
 #[cfg(feature = "sqlite")]
 use sqlx::{Sqlite, SqliteConnection};
 
-use super::{PUBLISHED_PRIORITY, mail_fetch, own_fetch};
+use super::{PUBLISHED_PRIORITY, mail_fetch, order_fetch, own_fetch};
 
 /// The `attempt` a row keeps after `delivered` deliveries, the last of which settled it.
 ///
@@ -543,5 +543,125 @@ impl Fetch<MySql> for FetchedMail {
 impl Fetch<Sqlite> for FetchedMail {
     async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
         mail_fetch::sqlite(conn, MAILED, ids).await
+    }
+}
+
+/// The queue table of an order's job, described by its headers struct: a group per name, an attempt and a lock key per job, and the service's
+/// own headers. A field without a role is a header: `tenant`, `trace` where it is not `NULL`, and
+/// `order_id`.
+#[derive(Debug, Clone, PartialEq, InboxHeaders, FromRow)]
+#[inbox(table = "headed_jobs", advisory_lock = "order-{job_id}")]
+pub(crate) struct OrderHeaders {
+    #[field(id, generated)]
+    pub(crate) job_id: i64,
+    #[field(group)]
+    pub(crate) name: String,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    pub(crate) tenant: String,
+    pub(crate) trace: Option<String>,
+    pub(crate) order_id: i64,
+}
+
+/// The message a handler takes from `headed_jobs`: the headers struct, and the job's note, which
+/// the default fetch reads from the same row.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+pub(crate) struct OrderJob {
+    #[field(headers)]
+    #[sqlx(flatten)]
+    pub(crate) headers: OrderHeaders,
+    pub(crate) note: Option<String>,
+}
+
+impl OrderJob {
+    /// A job of the queue `name` for the order `order_id` of `tenant`, as a producer writes it.
+    pub(crate) fn queued(name: &str, tenant: &str, trace: Option<&str>, order_id: i64) -> Self {
+        Self {
+            headers: OrderHeaders {
+                job_id: 0,
+                name: name.to_owned(),
+                attempt: 1,
+                tenant: tenant.to_owned(),
+                trace: trace.map(str::to_owned),
+                order_id,
+            },
+            note: None,
+        }
+    }
+
+    /// The same job with `note`.
+    pub(crate) fn noted(self, note: &str) -> Self {
+        Self {
+            note: Some(note.to_owned()),
+            ..self
+        }
+    }
+
+    /// `self` with the lease of the claim that lent `lent`: none in this form, so the job is lent
+    /// as the table holds it.
+    pub(crate) fn leased_as(self, _lent: &Self) -> Self {
+        self
+    }
+}
+
+/// A message of `headed_jobs` that reads a column the table lacks: the default fetch names it, so
+/// its subscription stops at startup.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+pub(crate) struct MissingJob {
+    #[field(headers)]
+    #[sqlx(flatten)]
+    pub(crate) headers: OrderHeaders,
+    pub(crate) missing: String,
+}
+
+/// The message a handler takes from `headed_jobs` through a fetch of the service's own, which joins
+/// each job to its order in `customer_orders`: a job whose order is missing joins no row.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+#[inbox(custom(fetch))]
+pub(crate) struct OrderMail {
+    #[field(headers)]
+    #[sqlx(flatten)]
+    pub(crate) headers: OrderHeaders,
+    pub(crate) customer: String,
+    pub(crate) total: i64,
+}
+
+impl OrderMail {
+    /// `self` with what the take that lent `lent` wrote into the row before the service's fetch
+    /// read it: the counted attempt (the delivery still reports the attempt as it stood before the
+    /// take).
+    pub(crate) fn claimed_as(self, lent: &Self) -> Self {
+        Self {
+            headers: OrderHeaders {
+                attempt: lent.headers.attempt,
+                ..self.headers
+            },
+            ..self
+        }
+    }
+}
+
+/// The columns `OrderMail` decodes, the job's as `j` and its order's as `o`.
+pub(crate) const ORDERED: &str =
+    "j.job_id, j.name, j.attempt, j.tenant, j.trace, j.order_id, o.customer, o.total";
+
+#[cfg(feature = "postgres")]
+impl Fetch<Postgres> for OrderMail {
+    async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        order_fetch::postgres(conn, ORDERED, ids).await
+    }
+}
+
+#[cfg(feature = "mysql")]
+impl Fetch<MySql> for OrderMail {
+    async fn fetch(conn: &mut MySqlConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        order_fetch::mysql(conn, ORDERED, ids).await
+    }
+}
+
+#[cfg(feature = "sqlite")]
+impl Fetch<Sqlite> for OrderMail {
+    async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+        order_fetch::sqlite(conn, ORDERED, ids).await
     }
 }

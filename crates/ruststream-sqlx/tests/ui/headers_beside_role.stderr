@@ -1,0 +1,5 @@
+error: `order_id` plays `id` beside the headers struct `OrderHeaders`, which describes the queue table: mark the field that plays `id` in `OrderHeaders`
+  --> tests/ui/headers_beside_role.rs:17:5
+   |
+17 |     order_id: i64,
+   |     ^^^^^^^^

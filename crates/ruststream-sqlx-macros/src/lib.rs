@@ -7,6 +7,7 @@
 
 mod check;
 mod events;
+mod headers;
 mod inbox;
 mod insert;
 mod mode;
@@ -22,6 +23,15 @@ use syn::{DeriveInput, parse_macro_input};
 pub fn derive_inbox(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);
     inbox::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Implemented in `ruststream-sqlx-macros` and used through `ruststream-sqlx`.
+#[proc_macro_derive(InboxHeaders, attributes(inbox, field, sqlx))]
+pub fn derive_inbox_headers(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    headers::expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

@@ -74,8 +74,9 @@ pub trait Claim<DB: Database>: InboxRow {
 
 /// Reads the rows of claimed ids, on the claim's connection.
 ///
-/// The derive builds it for a flat table; a service lists `fetch` in `custom(..)` to assemble
-/// messages itself, from other tables. Rows are matched to the claimed ids by their `id` field; a
+/// The derive builds it, for a flat table and for a message assembled from a headers struct; a
+/// service lists `fetch` in `custom(..)` to assemble messages itself, from other tables
+/// ([a fetch over a join](crate#a-fetch-over-a-join)). Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row settles by the decode-failure policy before its handler runs, and the
 /// log names the id. It runs inside the claim's transaction, or right after a lease claim that
 /// leased the rows and committed in one statement, as on Postgres and SQLite. In the advisory lock
@@ -572,7 +573,8 @@ pub trait Publish<DB: Database>: InboxRow {
 ///
 /// The derive implements it for the connection of each built-in dialect, `PgConnection` (feature
 /// `postgres`), `MySqlConnection` (feature `mysql`) and `SqliteConnection` (feature `sqlite`), with
-/// the statements built at compile time.
+/// the statements built at compile time. A headers struct gets it from
+/// [`InboxHeaders`](derive@crate::InboxHeaders): the queue table's columns.
 /// A struct with a `#[sqlx(flatten)]` field gets none: the derive cannot see the nested struct's
 /// columns, so the service writes that insert itself.
 ///
@@ -620,7 +622,7 @@ pub trait Publish<DB: Database>: InboxRow {
             `postgres`, `mysql` and `sqlite`), unless a `#[sqlx(flatten)]` field hides columns \
             from it: write that insert in the service"
 )]
-pub trait Insert<Connection>: InboxRow {
+pub trait Insert<Connection>: Sync {
     /// Inserts the row on `conn`.
     ///
     /// # Errors

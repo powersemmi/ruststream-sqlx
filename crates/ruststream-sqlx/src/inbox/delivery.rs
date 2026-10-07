@@ -24,6 +24,7 @@ use super::form::lease::settle::release;
 use super::form::lease::settle::release_in_process;
 use super::form::lease::{LeaseBook, Slot};
 use super::form::row_lock::BatchTx;
+use super::headers::HeaderCell;
 use super::queue::Queue;
 #[cfg(feature = "testing")]
 use super::testing::off_clock;
@@ -183,7 +184,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// ```
 pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     claimed: Claimed<Row>,
-    headers: HeaderMap,
+    headers: Row::Headers,
     pub(super) hold: Option<Hold<DB, Row>>,
     queue: &'static Queue,
     /// The subscription's handle on the pool, which the delivery lends its handler.
@@ -203,6 +204,19 @@ static ROW_GONE: LazyLock<CodecError> = LazyLock::new(|| CodecError::Decode(Box:
 #[derive(Debug, Error)]
 #[error("the claimed row is gone: the fetch returned no row for its id")]
 struct RowGone;
+
+/// Logs a claimed id of `queue` the fetch returned no row for, naming the id.
+fn row_gone(queue: &Queue, id: &impl Debug) {
+    tracing::warn!(
+        target: "ruststream_sqlx",
+        subscription = queue.name,
+        table = queue.table,
+        row = queue.row,
+        ?id,
+        "the fetch returned no row for a claimed id; the decode-failure policy settles its \
+         delivery",
+    );
+}
 
 /// What a subscription to a table in row mode logs when a handler reads a payload from a delivery
 /// whose row it never borrowed: a handler that decodes a payload, mounted where `row`, the struct
@@ -323,22 +337,14 @@ where
         queue: &'static Queue,
         pool: &'static Pool<DB>,
     ) -> Self {
-        // A row's headers move into the delivery in both modes: in row mode the row a handler
-        // borrows holds its headers column empty, and middleware reads the headers off the
-        // delivery.
+        // A row's headers column moves into the delivery in both modes: in row mode the row a
+        // handler borrows holds that column empty, and middleware reads the headers off the
+        // delivery. A message assembled from a headers struct builds its map on the first read.
         let headers = match &mut claimed {
-            Claimed::Row(row) => Row::take_headers(row),
+            Claimed::Row(row) => HeaderCell::take(row),
             Claimed::Missing(id) => {
-                tracing::warn!(
-                    target: "ruststream_sqlx",
-                    subscription = queue.name,
-                    table = queue.table,
-                    row = queue.row,
-                    ?id,
-                    "the fetch returned no row for a claimed id; the decode-failure policy settles \
-                     its delivery",
-                );
-                HeaderMap::new()
+                row_gone(queue, id);
+                Row::Headers::default()
             }
             Claimed::Undecodable { id, attempt, error } => {
                 tracing::warn!(
@@ -352,7 +358,7 @@ where
                     "the row does not decode into its struct; the decode-failure policy settles \
                      its delivery",
                 );
-                HeaderMap::new()
+                Row::Headers::default()
             }
         };
         Self {
@@ -388,7 +394,7 @@ where
     /// `headers` were taken from the row when the batch was built, and the row counts as lent.
     pub(super) fn of_batch(
         row: Row,
-        headers: HeaderMap,
+        headers: Row::Headers,
         hold: Hold<DB, Row>,
         queue: &'static Queue,
         pool: &'static Pool<DB>,
@@ -445,7 +451,11 @@ where
     }
 
     fn headers(&self) -> &HeaderMap {
-        &self.headers
+        let row = match &self.claimed {
+            Claimed::Row(row) => Some(row),
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
+        };
+        self.headers.read(row)
     }
 
     fn decode_error(&self) -> Option<&CodecError> {
@@ -577,7 +587,96 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
 
 #[cfg(test)]
 mod tests {
-    use super::unlent_payload;
+    use std::collections::BTreeMap;
+    use std::fmt::Debug;
+    use std::mem;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Level, Metadata, Subscriber};
+
+    use super::{row_gone, unlent_payload};
+    use crate::inbox::engine::{IdAt, Prepared};
+    use crate::inbox::queue::Queue;
+
+    /// The fields of each event logged while it is the default subscriber, by name, with its level.
+    #[derive(Default)]
+    struct Logged(Mutex<Vec<(Level, BTreeMap<String, String>)>>);
+
+    struct Fields<'a>(&'a mut BTreeMap<String, String>);
+
+    impl Visit for Fields<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn Debug) {
+            self.0.insert(field.name().to_owned(), format!("{value:?}"));
+        }
+
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0.insert(field.name().to_owned(), value.to_owned());
+        }
+    }
+
+    impl Subscriber for Logged {
+        fn enabled(&self, _: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _: &Attributes<'_>) -> Id {
+            Id::from_u64(1)
+        }
+
+        fn record(&self, _: &Id, _: &Record<'_>) {}
+
+        fn record_follows_from(&self, _: &Id, _: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut fields = BTreeMap::new();
+            event.record(&mut Fields(&mut fields));
+            self.0
+                .lock()
+                .expect("the log is not poisoned")
+                .push((*event.metadata().level(), fields));
+        }
+
+        fn enter(&self, _: &Id) {}
+
+        fn exit(&self, _: &Id) {}
+    }
+
+    #[test]
+    fn a_claimed_id_without_a_row_is_logged_with_its_id() {
+        let queue = Queue {
+            name: "mail",
+            table: "mail_jobs",
+            row: "app::FetchedMail",
+            spec: TableSpec::new("mail_jobs", Column::new("job_id"), Form::RowLock),
+            id_at: IdAt::First,
+            native_retry_after: false,
+            kinds: None,
+            prepared: Prepared::default(),
+            begin_claim: None,
+            counted_attempt: false,
+            poll_interval: Duration::from_secs(1),
+            lease: None,
+            cap: None,
+        };
+        let logged = Arc::new(Logged::default());
+        tracing::subscriber::with_default(Arc::clone(&logged), || row_gone(&queue, &42_i64));
+        let logged = mem::take(&mut *logged.0.lock().expect("the log is not poisoned"));
+        let [(level, fields)] = logged.as_slice() else {
+            panic!("one event, not {}", logged.len());
+        };
+        assert_eq!(*level, Level::WARN);
+        assert_eq!(fields.get("id").map(String::as_str), Some("42"));
+        assert_eq!(fields.get("subscription").map(String::as_str), Some("mail"));
+        assert_eq!(fields.get("table").map(String::as_str), Some("mail_jobs"));
+        assert_eq!(
+            fields.get("row").map(String::as_str),
+            Some("app::FetchedMail")
+        );
+    }
 
     #[test]
     fn a_payload_read_from_a_row_mode_delivery_names_the_row_to_take() {

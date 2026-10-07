@@ -35,7 +35,7 @@ where
     DB::fetch_rows(conn, statement.sql, arguments, cx.queue, out).await
 }
 
-/// The default claim of ids, for a fetch of the service's own.
+/// The default claim of ids, for a fetch of the service's own, into `ids`.
 ///
 /// # Errors
 ///
@@ -44,7 +44,8 @@ pub async fn claim_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     lease: Option<&Leasing<Row::Token>>,
-) -> Result<Vec<Row::Id>, Error>
+    ids: &mut Vec<Row::Id>,
+) -> Result<(), Error>
 where
     DB: QueueDatabase,
     Row: Events<DB>,
@@ -56,7 +57,7 @@ where
         .claim
         .ok_or_else(|| unprepared(Event::Claim))?;
     let arguments = arguments::<DB, Row>(statement, &Values::claiming(*cx, Event::Claim, lease))?;
-    DB::fetch_ids(conn, statement.sql, arguments).await
+    DB::fetch_ids(conn, statement.sql, arguments, ids).await
 }
 
 /// The default fetch of the rows of `ids`, after a claim of the service's own.
@@ -92,12 +93,12 @@ where
     Ok(fetched)
 }
 
-/// Pairs claimed ids with what the crate's fetch returned, in claim order.
+/// Pairs claimed ids with what the crate's fetch returned, in claim order, and empties `ids`.
 ///
 /// A row or an [`Claimed::Undecodable`] entry goes with its id, an id with neither is
 /// [`Claimed::Missing`], and an entry no id claimed is left alone.
 pub fn match_claimed<DB, Row>(
-    ids: Vec<Row::Id>,
+    ids: &mut Vec<Row::Id>,
     fetched: Vec<Claimed<Row>>,
     out: &mut Vec<Claimed<Row>>,
 ) where
@@ -110,7 +111,7 @@ pub fn match_claimed<DB, Row>(
 
 /// Pairs claimed ids with the rows a fetch of the service's own returned, as [`match_claimed`]
 /// does.
-pub fn match_rows<DB, Row>(ids: Vec<Row::Id>, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
+pub fn match_rows<DB, Row>(ids: &mut Vec<Row::Id>, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
 where
     DB: QueueDatabase,
     Row: Events<DB>,
@@ -121,7 +122,7 @@ where
 
 /// Pairs each of `ids` with the entry `id_of` names it in, turned into its row by `claimed`.
 fn pair<Row, Entry>(
-    ids: Vec<Row::Id>,
+    ids: &mut Vec<Row::Id>,
     mut fetched: Vec<Entry>,
     id_of: impl Fn(&Entry) -> &Row::Id,
     claimed: impl Fn(Entry) -> Claimed<Row>,
@@ -130,7 +131,8 @@ fn pair<Row, Entry>(
     Row: QueueRow,
     Row::Id: PartialEq,
 {
-    for id in ids {
+    // Drained, not consumed: the buffer goes back to its subscription for the next claim.
+    for id in ids.drain(..) {
         match fetched.iter().position(|entry| id_of(entry) == &id) {
             Some(position) => out.push(claimed(fetched.swap_remove(position))),
             None => out.push(Claimed::Missing(id)),

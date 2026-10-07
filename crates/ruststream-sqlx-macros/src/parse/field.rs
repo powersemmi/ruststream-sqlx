@@ -30,6 +30,24 @@ pub(super) fn field(field: &syn::Field, rename_all: Option<RenameAll>) -> syn::R
     } else {
         None
     };
+    // A flattened field that plays `headers` holds a headers struct: the headers layout.
+    let headers_struct = sqlx.flatten && matches!(marks.role, Some((Role::Headers, _)));
+    if headers_struct {
+        if let Some(span) = marks.generated {
+            return Err(syn::Error::new(
+                span,
+                format!(
+                    "`{ident}` holds a headers struct, which describes the queue table: mark its \
+                     generated columns there"
+                ),
+            ));
+        }
+        return Ok(Field {
+            ident,
+            ty: &field.ty,
+            storage: Storage::Headers,
+        });
+    }
     if let Some((attribute, _)) = &without_column {
         if let Some((role, span)) = marks.role {
             return Err(syn::Error::new(

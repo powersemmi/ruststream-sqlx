@@ -104,6 +104,7 @@ pub struct TableSpec<'a> {
     headers: Option<Column<'a>>,
     payload: Option<Column<'a>>,
     data: &'a [Column<'a>],
+    fetched: &'a [Column<'a>],
     form: Form<'a>,
     opening: Opening,
     select_all: bool,
@@ -131,6 +132,7 @@ impl<'a> TableSpec<'a> {
             headers: None,
             payload: None,
             data: &[],
+            fetched: &[],
             form,
             opening: Opening::Default,
             select_all: false,
@@ -266,6 +268,21 @@ impl<'a> TableSpec<'a> {
     pub const fn data(self, columns: &'a [Column<'a>]) -> Self {
         Self {
             data: columns,
+            ..self
+        }
+    }
+
+    /// The same table, with the columns a message assembled from it reads beside the headers
+    /// struct's: listed after the data, wherever the statements list the table's columns.
+    ///
+    /// `#[derive(Inbox)]` passes the message struct's own fields here when the struct flattens a
+    /// headers struct into its `#[field(headers)]` field, which describes the rest of the table.
+    /// The default fetch then names every column it reads, so a column the table lacks stops the
+    /// subscription when its statements are prepared.
+    #[must_use]
+    pub const fn fetching(self, columns: &'a [Column<'a>]) -> Self {
+        Self {
+            fetched: columns,
             ..self
         }
     }
@@ -822,7 +839,8 @@ impl<'a> TableSpec<'a> {
         }
     }
 
-    /// Every column: the one of each role in [`Role::ALL`] order, then the message's data.
+    /// Every column: the one of each role in [`Role::ALL`] order, then the message's data, then
+    /// the columns a message assembled from the table reads ([`fetching`](Self::fetching)).
     ///
     /// # Examples
     ///
@@ -884,6 +902,7 @@ impl<'a> TableSpec<'a> {
             .iter()
             .filter_map(|role| self.column(*role))
             .chain(self.data.iter().copied())
+            .chain(self.fetched.iter().copied())
     }
 }
 

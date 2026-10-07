@@ -16,10 +16,10 @@ error: `#[sqlx(skip)]` leaves `job_id` without a column, so it cannot play `id`
 22 |     #[field(id)]
    |             ^^
 
-error: `#[sqlx(flatten)]` leaves `headers` without a column, so it cannot play `headers`
+error: `#[sqlx(flatten)]` leaves `body` without a column, so it cannot play `payload`
   --> tests/ui/columns.rs:32:13
    |
-32 |     #[field(headers)]
+32 |     #[field(payload)]
    |             ^^^^^^^
 
 error: `#[sqlx(skip)]` leaves `created_at` without a column for the database to fill in

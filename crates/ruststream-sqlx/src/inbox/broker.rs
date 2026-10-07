@@ -31,13 +31,14 @@ use sqlx::{Database, Pool};
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
-use super::database::{BuiltIn, BuiltInDialect, QueueDatabase};
+use super::database::notify::{self, Listening, StartListening, start_listening};
+use super::database::{BuiltIn, BuiltInDialect, Notifies, QueueDatabase};
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
 use super::form::advisory::LockBook;
 use super::form::advisory::session::Closing;
-use super::publish::Routes;
+use super::publish::{Routes, TableWake, Wakes};
 use super::{FormDialect, FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
@@ -173,6 +174,8 @@ pub struct SqlxBroker<DB: Database, D = BuiltIn<DB>> {
     routes: Routes<DB, FormOf<D>>,
     poll_interval: Duration,
     lease: Duration,
+    /// The start of the listening connection, with `listen_notify`.
+    pub(crate) listen: Option<StartListening<DB>>,
 }
 
 impl<DB: Database, D: Dialect> fmt::Debug for SqlxBroker<DB, D> {
@@ -182,6 +185,7 @@ impl<DB: Database, D: Dialect> fmt::Debug for SqlxBroker<DB, D> {
             .field("routes", &self.routes)
             .field("poll_interval", &self.poll_interval)
             .field("lease", &self.lease)
+            .field("listen_notify", &self.listen.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -333,6 +337,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
             routes: Routes::default(),
             poll_interval: DEFAULT_POLL_INTERVAL,
             lease: DEFAULT_LEASE,
+            listen: None,
         }
     }
 
@@ -424,7 +429,9 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
 
     /// How long a subscription waits between claims that found its queue empty; one second
     /// unless set. A subscription's own [`poll_interval`](crate::InboxQueue::poll_interval)
-    /// overrides it.
+    /// overrides it. A publish through this broker wakes the subscriptions of its table and group
+    /// before then, and so does a notification with [`listen_notify`](Self::listen_notify)
+    /// ([waking a subscription](crate#waking-a-subscription)).
     ///
     /// # Examples
     ///
@@ -536,6 +543,85 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
         self.lease = lease;
         self
     }
+
+    /// Wakes the broker's subscriptions on Postgres notifications: a row another process announced
+    /// with `pg_notify` is claimed at once, not on the next poll.
+    ///
+    /// The broker holds one connection of the pool for its life, from
+    /// [`connect`](Broker::connect) to [`shutdown`](ConnectedBroker::shutdown), and listens there.
+    /// Each subscription listens on the channel of its table, qualified with its schema, as it
+    /// opens; a notification whose payload names a group wakes that group's subscription, and one
+    /// with an empty payload wakes every subscription of the table. Each publish of the broker
+    /// sends `SELECT pg_notify(table, group)` on the connection that wrote the row, right after
+    /// the write: one more statement per publish. A publish whose notification fails is still a
+    /// publish; the row waits for the poll interval and the failure is logged.
+    ///
+    /// The poll interval stays: a notification sent while the listening connection was lost is
+    /// gone, so after a reconnect every subscription claims once, and a row written by the
+    /// service's own SQL or a handler's [`Tx`](crate::Tx) wakes nobody unless the service sends
+    /// the notification itself. It is opt-in because of its cost: the pool connection it holds,
+    /// the statement each publish adds, and the lock, global to the server, that Postgres takes
+    /// at the commit of each transaction that notifies, so those commits run one after another,
+    /// which limits many concurrent writers.
+    ///
+    /// A table whose qualified name is longer than Postgres's 63-byte channel names stops its
+    /// subscription at startup with [`SqlxBrokerError::Declaration`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use std::time::Duration;
+    ///
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::PgPool;
+    ///
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // A row another service writes and announces with
+    ///     // `SELECT pg_notify('email_jobs', 'emails')` is sent at once; the poll each minute
+    ///     // catches a row whose notification was lost.
+    ///     let broker = SqlxBroker::new(pool)
+    ///         .poll_interval(Duration::from_secs(60))
+    ///         .listen_notify();
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(send);
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    #[must_use]
+    pub fn listen_notify(mut self) -> Self
+    where
+        DB: Notifies,
+    {
+        self.listen = Some(start_listening::<DB>());
+        self
+    }
 }
 
 impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
@@ -550,7 +636,20 @@ impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
             .map_err(|source| SqlxBrokerError::Connect { source })?;
         let dialect = self.dialect.resolve(&conn)?;
         drop(conn);
-        Ok(ConnectedSqlxBroker::new(self, dialect, Handle::current()))
+        let listening = match self.listen {
+            Some(start) => Some(
+                start(self.pool.clone())
+                    .await
+                    .map_err(|source| SqlxBrokerError::Connect { source })?,
+            ),
+            None => None,
+        };
+        Ok(ConnectedSqlxBroker::new(
+            self,
+            dialect,
+            Handle::current(),
+            listening,
+        ))
     }
 }
 
@@ -558,7 +657,9 @@ impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
 pub(crate) struct Shared<DB: Database> {
     pub(crate) pool: Pool<DB>,
     /// The routes, each with the form of its table on the connection's dialect.
-    pub(crate) routes: Routes<DB, FormDialect>,
+    pub(crate) routes: Routes<DB, FormDialect, &'static TableWake>,
+    /// The wake-ups of the subscriptions of each table the connection's publishers write.
+    pub(crate) wakes: Wakes,
     pub(crate) poll_interval: Duration,
     /// The lease a subscription in the lease form takes, unless it names its own.
     pub(crate) lease: Duration,
@@ -578,6 +679,8 @@ pub(crate) struct Shared<DB: Database> {
     /// The sessions of the connection being closed after they ended holding a lock or a
     /// transaction: `shutdown` waits until none is.
     pub(crate) closing: &'static Closing,
+    /// The listening connection, with `listen_notify`.
+    pub(crate) listening: Option<Listening>,
     /// The test harness's books of this connection.
     #[cfg(feature = "testing")]
     pub(crate) harness: super::testing::Harness,
@@ -665,13 +768,24 @@ impl<DB: Database, D: Dialect> fmt::Debug for ConnectedSqlxBroker<DB, D> {
 }
 
 impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
-    /// The connected form of `broker`, whose statements `dialect` builds and whose internal tasks
-    /// run on `runtime`.
-    pub(crate) fn new(broker: SqlxBroker<DB, D>, dialect: Arc<D>, runtime: Handle) -> Self {
+    /// The connected form of `broker`, whose statements `dialect` builds, whose internal tasks
+    /// run on `runtime`, and which listens on `listening` with `listen_notify`.
+    pub(crate) fn new(
+        broker: SqlxBroker<DB, D>,
+        dialect: Arc<D>,
+        runtime: Handle,
+        listening: Option<Listening>,
+    ) -> Self {
+        let wakes = Wakes::default();
+        let routes = broker.routes.resolve(
+            |form_of| form_of(&dialect),
+            |route| wakes.table(&route.description().spec),
+        );
         Self {
             shared: Arc::new(Shared {
                 pool: broker.pool,
-                routes: broker.routes.resolve(|form_of| form_of(&dialect)),
+                routes,
+                wakes,
                 poll_interval: broker.poll_interval,
                 lease: broker.lease,
                 closing: Closing::leak(runtime.clone()),
@@ -680,6 +794,7 @@ impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
                 stopping: CancellationToken::new(),
                 queues: Mutex::new(Vec::new()),
                 locks: Mutex::new(Vec::new()),
+                listening,
                 #[cfg(feature = "testing")]
                 harness: super::testing::Harness::default(),
             }),
@@ -719,6 +834,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
             // A session closing after its delivery or its claim was dropped may still hold its
             // lock.
             shared.closing.settled().await;
+            notify::close(&shared).await;
             Ok(ClosedSqlxBroker {
                 locks_released: released.into_iter().sum(),
                 connections_closed: shared.closing.forced(),

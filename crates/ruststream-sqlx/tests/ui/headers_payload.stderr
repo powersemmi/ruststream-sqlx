@@ -1,0 +1,5 @@
+error: `body` plays `payload` beside the headers struct `OrderHeaders`: a message assembled from a headers struct is handed to its handler itself, as in row mode, so it holds no payload; drop the role
+  --> tests/ui/headers_payload.rs:17:5
+   |
+17 |     body: Vec<u8>,
+   |     ^^^^

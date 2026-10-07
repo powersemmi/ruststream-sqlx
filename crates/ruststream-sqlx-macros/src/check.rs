@@ -9,17 +9,17 @@ use crate::parse::{ColumnField, Field, Inbox};
 
 /// The errors of one derive, reported together.
 #[derive(Default)]
-struct Errors(Option<syn::Error>);
+pub(crate) struct Errors(Option<syn::Error>);
 
 impl Errors {
-    fn push(&mut self, error: syn::Error) {
+    pub(crate) fn push(&mut self, error: syn::Error) {
         match &mut self.0 {
             Some(errors) => errors.combine(error),
             None => self.0 = Some(error),
         }
     }
 
-    fn finish(self) -> syn::Result<()> {
+    pub(crate) fn finish(self) -> syn::Result<()> {
         self.0.map_or(Ok(()), Err)
     }
 }

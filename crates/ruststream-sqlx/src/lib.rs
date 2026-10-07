@@ -6,6 +6,7 @@
     all(feature = "inbox", feature = "postgres"),
     doc = include_str!("overview/row_mode_errors.md")
 )]
+#![doc = include_str!("overview/headers.md")]
 #![doc = include_str!("overview/forms.md")]
 #![doc = include_str!("overview/transactional.md")]
 #![doc = include_str!("overview/isolation.md")]
@@ -15,6 +16,7 @@
 #![doc = include_str!("overview/decoding.md")]
 #![doc = include_str!("overview/batches.md")]
 #![doc = include_str!("overview/names.md")]
+#![doc = include_str!("overview/wake.md")]
 #![doc = include_str!("overview/testing.md")]
 #![forbid(unsafe_code)]
 
@@ -37,11 +39,11 @@ pub use inbox::TransactionalStep;
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
     ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
-    InboxDelivery, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert, KeyColumn,
-    LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, PayloadRow, Plain, Publish,
-    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
-    RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
-    Transactional, Tx, Unlock,
+    HeaderField, InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber,
+    Insert, KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies,
+    PayloadRow, Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
+    RetryAfter, Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock,
+    TimeColumn, TimeSource, Transactional, Tx, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
@@ -67,6 +69,10 @@ pub mod __private {
     };
     pub use crate::inbox::form::advisory::events::{
         Candidates, candidates, lock, match_taken, take, take_id, unlock,
+    };
+    pub use crate::inbox::headers::{
+        Assembled, HeaderCell, HeadersLease, HeadersRow, LazyHeaders, OwnClaim, OwnExtend, OwnLock,
+        put_header, unnamed_header,
     };
     pub use crate::inbox::named::kinds::{Kinds, KindsOf};
     pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
@@ -224,6 +230,63 @@ pub mod __private {
 ///
 /// `generated`, alone or beside a role, marks a column the database fills in.
 ///
+/// # The headers layout
+///
+/// A `#[field(headers)]` field with `#[sqlx(flatten)]` holds a headers struct, which derives
+/// [`InboxHeaders`](derive@InboxHeaders) and describes the queue table: its attributes, the
+/// fields that play a role, and the service's own headers. The struct that flattens it is the
+/// message, which a handler takes itself, `&Message` or `&[Message]`, as in row mode. It takes
+/// `#[inbox(custom(..))]` alone, and no role beside its headers field. Its other fields are its
+/// own data: the default fetch reads them from the queue table, by name, so a column the table
+/// lacks stops the subscription at startup; with `custom(fetch)` the service's [`Fetch`] reads
+/// them from wherever they live. The delivery's headers hold the headers struct's fields without a
+/// role, built on the first read. The headers struct gets the generated insert, the message none.
+///
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use sqlx::PgPool;
+///
+/// // order_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, attempt SMALLINT DEFAULT 1,
+/// // tenant TEXT, note TEXT
+/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
+/// pub struct OrderHeaders {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     tenant: String,
+/// }
+///
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// pub struct OrderJob {
+///     #[field(headers)]
+///     #[sqlx(flatten)]
+///     headers: OrderHeaders,
+///     note: Option<String>,
+/// }
+///
+/// // The header `tenant` comes from the headers struct, the note from the message's own column.
+/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// async fn ship(job: &OrderJob, ctx: &mut Context<'_>) -> HandlerOutcome {
+///     let tenant = ctx.headers().get_str("tenant").unwrap_or_default();
+///     tracing::info!(tenant, attempt = job.headers.attempt, note = ?job.note, "shipping");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(ship);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
 /// A struct with a `payload` field is in payload mode: its handler takes the payload, decoded by a
 /// codec. A struct without one is in row mode: its handler takes the struct itself, as the driver
 /// read it. A struct in row mode derives `Clone`, because the test harness keeps a copy of each
@@ -237,10 +300,10 @@ pub mod __private {
 ///
 /// A column is named in one place, sqlx's attributes. `#[sqlx(rename = "..")]` names a field's
 /// column as written, `#[sqlx(rename_all = "..")]` recases every other field's name, a raw
-/// identifier loses its `r#`, and a `#[sqlx(skip)]` field reads no column. A
-/// `#[sqlx(flatten)]` field reads columns the derive cannot see, so the statements select `*`,
-/// and a dead-letter move copies the row by position: the dead-letter table has the same columns
-/// in the same order.
+/// identifier loses its `r#`, and a `#[sqlx(skip)]` field reads no column. Outside the headers
+/// layout, a `#[sqlx(flatten)]` field reads columns the derive cannot see, so the statements
+/// select `*`, and a dead-letter move copies the row by position: the dead-letter table has the
+/// same columns in the same order.
 /// The other options of `#[sqlx(..)]`, such as `json`, `try_from` and `default`, belong to sqlx's
 /// own derive and pass through untouched.
 ///
@@ -252,7 +315,9 @@ pub mod __private {
 /// `fifo = true` or `claim` in `custom(..)` beside `advisory_lock`, `extend` in `custom(..)`
 /// without `locked_until`, `lock` or `unlock` in `custom(..)` without `advisory_lock` or without
 /// each other, `locked_until` on `clock = DatabaseClock`, a lock key naming no field, a dot in
-/// `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`.
+/// `table` or `schema`, an unknown isolation level or mode, `isolation` beside `mode`. In the
+/// headers layout: a flattened headers field whose type does not derive `InboxHeaders`, a role or
+/// a table attribute on the message, and a custom event the headers struct's form does not take.
 ///
 /// A struct in row mode without `Clone` does not compile. The error points at its name and
 /// suggests the derive:
@@ -291,3 +356,53 @@ pub mod __private {
 /// slots. [Row mode](crate#row-mode) shows both.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;
+/// Describes the queue table of a message assembled from it, and implements [`InboxHeaders`]
+/// for the struct.
+///
+/// The struct takes the table's attributes and the fields that play a role, as a struct deriving
+/// [`Inbox`](derive@Inbox) does; every field without a role is a header (see [`InboxHeaders`]).
+/// `custom(..)`, `payload` and `headers` belong to the message struct, which flattens this one
+/// into its `#[field(headers)]` field.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use sqlx::PgPool;
+///
+/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
+/// pub struct OrderHeaders {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     tenant: String,
+/// }
+///
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// pub struct OrderJob {
+///     #[field(headers)]
+///     #[sqlx(flatten)]
+///     headers: OrderHeaders,
+///     note: Option<String>,
+/// }
+///
+/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// async fn ship(job: &OrderJob) -> HandlerOutcome {
+///     tracing::info!(tenant = %job.headers.tenant, note = ?job.note, "shipping");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(ship);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[cfg(feature = "inbox")]
+pub use ruststream_sqlx_macros::InboxHeaders;

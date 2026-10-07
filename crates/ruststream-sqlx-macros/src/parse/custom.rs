@@ -9,6 +9,8 @@ use syn::spanned::Spanned;
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Custom {
+    /// Where `custom(..)` is written, if it is.
+    pub(crate) listed: Option<Span>,
     /// Where `claim` is listed: the advisory lock form selects its candidates itself, which the
     /// struct is checked for.
     pub(crate) claim: Option<Span>,
