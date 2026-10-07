@@ -18,6 +18,7 @@
 #![doc = include_str!("overview/names.md")]
 #![doc = include_str!("overview/wake.md")]
 #![doc = include_str!("overview/testing.md")]
+#![cfg_attr(feature = "outbox", doc = include_str!("overview/outbox.md"))]
 #![forbid(unsafe_code)]
 
 pub use ruststream_sqlx_dialect as dialect;
@@ -531,5 +532,64 @@ pub use ruststream_sqlx_macros::Outbox;
 /// `Outbox::new(pool).register::<OrderEvent>("orders").register::<RefundEvent>("refunds")`.
 /// Without `pool:` the registry starts as `Outbox::deferred()`, and the pool is set once it is
 /// built. A name written twice does not compile, and the error points at its second literal.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+/// # mod demo {
+/// # use ruststream::OutgoingMessage;
+/// # use ruststream::memory::prelude::*;
+/// # use ruststream_sqlx::{Outbox, outbox};
+/// # use serde::{Deserialize, Serialize};
+/// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+/// # #[derive(Outbox, sqlx::FromRow)]
+/// # #[outbox(table = "outbox")]
+/// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+/// # impl outbox::Publish<Postgres> for OrderOutbox {
+/// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+/// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+/// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+/// #     }
+/// # }
+/// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+/// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+/// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+/// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+/// use std::io;
+///
+/// /// Inside `#[ruststream::app]`: no `pool:`, and the pool arrives in `on_startup`.
+/// pub fn app() -> impl App {
+///     let tracking = outbox! { "orders" => OrderOutbox };
+///     let registry = tracking.clone();
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .on_startup(async move |()| {
+///             let pool = PgPool::connect("postgres://localhost/orders")
+///                 .await
+///                 .map_err(io::Error::other)?;
+///             registry.set_pool(pool.clone()).map_err(io::Error::other)?;
+///             Ok::<_, io::Error>(pool)
+///         })
+///         .layer(tracking.layer())
+///         .publish_layer(tracking.publish_layer())
+///         .with_broker(MemoryBroker::new(), |b| {
+///             b.include(place).out_reply(Publish);
+///             b.include(fulfil);
+///             b.after_startup(Publish, tracking.republish());
+///         })
+/// }
+///
+/// /// An app built inside a running runtime takes the pool it has.
+/// pub fn app_with(pool: PgPool) -> impl App {
+///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox };
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .publish_layer(tracking.publish_layer())
+///         .with_broker(MemoryBroker::new(), |b| {
+///             b.include(place).out_reply(Publish);
+///         })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 #[cfg(feature = "outbox")]
 pub use ruststream_sqlx_macros::outbox;

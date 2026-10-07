@@ -30,6 +30,7 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 - [Waking a subscription](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#waking-a-subscription): the poll interval, and a publish from the same process that wakes the subscriptions of its table and group
 - [`LISTEN/NOTIFY` on Postgres](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#listennotify-on-postgres): `listen_notify()`, the channel and payload another writer or a trigger sends, and its cost: a pool connection, a statement per publish, commits that notify one at a time
 - [Testing a service on the inbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#testing-a-service-on-the-inbox): `TestApp::start_live` against a real database or an in-memory SQLite, and the real clock
+- [The transactional outbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-transactional-outbox): `#[derive(Outbox)]`, `outbox!`, the publish and subscription middlewares, the startup republish, `wrap` for publishes outside handlers, the pool set in `on_startup`, the at-least-once guarantee and the test switch `RUSTSTREAM_SQLX_OUTBOX=on`
 
 ## Optional
 

@@ -210,6 +210,60 @@ where
 /// A message whose name is not registered passes every handle after a comparison with each
 /// registered name, and nothing else. A tracked message reads the pool with one atomic load, takes
 /// a connection for its statements, and allocates the id header's value.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+/// # mod demo {
+/// # use ruststream::OutgoingMessage;
+/// # use ruststream::memory::prelude::*;
+/// # use ruststream_sqlx::{Outbox, outbox};
+/// # use serde::{Deserialize, Serialize};
+/// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+/// # #[derive(Outbox, sqlx::FromRow)]
+/// # #[outbox(table = "outbox")]
+/// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+/// # impl outbox::Publish<Postgres> for OrderOutbox {
+/// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+/// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+/// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+/// #     }
+/// # }
+/// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+/// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+/// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+/// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+/// use std::convert::Infallible;
+/// use std::io;
+///
+/// /// What `#[ruststream::app]` runs: the pool is built in `on_startup`, inside the runtime.
+/// pub fn app() -> impl App {
+///     let tracking = Outbox::<Postgres>::deferred().register::<OrderOutbox>("orders");
+///     let registry = tracking.clone();
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .on_startup(async move |()| {
+///             let pool = PgPool::connect("postgres://localhost/orders")
+///                 .await
+///                 .map_err(io::Error::other)?;
+///             registry.set_pool(pool.clone()).map_err(io::Error::other)?;
+///             Ok::<_, io::Error>(pool)
+///         })
+///         .layer(tracking.layer())
+///         .publish_layer(tracking.publish_layer())
+///         .after_shutdown(async move |pool| {
+///             pool.close().await;
+///             Ok::<_, Infallible>(())
+///         })
+///         .with_broker(MemoryBroker::new(), |b| {
+///             b.include(place).out_reply(Publish);
+///             b.include(fulfil);
+///             b.after_startup(Publish, tracking.republish());
+///         })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 pub struct Outbox<DB: Database, Records = Nil> {
     pool: Arc<OnceLock<Pool<DB>>>,
     records: Records,
@@ -235,6 +289,48 @@ impl<DB: Database, Records: fmt::Debug> fmt::Debug for Outbox<DB, Records> {
 
 impl<DB: Database> Outbox<DB, Nil> {
     /// An outbox with no names yet, whose records live in `pool`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// /// An app built inside a running Tokio runtime, where the pool exists already.
+    /// pub async fn run(pool: PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///     let tracking = Outbox::new(pool).register::<OrderOutbox>("orders");
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .layer(tracking.layer())
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///             b.include(fulfil);
+    ///             b.after_startup(Publish, tracking.republish());
+    ///         })
+    ///         .run()
+    ///         .await?;
+    ///     Ok(())
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
         Self {
@@ -245,6 +341,51 @@ impl<DB: Database> Outbox<DB, Nil> {
 
     /// An outbox with no names and no pool yet: the service gives it the pool with
     /// [`set_pool`](Self::set_pool), usually in `on_startup`, where the pool is built.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// use std::io;
+    ///
+    /// pub fn app() -> impl App {
+    ///     let tracking = Outbox::<Postgres>::deferred().register::<OrderOutbox>("orders");
+    ///     let registry = tracking.clone();
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .on_startup(async move |()| {
+    ///             let pool = PgPool::connect("postgres://localhost/orders")
+    ///                 .await
+    ///                 .map_err(io::Error::other)?;
+    ///             registry.set_pool(pool.clone()).map_err(io::Error::other)?;
+    ///             Ok::<_, io::Error>(pool)
+    ///         })
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub fn deferred() -> Self {
         Self {
@@ -260,6 +401,48 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     /// # Panics
     ///
     /// Panics when `name` is registered already: each name has one record type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "refunds")] pub struct RefundRequested { id: u64 }
+    /// # #[subscriber("cancellations", reply)] async fn cancel(cmd: &PlaceOrder) -> RefundRequested { RefundRequested { id: cmd.id } }
+    /// /// One record type tracks both names; each name republishes its own records.
+    /// pub fn app(pool: PgPool) -> impl App {
+    ///     let tracking = Outbox::new(pool)
+    ///         .register::<OrderOutbox>("orders")
+    ///         .register::<OrderOutbox>("refunds");
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///             b.include(cancel).out_reply(Publish);
+    ///             b.after_startup(Publish, tracking.republish());
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     #[track_caller]
     pub fn register<Record: Tracked<DB>>(
@@ -287,6 +470,52 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     /// # Errors
     ///
     /// [`PoolAlreadySet`] when the outbox has a pool already; the one it has stays.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// use std::io;
+    ///
+    /// pub fn app() -> impl App {
+    ///     let tracking = outbox! { "orders" => OrderOutbox };
+    ///     let registry = tracking.clone();
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .on_startup(async move |()| {
+    ///             let pool = PgPool::connect("postgres://localhost/orders")
+    ///                 .await
+    ///                 .map_err(io::Error::other)?;
+    ///             // Every handle the registry gave out reads this pool from now on.
+    ///             registry.set_pool(pool.clone()).map_err(io::Error::other)?;
+    ///             Ok::<_, io::Error>(pool)
+    ///         })
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn set_pool(&self, pool: Pool<DB>) -> Result<(), PoolAlreadySet> {
         // Why at run time: a pool is built asynchronously, often in `on_startup`, after the
         // registry and its handles were made.
@@ -299,6 +528,42 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// its record before the handler runs, and settles it by the handler's outcome.
     ///
     /// Mounted with `RustStream::layer`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// /// The consumer side: `fulfil` runs once per record, and its acknowledgement marks the record.
+    /// pub fn app(pool: PgPool) -> impl App {
+    ///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox };
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .layer(tracking.layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(fulfil);
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub fn layer(&self) -> TrackingLayer<DB, Records> {
         TrackingLayer::new(Arc::clone(&self.pool), self.records)
@@ -308,6 +573,42 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// before it is sent, and carries its record's id.
     ///
     /// Mounted with `RustStream::publish_layer`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// /// The producer side: the reply of `place` is recorded, then sent with its record's id.
+    /// pub fn app(pool: PgPool) -> impl App {
+    ///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox };
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub fn publish_layer(&self) -> TrackingPublishLayer<DB, Records> {
         TrackingPublishLayer::new(Arc::clone(&self.pool), self.records)
@@ -317,6 +618,43 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// each unprocessed record again through the scope's publisher, with its id.
     ///
     /// The hook allocates its body once, at startup.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// pub fn app(pool: PgPool) -> impl App {
+    ///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox };
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///             // Runs once the subscriptions are open; a record it cannot send fails startup.
+    ///             b.after_startup(Publish, tracking.republish());
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     pub fn republish<Live: Publisher + 'static>(
         &self,
     ) -> impl FnOnce(Live) -> Republishing + Send + 'static {
@@ -329,6 +667,49 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// # Panics
     ///
     /// Panics when a name of `names` is not registered.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "audits")] pub struct Audited { id: u64 }
+    /// # #[subscriber("checkout-audit", reply)] async fn audit(cmd: &PlaceOrder) -> Audited { Audited { id: cmd.id } }
+    /// /// Each broker republishes the names it carries.
+    /// pub fn app(pool: PgPool) -> impl App {
+    ///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox, "audits" => OrderOutbox };
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///             b.after_startup(Publish, tracking.republish_names(["orders"]));
+    ///         })
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(audit).out_reply(Publish);
+    ///             b.after_startup(Publish, tracking.republish_names(["audits"]));
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[track_caller]
     pub fn republish_names<Live: Publisher + 'static>(
         &self,
@@ -359,6 +740,51 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
 
     /// `publisher` with the publish middleware's tracking, for publishes outside the handlers
     /// (an HTTP endpoint, an `after_startup` hook), which the publish pipeline does not reach.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+    /// pub async fn serve(pool: PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox };
+    ///     let broker = MemoryBroker::new().bindable();
+    ///     let egress = broker.bind(Publish);
+    ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .with_broker(broker, |b| {
+    ///             b.include(fulfil);
+    ///         })
+    ///         .start()
+    ///         .await?;
+    ///
+    ///     // What an HTTP endpoint publishes: recorded first, then sent with its record's id.
+    ///     let publisher = tracking.wrap(running.publisher(egress).await?);
+    ///     publisher.message(&OrderPlaced { id: 7 }).publish().await?;
+    ///
+    ///     running.shutdown().await?;
+    ///     Ok(())
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub fn wrap<Live: Publisher>(&self, publisher: Live) -> TrackedPublisher<Live, DB, Records> {
         TrackedPublisher::new(publisher, Arc::clone(&self.pool), self.records)

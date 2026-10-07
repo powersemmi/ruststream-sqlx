@@ -8,14 +8,18 @@ SQLite. A struct of the service's own describes a queue table: [`Inbox`] reads t
 broker: a subscription claims rows, a handler's outcome settles them, and a publish writes a row
 through the service's own SQL.
 
-The `inbox` feature turns the broker on, and a service adds what its database and its tables
-need:
+The crate also serves a transactional outbox over any RustStream broker: what a service publishes
+is recorded in its own table until a consumer has processed it, and what was not processed is
+published again at startup. It is described in [the transactional outbox](#the-transactional-outbox).
+
+The `inbox` feature turns the broker on, the `outbox` feature the outbox, and a service adds what
+its database and its tables need:
 
 - `postgres`, `mysql` (MySQL and MariaDB) and `sqlite`: a built-in dialect and its sqlx driver;
 - `any`: an `AnyPool`, served by the dialect of the database it reaches;
 - `chrono` or `time`: the time columns; `json`: the headers column;
-- `testing`: the broker's in-process mode for `TestApp`; `asyncapi`: what a subscription adds to
-  the generated document.
+- `testing`: the broker's in-process mode for `TestApp`, and the outbox's test switch;
+  `asyncapi`: what a subscription adds to the generated document.
 
 Where things are:
 
@@ -27,6 +31,8 @@ Where things are:
   its delivery's transaction.
 - [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
   implements.
+- [The transactional outbox](#the-transactional-outbox): `#[derive(Outbox)]`, `outbox!` and the
+  registry's middlewares, under the `outbox` feature.
 
 # The inbox broker
 
