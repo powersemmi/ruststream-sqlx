@@ -58,20 +58,66 @@
 //!
 //! # Examples
 //!
+//! A dialect of the service's own wraps Postgres and writes one statement its own way: a finished
+//! email stays in its table, in the `sent` group, for an audit. The service mounts it with
+//! `SqlxBroker::with_dialect`, as the [`ruststream-sqlx`
+//! overview](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/#a-dialect-of-the-services-own)
+//! shows.
+//!
 //! ```
-//! # #[cfg(feature = "postgres")] {
-//! use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
+//! # #[cfg(feature = "postgres")]
+//! # mod demo {
+//! # use std::num::NonZeroUsize;
+//! use ruststream_sqlx_dialect::{
+//!     ClaimShape, Dialect, Param, Postgres, RowLock, Statement, StatementError, TableSpec,
+//! };
+//! # use ruststream_sqlx_dialect::TableName;
 //!
-//! const JOBS: TableSpec<'static> =
-//!     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("payload"));
+//! /// Postgres, with an acknowledgement of the service's own.
+//! #[derive(Debug)]
+//! pub struct Audited;
 //!
-//! let claim = Postgres.lock_claim(&JOBS, ClaimShape::Rows)?;
-//! assert_eq!(
-//!     claim.sql(),
-//!     r#"SELECT "job_id", "payload" FROM "jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
-//! );
+//! impl Dialect for Audited {
+//!     fn name(&self) -> &'static str {
+//!         "audited"
+//!     }
+//!
+//!     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+//!         if spec.table() == "email_jobs" {
+//!             return Ok(Statement::new(
+//!                 r#"UPDATE "email_jobs" SET "name" = 'sent' WHERE "job_id" = $1"#,
+//!                 [Param::Id],
+//!             ));
+//!         }
+//!         Postgres.ack(spec)
+//!     }
+//!
+//!     // Every other statement is the built-in dialect's.
+//!     fn quote_into(&self, ident: &str, out: &mut String) {
+//!         Postgres.quote_into(ident, out);
+//!     }
+//! #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+//! #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+//! #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+//! #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+//! #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+//! #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+//! #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+//! #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
+//! }
+//!
+//! // The row lock form, which `email_jobs` takes.
+//! impl RowLock for Audited {
+//!     fn lock_claim(
+//!         &self,
+//!         spec: &TableSpec<'_>,
+//!         shape: ClaimShape,
+//!     ) -> Result<Statement, StatementError> {
+//!         Postgres.lock_claim(spec, shape)
+//!     }
+//! }
 //! # }
-//! # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+//! # fn main() {}
 //! ```
 
 #![forbid(unsafe_code)]

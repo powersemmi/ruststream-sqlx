@@ -103,61 +103,78 @@ const MARIADB_FLOOR: Floor = Floor {
 ///
 /// # Examples
 ///
-/// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, MySql, RowLock, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-///     .within("app")
-///     .priority(Column::new("priority"))
-///     .payload(Column::new("payload"));
-///
-/// let claim = MySql.lock_claim(&JOBS, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     "SELECT `job_id`, `priority`, `payload` FROM `app`.`jobs` ORDER BY `priority`, `job_id` LIMIT ? FOR UPDATE SKIP LOCKED",
-/// );
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
-///
-/// In the lease form the claim only selects, and its transaction stamps each row it took:
+/// A dialect of the service's own wraps MySQL and changes one statement:
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Lease, MySql, Param, TableSpec};
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Dialect, MySql, Opening, Param, RowLock, Statement, StatementError, TableSpec,
+/// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .attempt(Column::new("attempt"));
+/// /// MySQL, with an acknowledgement of the service's own.
+/// #[derive(Debug)]
+/// pub struct Audited;
 ///
-/// // What a broker prepares to claim leased rows: the select, and the stamp it runs per row.
-/// let mut claiming = vec![MySql.lease_claim(&JOBS, ClaimShape::Rows)?];
-/// if !MySql.claim_writes_lease() {
-///     claiming.push(MySql.stamp(&JOBS)?);
+/// impl Dialect for Audited {
+///     fn name(&self) -> &'static str {
+///         "audited"
+///     }
+///
+///     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         if spec.table() == "email_jobs" {
+///             return Ok(Statement::new(
+///                 "UPDATE `email_jobs` SET `name` = 'sent' WHERE `job_id` = ?",
+///                 [Param::Id],
+///             ));
+///         }
+///         MySql.ack(spec)
+///     }
+///
+///     // What MySQL answers beside its statements stays MySQL's: claims open at READ COMMITTED, a
+///     // FIFO group is taken before its claim, and an older server stops the subscription.
+///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+///         MySql.begin(opening)
+///     }
+///
+///     fn fifo_guard(
+///         &self,
+///         spec: &TableSpec<'_>,
+///     ) -> Result<Option<Statement>, StatementError> {
+///         MySql.fifo_guard(spec)
+///     }
+///
+///     fn server_version(&self) -> Option<&'static str> {
+///         MySql.server_version()
+///     }
+///
+///     fn check_server(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         version: &str,
+///     ) -> Result<(), StatementError> {
+///         MySql.check_server(spec, version)
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
 /// }
-/// assert_eq!(
-///     claiming[1].sql(),
-///     "UPDATE `jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` = ? AND (`locked_until` IS NULL OR `locked_until` <= ?)",
-/// );
-/// assert_eq!(claiming[1].params(), [Param::Lease, Param::Id, Param::LeaseNow]);
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
 ///
-/// A subscription that starts on an older server stops and names the version it needs:
-///
-/// ```
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, MySql, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
-///
-/// // The broker reads the version with `MySql.server_version()` and checks the answer.
-/// let checked = MySql
-///     .check_server(&JOBS, "10.5.23-MariaDB")
-///     .map_err(|refused| refused.to_string());
-/// assert_eq!(
-///     checked,
-///     Err("the mysql dialect needs MariaDB 10.6 or later for this form; the server reports \
-///          `10.5.23-MariaDB`"
-///         .to_owned()),
-/// );
+/// impl RowLock for Audited {
+///     fn lock_claim(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         shape: ClaimShape,
+///     ) -> Result<Statement, StatementError> {
+///         MySql.lock_claim(spec, shape)
+///     }
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct MySql;

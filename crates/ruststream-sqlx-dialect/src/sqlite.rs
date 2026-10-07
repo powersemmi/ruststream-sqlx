@@ -57,21 +57,72 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 ///
 /// # Examples
 ///
+/// A dialect of the service's own wraps SQLite and changes one statement:
+///
 /// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Lease, Param, Sqlite, TableSpec};
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Dialect, Lease, Param, Sqlite, Statement, StatementError, TableSpec,
+/// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .attempt(Column::new("attempt"))
-///         .payload(Column::new("payload"));
+/// /// SQLite, with an acknowledgement of the service's own.
+/// #[derive(Debug)]
+/// pub struct Audited;
 ///
-/// let claim = Sqlite.lease_claim(&JOBS, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     "UPDATE `jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `job_id` IN (SELECT `job_id` FROM `jobs` WHERE (`locked_until` IS NULL OR `locked_until` <= ?) ORDER BY `job_id` LIMIT ?) RETURNING `job_id`, `attempt` - 1 AS `attempt`, `locked_until`, `payload`",
-/// );
-/// assert_eq!(claim.params(), [Param::Lease, Param::LeaseNow, Param::Limit]);
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// impl Dialect for Audited {
+///     fn name(&self) -> &'static str {
+///         "audited"
+///     }
+///
+///     // A finished email stays in its table, in the `sent` group. The row changes only while it
+///     // holds the delivery's lease.
+///     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         if spec.table() == "email_jobs" {
+///             return Ok(Statement::new(
+///                 "UPDATE `email_jobs` SET `name` = 'sent', `locked_until` = NULL \
+///                  WHERE `job_id` = ? AND `locked_until` = ?",
+///                 [Param::Id, Param::Held],
+///             ));
+///         }
+///         Sqlite.ack(spec)
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
+/// }
+///
+/// impl Lease for Audited {
+///     fn lease_claim(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         shape: ClaimShape,
+///     ) -> Result<Statement, StatementError> {
+///         Sqlite.lease_claim(spec, shape)
+///     }
+///
+///     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Sqlite.extend(spec)
+///     }
+///
+///     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Sqlite.stamp(spec)
+///     }
+///
+///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
+///         Sqlite.claim_counts_attempt(spec)
+///     }
+///
+///     fn begin_lease_claim(&self) -> Option<&'static str> {
+///         Sqlite.begin_lease_claim()
+///     }
+/// }
 /// ```
 ///
 /// A table in the row lock form finds no claim here, so a subscription to one does not compile:
@@ -89,20 +140,6 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 /// }
 ///
 /// let claim = claims_its_rows(&Sqlite);
-/// ```
-///
-/// and its settlements are refused, naming the form:
-///
-/// ```
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Sqlite, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock);
-///
-/// let refused = Sqlite.ack(&JOBS).map_err(|refused| format!("table `jobs`: {refused}"));
-/// assert_eq!(
-///     refused,
-///     Err("table `jobs`: the sqlite dialect has no statements for the row lock form".to_owned()),
-/// );
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Sqlite;

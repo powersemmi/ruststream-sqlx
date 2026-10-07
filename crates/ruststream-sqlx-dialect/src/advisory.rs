@@ -26,35 +26,55 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 /// # Examples
 ///
 /// ```
-/// # #[cfg(all(feature = "postgres", feature = "sqlite"))] {
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     Advisory, ClaimShape, Column, Form, KeyPart, Postgres, Sqlite, Statement, StatementError,
-///     TableSpec,
+///     Advisory, ClaimShape, Dialect, Postgres, Statement, StatementError, TableSpec,
 /// };
 ///
-/// const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY))
-///     .attempt(Column::new("attempt"))
-///     .payload(Column::new("payload"));
+/// /// Postgres, with statements of the service's own in its `Dialect` impl.
+/// #[derive(Debug)]
+/// pub struct Audited;
 ///
-/// // What a subscription to an advisory table prepares when it starts.
-/// fn advising(
-///     dialect: &dyn Advisory,
-///     spec: &TableSpec<'_>,
-/// ) -> Result<Vec<Statement>, StatementError> {
-///     let mut statements = vec![dialect.advisory_claim(spec)?];
-///     statements.extend(dialect.lock());
-///     statements.extend(dialect.unlock());
-///     statements.extend(dialect.take(spec, ClaimShape::Rows)?);
-///     Ok(statements)
+/// // A table with `advisory_lock` mounts on `Audited`.
+/// impl Advisory for Audited {
+///     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Postgres.advisory_claim(spec)
+///     }
+///
+///     fn lock(&self) -> Option<Statement> {
+///         Postgres.lock()
+///     }
+///
+///     fn unlock(&self) -> Option<Statement> {
+///         Postgres.unlock()
+///     }
+///
+///     fn take(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         shape: ClaimShape,
+///     ) -> Result<Vec<Statement>, StatementError> {
+///         Postgres.take(spec, shape)
+///     }
 /// }
-///
-/// // Postgres: the candidates, the lock, the unlock and a take of one statement. SQLite keeps
-/// // its locks in the process: the candidates and the take.
-/// assert_eq!(advising(&Postgres, &JOBS)?.len(), 4);
-/// assert_eq!(advising(&Sqlite, &JOBS)?.len(), 2);
+/// # impl Dialect for Audited {
+/// #     fn name(&self) -> &'static str { "audited" }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "the `{Self}` dialect takes no advisory locks, so a table on it cannot take its rows \
@@ -80,24 +100,51 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Advisory, Column, Form, KeyPart, Param, Postgres, TableSpec};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Advisory, ClaimShape, Dialect, Param, Postgres, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY))
-    ///         .group(Column::new("name"))
-    ///         .payload(Column::new("payload"));
+    /// /// Postgres, with the service's advisory locks in a key space of their own, apart from the
+    /// /// locks other programs on the database take.
+    /// #[derive(Debug)]
+    /// pub struct Namespaced;
     ///
-    /// // Postgres probes each key in claim order, and only as far as the limit reaches.
-    /// let claim = Postgres.advisory_claim(&JOBS)?;
-    /// assert_eq!(
-    ///     claim.sql(),
-    ///     r#"SELECT "job_id", "__lock" FROM (SELECT "job_id", concat('jobs-', "job_id") AS "__lock" FROM "jobs" WHERE "name" = $1 ORDER BY "job_id" OFFSET 0) AS __candidates WHERE pg_try_advisory_xact_lock_shared(hashtextextended("__lock", 0)) LIMIT $2"#,
-    /// );
-    /// assert_eq!(claim.params(), [Param::Group, Param::Limit]);
+    /// impl Advisory for Namespaced {
+    ///     // The candidates of `email_jobs` (`advisory_lock = "email-{job_id}"`), probed in the
+    ///     // key
+    ///     // space the lock takes.
+    ///     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+    ///         if spec.table() != "email_jobs" {
+    ///             return Postgres.advisory_claim(spec);
+    ///         }
+    ///         Ok(Statement::new(
+    ///             r#"SELECT "job_id", "__lock" FROM (SELECT "job_id", concat('email-', "job_id") AS "__lock" FROM "email_jobs" ORDER BY "job_id" OFFSET 0) AS __candidates WHERE pg_try_advisory_xact_lock_shared(7, hashtext("__lock")) LIMIT $1"#,
+    ///             [Param::Limit],
+    ///         ))
+    ///     }
+    /// #     fn lock(&self) -> Option<Statement> { Postgres.lock() }
+    /// #     fn unlock(&self) -> Option<Statement> { Postgres.unlock() }
+    /// #     fn take(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Vec<Statement>, StatementError> { Postgres.take(spec, shape) }
+    /// }
+    /// # impl Dialect for Namespaced {
+    /// #     fn name(&self) -> &'static str { "namespaced" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// # }
+    /// # fn main() {}
     /// ```
     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 
@@ -108,22 +155,46 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(all(feature = "mysql", feature = "sqlite"))] {
-    /// use ruststream_sqlx_dialect::{Advisory, MySql, Param, Sqlite, Statement};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Advisory, ClaimShape, Dialect, Param, Postgres, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// // Where a broker holds the keys in work: in the database's locks, or in the process.
-    /// fn held_by_the_database(dialect: &dyn Advisory) -> bool {
-    ///     dialect.lock().is_some()
+    /// /// Postgres, with the service's advisory locks in a key space of their own, apart from the
+    /// /// locks other programs on the database take.
+    /// #[derive(Debug)]
+    /// pub struct Namespaced;
+    ///
+    /// impl Advisory for Namespaced {
+    ///     // The session's lock on a key, in key space 7.
+    ///     fn lock(&self) -> Option<Statement> {
+    ///         Some(Statement::new(
+    ///             "SELECT pg_try_advisory_lock(7, hashtext($1))::int::bigint",
+    ///             [Param::Key],
+    ///         ))
+    ///     }
+    /// #     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.advisory_claim(spec) }
+    /// #     fn unlock(&self) -> Option<Statement> { Postgres.unlock() }
+    /// #     fn take(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Vec<Statement>, StatementError> { Postgres.take(spec, shape) }
     /// }
-    ///
-    /// let lock = MySql.lock();
-    /// assert_eq!(
-    ///     lock.as_ref().map(Statement::sql),
-    ///     Some("SELECT CAST(COALESCE(GET_LOCK(?, 0), 0) AS SIGNED)"),
-    /// );
-    /// assert_eq!(lock.as_ref().map(Statement::params), Some([Param::Key].as_slice()));
-    /// assert!(!held_by_the_database(&Sqlite));
+    /// # impl Dialect for Namespaced {
+    /// #     fn name(&self) -> &'static str { "namespaced" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
+    /// # }
+    /// # fn main() {}
     /// ```
     fn lock(&self) -> Option<Statement>;
 
@@ -133,19 +204,46 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # use std::error::Error;
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Advisory, Param, Postgres};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Advisory, ClaimShape, Dialect, Param, Postgres, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// // A settlement runs its step, then this, on the session that holds the key.
-    /// let unlock = Postgres.unlock().ok_or("postgres keeps its locks in the database")?;
-    /// assert_eq!(
-    ///     unlock.sql(),
-    ///     "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::bigint",
-    /// );
-    /// assert_eq!(unlock.params(), [Param::Key]);
+    /// /// Postgres, with the service's advisory locks in a key space of their own, apart from the
+    /// /// locks other programs on the database take.
+    /// #[derive(Debug)]
+    /// pub struct Namespaced;
+    ///
+    /// impl Advisory for Namespaced {
+    ///     // The release of the session's lock on a key, in key space 7.
+    ///     fn unlock(&self) -> Option<Statement> {
+    ///         Some(Statement::new(
+    ///             "SELECT pg_advisory_unlock(7, hashtext($1))::int::bigint",
+    ///             [Param::Key],
+    ///         ))
+    ///     }
+    /// #     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.advisory_claim(spec) }
+    /// #     fn lock(&self) -> Option<Statement> { Postgres.lock() }
+    /// #     fn take(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Vec<Statement>, StatementError> { Postgres.take(spec, shape) }
+    /// }
+    /// # impl Dialect for Namespaced {
+    /// #     fn name(&self) -> &'static str { "namespaced" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
-    /// # Ok::<(), Box<dyn Error>>(())
+    /// # }
+    /// # fn main() {}
     /// ```
     fn unlock(&self) -> Option<Statement>;
 
@@ -166,29 +264,60 @@ pub trait Advisory: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "mysql")] {
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     Advisory, ClaimShape, Column, Form, KeyPart, MySql, Param, Statement, TableSpec,
+    ///     Advisory, ClaimShape, Dialect, Param, Postgres, Statement, StatementError, TableSpec,
     /// };
     ///
-    /// const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")];
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(KEY))
-    ///         .attempt(Column::new("attempt"))
-    ///         .payload(Column::new("payload"));
+    /// #[derive(Debug)]
+    /// pub struct Taken;
     ///
-    /// // An update returns no rows on MySQL, so the take counts the attempt, then reads the row.
-    /// let take = MySql.take(&JOBS, ClaimShape::Rows)?;
-    /// assert_eq!(
-    ///     take.iter().map(Statement::sql).collect::<Vec<_>>(),
-    ///     [
-    ///         "UPDATE `jobs` SET `attempt` = `attempt` + 1 WHERE `job_id` = ?",
-    ///         "SELECT `job_id`, `attempt` - 1 AS `attempt`, `payload` FROM `jobs` WHERE `job_id` = ?",
-    ///     ],
-    /// );
-    /// assert_eq!(take[1].params(), [Param::Id]);
+    /// impl Advisory for Taken {
+    ///     // Taking an email also records when. `email_jobs` keeps no finished rows and no delays,
+    ///     // so
+    ///     // a row that is still there is claimable; it returns as it was before the count.
+    ///     fn take(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         shape: ClaimShape,
+    ///     ) -> Result<Vec<Statement>, StatementError> {
+    ///         if spec.table() != "email_jobs" {
+    ///             return Postgres.take(spec, shape);
+    ///         }
+    ///         let returned = match shape {
+    ///             ClaimShape::Rows => r#""job_id", "attempt" - 1 AS "attempt", "payload""#,
+    ///             ClaimShape::Ids => r#""job_id""#,
+    ///             ClaimShape::Roles => r#""job_id" AS "id", "attempt" - 1 AS "attempt", "payload""#,
+    ///         };
+    ///         Ok(vec![Statement::new(
+    ///             format!(
+    ///                 r#"UPDATE "email_jobs" SET "attempt" = "attempt" + 1, "taken_at" = $1 WHERE "job_id" = $2 RETURNING {returned}"#
+    ///             ),
+    ///             [Param::Now, Param::Id],
+    ///         )])
+    ///     }
+    /// #     fn advisory_claim(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.advisory_claim(spec) }
+    /// #     fn lock(&self) -> Option<Statement> { Postgres.lock() }
+    /// #     fn unlock(&self) -> Option<Statement> { Postgres.unlock() }
+    /// }
+    /// # impl Dialect for Taken {
+    /// #     fn name(&self) -> &'static str { "taken" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// # }
+    /// # fn main() {}
     /// ```
     fn take(
         &self,

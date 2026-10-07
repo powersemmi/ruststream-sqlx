@@ -18,29 +18,43 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
+/// # #[cfg(feature = "mysql")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Column, Form, Postgres, RowLock, Statement, StatementError, TableSpec,
+///     ClaimShape, Dialect, MySql, RowLock, Statement, StatementError, TableSpec,
 /// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::RowLock).payload(Column::new("payload"));
+/// /// MySQL, with statements of the service's own in its `Dialect` impl.
+/// #[derive(Debug)]
+/// pub struct Audited;
 ///
-/// // What a subscription to a row lock table prepares when it starts: the claim, and the
-/// // statement its transaction opens with.
-/// fn claiming(
-///     dialect: &dyn RowLock,
-///     spec: &TableSpec<'_>,
-/// ) -> Result<(Statement, &'static str), StatementError> {
-///     let opening = dialect.begin(spec.opening())?.unwrap_or("BEGIN");
-///     Ok((dialect.lock_claim(spec, ClaimShape::Rows)?, opening))
+/// // A table without `locked_until` or `advisory_lock` mounts on `Audited`.
+/// impl RowLock for Audited {
+///     fn lock_claim(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         shape: ClaimShape,
+///     ) -> Result<Statement, StatementError> {
+///         MySql.lock_claim(spec, shape)
+///     }
 /// }
-///
-/// let (claim, opening) = claiming(&Postgres, &JOBS)?;
-/// assert_eq!(opening, "BEGIN");
-/// assert!(claim.sql().ends_with("FOR UPDATE SKIP LOCKED"));
+/// # impl Dialect for Audited {
+/// #     fn name(&self) -> &'static str { "audited" }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "the `{Self}` dialect builds no row lock claim, so a table on it cannot take its \
@@ -71,42 +85,49 @@ pub trait RowLock: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Param, Postgres, RowLock, TableSpec};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Postgres, RowLock, Statement, StatementError, TableSpec,
+    /// };
+    /// # use ruststream_sqlx_dialect::TableName;
     ///
-    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-    ///     .group(Column::new("name"))
-    ///     .retry_after(Column::new("retry_after"))
-    ///     .payload(Column::new("payload"));
+    /// /// Postgres, with claims that let other rows reference a row in work by foreign key.
+    /// #[derive(Debug)]
+    /// pub struct NoKeyUpdate;
     ///
-    /// let claim = Postgres.lock_claim(&JOBS, ClaimShape::Ids)?;
-    /// assert_eq!(
-    ///     claim.sql(),
-    ///     r#"SELECT "job_id" FROM "jobs" WHERE "name" = $1 AND "retry_after" <= $2 ORDER BY "retry_after", "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED"#,
-    /// );
-    /// assert_eq!(claim.params(), [Param::Group, Param::Now, Param::Limit]);
+    /// impl RowLock for NoKeyUpdate {
+    ///     fn lock_claim(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         shape: ClaimShape,
+    ///     ) -> Result<Statement, StatementError> {
+    ///         // `FOR NO KEY UPDATE` still keeps two claims apart, and lets an insert that
+    ///         // references
+    ///         // a claimed row go on.
+    ///         let claim = Postgres.lock_claim(spec, shape)?;
+    ///         let sql = claim
+    ///             .sql()
+    ///             .replace(" FOR UPDATE SKIP LOCKED", " FOR NO KEY UPDATE SKIP LOCKED");
+    ///         Ok(Statement::new(sql, claim.params().iter().copied()))
+    ///     }
+    /// }
+    /// # impl Dialect for NoKeyUpdate {
+    /// #     fn name(&self) -> &'static str { "no_key_update" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-    /// ```
-    ///
-    /// The claim of a FIFO group locks the group's head alone:
-    ///
-    /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Param, Postgres, RowLock, TableSpec};
-    ///
-    /// const LEDGER: TableSpec<'static> = TableSpec::new("ledger", Column::new("id"), Form::RowLock)
-    ///     .fifo_group(Column::new("account"))
-    ///     .payload(Column::new("payload"));
-    ///
-    /// let claim = Postgres.lock_claim(&LEDGER, ClaimShape::Ids)?;
-    /// assert_eq!(
-    ///     claim.sql(),
-    ///     r#"SELECT "id" FROM "ledger" WHERE "id" = (SELECT "id" FROM "ledger" WHERE "account" = $1 ORDER BY "id" LIMIT 1) FOR UPDATE SKIP LOCKED"#,
-    /// );
-    /// assert_eq!(claim.params(), [Param::Group]);
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// # fn main() {}
     /// ```
     fn lock_claim(
         &self,

@@ -56,54 +56,52 @@ const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::b
 ///
 /// # Examples
 ///
-/// ```
-/// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
-///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-///     .within("app")
-///     .priority(Column::new("priority"))
-///     .payload(Column::new("payload"));
-///
-/// let claim = Postgres.lock_claim(&JOBS, ClaimShape::Rows)?;
-/// assert_eq!(
-///     claim.sql(),
-///     r#"SELECT "job_id", "priority", "payload" FROM "app"."jobs" ORDER BY "priority", "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#,
-/// );
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
-///
-/// In the lease form a settlement changes the row only while the row holds the delivery's lease:
+/// A dialect of the service's own wraps Postgres and changes one statement:
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     ClaimShape, Dialect, Postgres, RowLock, Statement, StatementError, TableSpec,
+/// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .payload(Column::new("payload"));
+/// /// Postgres, with an insert of the service's own.
+/// #[derive(Debug)]
+/// pub struct Idempotent;
 ///
-/// let ack = Postgres.ack(&JOBS)?;
-/// assert_eq!(
-///     ack.sql(),
-///     r#"DELETE FROM "jobs" WHERE "job_id" = $1 AND "locked_until" = $2"#,
-/// );
-/// assert_eq!(ack.params(), [Param::Id, Param::Held]);
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
-/// ```
+/// impl Dialect for Idempotent {
+///     fn name(&self) -> &'static str {
+///         "idempotent"
+///     }
 ///
-/// A table that names READ UNCOMMITTED is refused, and the refusal names the level:
+///     // Publishing a job twice keeps one row: the insert skips a row whose id is already there.
+///     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         let insert = Postgres.insert(spec)?;
+///         Ok(Statement::new(
+///             format!("{} ON CONFLICT DO NOTHING", insert.sql()),
+///             insert.params().iter().copied(),
+///         ))
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+/// }
 ///
-/// ```
-/// use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Postgres};
-///
-/// let refused = Postgres
-///     .begin(Opening::Isolation(Isolation::ReadUncommitted))
-///     .map_err(|refused| format!("subscription `emails`: {refused}"));
-/// assert_eq!(
-///     refused,
-///     Err("subscription `emails`: the postgres dialect opens no transaction at isolation \
-///          `read_uncommitted`"
-///         .to_owned()),
-/// );
+/// impl RowLock for Idempotent {
+///     fn lock_claim(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         shape: ClaimShape,
+///     ) -> Result<Statement, StatementError> {
+///         Postgres.lock_claim(spec, shape)
+///     }
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Postgres;

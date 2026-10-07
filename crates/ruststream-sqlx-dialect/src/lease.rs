@@ -24,29 +24,66 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 ///
 /// # Examples
 ///
+/// A dialect of the service's own that wraps SQLite keeps its lease form whole:
+///
 /// ```
-/// # #[cfg(feature = "postgres")] {
+/// # #[cfg(feature = "sqlite")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Column, Form, Lease, Postgres, Statement, StatementError, TableSpec,
+///     ClaimShape, Dialect, Lease, Sqlite, Statement, StatementError, TableSpec,
 /// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")));
+/// /// SQLite, with statements of the service's own in its `Dialect` impl.
+/// #[derive(Debug)]
+/// pub struct Audited;
 ///
-/// // What a subscription to a lease table prepares when it starts.
-/// fn leasing(dialect: &dyn Lease, spec: &TableSpec<'_>) -> Result<Vec<Statement>, StatementError> {
-///     let mut statements = vec![dialect.lease_claim(spec, ClaimShape::Rows)?, dialect.extend(spec)?];
-///     if !dialect.claim_writes_lease() {
-///         // The claim only selects: its transaction stamps each claimed row before the commit.
-///         statements.push(dialect.stamp(spec)?);
+/// impl Lease for Audited {
+///     fn lease_claim(
+///         &self,
+///         spec: &TableSpec<'_>,
+///         shape: ClaimShape,
+///     ) -> Result<Statement, StatementError> {
+///         Sqlite.lease_claim(spec, shape)
 ///     }
-///     Ok(statements)
-/// }
 ///
-/// // Postgres locks, stamps and returns the rows in one statement.
-/// assert_eq!(leasing(&Postgres, &JOBS)?.len(), 2);
+///     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Sqlite.extend(spec)
+///     }
+///
+///     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Sqlite.stamp(spec)
+///     }
+///
+///     // The answers come from the dialect the statements come from.
+///     fn claim_writes_lease(&self) -> bool {
+///         Sqlite.claim_writes_lease()
+///     }
+///
+///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
+///         Sqlite.claim_counts_attempt(spec)
+///     }
+///
+///     fn begin_lease_claim(&self) -> Option<&'static str> {
+///         Sqlite.begin_lease_claim()
+///     }
+/// }
+/// # impl Dialect for Audited {
+/// #     fn name(&self) -> &'static str { "audited" }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// # }
+/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "the `{Self}` dialect builds no lease claim, so a table on it cannot take its rows \
@@ -82,19 +119,63 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Lease, Param, Postgres, TableSpec};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Lease, Param, Postgres, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-    ///         .payload(Column::new("payload"));
+    /// #[derive(Debug)]
+    /// pub struct Returning;
     ///
-    /// let claim = Postgres.lease_claim(&JOBS, ClaimShape::Rows)?;
-    /// assert!(claim.sql().starts_with("WITH __claimed AS (SELECT"));
-    /// // The time a lease must have ended by, the most rows to take, the new lease.
-    /// assert_eq!(claim.params(), [Param::LeaseNow, Param::Limit, Param::Lease]);
+    /// impl Lease for Returning {
+    ///     // One update takes the rows of `email_jobs`, writes their lease, counts the attempt and
+    ///     // returns them as it left them.
+    ///     fn lease_claim(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         shape: ClaimShape,
+    ///     ) -> Result<Statement, StatementError> {
+    ///         if spec.table() != "email_jobs" {
+    ///             return Postgres.lease_claim(spec, shape);
+    ///         }
+    ///         let returned = match shape {
+    ///             ClaimShape::Rows => r#""job_id", "attempt", "locked_until", "payload""#,
+    ///             ClaimShape::Ids => r#""job_id""#,
+    ///             ClaimShape::Roles => r#""job_id" AS "id", "attempt", "payload""#,
+    ///         };
+    ///         Ok(Statement::new(
+    ///             format!(
+    ///                 r#"UPDATE "email_jobs" SET "locked_until" = $1, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "locked_until" IS NULL OR "locked_until" <= $2 ORDER BY "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED) RETURNING {returned}"#
+    ///             ),
+    ///             [Param::Lease, Param::LeaseNow, Param::Limit],
+    ///         ))
+    ///     }
+    ///
+    ///     // So the rows of `email_jobs` carry the attempt the claim counted.
+    ///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
+    ///         spec.table() == "email_jobs"
+    ///     }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.extend(spec) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.stamp(spec) }
+    /// }
+    /// # impl Dialect for Returning {
+    /// #     fn name(&self) -> &'static str { "returning" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// # }
+    /// # fn main() {}
     /// ```
     fn lease_claim(
         &self,
@@ -115,21 +196,48 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Column, Form, Lease, Param, Postgres, TableSpec};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Lease, Param, Postgres, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")));
+    /// #[derive(Debug)]
+    /// pub struct Heartbeat;
     ///
-    /// let extend = Postgres.extend(&JOBS)?;
-    /// assert_eq!(
-    ///     extend.sql(),
-    ///     r#"UPDATE "jobs" SET "locked_until" = $1 WHERE "job_id" = $2 AND "locked_until" = $3"#,
-    /// );
-    /// // The new expiry, the row, and the expiry the delivery holds until this statement runs.
-    /// assert_eq!(extend.params(), [Param::Lease, Param::Id, Param::Held]);
+    /// impl Lease for Heartbeat {
+    ///     // An extension of an email's lease also records when its handler was last seen. It
+    ///     // changes
+    ///     // the row only while the row holds the delivery's lease.
+    ///     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+    ///         if spec.table() == "email_jobs" {
+    ///             return Ok(Statement::new(
+    ///                 r#"UPDATE "email_jobs" SET "locked_until" = $1, "seen_at" = $2 WHERE "job_id" = $3 AND "locked_until" = $4"#,
+    ///                 [Param::Lease, Param::Now, Param::Id, Param::Held],
+    ///             ));
+    ///         }
+    ///         Postgres.extend(spec)
+    ///     }
+    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { Postgres.lease_claim(spec, shape) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.stamp(spec) }
+    /// }
+    /// # impl Dialect for Heartbeat {
+    /// #     fn name(&self) -> &'static str { "heartbeat" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// # }
+    /// # fn main() {}
     /// ```
     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 
@@ -149,21 +257,57 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Column, Form, Lease, Param, Postgres, TableSpec};
+    /// # #[cfg(feature = "mysql")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Lease, MySql, Param, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-    ///         .attempt(Column::new("attempt"));
+    /// #[derive(Debug)]
+    /// pub struct Stamped;
     ///
-    /// let stamp = Postgres.stamp(&JOBS)?;
-    /// assert_eq!(
-    ///     stamp.sql(),
-    ///     r#"UPDATE "jobs" SET "locked_until" = $1, "attempt" = "attempt" + 1 WHERE "job_id" = $2 AND ("locked_until" IS NULL OR "locked_until" <= $3)"#,
-    /// );
-    /// assert_eq!(stamp.params(), [Param::Lease, Param::Id, Param::LeaseNow]);
+    /// impl Lease for Stamped {
+    ///     // MySQL's claim only selects, so the broker stamps each row it took.
+    ///     fn claim_writes_lease(&self) -> bool {
+    ///         MySql.claim_writes_lease()
+    ///     }
+    ///
+    ///     fn begin_lease_claim(&self) -> Option<&'static str> {
+    ///         MySql.begin_lease_claim()
+    ///     }
+    ///
+    ///     // The stamp of an email also records when it was claimed.
+    ///     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+    ///         if spec.table() == "email_jobs" {
+    ///             return Ok(Statement::new(
+    ///                 "UPDATE `email_jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1, \
+    ///                  `claimed_at` = UTC_TIMESTAMP(6) WHERE `job_id` = ? \
+    ///                  AND (`locked_until` IS NULL OR `locked_until` <= ?)",
+    ///                 [Param::Lease, Param::Id, Param::LeaseNow],
+    ///             ));
+    ///         }
+    ///         MySql.stamp(spec)
+    ///     }
+    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { MySql.lease_claim(spec, shape) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.extend(spec) }
+    /// }
+    /// # impl Dialect for Stamped {
+    /// #     fn name(&self) -> &'static str { "stamped" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
     /// # }
-    /// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+    /// # }
+    /// # fn main() {}
     /// ```
     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 
@@ -174,22 +318,44 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(all(feature = "postgres", feature = "mysql"))] {
-    /// use ruststream_sqlx_dialect::{Lease, MySql, Postgres};
+    /// # #[cfg(feature = "mysql")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Lease, MySql, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// // How many statements a claim of `rows` leased rows runs.
-    /// fn statements(dialect: &dyn Lease, rows: usize) -> usize {
-    ///     if dialect.claim_writes_lease() {
-    ///         1
-    ///     } else {
-    ///         1 + rows
+    /// /// MySQL, with statements of the service's own in its `Dialect` impl.
+    /// #[derive(Debug)]
+    /// pub struct Audited;
+    ///
+    /// impl Lease for Audited {
+    ///     // MySQL's claim only selects. A dialect that keeps the claim answers as MySQL does, so
+    ///     // the
+    ///     // broker stamps each row the claim took before the claim's transaction commits.
+    ///     fn claim_writes_lease(&self) -> bool {
+    ///         MySql.claim_writes_lease()
     ///     }
+    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { MySql.lease_claim(spec, shape) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.extend(spec) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.stamp(spec) }
     /// }
-    ///
-    /// // Postgres locks, stamps and returns the rows in one statement; MySQL selects, then stamps.
-    /// assert_eq!(statements(&Postgres, 10), 1);
-    /// assert_eq!(statements(&MySql, 10), 11);
+    /// # impl Dialect for Audited {
+    /// #     fn name(&self) -> &'static str { "audited" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
     /// # }
+    /// # }
+    /// # fn main() {}
     /// ```
     fn claim_writes_lease(&self) -> bool {
         true
@@ -202,25 +368,63 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")] {
-    /// use ruststream_sqlx_dialect::{Column, Form, Lease, Postgres, TableSpec};
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Lease, Param, Postgres, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// const JOBS: TableSpec<'static> =
-    ///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-    ///         .attempt(Column::new("attempt"));
+    /// #[derive(Debug)]
+    /// pub struct Returning;
     ///
-    /// // The attempt a delivery reports, from the one its claimed row carries.
-    /// fn reported(dialect: &dyn Lease, spec: &TableSpec<'_>, carried: u64) -> u64 {
-    ///     if dialect.claim_counts_attempt(spec) {
-    ///         carried.saturating_sub(1)
-    ///     } else {
-    ///         carried
+    /// impl Lease for Returning {
+    ///     // One update takes the rows of `email_jobs`, writes their lease, counts the attempt and
+    ///     // returns them as it left them.
+    ///     fn lease_claim(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         shape: ClaimShape,
+    ///     ) -> Result<Statement, StatementError> {
+    ///         if spec.table() != "email_jobs" {
+    ///             return Postgres.lease_claim(spec, shape);
+    ///         }
+    ///         let returned = match shape {
+    ///             ClaimShape::Rows => r#""job_id", "attempt", "locked_until", "payload""#,
+    ///             ClaimShape::Ids => r#""job_id""#,
+    ///             ClaimShape::Roles => r#""job_id" AS "id", "attempt", "payload""#,
+    ///         };
+    ///         Ok(Statement::new(
+    ///             format!(
+    ///                 r#"UPDATE "email_jobs" SET "locked_until" = $1, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "locked_until" IS NULL OR "locked_until" <= $2 ORDER BY "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED) RETURNING {returned}"#
+    ///             ),
+    ///             [Param::Lease, Param::LeaseNow, Param::Limit],
+    ///         ))
     ///     }
-    /// }
     ///
-    /// // Postgres returns each row as it was before the claim counted the attempt.
-    /// assert_eq!(reported(&Postgres, &JOBS, 1), 1);
+    ///     // So the rows of `email_jobs` carry the attempt the claim counted.
+    ///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
+    ///         spec.table() == "email_jobs"
+    ///     }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.extend(spec) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.stamp(spec) }
+    /// }
+    /// # impl Dialect for Returning {
+    /// #     fn name(&self) -> &'static str { "returning" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
     /// # }
+    /// # }
+    /// # fn main() {}
     /// ```
     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
         let _ = spec;
@@ -238,17 +442,45 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(all(feature = "postgres", feature = "sqlite"))] {
-    /// use ruststream_sqlx_dialect::{Lease, Postgres, Sqlite};
+    /// # #[cfg(feature = "sqlite")]
+    /// # mod demo {
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Lease, Sqlite, Statement, StatementError, TableSpec,
+    /// };
     ///
-    /// // What a broker sends to open the transaction a claim stamps its rows in.
-    /// fn opening(dialect: &dyn Lease) -> &'static str {
-    ///     dialect.begin_lease_claim().unwrap_or("BEGIN")
+    /// /// SQLite, with statements of the service's own in its `Dialect` impl.
+    /// #[derive(Debug)]
+    /// pub struct Audited;
+    ///
+    /// impl Lease for Audited {
+    ///     // A table with a claim of its own (`custom(claim)`) selects its rows, then stamps them,
+    ///     // in
+    ///     // the transaction this opens: `BEGIN IMMEDIATE` takes SQLite's write lock before the
+    ///     // select.
+    ///     fn begin_lease_claim(&self) -> Option<&'static str> {
+    ///         Sqlite.begin_lease_claim()
+    ///     }
+    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { Sqlite.lease_claim(spec, shape) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.extend(spec) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.stamp(spec) }
     /// }
-    ///
-    /// assert_eq!(opening(&Postgres), "BEGIN");
-    /// assert_eq!(opening(&Sqlite), "BEGIN IMMEDIATE");
+    /// # impl Dialect for Audited {
+    /// #     fn name(&self) -> &'static str { "audited" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.ack(spec) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
     /// # }
+    /// # }
+    /// # fn main() {}
     /// ```
     fn begin_lease_claim(&self) -> Option<&'static str> {
         None

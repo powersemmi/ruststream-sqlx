@@ -10,11 +10,46 @@ use std::fmt::{self, Display, Formatter};
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx_dialect::Role;
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{Dialect, Param, Role, Statement, StatementError, TableSpec};
 ///
-/// // An attribute parser reads `#[field(retry_after)]` this way.
-/// assert_eq!(Role::from_attribute("retry_after"), Some(Role::RetryAfter));
-/// assert_eq!(Role::from_attribute("deadline"), None);
+/// /// SQL Server, a database without a built-in dialect.
+/// #[derive(Debug)]
+/// pub struct Mssql;
+///
+/// impl Dialect for Mssql {
+///     fn name(&self) -> &'static str {
+///         "mssql"
+///     }
+///
+///     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         // A delayed retry writes the column that plays `retry_after`.
+///         let Some(until) = spec.column(Role::RetryAfter) else {
+///             return Err(StatementError::MissingRole {
+///                 statement: "retry_after",
+///                 role: Role::RetryAfter,
+///             });
+///         };
+///         let mut sql = String::from("UPDATE ");
+///         self.quote_into(spec.table(), &mut sql);
+///         sql.push_str(" SET ");
+///         self.quote_into(until.name(), &mut sql);
+///         sql.push_str(" = @p1 WHERE ");
+///         self.quote_into(spec.id().name(), &mut sql);
+///         sql.push_str(" = @p2");
+///         Ok(Statement::new(sql, [Param::RetryAfter, Param::Id]))
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -43,17 +78,6 @@ pub enum Role {
 
 impl Role {
     /// Every role, in the order the documentation lists them.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::Role;
-    ///
-    /// // The hint an attribute parser gives for a name it does not know.
-    /// let known: Vec<&str> = Role::ALL.iter().copied().map(Role::attribute).collect();
-    /// let hint = format!("expected one of: {}", known.join(", "));
-    /// assert!(hint.starts_with("expected one of: id, group, partition_key"));
-    /// ```
     pub const ALL: &'static [Self] = &[
         Self::Id,
         Self::Group,
@@ -72,12 +96,78 @@ impl Role {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_sqlx_dialect::Role;
+    /// # use std::num::NonZeroUsize;
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Dialect, Param, Role, RowLock, Statement, StatementError, TableSpec,
+    /// };
+    /// # use ruststream_sqlx_dialect::TableName;
     ///
-    /// // A startup check names the attribute a struct lacks.
-    /// let missing = Role::RetryAfter;
-    /// let hint = format!("add `#[field({})]` to the struct", missing.attribute());
-    /// assert_eq!(hint, "add `#[field(retry_after)]` to the struct");
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl RowLock for Mssql {
+    ///     // The service's queue tables have no groups and no claim order of their own.
+    ///     fn lock_claim(
+    ///         &self,
+    ///         spec: &TableSpec<'_>,
+    ///         shape: ClaimShape,
+    ///     ) -> Result<Statement, StatementError> {
+    ///         let mut selected = String::new();
+    ///         match shape {
+    ///             // Whole rows, for a struct the broker reads.
+    ///             ClaimShape::Rows => {
+    ///                 for column in spec.columns() {
+    ///                     if !selected.is_empty() {
+    ///                         selected.push_str(", ");
+    ///                     }
+    ///                     self.quote_into(column.name(), &mut selected);
+    ///                 }
+    ///             }
+    ///             // Only the ids, for a struct that fetches its rows itself.
+    ///             ClaimShape::Ids => self.quote_into(spec.id().name(), &mut selected),
+    ///             // The columns that run the queue, each under the name of its role.
+    ///             ClaimShape::Roles => {
+    ///                 let roles = [
+    ///                     Role::Id,
+    ///                     Role::PartitionKey,
+    ///                     Role::Attempt,
+    ///                     Role::Headers,
+    ///                     Role::Payload,
+    ///                 ];
+    ///                 for role in roles {
+    ///                     let Some(column) = spec.column(role) else {
+    ///                         continue;
+    ///                     };
+    ///                     if !selected.is_empty() {
+    ///                         selected.push_str(", ");
+    ///                     }
+    ///                     self.quote_into(column.name(), &mut selected);
+    ///                     selected.push_str(" AS ");
+    ///                     self.quote_into(role.attribute(), &mut selected);
+    ///                 }
+    ///             }
+    ///         }
+    ///         let mut sql = format!("SELECT TOP (@p1) {selected} FROM ");
+    ///         self.quote_into(spec.table(), &mut sql);
+    ///         sql.push_str(" WITH (UPDLOCK, READPAST) ORDER BY ");
+    ///         self.quote_into(spec.id().name(), &mut sql);
+    ///         Ok(Statement::new(sql, [Param::Limit]))
+    ///     }
+    /// }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// # }
     /// ```
     #[must_use]
     pub const fn attribute(self) -> &'static str {
@@ -96,17 +186,6 @@ impl Role {
     }
 
     /// The role `#[field(..)]` names with `name`, or `None` when no role has that name.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::Role;
-    ///
-    /// // An attribute parser tells a role from the other words `#[field(..)]` takes.
-    /// let words = ["group", "generated"];
-    /// let roles: Vec<Role> = words.iter().filter_map(|word| Role::from_attribute(word)).collect();
-    /// assert_eq!(roles, [Role::Group]);
-    /// ```
     #[must_use]
     pub fn from_attribute(name: &str) -> Option<Self> {
         Self::ALL

@@ -14,17 +14,52 @@ use crate::statement::StatementError;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Isolation, Postgres, TableSpec};
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     Dialect, Isolation, Opening, Opens, Statement, StatementError, TableSpec, level,
+/// };
 ///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-///     .isolation(Isolation::RepeatableRead);
+/// /// SQL Server, a database without a built-in dialect.
+/// #[derive(Debug)]
+/// pub struct Mssql;
 ///
-/// // The statement a claim of `jobs` opens its transaction with.
-/// let begin = Postgres.begin(JOBS.opening())?;
-/// assert_eq!(begin, Some("BEGIN ISOLATION LEVEL REPEATABLE READ"));
-/// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// impl Dialect for Mssql {
+///     fn name(&self) -> &'static str {
+///         "mssql"
+///     }
+///
+///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+///         match opening {
+///             Opening::Default => Ok(None),
+///             Opening::Isolation(Isolation::ReadCommitted) => Ok(Some(
+///                 "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; BEGIN TRANSACTION",
+///             )),
+///             Opening::Isolation(Isolation::RepeatableRead) => Ok(Some(
+///                 "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; BEGIN TRANSACTION",
+///             )),
+///             // A refusal names the opening the table declares.
+///             other => Err(StatementError::UnsupportedOpening {
+///                 dialect: self.name(),
+///                 opening: other.name(),
+///             }),
+///         }
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// }
+///
+/// // A table at one of these levels mounts on `Mssql`.
+/// impl Opens<level::ReadCommitted> for Mssql {}
+/// impl Opens<level::RepeatableRead> for Mssql {}
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -41,17 +76,6 @@ pub enum Isolation {
 
 impl Isolation {
     /// The level as SQL names it: `READ COMMITTED`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::Isolation;
-    ///
-    /// // The line a service logs when a subscription opens its claims at a level.
-    /// let level = Isolation::RepeatableRead;
-    /// let line = format!("claims of `jobs` open at {}", level.sql());
-    /// assert_eq!(line, "claims of `jobs` open at REPEATABLE READ");
-    /// ```
     #[must_use]
     pub const fn sql(self) -> &'static str {
         match self {
@@ -63,17 +87,6 @@ impl Isolation {
     }
 
     /// The level as a table names it: `read_committed`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::Isolation;
-    ///
-    /// // A message that points at what the table declares.
-    /// let level = Isolation::RepeatableRead;
-    /// let hint = format!("the table declares `isolation = {}`", level.attribute());
-    /// assert_eq!(hint, "the table declares `isolation = repeatable_read`");
-    /// ```
     #[must_use]
     pub const fn attribute(self) -> &'static str {
         match self {
@@ -93,19 +106,46 @@ impl Isolation {
 ///
 /// # Examples
 ///
+/// A dialect that wraps SQLite opens its transactions in the modes SQLite opens:
+///
 /// ```
-/// # #[cfg(feature = "sqlite")] {
-/// use ruststream_sqlx_dialect::{Column, Dialect, Form, Mode, Sqlite, TableSpec};
+/// # #[cfg(feature = "sqlite")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     Dialect, Opening, Opens, Sqlite, Statement, StatementError, TableSpec, level,
+/// };
 ///
-/// const JOBS: TableSpec<'static> =
-///     TableSpec::new("jobs", Column::new("job_id"), Form::Lease(Column::new("locked_until")))
-///         .mode(Mode::Immediate);
+/// #[derive(Debug)]
+/// pub struct Audited;
 ///
-/// // The statement a transaction of `jobs` opens with: it takes the write lock at once.
-/// let begin = Sqlite.begin(JOBS.opening())?;
-/// assert_eq!(begin, Some("BEGIN IMMEDIATE"));
+/// impl Dialect for Audited {
+///     fn name(&self) -> &'static str {
+///         "audited"
+///     }
+///
+///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+///         Sqlite.begin(opening)
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
+/// }
+///
+/// // A table with `mode = deferred`, `immediate` or `exclusive` mounts on `Audited`.
+/// impl Opens<level::Deferred> for Audited {}
+/// impl Opens<level::Immediate> for Audited {}
+/// impl Opens<level::Exclusive> for Audited {}
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -122,16 +162,6 @@ pub enum Mode {
 
 impl Mode {
     /// The mode as SQL names it: `IMMEDIATE`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::Mode;
-    ///
-    /// // A transaction a service opens on its own SQLite connection, in the table's mode.
-    /// let begin = format!("BEGIN {}", Mode::Exclusive.sql());
-    /// assert_eq!(begin, "BEGIN EXCLUSIVE");
-    /// ```
     #[must_use]
     pub const fn sql(self) -> &'static str {
         match self {
@@ -142,16 +172,6 @@ impl Mode {
     }
 
     /// The mode as a table names it: `immediate`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ruststream_sqlx_dialect::Mode;
-    ///
-    /// // A message that points at what the table declares.
-    /// let hint = format!("the table declares `mode = {}`", Mode::Immediate.attribute());
-    /// assert_eq!(hint, "the table declares `mode = immediate`");
-    /// ```
     #[must_use]
     pub const fn attribute(self) -> &'static str {
         match self {
@@ -172,31 +192,46 @@ impl Mode {
 /// # Examples
 ///
 /// ```
-/// use ruststream_sqlx_dialect::{Column, Form, Isolation, Opening, StatementError, TableSpec};
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     Dialect, Opening, Opens, Postgres, Statement, StatementError, TableSpec, level,
+/// };
 ///
-/// // The `begin` of a SQL Server dialect of the service's own: SERIALIZABLE beside the default.
-/// fn begin(opening: Opening) -> Result<Option<&'static str>, StatementError> {
-///     match opening {
-///         Opening::Default => Ok(None),
-///         Opening::Isolation(Isolation::Serializable) => Ok(Some(
-///             "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; BEGIN TRANSACTION",
-///         )),
-///         other => Err(StatementError::UnsupportedOpening {
-///             dialect: "mssql",
-///             opening: other.name(),
-///         }),
+/// /// Postgres, with every claim of a table that names no level reading one snapshot.
+/// #[derive(Debug)]
+/// pub struct Snapshot;
+///
+/// impl Dialect for Snapshot {
+///     fn name(&self) -> &'static str {
+///         "snapshot"
 ///     }
+///
+///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+///         match opening {
+///             Opening::Default => Ok(Some("BEGIN ISOLATION LEVEL REPEATABLE READ")),
+///             other => Postgres.begin(other),
+///         }
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
 /// }
 ///
-/// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::RowLock)
-///     .isolation(Isolation::Serializable);
-///
-/// let opened = begin(JOBS.opening())?;
-/// assert_eq!(
-///     opened,
-///     Some("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE; BEGIN TRANSACTION"),
-/// );
-/// # Ok::<(), StatementError>(())
+/// impl Opens<level::ReadCommitted> for Snapshot {}
+/// impl Opens<level::RepeatableRead> for Snapshot {}
+/// impl Opens<level::Serializable> for Snapshot {}
+/// # }
+/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -219,18 +254,52 @@ impl Opening {
     /// # Examples
     ///
     /// ```
-    /// use ruststream_sqlx_dialect::{Mode, Opening, StatementError};
-    ///
-    /// // A SQL Server dialect of the service's own refuses a SQLite mode, naming it.
-    /// let opening = Opening::Mode(Mode::Immediate);
-    /// let refused = StatementError::UnsupportedOpening {
-    ///     dialect: "mssql",
-    ///     opening: opening.name(),
+    /// # use std::num::NonZeroUsize;
+    /// # use ruststream_sqlx_dialect::TableName;
+    /// use ruststream_sqlx_dialect::{
+    ///     Dialect, Isolation, Opening, Opens, Statement, StatementError, TableSpec, level,
     /// };
-    /// assert_eq!(
-    ///     refused.to_string(),
-    ///     "the mssql dialect opens no transaction at mode `immediate`",
-    /// );
+    ///
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl Dialect for Mssql {
+    ///     fn name(&self) -> &'static str {
+    ///         "mssql"
+    ///     }
+    ///
+    ///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+    ///         match opening {
+    ///             Opening::Default => Ok(None),
+    ///             Opening::Isolation(Isolation::ReadCommitted) => Ok(Some(
+    ///                 "SET TRANSACTION ISOLATION LEVEL READ COMMITTED; BEGIN TRANSACTION",
+    ///             )),
+    ///             Opening::Isolation(Isolation::RepeatableRead) => Ok(Some(
+    ///                 "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ; BEGIN TRANSACTION",
+    ///             )),
+    ///             // A refusal names the opening the table declares.
+    ///             other => Err(StatementError::UnsupportedOpening {
+    ///                 dialect: self.name(),
+    ///                 opening: other.name(),
+    ///             }),
+    ///         }
+    ///     }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// }
+    ///
+    /// // A table at one of these levels mounts on `Mssql`.
+    /// impl Opens<level::ReadCommitted> for Mssql {}
+    /// impl Opens<level::RepeatableRead> for Mssql {}
     /// ```
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -264,28 +333,47 @@ impl Opening {
 ///
 /// # Examples
 ///
-/// ```
-/// # #[cfg(feature = "mysql")] {
-/// use ruststream_sqlx_dialect::{Isolation, MySql, Opening, Opens, StatementError, level};
+/// A dialect implements `Opens` for each level its `begin` opens:
 ///
-/// // What a subscription to a table at `Level` asks of its dialect.
-/// fn begin_at<Level, D: Opens<Level>>(
-///     dialect: &D,
-///     opening: Opening,
-/// ) -> Result<Option<&'static str>, StatementError> {
-///     dialect.begin(opening)
+/// ```
+/// # #[cfg(feature = "mysql")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     Dialect, Opening, Opens, MySql, Statement, StatementError, TableSpec, level,
+/// };
+///
+/// #[derive(Debug)]
+/// pub struct Audited;
+///
+/// impl Dialect for Audited {
+///     fn name(&self) -> &'static str {
+///         "audited"
+///     }
+///
+///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+///         MySql.begin(opening)
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
 /// }
 ///
-/// let begin = begin_at::<level::ReadUncommitted, _>(
-///     &MySql,
-///     Opening::Isolation(Isolation::ReadUncommitted),
-/// )?;
-/// assert_eq!(
-///     begin,
-///     Some("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED; START TRANSACTION"),
-/// );
+/// // A table at any of the four levels mounts on `Audited`, as on MySQL.
+/// impl Opens<level::ReadUncommitted> for Audited {}
+/// impl Opens<level::ReadCommitted> for Audited {}
+/// impl Opens<level::RepeatableRead> for Audited {}
+/// impl Opens<level::Serializable> for Audited {}
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// # fn main() {}
 /// ```
 pub mod level;
 
@@ -301,23 +389,46 @@ pub mod level;
 ///
 /// # Examples
 ///
-/// ```
-/// # #[cfg(feature = "postgres")] {
-/// use ruststream_sqlx_dialect::{Isolation, Opening, Opens, Postgres, StatementError, level};
+/// A dialect that wraps Postgres opens the levels Postgres opens:
 ///
-/// // What a subscription to a table with `isolation = serializable` asks of its dialect.
-/// fn serializable<D: Opens<level::Serializable>>(
-///     dialect: &D,
-/// ) -> Result<Option<&'static str>, StatementError> {
-///     dialect.begin(Opening::Isolation(Isolation::Serializable))
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// # use std::num::NonZeroUsize;
+/// # use ruststream_sqlx_dialect::TableName;
+/// use ruststream_sqlx_dialect::{
+///     Dialect, Opening, Opens, Postgres, Statement, StatementError, TableSpec, level,
+/// };
+///
+/// #[derive(Debug)]
+/// pub struct Audited;
+///
+/// impl Dialect for Audited {
+///     fn name(&self) -> &'static str {
+///         "audited"
+///     }
+///
+///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
+///         Postgres.begin(opening)
+///     }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
 /// }
 ///
-/// assert_eq!(
-///     serializable(&Postgres)?,
-///     Some("BEGIN ISOLATION LEVEL SERIALIZABLE"),
-/// );
+/// // A table at one of these levels mounts on `Audited`; one at `read_uncommitted` does not.
+/// impl Opens<level::ReadCommitted> for Audited {}
+/// impl Opens<level::RepeatableRead> for Audited {}
+/// impl Opens<level::Serializable> for Audited {}
 /// # }
-/// # Ok::<(), ruststream_sqlx_dialect::StatementError>(())
+/// # fn main() {}
 /// ```
 ///
 /// SQLite opens no transaction at an isolation level, so the same subscription on SQLite does
