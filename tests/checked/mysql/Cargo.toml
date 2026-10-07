@@ -24,3 +24,8 @@ ruststream-sqlx = { path = "../../../crates/ruststream-sqlx", optional = true, f
 # The service's own sqlx: `macros` checks the derive's statements against `DATABASE_URL`, or
 # against the committed `.sqlx` data where it is unset.
 sqlx = { workspace = true, optional = true, features = ["macros", "mysql", "chrono"] }
+
+[dev-dependencies]
+ruststream.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }

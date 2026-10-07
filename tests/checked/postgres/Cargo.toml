@@ -26,4 +26,7 @@ ruststream-sqlx = { path = "../../../crates/ruststream-sqlx", optional = true, f
 sqlx = { workspace = true, optional = true, features = ["macros", "postgres", "chrono"] }
 
 [dev-dependencies]
+ruststream.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
 trybuild.workspace = true

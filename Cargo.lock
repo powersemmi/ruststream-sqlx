@@ -1280,8 +1280,11 @@ name = "ruststream-sqlx-checked-mysql"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "ruststream",
  "ruststream-sqlx",
+ "serde_json",
  "sqlx",
+ "tokio",
 ]
 
 [[package]]
@@ -1289,8 +1292,11 @@ name = "ruststream-sqlx-checked-postgres"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "ruststream",
  "ruststream-sqlx",
+ "serde_json",
  "sqlx",
+ "tokio",
  "trybuild",
 ]
 
