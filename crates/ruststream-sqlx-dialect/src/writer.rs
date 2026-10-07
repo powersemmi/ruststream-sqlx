@@ -13,10 +13,12 @@ mod claim;
 mod columns;
 mod fifo;
 mod lease;
+mod outbox;
 mod settle;
 
 pub(crate) use advisory::Probe;
 pub(crate) use built_in::BuiltIn;
+pub(crate) use outbox::OutboxWriter;
 
 /// One statement being written: the SQL text, and the parameters its placeholders bind so far.
 pub(crate) struct SqlWriter<'d, D: ?Sized> {

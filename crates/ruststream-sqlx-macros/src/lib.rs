@@ -12,6 +12,7 @@ mod inbox;
 mod insert;
 mod mode;
 mod naming;
+mod outbox;
 mod parse;
 mod template;
 
@@ -32,6 +33,23 @@ pub fn derive_inbox(item: TokenStream) -> TokenStream {
 pub fn derive_inbox_headers(item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);
     headers::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Implemented in `ruststream-sqlx-macros` and used through `ruststream-sqlx`.
+#[proc_macro_derive(Outbox, attributes(outbox, field, sqlx))]
+pub fn derive_outbox(item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+    outbox::expand(&input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Implemented in `ruststream-sqlx-macros` and used through `ruststream-sqlx`.
+#[proc_macro]
+pub fn outbox(item: TokenStream) -> TokenStream {
+    outbox::registry::expand(item.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }

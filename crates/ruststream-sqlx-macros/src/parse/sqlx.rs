@@ -8,7 +8,7 @@ use syn::{Attribute, Ident, LitStr, Token, Type};
 
 use crate::naming::RenameAll;
 
-pub(super) fn rename_all(attrs: &[Attribute]) -> syn::Result<Option<RenameAll>> {
+pub(crate) fn rename_all(attrs: &[Attribute]) -> syn::Result<Option<RenameAll>> {
     let mut casing = None;
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("sqlx")) {
         attr.parse_nested_meta(|meta| {
@@ -25,17 +25,17 @@ pub(super) fn rename_all(attrs: &[Attribute]) -> syn::Result<Option<RenameAll>> 
 
 /// What `#[sqlx(..)]` says about one field.
 #[derive(Default)]
-pub(super) struct SqlxField {
-    pub(super) rename: Option<LitStr>,
-    pub(super) skip: bool,
-    pub(super) flatten: bool,
-    pub(super) json: bool,
-    pub(super) try_from: Option<Box<Type>>,
+pub(crate) struct SqlxField {
+    pub(crate) rename: Option<LitStr>,
+    pub(crate) skip: bool,
+    pub(crate) flatten: bool,
+    pub(crate) json: bool,
+    pub(crate) try_from: Option<Box<Type>>,
 }
 
 /// The column sqlx reads for a field: its `rename` as written, else its name without `r#`,
 /// recased by the struct's `rename_all`.
-pub(super) fn column_name(
+pub(crate) fn column_name(
     ident: &Ident,
     rename: Option<&LitStr>,
     rename_all: Option<RenameAll>,
@@ -54,7 +54,7 @@ pub(super) fn column_name(
     })
 }
 
-pub(super) fn sqlx_field(attrs: &[Attribute]) -> syn::Result<SqlxField> {
+pub(crate) fn sqlx_field(attrs: &[Attribute]) -> syn::Result<SqlxField> {
     let mut sqlx = SqlxField::default();
     for attr in attrs.iter().filter(|attr| attr.path().is_ident("sqlx")) {
         attr.parse_nested_meta(|meta| {

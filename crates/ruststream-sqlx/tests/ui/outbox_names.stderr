@@ -1,0 +1,5 @@
+error: `orders` is registered twice: a name has one record type
+  --> tests/ui/outbox_names.rs:10:9
+   |
+10 |         "orders" => RefundEvent,
+   |         ^^^^^^^^

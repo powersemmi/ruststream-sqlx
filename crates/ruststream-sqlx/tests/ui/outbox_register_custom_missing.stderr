@@ -1,0 +1,20 @@
+error[E0277]: `Untaken` misses an event of an outbox record on `sqlx::Postgres`, so it cannot be registered
+  --> tests/ui/outbox_register_custom_missing.rs:27:55
+   |
+27 |     let _ = Outbox::<Postgres>::deferred().register::<Untaken>("orders");
+   |                                            --------   ^^^^^^^ a record without every outbox event
+   |                                            |
+   |                                            required by a bound introduced by this call
+   |
+help: the trait `ruststream_sqlx::outbox::Fetch<sqlx::Postgres>` is not implemented for `Untaken`
+  --> tests/ui/outbox_register_custom_missing.rs:7:1
+   |
+ 7 | struct Untaken {
+   | ^^^^^^^^^^^^^^
+   = note: a record implements `outbox::Publish<sqlx::Postgres>` itself, and every event its `#[outbox(custom(..))]` lists; the `help` names the missing one
+   = note: required for `Untaken` to implement `ruststream_sqlx::outbox::Tracked<sqlx::Postgres>`
+note: required by a bound in `ruststream_sqlx::Outbox::<DB, Records>::register`
+  --> src/outbox/registry.rs
+   |
+   |     pub fn register<Record: Tracked<DB>>(
+   |                             ^^^^^^^^^^^ required by this bound in `Outbox::<DB, Records>::register`

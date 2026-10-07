@@ -5,6 +5,7 @@
 
 mod advisory;
 mod lease;
+mod outbox;
 mod row_lock;
 
 use std::error::Error;

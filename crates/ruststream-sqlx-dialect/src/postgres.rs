@@ -7,11 +7,12 @@ use crate::dialect::Dialect;
 use crate::form::KeyPart;
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
+use crate::outbox::OutboxDialect;
 use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, Probe, SqlWriter};
+use crate::writer::{BuiltIn, OutboxWriter, Probe, SqlWriter};
 
 /// How Postgres reads the current time: the start of the statement, so a settlement made long
 /// after the claim began records its own moment.
@@ -261,6 +262,20 @@ impl Dialect for Postgres {
             .param(Param::Group)
             .push(", 0))::int::bigint");
         Ok(Some(sql.finish()))
+    }
+}
+
+impl OutboxDialect for Postgres {
+    fn outbox_fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_fetch_statement(spec)
+    }
+
+    fn outbox_mark(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_mark_statement(spec)
+    }
+
+    fn outbox_recover(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_recover_statement(spec)
     }
 }
 

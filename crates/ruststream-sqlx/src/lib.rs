@@ -18,9 +18,20 @@
 #![doc = include_str!("overview/names.md")]
 #![doc = include_str!("overview/wake.md")]
 #![doc = include_str!("overview/testing.md")]
+#![cfg_attr(feature = "outbox", doc = include_str!("overview/outbox.md"))]
 #![forbid(unsafe_code)]
 
 pub use ruststream_sqlx_dialect as dialect;
+
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+mod header_column;
+#[cfg(feature = "outbox")]
+pub mod outbox;
+
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+pub use header_column::HeaderColumn;
+#[cfg(feature = "outbox")]
+pub use outbox::{Outbox, OutboxDatabase, OutboxRow};
 
 #[cfg(feature = "inbox")]
 mod inbox;
@@ -38,49 +49,60 @@ pub use inbox::TransactionalStep;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
-    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
-    HeaderField, InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber,
-    Insert, KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies,
-    PayloadRow, Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
-    RetryAfter, Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock,
-    TimeColumn, TimeSource, Transactional, Tx, Unlock,
+    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderField,
+    InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert,
+    KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow,
+    Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter,
+    Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
+    TimeSource, Transactional, Tx, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
 #[cfg(feature = "inbox")]
 pub use inbox::keys;
 
-#[cfg(feature = "inbox")]
+#[cfg(any(feature = "inbox", feature = "outbox"))]
 #[doc(hidden)]
 pub mod __private {
     pub use ruststream::HeaderMap;
-    pub use ruststream::runtime::{Input, SoloCarried};
-    pub use ruststream_sqlx_dialect::Param;
     pub use sqlx;
 
-    #[cfg(feature = "any")]
-    pub use crate::inbox::AnyDialect;
-    pub use crate::inbox::batch::{BatchClaim, BatchLane};
-    pub use crate::inbox::engine::{
-        Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
-        Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
-        dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, match_claimed,
-        match_rows, micros, no_lease, now, put, retry, retry_after,
-    };
-    pub use crate::inbox::form::advisory::events::{
-        Candidates, candidates, lock, match_taken, take, take_id, unlock,
-    };
-    pub use crate::inbox::headers::{
-        Assembled, HeaderCell, HeadersLease, HeadersRow, LazyHeaders, OwnClaim, OwnExtend, OwnLock,
-        put_header, unnamed_header,
-    };
-    pub use crate::inbox::named::kinds::{Kinds, KindsOf};
-    pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
-    pub use crate::inbox::queue::Queue;
-    pub use crate::inbox::{
-        AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, Lane, LeaseForm, OnConnection,
-        PayloadLane, QueueDatabase, QueueRow, RowLane, RowLockForm, no_insert,
-    };
+    #[cfg(feature = "outbox")]
+    pub use crate::outbox::{OutboxSql, no_outbox_statement};
+
+    #[cfg(feature = "inbox")]
+    pub use inbox::*;
+
+    /// What the inbox derives expand to.
+    #[cfg(feature = "inbox")]
+    mod inbox {
+        pub use ruststream::runtime::{Input, SoloCarried};
+        pub use ruststream_sqlx_dialect::Param;
+
+        #[cfg(feature = "any")]
+        pub use crate::inbox::AnyDialect;
+        pub use crate::inbox::batch::{BatchClaim, BatchLane};
+        pub use crate::inbox::engine::{
+            Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
+            Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
+            dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, match_claimed,
+            match_rows, micros, no_lease, now, put, retry, retry_after,
+        };
+        pub use crate::inbox::form::advisory::events::{
+            Candidates, candidates, lock, match_taken, take, take_id, unlock,
+        };
+        pub use crate::inbox::headers::{
+            Assembled, HeaderCell, HeadersLease, HeadersRow, LazyHeaders, OwnClaim, OwnExtend,
+            OwnLock, put_header, unnamed_header,
+        };
+        pub use crate::inbox::named::kinds::{Kinds, KindsOf};
+        pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
+        pub use crate::inbox::queue::Queue;
+        pub use crate::inbox::{
+            AdvisoryForm, FormDialect, FormOn, InboxMode, InsertSql, Lane, LeaseForm, OnConnection,
+            PayloadLane, QueueDatabase, QueueRow, RowLane, RowLockForm, no_insert,
+        };
+    }
 }
 
 /// Describes a queue table with a struct and implements [`InboxRow`] for it.
@@ -406,3 +428,168 @@ pub use ruststream_sqlx_macros::Inbox;
 /// ```
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::InboxHeaders;
+
+/// Describes a service's outbox table with a struct and implements its record contract
+/// ([`OutboxRow`]) and the default events.
+///
+/// The struct is an ordinary sqlx struct: `#[outbox(..)]` names the table, sqlx's own attributes
+/// name the columns, and `#[field(..)]` marks the columns the outbox reads. The service writes the
+/// record of a published message itself, in [`outbox::Publish`]; the derive writes the other
+/// events, each for every [`OutboxDatabase`], with its statement built at compile time.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream::OutgoingMessage;
+/// use ruststream_sqlx::{Outbox, outbox};
+/// use sqlx::types::Json;
+/// use sqlx::{PgConnection, Postgres};
+/// use std::collections::BTreeMap;
+///
+/// // app.outbox: id BIGSERIAL PRIMARY KEY, name TEXT, payload BYTEA, headers JSONB,
+/// // processed_at TIMESTAMPTZ
+/// #[derive(Outbox, sqlx::FromRow)]
+/// #[outbox(table = "outbox", schema = "app")]
+/// pub struct OrderEvent {
+///     #[field(id)]
+///     id: i64,
+///     #[field(name)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+///     #[field(headers)]
+///     headers: Option<Json<BTreeMap<String, String>>>,
+///     #[field(processed_at)]
+///     processed_at: Option<chrono::DateTime<chrono::Utc>>,
+/// }
+///
+/// impl outbox::Publish<Postgres> for OrderEvent {
+///     async fn publish(
+///         conn: &mut PgConnection,
+///         msg: &OutgoingMessage<'_>,
+///     ) -> Result<i64, sqlx::Error> {
+///         let headers: BTreeMap<String, String> = msg
+///             .headers()
+///             .iter()
+///             .map(|(name, value)| (name.to_owned(), String::from_utf8_lossy(value).into_owned()))
+///             .collect();
+///         sqlx::query_scalar(
+///             "INSERT INTO app.outbox (name, payload, headers) VALUES ($1, $2, $3) RETURNING id",
+///         )
+///         .bind(msg.name())
+///         .bind(msg.payload())
+///         .bind(Json(headers))
+///         .fetch_one(conn)
+///         .await
+///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// # The table
+///
+/// `#[outbox(table = "..")]` names the table and is required; `schema = ".."` places it in a
+/// schema. Each names one thing and holds no dot.
+///
+/// # Roles
+///
+/// `#[field(..)]` gives a field one role:
+///
+/// - `id`, required: the record's identity, which a tracked message carries in
+///   [`OUTBOX_ID_HEADER`](outbox::OUTBOX_ID_HEADER) through its `Display` and `FromStr`.
+/// - `name`, required: the name the record was published under, read through `AsRef<str>`.
+/// - `payload`, required: the published bytes, read through `AsRef<[u8]>`.
+/// - `headers`: the published headers, a [`HeaderColumn`] type.
+/// - `processed_at`: the mark of a processed record, written from the database's clock, so any
+///   time type fits. Without it a processed record is deleted.
+///
+/// Every other field is a plain column sqlx reads. Column names come from sqlx's attributes:
+/// `rename`, `rename_all`, a raw identifier without `r#`, and `skip` for a field without a column;
+/// a `flatten` field makes the statements select `*`.
+///
+/// # Events
+///
+/// The default `Fetch` reads the record while it is unprocessed, `Ack` and `Discard` mark it
+/// processed, `Retry` leaves it as it is and runs no statement, and `Recover` reads the
+/// unprocessed records of one name. `#[outbox(custom(fetch, ack, retry, discard, recover))]`
+/// lists the events the service implements itself instead; `publish` has no default and is never
+/// listed.
+///
+/// # Compile errors
+///
+/// A struct the outbox cannot read does not compile, and the error points at the struct, the
+/// field or the word that causes it: no `id`, `name` or `payload`, a role played twice, a column
+/// named twice, a role on a field without a column, an unknown role or event, a dot in `table` or
+/// `schema`.
+#[cfg(feature = "outbox")]
+pub use ruststream_sqlx_macros::Outbox;
+/// Registers outbox records under the names they track, and returns the registry.
+///
+/// `outbox! { pool: pool, "orders" => OrderEvent, "refunds" => RefundEvent }` is
+/// `Outbox::new(pool).register::<OrderEvent>("orders").register::<RefundEvent>("refunds")`.
+/// Without `pool:` the registry starts as `Outbox::deferred()`, and the pool is set once it is
+/// built. A name written twice does not compile, and the error points at its second literal.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+/// # mod demo {
+/// # use ruststream::OutgoingMessage;
+/// # use ruststream::memory::prelude::*;
+/// # use ruststream_sqlx::{Outbox, outbox};
+/// # use serde::{Deserialize, Serialize};
+/// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+/// # #[derive(Outbox, sqlx::FromRow)]
+/// # #[outbox(table = "outbox")]
+/// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+/// # impl outbox::Publish<Postgres> for OrderOutbox {
+/// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+/// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+/// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+/// #     }
+/// # }
+/// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+/// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+/// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+/// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+/// use std::io;
+///
+/// /// Inside `#[ruststream::app]`: no `pool:`, and the pool arrives in `on_startup`.
+/// pub fn app() -> impl App {
+///     let tracking = outbox! { "orders" => OrderOutbox };
+///     let registry = tracking.clone();
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .on_startup(async move |()| {
+///             let pool = PgPool::connect("postgres://localhost/orders")
+///                 .await
+///                 .map_err(io::Error::other)?;
+///             registry.set_pool(pool.clone()).map_err(io::Error::other)?;
+///             Ok::<_, io::Error>(pool)
+///         })
+///         .layer(tracking.layer())
+///         .publish_layer(tracking.publish_layer())
+///         .with_broker(MemoryBroker::new(), |b| {
+///             b.include(place).out_reply(Publish);
+///             b.include(fulfil);
+///             b.after_startup(Publish, tracking.republish());
+///         })
+/// }
+///
+/// /// An app built inside a running runtime takes the pool it has.
+/// pub fn app_with(pool: PgPool) -> impl App {
+///     let tracking = outbox! { pool: pool, "orders" => OrderOutbox };
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .publish_layer(tracking.publish_layer())
+///         .with_broker(MemoryBroker::new(), |b| {
+///             b.include(place).out_reply(Publish);
+///         })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[cfg(feature = "outbox")]
+pub use ruststream_sqlx_macros::outbox;

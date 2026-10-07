@@ -28,7 +28,7 @@ use ruststream_sqlx_dialect::TableSpec;
 
 pub use batch::{RowBatch, RowDeliveries};
 pub use broker::{ClosedSqlxBroker, ConnectedSqlxBroker, SqlxBroker};
-pub use columns::{AttemptColumn, HeaderColumn, KeyColumn};
+pub use columns::{AttemptColumn, KeyColumn};
 #[cfg(feature = "any")]
 pub use database::AnyDialect;
 pub use database::{

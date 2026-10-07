@@ -1,0 +1,48 @@
+[package]
+name = "outbox-example"
+description = "Orders and refunds over Redis Pub/Sub, tracked by the ruststream-sqlx outbox."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# The service is one default feature: a workspace build without default features enables nothing
+# here, so the published crates keep exactly the features that build asks for, and the binary is
+# skipped.
+[features]
+default = ["service"]
+service = [
+    "dep:async-trait",
+    "dep:chrono",
+    "dep:ruststream",
+    "dep:ruststream-fred",
+    "dep:ruststream-sqlx",
+    "dep:serde",
+    "dep:sqlx",
+    "dep:uuid",
+]
+
+[[bin]]
+name = "outbox-example"
+path = "src/main.rs"
+required-features = ["service"]
+
+[dependencies]
+# Not used directly: a floor for `fred`, which `ruststream-fred` pulls in and which asks for
+# `async-trait = "0.1"`, while async-trait 0.1.0 does not build. The minimal-versions check would
+# otherwise resolve it.
+async-trait = { version = "0.1.68", optional = true }
+chrono = { workspace = true, optional = true }
+ruststream = { workspace = true, optional = true, features = ["macros", "json"] }
+ruststream-fred = { version = "0.7", optional = true }
+ruststream-sqlx = { path = "../../crates/ruststream-sqlx", optional = true, features = ["outbox", "postgres"] }
+serde = { workspace = true, optional = true }
+# `migrate` and `macros`: the service creates its table with `sqlx::migrate!` at startup.
+sqlx = { workspace = true, optional = true, features = ["postgres", "uuid", "chrono", "derive", "migrate", "macros"] }
+uuid = { version = "1", optional = true, features = ["v7"] }

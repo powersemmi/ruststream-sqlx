@@ -5,6 +5,7 @@
 
 mod advisory;
 mod lease;
+mod outbox;
 
 use std::error::Error;
 use std::num::NonZeroUsize;

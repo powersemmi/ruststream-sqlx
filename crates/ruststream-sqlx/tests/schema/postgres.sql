@@ -211,3 +211,35 @@ CREATE TABLE customer_orders (
     customer TEXT NOT NULL,
     total    BIGINT NOT NULL
 );
+
+-- The outbox of a service: what it published, kept until a consumer has processed it.
+CREATE TABLE outbox (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    payload      BYTEA NOT NULL,
+    headers      JSONB,
+    processed_at TIMESTAMPTZ
+);
+
+-- An outbox without `processed_at`: a processed record is deleted. `retries` counts what a
+-- record's own retry event wrote, and refuses a second one, so a settlement can fail.
+CREATE TABLE outbox_plain (
+    id      BIGSERIAL PRIMARY KEY,
+    name    TEXT NOT NULL,
+    payload BYTEA NOT NULL,
+    headers JSONB,
+    retries INTEGER NOT NULL DEFAULT 0 CHECK (retries <= 1)
+);
+
+-- An outbox whose events are the service's own: its fetch takes a record by setting `taken_at`, a
+-- retry releases the record and counts the attempt, a drop deletes it, and the recovery leaves a
+-- taken record alone.
+CREATE TABLE outbox_taken (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    payload      BYTEA NOT NULL,
+    headers      JSONB,
+    taken_at     TIMESTAMPTZ,
+    processed_at TIMESTAMPTZ,
+    attempts     INTEGER NOT NULL DEFAULT 0
+);
