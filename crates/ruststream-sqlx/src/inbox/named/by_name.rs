@@ -33,6 +33,11 @@ use sqlx::{Decode, Type, ValueRef};
 ))]
 use super::database::unread;
 use super::row::NamedTime;
+#[cfg(all(
+    feature = "json",
+    any(feature = "postgres", feature = "mysql", feature = "sqlite")
+))]
+use crate::HeaderColumn;
 #[cfg(any(
     feature = "postgres",
     feature = "mysql",
@@ -40,11 +45,6 @@ use super::row::NamedTime;
     feature = "any"
 ))]
 use crate::inbox::BuiltIn;
-#[cfg(all(
-    feature = "json",
-    any(feature = "postgres", feature = "mysql", feature = "sqlite")
-))]
-use crate::inbox::HeaderColumn;
 
 /// Subscriptions by name on the database `DB`, as a feature of a dialect: the headers and the
 /// times their rows hold, which no struct of the service's own names.

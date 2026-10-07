@@ -22,6 +22,16 @@
 
 pub use ruststream_sqlx_dialect as dialect;
 
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+mod header_column;
+#[cfg(feature = "outbox")]
+pub mod outbox;
+
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+pub use header_column::HeaderColumn;
+#[cfg(feature = "outbox")]
+pub use outbox::OutboxRow;
+
 #[cfg(feature = "inbox")]
 mod inbox;
 #[cfg(feature = "inbox")]
@@ -38,12 +48,12 @@ pub use inbox::TransactionalStep;
 #[cfg(feature = "inbox")]
 pub use inbox::{
     Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
-    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderColumn,
-    HeaderField, InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber,
-    Insert, KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies,
-    PayloadRow, Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry,
-    RetryAfter, Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock,
-    TimeColumn, TimeSource, Transactional, Tx, Unlock,
+    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderField,
+    InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert,
+    KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow,
+    Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter,
+    Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
+    TimeSource, Transactional, Tx, Unlock,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.

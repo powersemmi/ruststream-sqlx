@@ -38,6 +38,16 @@ inbox = [
     "dep:stackfuture",
     "dep:foldhash",
 ]
+# The transactional outbox over any RustStream broker: `#[derive(Outbox)]` describes the outbox
+# table, `outbox!` registers it, and two middlewares and a startup republish track what a service
+# publishes until a consumer has processed it.
+outbox = [
+    "dep:ruststream-sqlx-macros",
+    "dep:ruststream",
+    "dep:sqlx",
+    "dep:tracing",
+    "dep:thiserror",
+]
 # The built-in Postgres dialect, the sqlx driver, and the derive's Postgres insert.
 postgres = [
     "ruststream-sqlx-dialect/postgres",
@@ -63,10 +73,11 @@ any = ["inbox", "sqlx/any"]
 chrono = ["inbox", "dep:chrono", "sqlx/chrono"]
 # `time::OffsetDateTime` as a time column.
 time = ["inbox", "dep:time", "sqlx/time"]
-# A JSON object of strings as the `headers` column.
-json = ["inbox", "sqlx/json"]
-# The broker's in-process mode for `TestApp`, registered with the harness.
-testing = ["inbox", "ruststream/testing"]
+# A JSON object of strings as the `headers` column of an inbox or an outbox table.
+json = ["sqlx?/json"]
+# Test builds: the inbox broker's in-process mode for `TestApp`, registered with the harness, and
+# the outbox switched off unless `RUSTSTREAM_SQLX_OUTBOX=on`.
+testing = ["dep:ruststream", "ruststream/testing"]
 # What the inbox adds to the AsyncAPI document: the table a subscription reads.
 asyncapi = ["inbox", "ruststream/asyncapi", "dep:serde"]
 
