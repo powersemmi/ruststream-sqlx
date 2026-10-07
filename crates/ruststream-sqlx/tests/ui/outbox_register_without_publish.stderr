@@ -11,7 +11,7 @@ help: the trait `ruststream_sqlx::outbox::Publish<sqlx::Postgres>` is not implem
    | ^^^^^^^^^^^^^^^^^
    = note: implement `outbox::Publish<sqlx::Postgres>` for `Unrecorded`: its statement inserts the record and returns the id
 help: the trait `ruststream_sqlx::outbox::RecordList<DB>` is conditionally implemented for `Registered<Record, Rest>`
-  --> src/outbox/registry.rs
+  --> src/outbox/registry/list.rs
    |
    | / impl<DB, Record, Rest> RecordList<DB> for Registered<Record, Rest>
    | | where

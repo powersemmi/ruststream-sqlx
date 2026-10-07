@@ -11,7 +11,7 @@ help: the trait `ruststream_sqlx::outbox::Fetch<sqlx::Postgres>` is not implemen
    | ^^^^^^^^^^^^^^
    = note: implement `outbox::Fetch<sqlx::Postgres>` for `Untaken`, or drop `fetch` from `#[outbox(custom(..))]` (or `.own::<own::Fetch>()` from its `OutboxSpec`)
 help: the trait `ruststream_sqlx::outbox::RecordList<DB>` is conditionally implemented for `Registered<Record, Rest>`
-  --> src/outbox/registry.rs
+  --> src/outbox/registry/list.rs
    |
    | / impl<DB, Record, Rest> RecordList<DB> for Registered<Record, Rest>
    | | where
