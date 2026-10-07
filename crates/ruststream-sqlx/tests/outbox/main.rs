@@ -2,8 +2,9 @@
 //! recorded in a real database's outbox table, whose deliveries take and settle their records, and
 //! whose startup republishes what no consumer processed.
 //!
-//! A test of tracking runs only with `RUSTSTREAM_SQLX_OUTBOX=on`: a test build reads the switch
-//! once per process, so the suite cannot turn it on for itself.
+//! A test of tracking runs only with `RUSTSTREAM_SQLX_OUTBOX=on`, and the test of a build that
+//! leaves the outbox off runs only without it: a test build reads the switch once per process, so
+//! the suite cannot turn it on or off for itself.
 
 #![cfg(all(
     feature = "outbox",
@@ -11,6 +12,7 @@
     feature = "json",
     feature = "testing",
     feature = "postgres",
+    feature = "mysql",
     feature = "sqlite"
 ))]
 
@@ -21,6 +23,7 @@ mod live;
 
 mod records;
 mod registry;
+mod stand;
 mod tracked;
 
 /// The variable that turns the outbox on in a test build.
@@ -44,27 +47,3 @@ fn tracking_on() -> bool {
     eprintln!("{SWITCH} is not `on`; skipping the outbox suite");
     false
 }
-
-/// One module per stand the outbox suite runs on, each holding `$items` with the stand's `Db` and
-/// `database`.
-macro_rules! stands {
-    ($($items:item)*) => {
-        mod postgres {
-            #[allow(unused_imports)]
-            use super::*;
-            #[allow(unused_imports)]
-            use crate::live::postgres::{Db, database};
-            $($items)*
-        }
-
-        mod sqlite {
-            #[allow(unused_imports)]
-            use super::*;
-            #[allow(unused_imports)]
-            use crate::live::sqlite::{Db, database};
-            $($items)*
-        }
-    };
-}
-
-pub(crate) use stands;

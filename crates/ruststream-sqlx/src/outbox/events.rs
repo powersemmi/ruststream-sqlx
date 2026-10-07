@@ -129,6 +129,13 @@ pub trait Recover<DB: Database>: OutboxRow {
 
 /// Every event of a record type, which registering it requires; implemented for any type that
 /// has them all.
+// Registering names this bound, so a missing event surfaces here; rustc then names the missing
+// event's trait in a `help` line below, without that trait's own message.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` misses an event of an outbox record on `{DB}`, so it cannot be registered",
+    label = "a record without every outbox event",
+    note = "a record implements `outbox::Publish<{DB}>` itself, and every event its `#[outbox(custom(..))]` lists; the `help` names the missing one"
+)]
 #[doc(hidden)]
 pub trait Tracked<DB: Database>:
     Publish<DB> + Fetch<DB> + Ack<DB> + Retry<DB> + Discard<DB> + Recover<DB>

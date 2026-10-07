@@ -4,8 +4,11 @@
 //! consumer processed.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::error::Error;
 use std::time::Duration;
+
+use chrono::{DateTime, Utc};
 
 use ruststream::memory::prelude::*;
 use ruststream::runtime::{Outgoing, PublishContext};
@@ -14,8 +17,10 @@ use ruststream_sqlx::outbox::{Nil, OUTBOX_ID_HEADER, Outbox, Registered};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 
-use crate::records::{Headers, OrderRecord, RefundRecord};
-use crate::{stands, tracking_on};
+use crate::live::stands;
+use crate::records::{Headers, OrderRecord, ParcelRecord, RefundRecord};
+use crate::stand::Stand;
+use crate::{SWITCH, tracking_on};
 
 /// What a consumer answers a message with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +61,15 @@ struct Order {
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 #[outgoing(name = "refunds")]
 struct Refund {
+    id: u32,
+    outcome: Outcome,
+}
+
+/// A parcel: published under `parcels`, a registered name whose record runs the service's own
+/// events.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+#[outgoing(name = "parcels")]
+struct Parcel {
     id: u32,
     outcome: Outcome,
 }
@@ -113,6 +127,11 @@ async fn pay_back(refund: &Refund) -> HandlerOutcome {
     refund.outcome.settle()
 }
 
+#[subscriber("parcels")]
+async fn ship(parcel: &Parcel) -> HandlerOutcome {
+    parcel.outcome.settle()
+}
+
 #[subscriber("notes")]
 async fn read(_note: &Note) -> HandlerOutcome {
     HandlerOutcome::ack()
@@ -127,6 +146,9 @@ enum Startup {
     /// Publishes an order and a note through `wrap` over the live publisher.
     Wrap,
 }
+
+/// A time column, `NULL` for none: a mark or a take.
+type Time = Option<DateTime<Utc>>;
 
 /// The JSON the default codec writes for `value`.
 fn json(value: &impl Serialize) -> Vec<u8> {
@@ -171,11 +193,18 @@ fn chain(error: &(dyn Error + 'static)) -> String {
 stands! {
     use sqlx::Pool;
 
-    type Tracking = Outbox<Db, Registered<RefundRecord, Registered<OrderRecord, Nil>>>;
+    type Tracking = Outbox<
+        Db,
+        Registered<ParcelRecord, Registered<RefundRecord, Registered<OrderRecord, Nil>>>,
+    >;
 
-    /// The registry: `orders` in `outbox`, `refunds` in `outbox_plain`.
+    /// The registry: `orders` in `outbox`, `refunds` in `outbox_plain`, `parcels` in
+    /// `outbox_taken`.
     fn registered(tracking: Outbox<Db>) -> Tracking {
-        tracking.register::<OrderRecord>("orders").register::<RefundRecord>("refunds")
+        tracking
+            .register::<OrderRecord>("orders")
+            .register::<RefundRecord>("refunds")
+            .register::<ParcelRecord>("parcels")
     }
 
     /// The service: its handlers, the two middlewares, and what it does once it started. `pool`,
@@ -194,6 +223,7 @@ stands! {
                 b.include(look_up);
                 b.include(fulfil).max_attempts(nonzero!(1u32));
                 b.include(pay_back).max_attempts(nonzero!(1u32));
+                b.include(ship).max_attempts(nonzero!(1u32));
                 b.include(read);
                 match startup {
                     Startup::Nothing => {}
@@ -218,12 +248,17 @@ stands! {
 
     /// The records of `outbox` in id order, as `(id, name, payload, headers, processed)`.
     async fn orders(pool: &Pool<Db>) -> Vec<(i64, String, Vec<u8>, Headers, bool)> {
-        sqlx::query_as(
-            "SELECT id, name, payload, headers, processed_at IS NOT NULL FROM outbox ORDER BY id",
+        let rows: Vec<(i64, String, Vec<u8>, Headers, Time)> = sqlx::query_as(
+            "SELECT id, name, payload, headers, processed_at FROM outbox ORDER BY id",
         )
         .fetch_all(pool)
         .await
-        .expect("the outbox reads")
+        .expect("the outbox reads");
+        rows.into_iter()
+            .map(|(id, name, payload, headers, processed_at)| {
+                (id, name, payload, headers, processed_at.is_some())
+            })
+            .collect()
     }
 
     /// The records of `outbox_plain` in id order, as `(id, name, retries)`.
@@ -236,29 +271,53 @@ stands! {
 
     /// Writes the record of `order`, processed or not, and returns its id.
     async fn insert_order(pool: &Pool<Db>, order: &Order, headers: Headers, processed: bool) -> i64 {
-        sqlx::query_scalar(
-            "INSERT INTO outbox (name, payload, headers, processed_at) \
-             VALUES ('orders', $1, $2, CASE WHEN $3 THEN CURRENT_TIMESTAMP END) RETURNING id",
-        )
+        let mut conn = pool.acquire().await.expect("a connection opens");
+        let insert = sqlx::query(<Db as Stand>::returning_id(
+            "INSERT INTO outbox (name, payload, headers, processed_at) VALUES ('orders', ?, ?, ?)",
+        ))
         .bind(json(order))
         .bind(headers)
-        .bind(processed)
-        .fetch_one(pool)
-        .await
-        .expect("the record is written")
+        .bind(processed.then(Utc::now));
+        <Db as Stand>::inserted(&mut conn, insert).await.expect("the record is written")
     }
 
     /// Writes the record of `refund`, retried `retries` times, and returns its id.
     async fn insert_refund(pool: &Pool<Db>, refund: &Refund, retries: i32) -> i64 {
-        sqlx::query_scalar(
-            "INSERT INTO outbox_plain (name, payload, retries) VALUES ('refunds', $1, $2) \
-             RETURNING id",
-        )
+        let mut conn = pool.acquire().await.expect("a connection opens");
+        let insert = sqlx::query(<Db as Stand>::returning_id(
+            "INSERT INTO outbox_plain (name, payload, retries) VALUES ('refunds', ?, ?)",
+        ))
         .bind(json(refund))
-        .bind(retries)
-        .fetch_one(pool)
+        .bind(retries);
+        <Db as Stand>::inserted(&mut conn, insert).await.expect("the record is written")
+    }
+
+    /// Writes the record of `parcel`, taken or not, with `headers`, and returns its id.
+    async fn insert_parcel(pool: &Pool<Db>, parcel: &Parcel, headers: Headers, taken: bool) -> i64 {
+        let mut conn = pool.acquire().await.expect("a connection opens");
+        let insert = sqlx::query(<Db as Stand>::returning_id(
+            "INSERT INTO outbox_taken (name, payload, headers, taken_at) \
+             VALUES ('parcels', ?, ?, ?)",
+        ))
+        .bind(json(parcel))
+        .bind(headers)
+        .bind(taken.then(Utc::now));
+        <Db as Stand>::inserted(&mut conn, insert).await.expect("the record is written")
+    }
+
+    /// The records of `outbox_taken` in id order, as `(id, taken, processed, attempts)`.
+    async fn parcels(pool: &Pool<Db>) -> Vec<(i64, bool, bool, i32)> {
+        let rows: Vec<(i64, Time, Time, i32)> = sqlx::query_as(
+            "SELECT id, taken_at, processed_at, attempts FROM outbox_taken ORDER BY id",
+        )
+        .fetch_all(pool)
         .await
-        .expect("the record is written")
+        .expect("the taken outbox reads");
+        rows.into_iter()
+            .map(|(id, taken_at, processed_at, attempts)| {
+                (id, taken_at.is_some(), processed_at.is_some(), attempts)
+            })
+            .collect()
     }
 
     /// Drops `outbox`, so every statement on it fails.
@@ -607,6 +666,123 @@ stands! {
             .assert_called(1)
             // The handler acknowledges this order, so a retry is the layer's own.
             .settled(HandlerOutcome::retry());
+        tb.shutdown().await.expect("the app stops");
+    }
+
+    /// Writes an untaken record of a parcel settled with `outcome`, delivers it with its id, and
+    /// returns what `outbox_taken` holds after the handler ran once.
+    async fn shipped(outcome: Outcome) -> Option<Vec<(i64, bool, bool, i32)>> {
+        if !tracking_on() {
+            return None;
+        }
+        let db = database().await?;
+        let parcel = Parcel { id: 20, outcome };
+        let id = insert_parcel(&db.pool, &parcel, None, false).await;
+        let tb = started(&db.pool, Startup::Nothing).await;
+        publish_tracked(&tb, "parcels", &parcel, &id.to_string()).await;
+        tb.broker::<MemoryBroker>().subscriber("parcels").assert_called(1).with(&parcel);
+        tb.shutdown().await.expect("the app stops");
+        let rows = parcels(&db.pool).await;
+        db.finish().await;
+        Some(rows)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_services_own_fetch_takes_and_its_own_ack_marks_the_record() {
+        let Some(rows) = shipped(Outcome::Ack).await else { return };
+        let states: Vec<_> = rows.iter().map(|row| (row.1, row.2, row.3)).collect();
+        assert_eq!(states, [(true, true, 0)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_services_own_retry_releases_the_record_and_counts_the_attempt() {
+        let Some(rows) = shipped(Outcome::Retry).await else { return };
+        let states: Vec<_> = rows.iter().map(|row| (row.1, row.2, row.3)).collect();
+        assert_eq!(states, [(false, false, 1)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_services_own_discard_deletes_the_record() {
+        let Some(rows) = shipped(Outcome::Drop).await else { return };
+        assert_eq!(rows, []);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_record_the_services_own_fetch_refuses_is_acknowledged_without_the_handler() {
+        if !tracking_on() {
+            return;
+        }
+        let Some(db) = database().await else { return };
+        let parcel = Parcel { id: 21, outcome: Outcome::Retry };
+        let id = insert_parcel(&db.pool, &parcel, None, true).await;
+        let tb = started(&db.pool, Startup::Nothing).await;
+        publish_tracked(&tb, "parcels", &parcel, &id.to_string()).await;
+
+        // The handler retries this parcel, so an acknowledgement is the layer's own.
+        tb.broker::<MemoryBroker>()
+            .subscriber("parcels")
+            .assert_called(1)
+            .settled(HandlerOutcome::ack());
+        assert_eq!(parcels(&db.pool).await, [(id, true, false, 0)]);
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_services_own_recovery_republishes_only_what_it_selects() {
+        if !tracking_on() {
+            return;
+        }
+        let Some(db) = database().await else { return };
+        let waiting = Parcel { id: 22, outcome: Outcome::Ack };
+        let taken = Parcel { id: 23, outcome: Outcome::Ack };
+        let waiting_id = insert_parcel(&db.pool, &waiting, Some(tenant("acme")), false).await;
+        let taken_id = insert_parcel(&db.pool, &taken, None, true).await;
+        let tb = started(&db.pool, Startup::Republish).await;
+        tb.settle().await.expect("the republished messages are handled");
+
+        tb.broker::<MemoryBroker>().subscriber("parcels").assert_called(1).with(&waiting);
+        assert_eq!(published_ids(&tb, "parcels"), [Some(waiting_id.to_string())]);
+        let published = tb.broker::<MemoryBroker>().published::<()>("parcels");
+        let tenants: Vec<_> = published
+            .messages()
+            .iter()
+            .map(|message| message.headers().get_str("tenant"))
+            .collect();
+        assert_eq!(tenants, [Some("acme")]);
+        assert_eq!(
+            parcels(&db.pool).await,
+            [(waiting_id, true, true, 0), (taken_id, true, false, 0)],
+        );
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_build_with_the_outbox_off_touches_no_database() {
+        if env::var(SWITCH).as_deref() == Ok("on") {
+            eprintln!("{SWITCH} is `on`; skipping the test of a build that leaves the outbox off");
+            return;
+        }
+        // Every connection of this pool fails, so a statement anywhere fails the test.
+        let tracking = registered(Outbox::new(<Db as Stand>::unreachable()));
+        let tb = TestApp::start(app(&tracking, None, Startup::Republish))
+            .await
+            .expect("the app starts without its database");
+        let request = Request { id: 24, outcome: Outcome::Ack };
+        tb.broker::<MemoryBroker>()
+            .publish("requests", &request)
+            .await
+            .expect("the request is handled");
+        let order = Order { id: 25, outcome: Outcome::Ack };
+        publish_tracked(&tb, "orders", &order, "25").await;
+
+        // The reply carries no id, and the test's own message keeps the one it was given.
+        assert_eq!(published_ids(&tb, "orders"), [None, Some("25".to_owned())]);
+        tb.broker::<MemoryBroker>()
+            .subscriber("orders")
+            .assert_called(2)
+            .settled(HandlerOutcome::ack());
         tb.shutdown().await.expect("the app stops");
     }
 }

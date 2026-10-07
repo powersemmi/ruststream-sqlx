@@ -231,3 +231,16 @@ CREATE TABLE outbox_plain (
     headers JSON,
     retries INT NOT NULL DEFAULT 0 CHECK (retries <= 1)
 );
+
+-- An outbox whose events are the service's own: its fetch takes a record by setting `taken_at`, a
+-- retry releases the record and counts the attempt, a drop deletes it, and the recovery leaves a
+-- taken record alone.
+CREATE TABLE outbox_taken (
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name         VARCHAR(255) NOT NULL,
+    payload      LONGBLOB NOT NULL,
+    headers      JSON,
+    taken_at     DATETIME(6),
+    processed_at DATETIME(6),
+    attempts     INT NOT NULL DEFAULT 0
+);

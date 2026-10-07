@@ -247,3 +247,16 @@ CREATE TABLE outbox_plain (
     headers TEXT,
     retries INTEGER NOT NULL DEFAULT 0 CHECK (retries <= 1)
 );
+
+-- An outbox whose events are the service's own: its fetch takes a record by setting `taken_at`, a
+-- retry releases the record and counts the attempt, a drop deletes it, and the recovery leaves a
+-- taken record alone.
+CREATE TABLE outbox_taken (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    payload      BLOB NOT NULL,
+    headers      TEXT,
+    taken_at     TEXT,
+    processed_at TEXT,
+    attempts     INTEGER NOT NULL DEFAULT 0
+);

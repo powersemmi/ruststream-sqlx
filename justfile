@@ -34,7 +34,8 @@ brokers-down:
 
 # Runs the suites against the compose stand's Postgres, MySQL and MariaDB. RUSTSTREAM_REQUIRE_LIVE
 # turns a skipped live test into a failure, so a stand the suites never reached is reported instead
-# of passing.
+# of passing. RUSTSTREAM_SQLX_OUTBOX turns the outbox on in this test build; `just test` runs with
+# it off, the way a service's own tests run.
 test-brokers: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
@@ -43,6 +44,7 @@ test-brokers: brokers-up
     MYSQL_TEST_URL=mysql://root:ruststream@127.0.0.1:53306 \
     MARIADB_TEST_URL=mysql://root:ruststream@127.0.0.1:53307 \
     RUSTSTREAM_REQUIRE_LIVE=1 \
+    RUSTSTREAM_SQLX_OUTBOX=on \
         cargo test -p ruststream-sqlx --all-features --no-fail-fast
 
 fmt:
