@@ -1,9 +1,11 @@
 //! A publish from the same process wakes the subscriptions of the table and the group it wrote,
 //! run as an application through `TestApp::start` against each stand and form, with a poll
-//! interval no test outlives: the harness settles once each job a test published was handled, and
-//! only a wake-up brings a subscription to it. Which subscriptions a publish wakes is pinned by the
-//! wake-up list's own tests; a test here writes no row the harness does not know, so what it
-//! asserts holds whenever the subscriptions run their first claims.
+//! interval no test outlives. A test first has the subscription it watches handle one job, in a
+//! batch larger than one: its claim as it opened is then over, and so is the claim that took the
+//! job, which found fewer rows than a batch holds, so the subscription waits its interval and only
+//! a wake-up brings it to the next job. Every row is published through the harness, which settles
+//! once each job was handled, so no assertion depends on when a subscription runs a claim. Which
+//! subscriptions a publish wakes is pinned by the wake-up list's own tests.
 
 use ruststream::runtime::PublishError;
 use ruststream::testing::{TestApp, TestError};
@@ -11,6 +13,8 @@ use ruststream_sqlx::Repository;
 use ruststream_sqlx::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Pool;
+
+use std::time::Duration;
 
 use super::INTERVAL;
 use crate::live;
@@ -28,6 +32,10 @@ struct Invoice {
     n: u32,
 }
 
+/// How long a test waits for a job before it reports that no wake-up brought the subscription to
+/// it: a bound on a failure, far below the poll interval.
+const HANDLED: Duration = Duration::from_secs(10);
+
 /// A header `plain_jobs` has no column for.
 #[derive(Serialize)]
 struct Tenant {
@@ -41,6 +49,7 @@ live::matrix! {
             .route::<Plain>("plain")
             .route::<SendEmail>("orders")
             .route::<SendEmail>("a")
+            .route::<SendEmail>("invoices")
     }
 
     #[subscriber(InboxQueue::<Plain>::new("plain"))]
@@ -59,8 +68,8 @@ live::matrix! {
     }
 
     #[subscriber(InboxQueue::<SendEmail>::new("invoices"))]
-    async fn file(_invoice: &Invoice) -> HandlerOutcome {
-        HandlerOutcome::ack()
+    async fn file(invoices: &[Invoice]) -> Vec<HandlerOutcome> {
+        invoices.iter().map(|_| HandlerOutcome::ack()).collect()
     }
 
     #[subscriber(InboxQueue::<SendEmail>::new("a"))]
@@ -78,12 +87,37 @@ live::matrix! {
         TestApp::start(app).await.expect("the app starts")
     }
 
+    /// Publishes job `n` to `to`, and returns once it was handled.
+    ///
+    /// # Panics
+    ///
+    /// When it was not handled within [`HANDLED`].
     async fn publish<State: Send + Sync + 'static>(
         tb: &TestApp<State>,
         to: &str,
         n: u32,
     ) -> Result<(), PublishError<TestError>> {
-        tb.broker::<SqlxBroker<Db>>().message(&Job { n }).to(to).publish().await
+        let job = Job { n };
+        let published = tb.broker::<SqlxBroker<Db>>().message(&job).to(to).publish();
+        tokio::time::timeout(HANDLED, published)
+            .await
+            .expect("a wake-up brings the subscription to the job")
+    }
+
+    /// Brings the batch subscription of `name` to its interval: it handles job 0.
+    async fn waiting<State: Send + Sync + 'static>(tb: &TestApp<State>, name: &str) {
+        publish(tb, name, 0).await.expect("the subscription handles a job");
+    }
+
+    /// The jobs `name` handled, in the order its batches came.
+    fn handled<State: Send + Sync + 'static>(tb: &TestApp<State>, name: &str) -> Vec<u32> {
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber(name)
+            .batches::<Job>()
+            .into_iter()
+            .flatten()
+            .map(|job| job.n)
+            .collect()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -91,15 +125,16 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("jobs", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(handle);
+                b.include(handle_all.batch(nonzero!(4)));
             });
         let tb = started(app).await;
+        waiting(&tb, "plain").await;
         publish(&tb, "plain", 1).await.expect("the publish wakes the subscription");
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("plain")
-            .assert_called_once()
-            .with(&Job { n: 1 })
+            .assert_batch_sizes(&[1, 1])
             .settled(HandlerOutcome::ack());
+        assert_eq!(handled(&tb, "plain"), [0, 1]);
         assert_eq!(db.count("plain_jobs").await, 0, "the row was acknowledged");
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
@@ -111,9 +146,10 @@ live::matrix! {
         let app = RustStream::new(AppInfo::new("billing", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
                 b.include(bill).out_reply(Repository::<SendEmail>::default());
-                b.include(file);
+                b.include(file.batch(nonzero!(4)));
             });
         let tb = started(app).await;
+        waiting(&tb, "invoices").await;
         publish(&tb, "orders", 7).await.expect("the order and its invoice are handled");
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("orders")
@@ -121,9 +157,9 @@ live::matrix! {
             .settled(HandlerOutcome::ack());
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("invoices")
-            .assert_called_once()
-            .with(&Invoice { n: 7 })
+            .assert_batch_sizes(&[1, 1])
             .settled(HandlerOutcome::ack());
+        assert_eq!(handled(&tb, "invoices"), [0, 7]);
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }
@@ -157,6 +193,7 @@ live::matrix! {
                 b.include(handle_all.batch(nonzero!(2)));
             });
         let tb = started(app).await;
+        waiting(&tb, "plain").await;
         // The first write wakes a claim; the others land while it runs or right after, and each
         // keeps a wake-up for the claim after it.
         let (one, two, three) = tokio::join!(
@@ -167,16 +204,9 @@ live::matrix! {
         one.expect("the first publish is handled");
         two.expect("the second publish is handled");
         three.expect("the third publish is handled");
-        let mut handled: Vec<u32> = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("plain")
-            .batches::<Job>()
-            .into_iter()
-            .flatten()
-            .map(|job| job.n)
-            .collect();
+        let mut handled = handled(&tb, "plain");
         handled.sort_unstable();
-        assert_eq!(handled, [1, 2, 3], "every row was claimed before the interval");
+        assert_eq!(handled, [0, 1, 2, 3], "every row was claimed before the interval");
         assert_eq!(db.count("plain_jobs").await, 0, "and acknowledged");
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
