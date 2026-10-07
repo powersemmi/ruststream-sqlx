@@ -429,7 +429,9 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
 
     /// How long a subscription waits between claims that found its queue empty; one second
     /// unless set. A subscription's own [`poll_interval`](crate::InboxQueue::poll_interval)
-    /// overrides it.
+    /// overrides it. A publish through this broker wakes the subscriptions of its table and group
+    /// before then, and so does a notification with [`listen_notify`](Self::listen_notify)
+    /// ([waking a subscription](crate#waking-a-subscription)).
     ///
     /// # Examples
     ///
@@ -557,11 +559,13 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// The poll interval stays: a notification sent while the listening connection was lost is
     /// gone, so after a reconnect every subscription claims once, and a row written by the
     /// service's own SQL or a handler's [`Tx`](crate::Tx) wakes nobody unless the service sends
-    /// the notification itself. It is opt-in because Postgres serializes the commits of
-    /// transactions that notify, which limits many concurrent writers.
+    /// the notification itself. It is opt-in because of its cost: the pool connection it holds,
+    /// the statement each publish adds, and the lock, global to the server, that Postgres takes
+    /// at the commit of each transaction that notifies, so those commits run one after another,
+    /// which limits many concurrent writers.
     ///
     /// A table whose qualified name is longer than Postgres's 63-byte channel names stops its
-    /// subscription at startup.
+    /// subscription at startup with [`SqlxBrokerError::Declaration`].
     ///
     /// # Examples
     ///

@@ -229,7 +229,9 @@ impl<Row> InboxQueue<Row> {
     }
 
     /// How long this subscription waits between claims that found the queue empty; the broker's
-    /// interval unless set. After a full claim the next one runs at once.
+    /// interval unless set. After a full claim the next one runs at once. A publish through the
+    /// broker into the subscription's table and group ends the wait early
+    /// ([waking a subscription](crate#waking-a-subscription)).
     ///
     /// # Examples
     ///

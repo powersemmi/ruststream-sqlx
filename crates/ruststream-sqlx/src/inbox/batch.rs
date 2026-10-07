@@ -137,9 +137,11 @@ where
 ///
 /// The rows lie in one vector in claim order, as the driver read them: the handler reads them
 /// where they lie, with no codec and no copy. Each row's headers column was taken into its
-/// delivery's headers when the batch was built, so the handler reads the column empty. A claimed
-/// id without a row, and a row the driver could not read, follow the slice: the runtime settles
-/// them by the subscription's decode policy, its error in the log. Every delivery of the batch
+/// delivery's headers when the batch was built, so the handler reads the column empty. A message
+/// assembled from a headers struct keeps its headers struct whole, and each delivery builds its
+/// header map from it on the first read. A claimed id without a row, and a row the driver could
+/// not read, follow the slice: the runtime settles them by the subscription's decode policy, its
+/// error in the log. Every delivery of the batch
 /// holds its row in the table's form, as a payload-mode batch's deliveries do: one transaction
 /// for the whole batch in the row lock form, a lease the subscription extends while the handler
 /// runs in the lease form, a session that holds the row's key in the advisory lock form.

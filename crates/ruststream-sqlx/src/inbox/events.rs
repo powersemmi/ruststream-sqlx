@@ -74,8 +74,9 @@ pub trait Claim<DB: Database>: InboxRow {
 
 /// Reads the rows of claimed ids, on the claim's connection.
 ///
-/// The derive builds it for a flat table; a service lists `fetch` in `custom(..)` to assemble
-/// messages itself, from other tables. Rows are matched to the claimed ids by their `id` field; a
+/// The derive builds it, for a flat table and for a message assembled from a headers struct; a
+/// service lists `fetch` in `custom(..)` to assemble messages itself, from other tables
+/// ([a fetch over a join](crate#a-fetch-over-a-join)). Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row settles by the decode-failure policy before its handler runs, and the
 /// log names the id. It runs inside the claim's transaction, or right after a lease claim that
 /// leased the rows and committed in one statement, as on Postgres and SQLite. In the advisory lock

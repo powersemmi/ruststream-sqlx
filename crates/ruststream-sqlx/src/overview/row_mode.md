@@ -93,7 +93,8 @@ Every form serves row mode: the row lock, the lease and the advisory lock. Trans
 serves it too, and the handler takes `&SendEmail` beside `Ctx<keys::Tx<DB>>`.
 
 The `headers` column becomes the delivery's headers, which middleware reads. The row a handler
-reads holds that column empty.
+reads holds that column empty. A message assembled from a headers struct builds its delivery's
+headers from that struct instead ([the headers layout](#the-headers-layout)).
 
 A task is written by the derive's [`insert`](Insert::insert), in the service's own transaction or
 in the handler's. [`Repository`] writes a row-mode table through a [`Publish`] of the service's

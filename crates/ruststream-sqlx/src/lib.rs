@@ -6,6 +6,7 @@
     all(feature = "inbox", feature = "postgres"),
     doc = include_str!("overview/row_mode_errors.md")
 )]
+#![doc = include_str!("overview/headers.md")]
 #![doc = include_str!("overview/forms.md")]
 #![doc = include_str!("overview/transactional.md")]
 #![doc = include_str!("overview/isolation.md")]
@@ -15,6 +16,7 @@
 #![doc = include_str!("overview/decoding.md")]
 #![doc = include_str!("overview/batches.md")]
 #![doc = include_str!("overview/names.md")]
+#![doc = include_str!("overview/wake.md")]
 #![doc = include_str!("overview/testing.md")]
 #![forbid(unsafe_code)]
 
@@ -298,10 +300,10 @@ pub mod __private {
 ///
 /// A column is named in one place, sqlx's attributes. `#[sqlx(rename = "..")]` names a field's
 /// column as written, `#[sqlx(rename_all = "..")]` recases every other field's name, a raw
-/// identifier loses its `r#`, and a `#[sqlx(skip)]` field reads no column. A
-/// `#[sqlx(flatten)]` field reads columns the derive cannot see, so the statements select `*`,
-/// and a dead-letter move copies the row by position: the dead-letter table has the same columns
-/// in the same order.
+/// identifier loses its `r#`, and a `#[sqlx(skip)]` field reads no column. Outside the headers
+/// layout, a `#[sqlx(flatten)]` field reads columns the derive cannot see, so the statements
+/// select `*`, and a dead-letter move copies the row by position: the dead-letter table has the
+/// same columns in the same order.
 /// The other options of `#[sqlx(..)]`, such as `json`, `try_from` and `default`, belong to sqlx's
 /// own derive and pass through untouched.
 ///
