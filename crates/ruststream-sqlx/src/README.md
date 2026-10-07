@@ -105,7 +105,8 @@ pub fn app(pool: PgPool) -> RustStream {
 service's. An [`InboxQueue`] subscription reads one queue: its name selects a group where the
 table has a `group` column, and addresses the whole table where it has none. A subscription
 claims rows when its stream is polled; after a claim that found fewer rows than it asked for, it
-waits the poll interval, one second unless set. The bytes reach the codec lent from the row.
+waits the poll interval, one second unless set. The bytes reach the codec lent from the row. A
+table without a payload column hands its handler the row itself (see [Row mode](#row-mode)).
 
 What a handler answers decides the row's fate:
 

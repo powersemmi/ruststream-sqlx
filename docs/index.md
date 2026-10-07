@@ -17,6 +17,11 @@ database session of the connection that serves the delivery. No transaction stay
 that share a key go into work one at a time. SQLite tables take the lease or the advisory lock
 form.
 
+A handler takes a row's message, which a codec decodes from the table's payload column. A table
+without a payload column is in row mode: the handler takes the row itself, the service's own
+struct as sqlx read it, with no codec in between. A batch handler takes the rows of one claim as
+one slice.
+
 A handler mounted with `.transactional()` writes through its delivery's transaction, in every
 form. Acknowledgement commits the handler's writes and finishes the row in one transaction. Every
 other outcome rolls the writes back. While a delivery is in work, its transaction holds a

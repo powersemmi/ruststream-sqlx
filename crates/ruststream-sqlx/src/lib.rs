@@ -1,4 +1,11 @@
 #![doc = include_str!("README.md")]
+#![doc = include_str!("overview/row_mode.md")]
+// The compile errors of row mode need the inbox and a driver: without them each example would fail
+// for that reason alone. They render where both are on, as on docs.rs.
+#![cfg_attr(
+    all(feature = "inbox", feature = "postgres"),
+    doc = include_str!("overview/row_mode_errors.md")
+)]
 #![doc = include_str!("overview/forms.md")]
 #![doc = include_str!("overview/transactional.md")]
 #![doc = include_str!("overview/isolation.md")]
@@ -278,5 +285,9 @@ pub mod __private {
 ///     to: String,
 /// }
 /// ```
+///
+/// A handler that does not fit its table's mode meets the core's errors at the mount site: a
+/// handler of rows on a table in payload mode, a batch handler of rows with a reply or `Out`
+/// slots. [Row mode](crate#row-mode) shows both.
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;

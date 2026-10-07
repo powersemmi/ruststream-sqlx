@@ -11,6 +11,8 @@
     "On Postgres, advisory lock tables need a direct connection or PgBouncer in session pooling: the lock lives in the database session, which transaction pooling hands to other clients.",
     "Mount an inbox handler with `.transactional()` (`b.include(handler.transactional())`) before it takes its delivery's transaction as its first `Ctx`, `Ctx(mut tx): Ctx<keys::Tx<DB>>`, and writes through `&mut *tx`: acknowledgement commits those writes, and every other outcome rolls them back.",
     "Take an inbox handler's `Ctx` keys in the order `keys::Tx`, `keys::Pool`, `keys::Attempt`, leaving out the ones it does not need: the first `Ctx` decides which keys compile after it.",
+    "Leave `#[field(payload)]` out of an inbox struct to deliver the row itself: the struct derives `Clone` and not `Deserialize`, and the handler takes `&Row`, or `&[Row]` in a batch mounted with no reply and no `Out` slots.",
+    "Write a row-mode task with the derive's `insert` or through `Repository` with a `Publish` of the service's own; routes and by-name subscriptions read payload-mode tables.",
     "In transactional mode each delivery in work holds a pool connection for its transaction, in the lease form too: a handler that takes another one, through `Ctx<keys::Pool<DB>>` or a publish, needs a pool larger than its `workers(n)`."
   ]
 }

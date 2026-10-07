@@ -58,8 +58,13 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 
 /// One claimed row in a handler's hands.
 ///
-/// The payload is lent from the row, without a copy; a table in row mode lends its handler the row
-/// itself, as the driver read it. In the row lock form the delivery holds the claim's
+/// In payload mode the payload is lent from the row, without a copy. In row mode the delivery
+/// lends its handler the row itself, as the driver read it, with no codec in between. A `headers`
+/// column becomes the delivery's headers, and the row it lends holds that column empty. A claimed
+/// id without a row, and a row the driver could not read, lend no row: the runtime settles them by
+/// the decode policy.
+///
+/// In the row lock form the delivery holds the claim's
 /// transaction: settling it runs one statement and commits, and dropping it unsettled rolls the
 /// transaction back, which returns the row to the queue at once. In the lease form the delivery
 /// holds the lease its claim wrote, which its subscription extends each half lease: settling it
@@ -123,6 +128,48 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///         Sent::Later => HandlerOutcome::retry_after(Duration::from_secs(60)),
 ///         // The address does not exist: the row is finished without a send.
 ///         Sent::Never => HandlerOutcome::drop(),
+///     }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// In row mode the handler borrows the row the delivery holds, beside what it reads off the
+/// delivery:
+///
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use sqlx::PgPool;
+///
+/// /// A mail to send: the table has no payload column, so a handler takes the row itself.
+/// #[derive(Inbox, sqlx::FromRow, Clone)]
+/// #[inbox(table = "mail_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     to: String,
+/// }
+///
+/// # async fn deliver(_: &str) -> bool { true }
+/// // The delivery lends `send` its row and reports the attempt the table counted.
+/// #[subscriber(InboxQueue::<SendEmail>::new("mail"))]
+/// async fn send(email: &SendEmail, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
+///     if deliver(&email.to).await {
+///         HandlerOutcome::ack()
+///     } else if attempt < Some(3) {
+///         HandlerOutcome::retry()
+///     } else {
+///         HandlerOutcome::drop()
 ///     }
 /// }
 ///

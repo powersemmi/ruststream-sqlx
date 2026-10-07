@@ -11,6 +11,7 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 ## Guides
 
 - [The inbox broker](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-inbox-broker): task queues in the service's Postgres, MySQL/MariaDB and SQLite tables, taken by row lock, by lease or by advisory lock; what each handler outcome does to a row, and where "now" comes from
+- [Row mode](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-mode): a table without a payload column, whose handler takes the row itself, `&Row` or `&[Row]`, with no codec; what settles a row the driver cannot read, and how a row-mode task is written
 - [Row locks, leases or advisory locks](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-locks-leases-or-advisory-locks): the three forms a queue table takes its rows in, what each holds while a handler runs, and when to declare `#[field(locked_until)]` or `advisory_lock`
 - [The lease form](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-lease-form): the claim that commits, the lease as the ownership token, its extension every half lease, `LeaseLost`, and attempts counted at the claim
 - [The advisory lock form](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-advisory-lock-form): `advisory_lock = ".."` and its key, the claim of candidates, the lock released at settlement, on an unsettled drop and at `shutdown` with its counts, a pool connection per delivery in work, and how Postgres, MySQL/MariaDB and SQLite keep the locks

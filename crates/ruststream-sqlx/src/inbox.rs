@@ -47,6 +47,11 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.
 ///
+/// The struct puts its table in one of two modes. In payload mode a `#[field(payload)]` field
+/// holds the message, and a codec decodes it for the handler ([`PayloadRow`]). In row mode the
+/// struct has no such field, and the handler takes the struct itself, `&Row` or `&[Row]` (see
+/// [Row mode](crate#row-mode)).
+///
 /// # Examples
 ///
 /// ```
@@ -191,7 +196,12 @@ impl<Row: QueueRow> Lane<Row> for RowLane {
 ///
 /// The derive implements it for a struct with a `#[field(payload)]` field. A subscription hands
 /// the handler the payload decoded by a codec or a `Deserialized` type, as on any broker, and the
-/// bytes are lent from the row without a copy.
+/// bytes are lent from the row without a copy. Routes and by-name subscriptions read tables in
+/// this mode.
+///
+/// A struct without a payload field is in row mode: its handler takes the row itself, and the
+/// derive's [`insert`](crate::Insert::insert) or a [`Repository`] over the service's own
+/// [`Publish`] writes its tasks (see [Row mode](crate#row-mode)).
 ///
 /// # Examples
 ///

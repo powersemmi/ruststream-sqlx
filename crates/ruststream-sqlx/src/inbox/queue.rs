@@ -70,6 +70,11 @@ pub(crate) use open::{Registration, open};
 /// `dead_letter` table (one with the same columns). With `max_attempts(1)` every failure moves the
 /// row at once. A registration that declares one without the other stops at startup.
 ///
+/// A table in payload mode hands its handler the payload, decoded by a codec. A table in row mode,
+/// whose struct has no `#[field(payload)]` field, hands it the row itself: `&Row` for one
+/// delivery, `&[Row]` for a batch (see [Row mode](crate#row-mode)). The forms, transactional mode
+/// and the retry declarations work the same in both modes.
+///
 /// # Examples
 ///
 /// ```
@@ -111,6 +116,48 @@ pub(crate) use open::{Registration, open};
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Five attempts, then the row moves to the `emails.failed` group.
 ///         b.include(send).max_attempts(nonzero!(5u32)).dead_letter("emails.failed");
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// In row mode the handler takes the row the subscription claimed:
+///
+/// ```
+/// # #[cfg(feature = "postgres")]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use sqlx::PgPool;
+///
+/// /// A page to send to the engineer on call: the row itself is the task.
+/// #[derive(Inbox, sqlx::FromRow, Clone)]
+/// #[inbox(table = "page_jobs")]
+/// pub struct Page {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     on_call: String,
+///     text: String,
+/// }
+///
+/// # async fn send_page(_: &str, _: &str) -> bool { true }
+/// #[subscriber(InboxQueue::<Page>::new("pages"))]
+/// async fn notify(page: &Page) -> HandlerOutcome {
+///     if send_page(&page.on_call, &page.text).await {
+///         HandlerOutcome::ack()
+///     } else {
+///         HandlerOutcome::retry()
+///     }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("pager", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         // Three attempts, then the row moves to the `pages.failed` group.
+///         b.include(notify).max_attempts(nonzero!(3u32)).dead_letter("pages.failed");
 ///     })
 /// }
 /// # }
