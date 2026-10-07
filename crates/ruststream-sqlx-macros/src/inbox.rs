@@ -7,7 +7,7 @@ use quote::quote;
 use syn::{DeriveInput, Generics, parse_quote, parse_quote_spanned};
 
 use crate::parse;
-use crate::{check, insert, template};
+use crate::{check, checked, insert, template};
 
 mod assembled;
 mod rows;
@@ -33,7 +33,15 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let table = inbox_table(input, &generics, &description, id_field);
     let rows = accessors(input, &generics, &inbox);
     let insert = insert::insert(input, &generics, &inbox)?;
-    Ok(quote!(#table #rows #insert))
+    let checked = checked::item(
+        input,
+        &generics,
+        &inbox,
+        (id_field, id_column),
+        key.as_deref(),
+        checked::Layout::Flat,
+    )?;
+    Ok(quote!(#table #rows #insert #checked))
 }
 
 /// `impl InboxTable` for a flat struct: its id, and its description as the chain and its type.
@@ -106,12 +114,12 @@ pub(crate) fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Gene
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use syn::{DeriveInput, parse_quote};
 
     use super::expand;
 
-    pub(super) fn errors(input: &DeriveInput) -> Vec<String> {
+    pub(crate) fn errors(input: &DeriveInput) -> Vec<String> {
         expand(input).map_or_else(
             |error| error.into_iter().map(|error| error.to_string()).collect(),
             |_| Vec::new(),
@@ -119,7 +127,7 @@ mod tests {
     }
 
     /// The expansion without whitespace, so a test reads it as the source would be written.
-    pub(super) fn expanded(input: &DeriveInput) -> syn::Result<String> {
+    pub(crate) fn expanded(input: &DeriveInput) -> syn::Result<String> {
         Ok(expand(input)?.to_string().replace(' ', ""))
     }
 

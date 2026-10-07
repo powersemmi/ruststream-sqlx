@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE \"checked_emails\" SET \"name\" = $1 WHERE \"id\" = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "217c43d66e5ecae9212769d5c8613a3a8b7c388d6c72bbbcd6c498d475af7399"
+}

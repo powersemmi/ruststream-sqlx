@@ -1,0 +1,43 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT `id`, IF(CHAR_LENGTH(CONCAT_WS('', LOWER(DATABASE()), '.', 'webhook-', `endpoint`)) BETWEEN 1 AND 64, CONCAT_WS('', LOWER(DATABASE()), '.', 'webhook-', `endpoint`), SHA2(CONCAT_WS('', LOWER(DATABASE()), '.', 'webhook-', `endpoint`), 256)) AS `__lock` FROM `checked_webhooks` WHERE IS_USED_LOCK(IF(CHAR_LENGTH(CONCAT_WS('', LOWER(DATABASE()), '.', 'webhook-', `endpoint`)) BETWEEN 1 AND 64, CONCAT_WS('', LOWER(DATABASE()), '.', 'webhook-', `endpoint`), SHA2(CONCAT_WS('', LOWER(DATABASE()), '.', 'webhook-', `endpoint`), 256))) IS NULL ORDER BY `id` LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | PRIMARY_KEY | AUTO_INCREMENT",
+          "collation": 63,
+          "max_size": 20
+        },
+        "origin": {
+          "Table": {
+            "table": "ruststream_checked.checked_webhooks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "__lock",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "collation": 255,
+          "max_size": 1312
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "467ceb4e500730e30244496670d697462cca6ecdedd2504a81463082b6c4ac3f"
+}

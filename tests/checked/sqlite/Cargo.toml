@@ -1,0 +1,26 @@
+[package]
+name = "ruststream-sqlx-checked-sqlite"
+description = "Checked queue tables on SQLite: the statements the derive generates enter cargo sqlx prepare."
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# The tables are one default feature: a workspace build without default features enables nothing
+# here, so the published crates keep exactly the features that build asks for.
+[features]
+default = ["checked"]
+checked = ["dep:chrono", "dep:ruststream-sqlx", "dep:sqlx"]
+
+[dependencies]
+chrono = { workspace = true, optional = true }
+ruststream-sqlx = { path = "../../../crates/ruststream-sqlx", optional = true, features = ["inbox", "sqlite", "chrono"] }
+# The service's own sqlx: `macros` checks the derive's statements against `DATABASE_URL`, or
+# against the committed `.sqlx` data where it is unset.
+sqlx = { workspace = true, optional = true, features = ["macros", "sqlite", "chrono"] }

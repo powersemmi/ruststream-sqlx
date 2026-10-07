@@ -1,5 +1,6 @@
 //! `#[inbox(..)]` on the struct: the table, its schema, its advisory lock key, what its
-//! transactions open at, the events the service implements itself and the clock.
+//! transactions open at, the events the service implements itself, the clock, and whether its
+//! statements are checked at compile time.
 
 use proc_macro2::{TokenStream as TokenStream2, TokenTree};
 use ruststream_sqlx_dialect::{Isolation, Mode, Opening};
@@ -9,6 +10,7 @@ use syn::spanned::Spanned;
 use syn::{DeriveInput, LitStr, Token};
 
 use super::custom::Custom;
+use crate::checked::Request;
 
 /// `#[inbox(..)]`: the table, its schema, its advisory lock key and what its transactions open at.
 pub(crate) struct Table {
@@ -19,6 +21,8 @@ pub(crate) struct Table {
     pub(crate) opening: Opening,
     pub(crate) custom: Custom,
     pub(crate) clock: Option<syn::Path>,
+    /// `checked` and `db = ..` as written.
+    pub(crate) checked: Request,
 }
 
 /// The isolation levels `isolation = ..` names, each read as [`Isolation::attribute`] spells it.
@@ -107,6 +111,7 @@ pub(super) fn table(input: &DeriveInput, derive: &str) -> syn::Result<Table> {
     let mut custom = Custom::default();
     let mut custom_seen = false;
     let mut clock = None;
+    let mut checked = Request::default();
     for attr in input
         .attrs
         .iter()
@@ -136,6 +141,25 @@ pub(super) fn table(input: &DeriveInput, derive: &str) -> syn::Result<Table> {
             if key == "isolation" || key == "mode" {
                 return self::opening(&key, &meta, &mut opening);
             }
+            if key == "checked" {
+                if !meta.input.is_empty() && !meta.input.peek(Token![,]) {
+                    return Err(
+                        meta.error("`checked` takes no value: `#[inbox(checked, db = ..)]`")
+                    );
+                }
+                if checked.checked.replace(meta.path.span()).is_some() {
+                    return Err(meta.error("`checked` is given twice"));
+                }
+                return Ok(());
+            }
+            if key == "db" {
+                let (word, value) = word(&meta)?;
+                let span = value.map_or_else(|| meta.path.span(), |value| value.span());
+                if checked.db.replace((word, span)).is_some() {
+                    return Err(meta.error("`db` is given twice"));
+                }
+                return Ok(());
+            }
             let (slot, dotted) = match key.as_str() {
                 "table" => (&mut name, Some(DOTTED_TABLE)),
                 "schema" => (&mut schema, Some(DOTTED_SCHEMA)),
@@ -143,7 +167,8 @@ pub(super) fn table(input: &DeriveInput, derive: &str) -> syn::Result<Table> {
                 _ => {
                     return Err(meta.error(
                         "unknown `#[inbox(..)]` option: expected `table`, `schema`, \
-                         `advisory_lock`, `isolation`, `mode`, `custom` or `clock`",
+                         `advisory_lock`, `isolation`, `mode`, `custom`, `clock`, `checked` or \
+                         `db`",
                     ));
                 }
             };
@@ -175,6 +200,7 @@ pub(super) fn table(input: &DeriveInput, derive: &str) -> syn::Result<Table> {
         opening,
         custom,
         clock,
+        checked,
     })
 }
 

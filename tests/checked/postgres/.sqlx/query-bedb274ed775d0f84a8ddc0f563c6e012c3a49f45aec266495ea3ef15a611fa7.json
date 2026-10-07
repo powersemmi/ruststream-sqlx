@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE \"checked_ledger\" SET \"account\" = $1, \"locked_until\" = NULL WHERE \"id\" = $2 AND \"locked_until\" = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bedb274ed775d0f84a8ddc0f563c6e012c3a49f45aec266495ea3ef15a611fa7"
+}

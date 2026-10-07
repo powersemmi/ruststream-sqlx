@@ -1,0 +1,69 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE `checked_ledger` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `id` IN (SELECT `id` FROM `checked_ledger` WHERE `id` = (SELECT `id` FROM `checked_ledger` WHERE `account` = ? ORDER BY `id` LIMIT 1) AND (`locked_until` IS NULL OR `locked_until` <= ?) AND NOT EXISTS (SELECT 1 FROM `checked_ledger` AS __work WHERE __work.`account` = ? AND __work.`locked_until` > ?)) RETURNING `id`, `account`, `attempt` - 1 AS `attempt`, `locked_until`, `payload`",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "attempt",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "locked_until",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "locked_until"
+          }
+        }
+      },
+      {
+        "name": "payload",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1366dce419aa4fb18279aadf97fcf789d7b3858f6943d72806cd275093660143"
+}

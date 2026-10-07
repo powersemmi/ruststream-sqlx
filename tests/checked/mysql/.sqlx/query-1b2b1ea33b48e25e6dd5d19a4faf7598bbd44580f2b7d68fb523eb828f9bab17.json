@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST((SELECT COUNT(*) FROM `checked_ledger` WHERE `account` = ?) = (SELECT COUNT(*) FROM `checked_ledger` WHERE `account` = ? FOR UPDATE SKIP LOCKED) AS SIGNED)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "CAST((SELECT COUNT(*) FROM `checked_ledger` WHERE `account` = ?) = (SELECT COUNT(*) FROM `checked_ledger` WHERE `account` = ? FOR UPDATE SKIP LOCKED) AS SIGNED)",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "1b2b1ea33b48e25e6dd5d19a4faf7598bbd44580f2b7d68fb523eb828f9bab17"
+}

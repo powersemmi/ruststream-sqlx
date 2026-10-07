@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO \"checked_ledger\" (\"account\", \"locked_until\", \"payload\") VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "237e8be45cb7b91d21afabd24ead96cd5ef02c8f21cd0b54a97e3442af5cc872"
+}

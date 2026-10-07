@@ -1276,6 +1276,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruststream-sqlx-checked-mysql"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "ruststream-sqlx",
+ "sqlx",
+]
+
+[[package]]
+name = "ruststream-sqlx-checked-postgres"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "ruststream-sqlx",
+ "sqlx",
+]
+
+[[package]]
+name = "ruststream-sqlx-checked-sqlite"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "ruststream-sqlx",
+ "sqlx",
+]
+
+[[package]]
 name = "ruststream-sqlx-dialect"
 version = "0.7.0"
 dependencies = [

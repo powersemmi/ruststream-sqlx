@@ -5,6 +5,9 @@ members = [
     "crates/ruststream-sqlx-dialect",
     "crates/ruststream-sqlx-macros",
     "examples/outbox",
+    "tests/checked/mysql",
+    "tests/checked/postgres",
+    "tests/checked/sqlite",
 ]
 
 [workspace.package]

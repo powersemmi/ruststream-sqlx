@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO \"checked_emails\" (\"name\", \"retry_after\", \"processed_at\", \"payload\", \"note\") VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ee3a587f96c18918f6ec7222bf0ccccd6acf9c402835bcb2545acb21a59c0945"
+}
