@@ -52,6 +52,7 @@ fn broker(pool: &Pool<Db>) -> SqlxBroker<Db> {
     SqlxBroker::new(pool.clone())
         .poll_interval(INTERVAL)
         .route::<SendEmail>("a")
+        .route::<SendEmail>("c")
         .listen_notify()
 }
 
@@ -174,7 +175,9 @@ async fn a_notification_without_a_group_wakes_every_subscription_of_the_table() 
 }
 
 /// A publish through the harness, on a live and on an in-process connection, reaches a listener
-/// of the test's own as a notification on the table's channel naming the group.
+/// of the test's own as a notification on the table's channel naming the group. The group is one
+/// no subscription of the app reads, so the publish returns once its row and its notification are
+/// written, whatever the subscriptions are doing.
 async fn announces_its_publish(tb: TestApp<()>, pool: &PgPool) {
     let mut listener = PgListener::connect_with(pool)
         .await
@@ -185,17 +188,17 @@ async fn announces_its_publish(tb: TestApp<()>, pool: &PgPool) {
         .expect("the channel listens");
     tb.broker::<SqlxBroker<Db>>()
         .message(&Job { n: 1 })
-        .to("a")
+        .to("c")
         .publish()
         .await
-        .expect("the publish is handled");
+        .expect("the publish is written");
     let notification = tokio::time::timeout(ANNOUNCED, listener.recv())
         .await
         .expect("the publish announces its row")
         .expect("the notification reads");
     assert_eq!(
         (notification.channel(), notification.payload()),
-        ("email_jobs", "a")
+        ("email_jobs", "c")
     );
     listener
         .unlisten_all()
@@ -210,9 +213,6 @@ async fn a_publish_announces_its_row_to_other_processes() {
     let tb = TestApp::start_live_within(app(&db.pool), WOKEN)
         .await
         .expect("the app starts");
-    tb.advance(IDLE)
-        .await
-        .expect("both subscriptions wait their interval");
     announces_its_publish(tb, &db.pool).await;
     db.finish().await;
 }

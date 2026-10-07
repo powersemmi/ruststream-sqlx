@@ -1,6 +1,9 @@
 //! A publish from the same process wakes the subscriptions of the table and the group it wrote,
-//! run as an application through `TestApp::start_live` against each stand and form, with a poll
-//! interval no test outlives.
+//! run as an application through `TestApp::start` against each stand and form, with a poll
+//! interval no test outlives: the harness settles once each job a test published was handled, and
+//! only a wake-up brings a subscription to it. Which subscriptions a publish wakes is pinned by the
+//! wake-up list's own tests; a test here writes no row the harness does not know, so what it
+//! asserts holds whenever the subscriptions run their first claims.
 
 use ruststream::runtime::PublishError;
 use ruststream::testing::{TestApp, TestError};
@@ -9,7 +12,7 @@ use ruststream_sqlx::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Pool;
 
-use super::{ASLEEP, IDLE, INTERVAL, WOKEN};
+use super::INTERVAL;
 use crate::live;
 
 /// A job a test publishes.
@@ -70,6 +73,11 @@ live::matrix! {
         HandlerOutcome::ack()
     }
 
+    /// Starts `app` in process.
+    async fn started(app: RustStream) -> TestApp<()> {
+        TestApp::start(app).await.expect("the app starts")
+    }
+
     async fn publish<State: Send + Sync + 'static>(
         tb: &TestApp<State>,
         to: &str,
@@ -85,8 +93,7 @@ live::matrix! {
             .with_broker(broker(&db.pool), |b| {
                 b.include(handle);
             });
-        let tb = TestApp::start_live_within(app, WOKEN).await.expect("the app starts");
-        tb.advance(IDLE).await.expect("the subscription waits its interval");
+        let tb = started(app).await;
         publish(&tb, "plain", 1).await.expect("the publish wakes the subscription");
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("plain")
@@ -106,8 +113,7 @@ live::matrix! {
                 b.include(bill).out_reply(Repository::<SendEmail>::default());
                 b.include(file);
             });
-        let tb = TestApp::start_live_within(app, WOKEN).await.expect("the app starts");
-        tb.advance(IDLE).await.expect("both subscriptions wait their interval");
+        let tb = started(app).await;
         publish(&tb, "orders", 7).await.expect("the order and its invoice are handled");
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("orders")
@@ -123,30 +129,22 @@ live::matrix! {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_publish_to_one_group_wakes_only_its_subscription() {
+    async fn a_publish_to_one_group_reaches_only_its_subscription() {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("groups", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
                 b.include(first);
                 b.include(second);
             });
-        let tb = TestApp::start_live_within(app, WOKEN).await.expect("the app starts");
-        tb.advance(IDLE).await.expect("both subscriptions wait their interval");
-        // A row of `b` written by another process: only the interval brings `b` to it.
-        let waiting = serde_json::to_vec(&Job { n: 2 }).expect("json");
-        db.mail(&[SendEmail::queued("b", waiting)]).await;
+        let tb = started(app).await;
         publish(&tb, "a", 1).await.expect("the publish wakes `a`");
-        tb.advance(ASLEEP).await.expect("`b` sleeps on");
         tb.broker::<SqlxBroker<Db>>()
             .subscriber("a")
             .assert_called_once()
+            .with(&Job { n: 1 })
             .settled(HandlerOutcome::ack());
+        // `b` reads the same table, and its claim takes only rows of its own group.
         tb.broker::<SqlxBroker<Db>>().subscriber("b").assert_not_called();
-        let rows = db.email_rows("email_jobs").await;
-        assert!(
-            rows.iter().any(|(group, _, _, finished)| group == "b" && !finished),
-            "the row of `b` waits: {rows:?}"
-        );
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }
@@ -158,8 +156,7 @@ live::matrix! {
             .with_broker(broker(&db.pool), |b| {
                 b.include(handle_all.batch(nonzero!(2)));
             });
-        let tb = TestApp::start_live_within(app, WOKEN).await.expect("the app starts");
-        tb.advance(IDLE).await.expect("the subscription waits its interval");
+        let tb = started(app).await;
         // The first write wakes a claim; the others land while it runs or right after, and each
         // keeps a wake-up for the claim after it.
         let (one, two, three) = tokio::join!(
@@ -186,27 +183,22 @@ live::matrix! {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_refused_publish_wakes_nothing() {
+    async fn a_refused_publish_writes_and_delivers_nothing() {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("refused", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
                 b.include(handle);
             });
-        let tb = TestApp::start_live_within(app, WOKEN).await.expect("the app starts");
-        tb.advance(IDLE).await.expect("the subscription waits its interval");
-        // A row written by another process, which a wake-up would bring the subscription to.
-        db.plain(&[serde_json::to_vec(&Job { n: 1 }).expect("json")]).await;
-        let refused = tb
-            .broker::<SqlxBroker<Db>>()
+        let tb = started(app).await;
+        // A header the table has no column for refuses the write. In process the harness's
+        // injection reports no outcome to the test, so the refusal shows in the table below.
+        tb.broker::<SqlxBroker<Db>>()
             .publish_with_headers("plain", &Job { n: 2 }, &Tenant { tenant: "acme" })
-            .await;
-        assert!(
-            matches!(refused, Err(TestError::Publish { .. })),
-            "a header the table has no column for refuses the publish: {refused:?}"
-        );
-        tb.advance(ASLEEP).await.expect("the subscription sleeps on");
+            .await
+            .expect("the injection is taken");
+        tb.settle().await.expect("the refused write settles");
         tb.broker::<SqlxBroker<Db>>().subscriber("plain").assert_not_called();
-        assert_eq!(db.count("plain_jobs").await, 1, "the row waits for the interval");
+        assert_eq!(db.count("plain_jobs").await, 0, "the refused row never reached the table");
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }
