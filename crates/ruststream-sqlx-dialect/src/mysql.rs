@@ -7,11 +7,12 @@ use crate::dialect::Dialect;
 use crate::form::{Form, KeyPart};
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
+use crate::outbox::OutboxDialect;
 use crate::row_lock::RowLock;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, Probe, SqlWriter};
+use crate::writer::{BuiltIn, OutboxWriter, Probe, SqlWriter};
 
 /// How MySQL reads the current time: UTC to the microsecond, fixed when the statement starts, so
 /// it does not follow the session's time zone.
@@ -323,6 +324,20 @@ impl Dialect for MySql {
             .group_count(spec, LOCK)
             .push(") AS SIGNED)");
         Ok(Some(sql.finish()))
+    }
+}
+
+impl OutboxDialect for MySql {
+    fn outbox_fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_fetch_statement(spec)
+    }
+
+    fn outbox_mark(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_mark_statement(spec)
+    }
+
+    fn outbox_recover(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_recover_statement(spec)
     }
 }
 

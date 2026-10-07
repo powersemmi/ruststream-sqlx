@@ -9,7 +9,7 @@ use syn::{Data, DeriveInput, Fields, Ident, Token, Type};
 
 mod custom;
 mod field;
-mod sqlx;
+pub(crate) mod sqlx;
 mod table;
 
 pub(crate) use custom::Custom;

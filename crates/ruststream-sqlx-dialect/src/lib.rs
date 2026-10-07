@@ -48,6 +48,11 @@
 //! implementation per [`level`] type, so a table that names a level its dialect lacks does not
 //! compile.
 //!
+//! A transactional outbox table records what a service publishes until a consumer has processed
+//! it. [`OutboxDialect`] builds its statements: the take of a record by its id, the mark of a
+//! processed record, and the recovery of the unprocessed records of one name, which the table's
+//! [`group`](TableSpec::group) column holds. Every built-in dialect implements it.
+//!
 //! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
 //! `sqlite` features. [`Postgres`] and [`MySql`] implement [`RowLock`], [`Lease`] and
 //! [`Advisory`], and [`MySql`] serves MariaDB too; [`Sqlite`] implements [`Lease`] and
@@ -150,6 +155,7 @@ mod lease;
 #[cfg(feature = "mysql")]
 mod mysql;
 mod opening;
+mod outbox;
 #[cfg(feature = "postgres")]
 mod postgres;
 mod role;
@@ -170,6 +176,7 @@ pub use lease::Lease;
 #[cfg(feature = "mysql")]
 pub use mysql::MySql;
 pub use opening::{Isolation, Mode, Opening, Opens, level};
+pub use outbox::OutboxDialect;
 #[cfg(feature = "postgres")]
 pub use postgres::Postgres;
 pub use role::Role;

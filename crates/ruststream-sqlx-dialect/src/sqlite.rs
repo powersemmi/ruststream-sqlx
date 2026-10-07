@@ -7,10 +7,11 @@ use crate::dialect::Dialect;
 use crate::form::KeyPart;
 use crate::lease::Lease;
 use crate::opening::{Mode, Opening, Opens, level};
+use crate::outbox::OutboxDialect;
 use crate::spec::TableSpec;
 use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
 use crate::table_name::TableName;
-use crate::writer::{BuiltIn, Probe, SqlWriter};
+use crate::writer::{BuiltIn, OutboxWriter, Probe, SqlWriter};
 
 /// How SQLite reads the current time: as text, in the layout sqlx writes `chrono` times in, so it
 /// compares with the times a service binds.
@@ -218,6 +219,20 @@ impl Dialect for Sqlite {
             Opening::Mode(Mode::Exclusive) => Ok(Some("BEGIN EXCLUSIVE")),
             Opening::Isolation(_) => Err(opening.refused(self.name())),
         }
+    }
+}
+
+impl OutboxDialect for Sqlite {
+    fn outbox_fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_fetch_statement(spec)
+    }
+
+    fn outbox_mark(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_mark_statement(spec)
+    }
+
+    fn outbox_recover(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+        self.outbox_recover_statement(spec)
     }
 }
 

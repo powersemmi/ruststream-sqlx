@@ -1,0 +1,35 @@
+error: table `outbox` has no `id` field: mark the field that identifies a record with `#[field(id)]`
+ --> tests/ui/outbox_roles.rs:5:8
+  |
+5 | struct NoRoles {
+  |        ^^^^^^^
+
+error: table `outbox` has no `name` field: mark the field that holds the name a record was published under with `#[field(name)]`
+ --> tests/ui/outbox_roles.rs:5:8
+  |
+5 | struct NoRoles {
+  |        ^^^^^^^
+
+error: table `outbox` has no `payload` field: mark the field that holds the published bytes with `#[field(payload)]`
+ --> tests/ui/outbox_roles.rs:5:8
+  |
+5 | struct NoRoles {
+  |        ^^^^^^^
+
+error: this field already plays `name`: a field plays one role
+  --> tests/ui/outbox_roles.rs:14:19
+   |
+14 |     #[field(name, payload)]
+   |                   ^^^^^^^
+
+error: `channel` plays `name`, which `name` plays already: a role is played by one field
+  --> tests/ui/outbox_roles.rs:26:5
+   |
+26 |     channel: String,
+   |     ^^^^^^^
+
+error: unknown role of an outbox record: expected `id`, `name`, `payload`, `headers` or `processed_at`
+  --> tests/ui/outbox_roles.rs:36:13
+   |
+36 |     #[field(retry_after)]
+   |             ^^^^^^^^^^^

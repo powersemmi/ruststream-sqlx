@@ -1,11 +1,12 @@
 //! The transactional outbox: what a service publishes is recorded in its own table until a
 //! consumer has processed it, and what was not processed is published again at startup.
 //!
-//! A struct deriving [`Outbox`](crate::Outbox) describes the table, `outbox!` registers it under
+//! A struct deriving [`Outbox`](derive@crate::Outbox) describes the table, `outbox!` registers it under
 //! the names it tracks, and the registry hands out the two middlewares and the republish. The
 //! events below are what the struct's statements do; a service implements the ones it lists in
 //! `#[outbox(custom(..))]`, and always [`Publish`], which has no default.
 
+mod database;
 mod error;
 mod events;
 mod layer;
@@ -16,6 +17,9 @@ mod row;
 mod switch;
 mod wrap;
 
+pub use database::OutboxDatabase;
+#[doc(hidden)]
+pub use database::{OutboxSql, no_outbox_statement};
 pub use error::{OutboxError, PoolAlreadySet, TrackedPublishError};
 pub use events::{Ack, Discard, Fetch, Publish, Recover, Retry, Tracked};
 pub use layer::TrackingLayer;
