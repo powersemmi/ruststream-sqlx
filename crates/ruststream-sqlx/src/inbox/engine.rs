@@ -15,6 +15,7 @@ use sqlx::{Error, FromRow};
 use super::QueueRow;
 use super::database::QueueDatabase;
 use super::form::advisory::events::Candidates;
+use super::headers::HeaderCell;
 use super::named::kinds::Kinds;
 use super::queue::Queue;
 
@@ -45,6 +46,10 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
     /// The lease a delivery holds: the expiry its claim wrote into `locked_until`, which its
     /// settlements match; `()` for a table in another form.
     type Token: Copy + Debug + Send + Sync + 'static;
+
+    /// Where a delivery keeps its header map: the map moved out of the `headers` field for a flat
+    /// struct, a cell built on the first read for a message assembled from a headers struct.
+    type Headers: HeaderCell<DB, Self>;
 
     /// The kinds a by-name subscription reads and binds the row's columns by, or `None` when it
     /// needs the row's own code: an event of the service's own, or a column type outside them.

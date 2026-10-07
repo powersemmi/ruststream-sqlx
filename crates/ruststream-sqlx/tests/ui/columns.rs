@@ -29,9 +29,9 @@ struct RoleOnSkipped {
 struct RoleOnFlattened {
     #[field(id)]
     job_id: i64,
-    #[field(headers)]
+    #[field(payload)]
     #[sqlx(flatten)]
-    headers: Headers,
+    body: Body,
 }
 
 #[derive(Inbox)]
@@ -44,8 +44,8 @@ struct GeneratedOnSkipped {
     created_at: i64,
 }
 
-struct Headers {
-    trace: String,
+struct Body {
+    bytes: Vec<u8>,
 }
 
 fn main() {}

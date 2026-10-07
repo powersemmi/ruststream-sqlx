@@ -300,8 +300,8 @@ fn misuse_of_the_attributes_is_reported() {
             "the column name is empty",
         ),
         (
-            parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field(headers)] #[sqlx(flatten)] headers: Headers } },
-            "`#[sqlx(flatten)]` leaves `headers` without a column, so it cannot play `headers`",
+            parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field(payload)] #[sqlx(flatten)] body: Body } },
+            "`#[sqlx(flatten)]` leaves `body` without a column, so it cannot play `payload`",
         ),
         (
             parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field(generated)] #[sqlx(skip)] created_at: i64 } },
@@ -440,5 +440,24 @@ fn a_json_field_is_marked_for_the_insert() -> syn::Result<()> {
         .map(|(_, column)| column.json)
         .collect();
     assert_eq!(json, [false, true, false]);
+    Ok(())
+}
+
+#[test]
+fn a_flattened_headers_field_holds_a_headers_struct() -> syn::Result<()> {
+    let input: DeriveInput = parse_quote! {
+        struct OrderJob {
+            #[field(headers)]
+            #[sqlx(flatten)]
+            headers: OrderHeaders,
+            note: Option<String>,
+        }
+    };
+    let fields = super::fields(&input)?;
+    assert!(matches!(fields[0].storage, Storage::Headers));
+    assert_eq!(
+        fields[1].column().map(|column| column.name.as_str()),
+        Some("note")
+    );
     Ok(())
 }

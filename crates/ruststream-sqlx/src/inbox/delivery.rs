@@ -24,6 +24,7 @@ use super::form::lease::settle::release;
 use super::form::lease::settle::release_in_process;
 use super::form::lease::{LeaseBook, Slot};
 use super::form::row_lock::BatchTx;
+use super::headers::HeaderCell;
 use super::queue::Queue;
 #[cfg(feature = "testing")]
 use super::testing::off_clock;
@@ -183,7 +184,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// ```
 pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     claimed: Claimed<Row>,
-    headers: HeaderMap,
+    headers: Row::Headers,
     pub(super) hold: Option<Hold<DB, Row>>,
     queue: &'static Queue,
     /// The subscription's handle on the pool, which the delivery lends its handler.
@@ -323,11 +324,11 @@ where
         queue: &'static Queue,
         pool: &'static Pool<DB>,
     ) -> Self {
-        // A row's headers move into the delivery in both modes: in row mode the row a handler
-        // borrows holds its headers column empty, and middleware reads the headers off the
-        // delivery.
+        // A row's headers column moves into the delivery in both modes: in row mode the row a
+        // handler borrows holds that column empty, and middleware reads the headers off the
+        // delivery. A message assembled from a headers struct builds its map on the first read.
         let headers = match &mut claimed {
-            Claimed::Row(row) => Row::take_headers(row),
+            Claimed::Row(row) => HeaderCell::take(row),
             Claimed::Missing(id) => {
                 tracing::warn!(
                     target: "ruststream_sqlx",
@@ -338,7 +339,7 @@ where
                     "the fetch returned no row for a claimed id; the decode-failure policy settles \
                      its delivery",
                 );
-                HeaderMap::new()
+                Row::Headers::default()
             }
             Claimed::Undecodable { id, attempt, error } => {
                 tracing::warn!(
@@ -352,7 +353,7 @@ where
                     "the row does not decode into its struct; the decode-failure policy settles \
                      its delivery",
                 );
-                HeaderMap::new()
+                Row::Headers::default()
             }
         };
         Self {
@@ -388,7 +389,7 @@ where
     /// `headers` were taken from the row when the batch was built, and the row counts as lent.
     pub(super) fn of_batch(
         row: Row,
-        headers: HeaderMap,
+        headers: Row::Headers,
         hold: Hold<DB, Row>,
         queue: &'static Queue,
         pool: &'static Pool<DB>,
@@ -445,7 +446,11 @@ where
     }
 
     fn headers(&self) -> &HeaderMap {
-        &self.headers
+        let row = match &self.claimed {
+            Claimed::Row(row) => Some(row),
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
+        };
+        self.headers.read(row)
     }
 
     fn decode_error(&self) -> Option<&CodecError> {

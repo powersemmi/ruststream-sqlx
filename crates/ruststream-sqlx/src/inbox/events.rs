@@ -572,7 +572,8 @@ pub trait Publish<DB: Database>: InboxRow {
 ///
 /// The derive implements it for the connection of each built-in dialect, `PgConnection` (feature
 /// `postgres`), `MySqlConnection` (feature `mysql`) and `SqliteConnection` (feature `sqlite`), with
-/// the statements built at compile time.
+/// the statements built at compile time. A headers struct gets it from
+/// [`InboxHeaders`](derive@crate::InboxHeaders): the queue table's columns.
 /// A struct with a `#[sqlx(flatten)]` field gets none: the derive cannot see the nested struct's
 /// columns, so the service writes that insert itself.
 ///
@@ -620,7 +621,7 @@ pub trait Publish<DB: Database>: InboxRow {
             `postgres`, `mysql` and `sqlite`), unless a `#[sqlx(flatten)]` field hides columns \
             from it: write that insert in the service"
 )]
-pub trait Insert<Connection>: InboxRow {
+pub trait Insert<Connection>: Sync {
     /// Inserts the row on `conn`.
     ///
     /// # Errors

@@ -9,22 +9,23 @@ use syn::{DeriveInput, Generics};
 use crate::parse::{Field, Inbox};
 
 /// What the lease form adds to a struct with a `locked_until` field.
-pub(super) struct LeaseParts {
+pub(crate) struct LeaseParts {
     /// The `LeaseRow` impl.
-    pub(super) row: Option<TokenStream2>,
+    pub(crate) row: Option<TokenStream2>,
     /// The refusal of the database's clock, as an item of its own.
-    pub(super) item_check: Option<TokenStream2>,
+    pub(crate) item_check: Option<TokenStream2>,
     /// The same refusal inside `SPEC`, for a generic struct.
-    pub(super) spec_check: Option<TokenStream2>,
+    pub(crate) spec_check: Option<TokenStream2>,
 }
 
-/// `LeaseRow` for a struct whose `field` plays `locked_until`, and the refusal of a lease on the
-/// database's clock.
-pub(super) fn lease_parts(
+/// `lease_trait` (`LeaseRow`, or `HeadersLease` for a headers struct) for a struct whose `field`
+/// plays `locked_until`, and the refusal of a lease on the database's clock.
+pub(crate) fn lease_parts(
     input: &DeriveInput,
     generics: &Generics,
     inbox: &Inbox<'_>,
     field: Option<&Field<'_>>,
+    lease_trait: &TokenStream2,
 ) -> LeaseParts {
     let Some(field) = field else {
         return LeaseParts {
@@ -39,7 +40,7 @@ pub(super) fn lease_parts(
     let time = quote_spanned!(ty.span()=> <#ty as ::ruststream_sqlx::TimeColumn>::Time);
     let row = quote! {
         #[automatically_derived]
-        impl #impl_generics ::ruststream_sqlx::LeaseRow for #name #ty_generics #where_clause {
+        impl #impl_generics #lease_trait for #name #ty_generics #where_clause {
             type Lease = #time;
         }
     };

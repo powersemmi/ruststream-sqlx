@@ -485,6 +485,8 @@ where
     // The lease in the type of the route's `locked_until` column, which the queue's kinds name.
     type Token = NamedTime;
 
+    type Headers = HeaderMap;
+
     fn kinds() -> Option<Kinds> {
         // The route's own row answers when the subscription opens.
         None

@@ -139,3 +139,17 @@ fn a_table_opens_its_transactions_at_the_last_opening_it_names() {
     );
     assert_eq!(names(&immediate), ["id"], "an opening adds no column");
 }
+
+#[test]
+fn a_message_assembled_from_the_table_reads_its_own_columns_after_the_data() {
+    const ASSEMBLED: TableSpec<'static> =
+        TableSpec::new("order_jobs", Column::new("job_id"), Form::RowLock)
+            .group(Column::new("name"))
+            .data(&[Column::new("tenant")])
+            .fetching(&[Column::new("note")]);
+    let assembled = ASSEMBLED;
+    assert_eq!(names(&assembled), ["job_id", "name", "tenant", "note"]);
+    assert!(!assembled.selects_all(), "every column is named");
+    let unassembled = assembled.fetching(&[]);
+    assert_eq!(names(&unassembled), ["job_id", "name", "tenant"]);
+}

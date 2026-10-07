@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::vec;
 
-use ruststream::{CarriesBatch, HeaderMap};
+use ruststream::CarriesBatch;
 use sqlx::Pool;
 
 #[cfg(feature = "testing")]
@@ -16,6 +16,7 @@ use super::engine::{Claimed, Events};
 use super::form::advisory::LockHold;
 use super::form::lease::{LeaseBook, Slot};
 use super::form::row_lock::BatchTx;
+use super::headers::HeaderCell;
 use super::queue::Queue;
 use super::subscriber::{InboxSubscriber, Taken};
 use super::{Lane, PayloadLane, PayloadRow, QueueRow, RowLane};
@@ -207,9 +208,10 @@ where
 {
     /// The rows the handler borrows, in claim order.
     rows: vec::IntoIter<Row>,
-    /// The headers taken from the rows, beside them; empty and unallocated while every row's are,
-    /// and shorter than the rows when the last rows' are.
-    headers: vec::IntoIter<HeaderMap>,
+    /// The headers taken from the rows, beside them; empty and unallocated while every row's are
+    /// unset (a message assembled from a headers struct builds its own on the first read), and
+    /// shorter than the rows when the last rows' are.
+    headers: vec::IntoIter<Row::Headers>,
     /// What holds the rows, beside them.
     claims: Claims<DB, Row>,
     /// The deliveries with no row to lend, in claim order; empty and unallocated when every row
@@ -325,14 +327,14 @@ where
 fn take<DB: QueueDatabase, Row: Events<DB>>(
     mut row: Row,
     rows: &mut Vec<Row>,
-    headers: &mut Vec<HeaderMap>,
+    headers: &mut Vec<Row::Headers>,
     count: usize,
 ) {
-    let taken = Row::take_headers(&mut row);
-    if !headers.is_empty() || !taken.is_empty() {
+    let taken = Row::Headers::take(&mut row);
+    if !headers.is_empty() || !taken.is_unset() {
         if headers.is_empty() {
             headers.reserve_exact(count);
-            headers.resize_with(rows.len(), HeaderMap::new);
+            headers.resize_with(rows.len(), Row::Headers::default);
         }
         headers.push(taken);
     }

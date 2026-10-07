@@ -64,7 +64,7 @@ fn payload_row(input: &DeriveInput, generics: &Generics, field: &Field<'_>) -> T
 /// struct's name: a struct without `Clone` gets one error there, rustc's, with its help to derive
 /// it. A message of the crate's own could only come as a second error beside it, since rustc
 /// checks the lane's bound wherever the impl is written.
-fn carried(input: &DeriveInput, generics: &Generics) -> TokenStream2 {
+pub(crate) fn carried(input: &DeriveInput, generics: &Generics) -> TokenStream2 {
     let name = &input.ident;
     let (_, ty_generics, _) = generics.split_for_impl();
     let mut bounded = generics.clone();

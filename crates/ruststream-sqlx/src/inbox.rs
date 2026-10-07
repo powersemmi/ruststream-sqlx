@@ -9,6 +9,7 @@ pub(crate) mod engine;
 mod error;
 mod events;
 pub(crate) mod form;
+pub(crate) mod headers;
 pub mod keys;
 pub(crate) mod named;
 mod publish;
@@ -40,6 +41,7 @@ pub use events::{
     Unlock,
 };
 pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
+pub use headers::{HeaderField, InboxHeaders};
 pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;

@@ -4,7 +4,9 @@ use std::str;
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use ruststream_sqlx::dialect::{ClaimShape, Lease, Statement};
-use ruststream_sqlx::{Fetch, HeaderColumn, Inbox, InboxRow, Insert, Publish, QueueDatabase};
+use ruststream_sqlx::{
+    Fetch, HeaderColumn, Inbox, InboxHeaders, InboxRow, Insert, Publish, QueueDatabase,
+};
 use sqlx::types::Json;
 use sqlx::{Error, Executor, FromRow};
 #[cfg(feature = "mysql")]
@@ -552,4 +554,81 @@ impl Fetch<Sqlite> for FetchedMail {
     async fn fetch(conn: &mut SqliteConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
         mail_fetch::sqlite(conn, MAILED, ids).await
     }
+}
+
+/// The queue table of an order's job, described by its headers struct: a group per name, an attempt and a lease, and the service's
+/// own headers. A field without a role is a header: `tenant`, `trace` where it is not `NULL`, and
+/// `order_id`.
+#[derive(Debug, Clone, PartialEq, InboxHeaders, FromRow)]
+#[inbox(table = "headed_jobs")]
+pub(crate) struct OrderHeaders {
+    #[field(id, generated)]
+    pub(crate) job_id: i64,
+    #[field(group)]
+    pub(crate) name: String,
+    #[field(attempt, generated)]
+    pub(crate) attempt: i16,
+    #[field(locked_until)]
+    pub(crate) locked_until: Option<DateTime<Utc>>,
+    pub(crate) tenant: String,
+    pub(crate) trace: Option<String>,
+    pub(crate) order_id: i64,
+}
+
+/// The message a handler takes from `headed_jobs`: the headers struct, and the job's note, which
+/// the default fetch reads from the same row.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+pub(crate) struct OrderJob {
+    #[field(headers)]
+    #[sqlx(flatten)]
+    pub(crate) headers: OrderHeaders,
+    pub(crate) note: Option<String>,
+}
+
+impl OrderJob {
+    /// A job of the queue `name` for the order `order_id` of `tenant`, as a producer writes it.
+    pub(crate) fn queued(name: &str, tenant: &str, trace: Option<&str>, order_id: i64) -> Self {
+        Self {
+            headers: OrderHeaders {
+                job_id: 0,
+                name: name.to_owned(),
+                attempt: 1,
+                locked_until: None,
+                tenant: tenant.to_owned(),
+                trace: trace.map(str::to_owned),
+                order_id,
+            },
+            note: None,
+        }
+    }
+
+    /// The same job with `note`.
+    pub(crate) fn noted(self, note: &str) -> Self {
+        Self {
+            note: Some(note.to_owned()),
+            ..self
+        }
+    }
+
+    /// `self` with the lease of the claim that lent `lent`: the claim writes it into the row, and
+    /// SQLite's claim lends the row with it, where the other databases lend the row as it was.
+    pub(crate) fn leased_as(self, lent: &Self) -> Self {
+        Self {
+            headers: OrderHeaders {
+                locked_until: lent.headers.locked_until,
+                ..self.headers
+            },
+            ..self
+        }
+    }
+}
+
+/// A message of `headed_jobs` that reads a column the table lacks: the default fetch names it, so
+/// its subscription stops at startup.
+#[derive(Debug, Clone, PartialEq, Inbox, FromRow)]
+pub(crate) struct MissingJob {
+    #[field(headers)]
+    #[sqlx(flatten)]
+    pub(crate) headers: OrderHeaders,
+    pub(crate) missing: String,
 }

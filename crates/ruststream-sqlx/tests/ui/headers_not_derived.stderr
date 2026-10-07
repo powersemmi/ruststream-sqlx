@@ -1,0 +1,26 @@
+error[E0277]: `OrderHeaders` is not a headers struct: a flattened `#[field(headers)]` field holds one
+  --> tests/ui/headers_not_derived.rs:10:24
+   |
+10 | #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+   |                        ^^^^^ this type does not derive `InboxHeaders`
+   |
+help: the trait `InboxHeaders` is not implemented for `OrderHeaders`
+  --> tests/ui/headers_not_derived.rs:5:1
+   |
+ 5 | struct OrderHeaders {
+   | ^^^^^^^^^^^^^^^^^^^
+   = note: derive `InboxHeaders` for `OrderHeaders` and describe the queue table on it, or drop `#[sqlx(flatten)]` to read the field as a header column
+   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: `OrderHeaders` is not a headers struct: a flattened `#[field(headers)]` field holds one
+  --> tests/ui/headers_not_derived.rs:14:14
+   |
+14 |     headers: OrderHeaders,
+   |              ^^^^^^^^^^^^ this type does not derive `InboxHeaders`
+   |
+help: the trait `InboxHeaders` is not implemented for `OrderHeaders`
+  --> tests/ui/headers_not_derived.rs:5:1
+   |
+ 5 | struct OrderHeaders {
+   | ^^^^^^^^^^^^^^^^^^^
+   = note: derive `InboxHeaders` for `OrderHeaders` and describe the queue table on it, or drop `#[sqlx(flatten)]` to read the field as a header column

@@ -1,0 +1,16 @@
+error[E0277]: the headers struct's table is in the advisory lock form, which selects its candidates with their keys itself
+  --> tests/ui/headers_custom_claim_advisory.rs:13:16
+   |
+13 | #[inbox(custom(claim))]
+   |                ^^^^^ the form of the message's headers struct
+   |
+   = help: the trait `ruststream_sqlx::__private::OwnClaim` is not implemented for `ruststream_sqlx::__private::AdvisoryForm`
+   = note: drop `claim` from the message struct's `custom(..)`
+note: required by a bound in `__takes`
+  --> tests/ui/headers_custom_claim_advisory.rs:12:24
+   |
+12 | #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+   |                        ^^^^^ required by this bound in `__takes`
+13 | #[inbox(custom(claim))]
+   |                ----- required by a bound in this function
+   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)
