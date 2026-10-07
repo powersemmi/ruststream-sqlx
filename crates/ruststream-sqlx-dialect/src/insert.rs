@@ -48,9 +48,6 @@ use crate::column::Column;
 use crate::spec::{Columns, TableSpec};
 use crate::statement::{NameLimit, Param, Statement, StatementError};
 
-#[cfg(test)]
-mod tests;
-
 /// How a built-in database spells an insert.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Spelling {

@@ -199,3 +199,59 @@ tuple!(
     Setting10, Setting11, Setting12, Setting13, Setting14, Setting15, Setting16, Setting17,
     Setting18, Setting19, Setting20
 );
+
+#[cfg(test)]
+mod tests {
+    use std::any::TypeId;
+    use std::time::SystemTime;
+
+    use super::{Declaration, Set, Unset};
+    use crate::SystemClock;
+    use crate::inbox::spec::{
+        Attempt, Clock, Fifo, Headers, Key, Lease, Payload, ProcessedAt, RetryAfter, own,
+    };
+
+    /// Whether two types are one.
+    fn same<Left: 'static, Right: 'static>() -> bool {
+        TypeId::of::<Left>() == TypeId::of::<Right>()
+    }
+
+    #[test]
+    fn a_lease_table_folds_each_setting_into_its_own_slot() {
+        type Settings = (
+            Lease<SystemTime>,
+            Payload,
+            Attempt,
+            RetryAfter<SystemTime>,
+            ProcessedAt<SystemTime>,
+            Key,
+        );
+        assert!(same::<
+            <Settings as Declaration>::Form,
+            Set<Lease<SystemTime>>,
+        >());
+        assert!(same::<<Settings as Declaration>::Message, Set<Payload>>());
+        assert!(same::<<Settings as Declaration>::Key, Set<Key>>());
+        assert!(same::<<Settings as Declaration>::Attempt, Set<Attempt>>());
+        assert!(same::<
+            <Settings as Declaration>::RetryAfter,
+            Set<RetryAfter<SystemTime>>,
+        >());
+        assert!(same::<
+            <Settings as Declaration>::ProcessedAt,
+            Set<ProcessedAt<SystemTime>>,
+        >());
+        assert!(same::<<Settings as Declaration>::Headers, Unset>());
+        assert!(same::<<Settings as Declaration>::Clock, Unset>());
+        assert!(same::<<Settings as Declaration>::OwnAck, Unset>());
+    }
+
+    #[test]
+    fn an_own_event_folds_into_its_own_slot() {
+        type Settings = (Fifo, Headers, own::Ack, Clock<SystemClock>);
+        assert!(same::<<Settings as Declaration>::OwnAck, Set<own::Ack>>());
+        assert!(same::<<Settings as Declaration>::Fifo, Set<Fifo>>());
+        assert!(same::<<Settings as Declaration>::OwnClaim, Unset>());
+        assert!(same::<<Settings as Declaration>::Form, Unset>());
+    }
+}

@@ -1,21 +1,17 @@
-use std::any::TypeId;
+//! A table described by hand with `InboxSpec`, as a service writes it: each chain of typed setters
+//! describes the same table as the dialect's `TableSpec` builder.
+
 use std::time::SystemTime;
 
-use ruststream_sqlx_dialect::{Column, Form, KeyPart, Mode, TableSpec, level};
-
-use super::{
-    Advisory, Attempt, Clock, Declaration, Fifo, HeaderFields, Headers, Key, Lease, Opens, Payload,
-    ProcessedAt, RetryAfter, Set, Unset, own,
+use ruststream_sqlx::dialect::{Column, Form, KeyPart, Mode, TableSpec, level};
+use ruststream_sqlx::spec::{
+    Advisory, Attempt, Clock, Fifo, HeaderFields, Headers, Key, Lease, Opens, Payload, ProcessedAt,
+    RetryAfter, own,
 };
-use crate::{DatabaseClock, InboxSpec, SystemClock};
+use ruststream_sqlx::{DatabaseClock, InboxSpec, SystemClock};
 
 const DATA: &[Column<'static>] = &[Column::new("recipient"), Column::new("subject")];
 const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("tenant")];
-
-/// Whether two types are one.
-fn same<Left: 'static, Right: 'static>() -> bool {
-    TypeId::of::<Left>() == TypeId::of::<Right>()
-}
 
 type LeaseTable = InboxSpec<(
     Lease<SystemTime>,
@@ -60,36 +56,6 @@ fn a_lease_table_describes_what_the_dialect_builder_describes() {
     assert_eq!(LEASE_TABLE.spec(), expected);
 }
 
-#[test]
-fn a_lease_table_folds_each_setting_into_its_own_slot() {
-    type Settings = (
-        Lease<SystemTime>,
-        Payload,
-        Attempt,
-        RetryAfter<SystemTime>,
-        ProcessedAt<SystemTime>,
-        Key,
-    );
-    assert!(same::<
-        <Settings as Declaration>::Form,
-        Set<Lease<SystemTime>>,
-    >());
-    assert!(same::<<Settings as Declaration>::Message, Set<Payload>>());
-    assert!(same::<<Settings as Declaration>::Key, Set<Key>>());
-    assert!(same::<<Settings as Declaration>::Attempt, Set<Attempt>>());
-    assert!(same::<
-        <Settings as Declaration>::RetryAfter,
-        Set<RetryAfter<SystemTime>>,
-    >());
-    assert!(same::<
-        <Settings as Declaration>::ProcessedAt,
-        Set<ProcessedAt<SystemTime>>,
-    >());
-    assert!(same::<<Settings as Declaration>::Headers, Unset>());
-    assert!(same::<<Settings as Declaration>::Clock, Unset>());
-    assert!(same::<<Settings as Declaration>::OwnAck, Unset>());
-}
-
 type AdvisoryTable = InboxSpec<(
     Clock<DatabaseClock>,
     Advisory,
@@ -127,13 +93,4 @@ fn a_fifo_row_lock_table_with_an_own_event_describes_what_the_dialect_builder_de
         .fifo_group(Column::new("customer"))
         .headers(Column::new("headers"));
     assert_eq!(FIFO_TABLE.spec(), expected);
-}
-
-#[test]
-fn an_own_event_folds_into_its_own_slot() {
-    type Settings = (Fifo, Headers, own::Ack, Clock<SystemClock>);
-    assert!(same::<<Settings as Declaration>::OwnAck, Set<own::Ack>>());
-    assert!(same::<<Settings as Declaration>::Fifo, Set<Fifo>>());
-    assert!(same::<<Settings as Declaration>::OwnClaim, Unset>());
-    assert!(same::<<Settings as Declaration>::Form, Unset>());
 }

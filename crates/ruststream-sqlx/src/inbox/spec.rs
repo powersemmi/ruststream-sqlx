@@ -10,8 +10,6 @@
 pub(super) mod builder;
 mod declaration;
 mod rules;
-#[cfg(test)]
-mod tests;
 
 use std::marker::PhantomData;
 

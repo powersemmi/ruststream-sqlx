@@ -1,12 +1,14 @@
-//! The `const fn` inserts: the same text as each built-in dialect's `insert`, over every shape a
-//! description takes, and the refusals a `const` turns into build errors.
+//! The `const fn` inserts a service renders through `ruststream_sqlx_dialect::insert`: the same
+//! text as each built-in dialect's `insert`, over every shape a description takes, and the
+//! refusals a `const` turns into build errors.
+
+#![cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
 
 use std::any::Any;
 use std::panic;
 
-use crate::{Column, Dialect, Form, KeyPart, Param, StatementError, TableSpec};
-
-use super::Sql;
+use ruststream_sqlx_dialect::insert::{self, Sql};
+use ruststream_sqlx_dialect::{Column, Dialect, Form, KeyPart, Param, StatementError, TableSpec};
 
 const KEY: &[KeyPart<'static>] = &[KeyPart::Literal("jobs-"), KeyPart::Column("id")];
 const DATA: &[Column<'static>] = &[
@@ -155,7 +157,7 @@ const BARE: TableSpec<'static> = TableSpec::new(
 fn a_capacity_that_fits_the_text_exactly_holds_it() {
     #[cfg(feature = "sqlite")]
     {
-        const EXACT: Sql<33> = super::sqlite(&BARE);
+        const EXACT: Sql<33> = insert::sqlite(&BARE);
         assert_eq!(EXACT.as_str(), "INSERT INTO `jobs` DEFAULT VALUES");
         assert_eq!(EXACT.to_string(), EXACT.as_str());
     }
@@ -163,9 +165,9 @@ fn a_capacity_that_fits_the_text_exactly_holds_it() {
 
 #[cfg(feature = "postgres")]
 mod postgres {
+    use ruststream_sqlx_dialect::Postgres;
+
     use super::*;
-    use crate::Postgres;
-    use crate::insert;
 
     const INSERT: Sql<256> = insert::postgres(&EMAILS);
 
@@ -209,9 +211,9 @@ mod postgres {
 
 #[cfg(feature = "mysql")]
 mod mysql {
+    use ruststream_sqlx_dialect::MySql;
+
     use super::*;
-    use crate::MySql;
-    use crate::insert;
 
     const INSERT: Sql<256> = insert::mysql(&EMAILS);
 
@@ -259,9 +261,9 @@ mod mysql {
 
 #[cfg(feature = "sqlite")]
 mod sqlite {
+    use ruststream_sqlx_dialect::Sqlite;
+
     use super::*;
-    use crate::Sqlite;
-    use crate::insert;
 
     const INSERT: Sql<256> = insert::sqlite(&EMAILS);
 

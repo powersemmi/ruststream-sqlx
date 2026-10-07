@@ -1,12 +1,11 @@
-//! What a description holds: a slot per role, its columns in order, its form, its groups,
-//! its clock and its opening.
+//! A table described by hand with `TableSpec`, as a service writes it: what the description holds
+//! (a slot per role, its columns in order, its form, its groups, its clock and its opening) and
+//! the settings it refuses.
 
 use std::any::Any;
 use std::panic;
 
-use super::{Column, Form, Role, TableSpec};
-use crate::form::KeyPart;
-use crate::opening::{Isolation, Mode, Opening};
+use ruststream_sqlx_dialect::{Column, Form, Isolation, KeyPart, Mode, Opening, Role, TableSpec};
 
 const EMAILS: TableSpec<'static> = TableSpec::new(
     "email_jobs",
