@@ -168,38 +168,48 @@ async fn cost(pool: &PgPool, service: Service) -> u64 {
         _ => "out",
     });
     let tb = match service {
-        Service::Bare => TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
-            b.include(relay).out_reply(Publish);
-            b.include(sink);
-        }))
-        .await,
-        Service::Untracked | Service::Tracked => TestApp::start(
-            app.layer(tracking.layer())
-                .publish_layer(tracking.publish_layer())
-                .with_broker(MemoryBroker::new(), |b| {
+        Service::Bare => {
+            TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
+                b.include(relay).out_reply(Publish);
+                b.include(sink);
+            }))
+            .await
+        }
+        Service::Untracked | Service::Tracked => {
+            TestApp::start(
+                app.layer(tracking.layer())
+                    .publish_layer(tracking.publish_layer())
+                    .with_broker(MemoryBroker::new(), |b| {
+                        b.include(relay).out_reply(Publish);
+                        b.include(sink);
+                    }),
+            )
+            .await
+        }
+        Service::TrackedPublish => {
+            TestApp::start(app.publish_layer(tracking.publish_layer()).with_broker(
+                MemoryBroker::new(),
+                |b| {
                     b.include(relay).out_reply(Publish);
                     b.include(sink);
-                }),
-        )
-        .await,
-        Service::TrackedPublish => TestApp::start(
-            app.publish_layer(tracking.publish_layer())
-                .with_broker(MemoryBroker::new(), |b| {
-                    b.include(relay).out_reply(Publish);
-                    b.include(sink);
-                }),
-        )
-        .await,
-        Service::RawPublish => TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
-            b.include(relay_raw).out_reply(Publish);
-            b.include(sink);
-        }))
-        .await,
-        Service::Raw => TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
-            b.include(relay_raw).out_reply(Publish);
-            b.include(sink_raw);
-        }))
-        .await,
+                },
+            ))
+            .await
+        }
+        Service::RawPublish => {
+            TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
+                b.include(relay_raw).out_reply(Publish);
+                b.include(sink);
+            }))
+            .await
+        }
+        Service::Raw => {
+            TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
+                b.include(relay_raw).out_reply(Publish);
+                b.include(sink_raw);
+            }))
+            .await
+        }
     }
     .expect("the service starts");
     let mut start = 0;
@@ -267,7 +277,10 @@ pub(super) async fn assert_outbox(pool: &PgPool) {
 /// raw insert followed by the same publish with the id header's value static, on a
 /// `MemoryBroker` nothing subscribes to.
 async fn assert_tracked_publish(pool: &PgPool) {
-    let connected = MemoryBroker::new().connect().await.expect("the broker connects");
+    let connected = MemoryBroker::new()
+        .connect()
+        .await
+        .expect("the broker connects");
     let plain = Publish.pair(&connected).await.expect("the publisher pairs");
     let tracking = Outbox::new(pool.clone()).register::<Record>("plain");
     let wrapped = tracking.wrap(Publish.pair(&connected).await.expect("the publisher pairs"));
