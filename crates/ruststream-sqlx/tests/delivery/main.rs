@@ -1,6 +1,5 @@
-//! What a handler is handed and what each outcome does to its row: acknowledgements, retries and
-//! dead letters, statements that fail, rows that do not decode, events a service implements
-//! itself, the database's clock, and the row itself where a table has no payload field.
+//! What a handler is handed and what each outcome does to its row: acknowledgements, events a
+//! service implements itself, and the database's clock.
 
 #![cfg(all(feature = "inbox", feature = "chrono", feature = "testing"))]
 
@@ -8,9 +7,5 @@
 mod live;
 
 mod database_clock;
-mod decoding;
-mod failures;
 mod outcomes;
 mod own_events;
-mod retries;
-mod row_mode;

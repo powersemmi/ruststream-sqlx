@@ -1,5 +1,4 @@
-//! Transactional mode: the delivery's transaction lent to its handler, in every form and on every
-//! stand.
+//! The level and the mode a table's transactions open at, as its struct declares.
 
 #![cfg(all(
     feature = "inbox",
@@ -11,9 +10,10 @@
 #[path = "../live/mod.rs"]
 mod live;
 
-mod advisory_session;
+#[path = "../transactional/job.rs"]
 mod job;
-mod lease_in_work;
-mod writes;
+mod openings;
+mod repeatable_read;
+mod sqlite_modes;
 
 use job::{JOB, Job, LEASE, POLL, audit};

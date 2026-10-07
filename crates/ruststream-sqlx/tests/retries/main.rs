@@ -9,6 +9,9 @@
     feature = "testing"
 ))]
 
+#[path = "../live/mod.rs"]
+mod live;
+
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -18,8 +21,6 @@ use ruststream::{Broker, ConnectedBroker, RetryDeclaration, SubscriptionSource};
 use ruststream_sqlx::{ConnectedSqlxBroker, Inbox, InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Pool};
-
-use crate::live;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Task {
