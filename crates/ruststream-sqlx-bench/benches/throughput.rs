@@ -211,7 +211,8 @@ async fn drain(app: impl App, latch: &Latch) {
 struct Measured {
     database: &'static str,
     form: &'static str,
-    delivery: String,
+    /// The batch size, or nothing for single deliveries.
+    batch: Option<usize>,
     workers: usize,
     pool: u32,
     rows: usize,
@@ -247,9 +248,7 @@ async fn measure(cell: Cell, rows: usize, rounds: usize) -> Measured {
     Measured {
         database: cell.database.name(),
         form: cell.database.form(),
-        delivery: cell
-            .batch
-            .map_or_else(|| "single".to_owned(), |size| format!("batch of {size}")),
+        batch: cell.batch.map(NonZeroUsize::get),
         workers: cell.workers.get(),
         pool: POOL,
         rows,
@@ -294,7 +293,8 @@ fn main() {
             "{} {}, {}, {} workers: raw {:.0}, service {:.0} msg/s, {:.1}% ({})",
             row.database,
             row.form,
-            row.delivery,
+            row.batch
+                .map_or_else(|| "single".to_owned(), |size| format!("batch of {size}")),
             row.workers,
             row.raw.best,
             row.framework.best,
