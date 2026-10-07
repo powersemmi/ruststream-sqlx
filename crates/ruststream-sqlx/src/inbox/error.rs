@@ -227,6 +227,23 @@ pub enum SqlxBrokerError {
         /// The row's id, as logs name it.
         id: String,
     },
+    /// The broker with `listen_notify` could not listen on the channel of the subscription's
+    /// table as it opened.
+    #[error(
+        "subscription `{subscription}` on table `{table}` ({row}): the broker could not listen \
+         for the table's notifications: {source}"
+    )]
+    Listen {
+        /// The subscription.
+        subscription: String,
+        /// The table, qualified with its schema: the channel.
+        table: String,
+        /// The row type.
+        row: &'static str,
+        /// The database's error.
+        #[source]
+        source: Box<sqlx::Error>,
+    },
     /// The service's `Publish` failed.
     #[error("publishing to `{name}` into table `{table}` ({row}) failed: {source}")]
     Publish {
@@ -316,6 +333,17 @@ mod tests {
             "subscription `emails` on table `email_jobs` (SendEmail): the handler still holds the \
              transaction of row 7, so its settlement took no effect; the transaction rolls back \
              when the handler's `Tx` drops"
+        );
+        let unheard = SqlxBrokerError::Listen {
+            subscription: "emails".to_owned(),
+            table: "email_jobs".to_owned(),
+            row: "SendEmail",
+            source: Box::new(sqlx::Error::PoolClosed),
+        };
+        assert_eq!(
+            unheard.to_string(),
+            "subscription `emails` on table `email_jobs` (SendEmail): the broker could not listen \
+             for the table's notifications: attempted to acquire a connection on a closed pool"
         );
         let old = SqlxBrokerError::ServerTooOld {
             subscription: "emails".to_owned(),

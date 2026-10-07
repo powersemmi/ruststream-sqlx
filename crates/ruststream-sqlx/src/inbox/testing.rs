@@ -218,7 +218,19 @@ impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
                 source: cancelled(),
             })
         })?;
-        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current());
+        let listening = match self.listen {
+            Some(start) => {
+                let pool = self.pool.clone();
+                Some(
+                    off_clock(start(pool))
+                        .await
+                        .unwrap_or_else(|| Err(cancelled()))
+                        .map_err(|source| SqlxBrokerError::Connect { source })?,
+                )
+            }
+            None => None,
+        };
+        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current(), listening);
         let _ = connected.shared.harness.clock.set(TestClock::start());
         connected.shared.closing.run_in_process();
         Ok(connected)
@@ -280,8 +292,8 @@ async fn inject<DB: QueueDatabase>(
     headers: HeaderMap,
 ) {
     let message = OutgoingMessage::new(name, payload).with_headers(headers);
-    let written = match shared.routes.find(name) {
-        Some((route, _)) => insert_routed(shared, route, &message).await,
+    let written = match shared.routes.find_with_wake(name) {
+        Some((route, wake)) => insert_routed(shared, route, wake, &message).await,
         None => Err(SqlxBrokerError::NoRoute {
             name: name.to_owned(),
         }),

@@ -193,6 +193,87 @@ pub(crate) mod mail_fetch {
     }
 }
 
+/// A fetch of the service's own over `headed_jobs` joined to `customer_orders`, per database: the
+/// rows of `ids`, read with the columns a row's struct names (the job's as `j`, the order's as
+/// `o`). A job whose order is missing joins no row, so the claim of its id finds none.
+///
+/// It refuses a list of no ids, as the fetch over `plain_jobs` does.
+pub(crate) mod order_fetch {
+    use sqlx::{AssertSqlSafe, Error, FromRow};
+    #[cfg(feature = "mysql")]
+    use sqlx::{MySqlConnection, mysql::MySqlRow};
+    #[cfg(feature = "postgres")]
+    use sqlx::{PgConnection, postgres::PgRow};
+    #[cfg(feature = "sqlite")]
+    use sqlx::{SqliteConnection, sqlite::SqliteRow};
+
+    use super::own_fetch::refuse_none;
+
+    /// The jobs joined to their orders.
+    const JOINED: &str = "headed_jobs j JOIN customer_orders o ON o.id = j.order_id";
+
+    /// The select of MySQL and SQLite, which bind no list as one parameter: one placeholder per id.
+    #[cfg(any(feature = "mysql", feature = "sqlite"))]
+    fn listed(columns: &str, ids: &[i64]) -> AssertSqlSafe<String> {
+        let placeholders = vec!["?"; ids.len()].join(", ");
+        AssertSqlSafe(format!(
+            "SELECT {columns} FROM {JOINED} WHERE j.job_id IN ({placeholders})"
+        ))
+    }
+
+    #[cfg(feature = "postgres")]
+    pub(crate) async fn postgres<Row>(
+        conn: &mut PgConnection,
+        columns: &str,
+        ids: &[i64],
+    ) -> Result<Vec<Row>, Error>
+    where
+        Row: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+    {
+        refuse_none(ids)?;
+        sqlx::query_as(AssertSqlSafe(format!(
+            "SELECT {columns} FROM {JOINED} WHERE j.job_id = ANY($1)"
+        )))
+        .bind(ids)
+        .fetch_all(conn)
+        .await
+    }
+
+    #[cfg(feature = "mysql")]
+    pub(crate) async fn mysql<Row>(
+        conn: &mut MySqlConnection,
+        columns: &str,
+        ids: &[i64],
+    ) -> Result<Vec<Row>, Error>
+    where
+        Row: for<'r> FromRow<'r, MySqlRow> + Send + Unpin,
+    {
+        refuse_none(ids)?;
+        let mut select = sqlx::query_as(listed(columns, ids));
+        for id in ids {
+            select = select.bind(id);
+        }
+        select.fetch_all(conn).await
+    }
+
+    #[cfg(feature = "sqlite")]
+    pub(crate) async fn sqlite<Row>(
+        conn: &mut SqliteConnection,
+        columns: &str,
+        ids: &[i64],
+    ) -> Result<Vec<Row>, Error>
+    where
+        Row: for<'r> FromRow<'r, SqliteRow> + Send + Unpin,
+    {
+        refuse_none(ids)?;
+        let mut select = sqlx::query_as(listed(columns, ids));
+        for id in ids {
+            select = select.bind(id);
+        }
+        select.fetch_all(conn).await
+    }
+}
+
 /// The rows of the row lock form: a claim locks its rows in a transaction their settlements end.
 pub(crate) mod row_lock;
 

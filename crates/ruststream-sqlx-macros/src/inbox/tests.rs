@@ -215,3 +215,95 @@ fn every_broken_rule_is_reported_at_once() {
         ]
     );
 }
+
+#[test]
+fn a_message_assembled_from_a_headers_struct_keeps_the_tables_parts_on_it() {
+    let cases: [(DeriveInput, &[&str]); 5] = [
+        (
+            parse_quote! { struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, #[field(id)] id: i64 } },
+            &[
+                "`id` plays `id` beside the headers struct `Head`, which describes the queue table: \
+               mark the field that plays `id` in `Head`",
+            ],
+        ),
+        (
+            parse_quote! { struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, #[field(payload)] body: Vec<u8> } },
+            &[
+                "`body` plays `payload` beside the headers struct `Head`: a message assembled from a \
+               headers struct is handed to its handler itself, as in row mode, so it holds no \
+               payload; drop the role",
+            ],
+        ),
+        (
+            parse_quote! {
+                #[inbox(table = "jobs", custom(fetch), advisory_lock = "jobs-{id}")]
+                struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head }
+            },
+            &[
+                "`table` describes the queue table, which the headers struct `Head` describes: \
+                 put it on `Head`'s `#[inbox(..)]`",
+                "`advisory_lock` describes the queue table, which the headers struct `Head` \
+                 describes: put it on `Head`'s `#[inbox(..)]`",
+            ],
+        ),
+        (
+            parse_quote! {
+                struct Job {
+                    #[field(headers)] #[sqlx(flatten)] headers: Head,
+                    #[field(headers)] #[sqlx(flatten)] more: Head,
+                    #[sqlx(flatten)] order: Order,
+                }
+            },
+            &[
+                "`more` flattens a second headers struct: a message is assembled from one, `Head`",
+                "`order` flattens a struct whose columns the default fetch cannot name: list \
+                 `fetch` in `#[inbox(custom(..))]` and read the message in the service's own \
+                 `Fetch`",
+            ],
+        ),
+        (
+            parse_quote! {
+                #[inbox(custom(lock))]
+                struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head }
+            },
+            &[
+                "`lock` is listed without `unlock`: the service's own lock is released by its own \
+               unlock, so list both in `custom(..)`",
+            ],
+        ),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(errors(&input), expected, "{}", input.ident);
+    }
+}
+
+#[test]
+fn a_messages_own_columns_join_its_headers_structs_description() -> syn::Result<()> {
+    let input: DeriveInput = parse_quote! {
+        struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, note: String, #[sqlx(skip)] cache: u8 }
+    };
+    let impls = expand(&input)?.to_string();
+    assert!(
+        impls.contains(
+            "< Head as :: ruststream_sqlx :: InboxHeaders > :: SPEC . fetching (& [:: ruststream_sqlx :: dialect :: Column :: new (\"note\")])"
+        ),
+        "{impls}"
+    );
+    assert!(impls.contains("type Headers = :: ruststream_sqlx :: __private :: LazyHeaders ;"));
+    // The service's own fetch reads the message wherever its columns live: the description stays
+    // the table's.
+    let fetched: DeriveInput = parse_quote! {
+        #[inbox(custom(fetch, claim))]
+        struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, customer: String }
+    };
+    let impls = expand(&fetched)?.to_string();
+    assert!(
+        impls.contains("const SPEC : :: ruststream_sqlx :: dialect :: TableSpec < 'static > = < Head as :: ruststream_sqlx :: InboxHeaders > :: SPEC ;"),
+        "{impls}"
+    );
+    assert!(
+        impls.contains("OwnClaim"),
+        "the listed claim is held to the form: {impls}"
+    );
+    Ok(())
+}

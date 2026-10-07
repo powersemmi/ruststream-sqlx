@@ -1,0 +1,5 @@
+error: `custom(..)` lists the events of the message, which a handler takes: put it on the message struct whose `#[field(headers)]` field flattens `OrderHeaders`
+ --> tests/ui/headers_with_custom.rs:4:31
+  |
+4 | #[inbox(table = "order_jobs", custom(fetch))]
+  |                               ^^^^^^

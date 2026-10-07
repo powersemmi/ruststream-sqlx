@@ -208,3 +208,23 @@ CREATE TABLE audit (
     job_id BIGINT,
     note   TEXT
 );
+
+-- A queue table whose message is assembled from it: the mechanics, the service's own headers
+-- `tenant`, `trace` and `order_id`, and the job's note, which the message reads beside them.
+CREATE TABLE headed_jobs (
+    job_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    attempt      INTEGER NOT NULL DEFAULT 1,
+    locked_until TEXT,
+    tenant       TEXT NOT NULL,
+    trace        TEXT,
+    order_id     INTEGER NOT NULL,
+    note         TEXT
+);
+
+-- The orders the jobs of `headed_jobs` are for, which a fetch of the service's own joins.
+CREATE TABLE customer_orders (
+    id       INTEGER PRIMARY KEY,
+    customer TEXT NOT NULL,
+    total    INTEGER NOT NULL
+);

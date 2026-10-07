@@ -485,6 +485,10 @@ where
     // The lease in the type of the route's `locked_until` column, which the queue's kinds name.
     type Token = NamedTime;
 
+    type Ids = ();
+
+    type Headers = HeaderMap;
+
     fn kinds() -> Option<Kinds> {
         // The route's own row answers when the subscription opens.
         None
@@ -615,6 +619,7 @@ where
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
         lease: Option<&'a Leasing<NamedTime>>,
+        _ids: &'a mut (),
         out: &'a mut Vec<Claimed<Self>>,
     ) -> Result<(), Error> {
         let claimed = out.len();

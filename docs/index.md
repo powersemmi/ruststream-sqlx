@@ -22,6 +22,19 @@ without a payload column is in row mode: the handler takes the row itself, the s
 struct as sqlx read it, with no codec in between. A batch handler takes the rows of one claim as
 one slice.
 
+A queue table may be described by a headers struct of its own: the columns that run the queue and
+the service's headers. The handler then takes a message struct that holds the headers struct
+beside data of its own, and the service's own query may join that data from other tables. The
+delivery's headers come from the fields of the headers struct, built only when something reads
+them.
+
+A subscription that found its queue empty waits its poll interval. A publish through the broker
+wakes the subscriptions of its table in the same process at once. On Postgres, `listen_notify()`
+also wakes them on notifications from other processes. The broker then holds one connection of the
+pool, and each publish runs one more statement. Postgres takes one lock, global to the server,
+when a transaction that notifies commits, so such transactions commit one at a time, which limits
+many concurrent writers.
+
 A handler mounted with `.transactional()` writes through its delivery's transaction, in every
 form. Acknowledgement commits the handler's writes and finishes the row in one transaction. Every
 other outcome rolls the writes back. While a delivery is in work, its transaction holds a

@@ -10,6 +10,9 @@ use sqlx::Pool;
 
 use super::broker::Shared;
 use super::database::QueueDatabase;
+#[cfg(feature = "testing")]
+use super::database::notify::Listening;
+use super::database::notify::announce;
 use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
@@ -19,11 +22,13 @@ use super::testing::{cancelled, off_clock};
 mod repository;
 mod routed;
 mod routes;
+mod wake;
 
 pub use repository::{Repository, RepositoryPublisher};
 pub use routed::{Routed, RoutedPublisher};
 use routes::Route;
 pub(crate) use routes::Routes;
+pub(crate) use wake::{TableWake, Wakes};
 
 /// The table `spec` describes, qualified with its schema, for messages.
 pub(crate) fn table_of(spec: &TableSpec<'_>) -> String {
@@ -70,6 +75,7 @@ where
 /// down.
 async fn insert<DB, Row>(
     shared: &Shared<DB>,
+    wake: &'static TableWake,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), SqlxBrokerError>
 where
@@ -85,12 +91,17 @@ where
     fits::<DB, Row>(message)?;
     #[cfg(feature = "testing")]
     if shared.harness.in_process() {
-        return publish_off_clock::<DB, Row>(&shared.pool, message)
+        let notify = shared.listening.as_ref().map(Listening::notify);
+        return publish_off_clock::<DB, Row>(&shared.pool, notify, wake, message)
             .await
             .map_err(failed);
     }
     let mut conn = shared.pool.acquire().await.map_err(failed)?;
-    Row::publish(&mut conn, message).await.map_err(failed)
+    Row::publish(&mut conn, message).await.map_err(failed)?;
+    if let Some(listening) = &shared.listening {
+        announce::<DB>(listening.notify(), &mut conn, wake, message.name()).await;
+    }
+    Ok(())
 }
 
 /// Writes `message` into `Row`'s table on `conn`, unless the table cannot hold one of its
@@ -109,11 +120,13 @@ where
         .map_err(|source| failed(message, &Row::SPEC, type_name::<Row>(), source))
 }
 
-/// Writes `message` through `route` on a connection of the pool, unless the broker is shut down:
-/// the route table's write, for the broker's publishes and the harness's injections alike.
+/// Writes `message` through `route` on a connection of the pool, unless the broker is shut down,
+/// then wakes the subscriptions `wake` holds for the message's group: the route table's write,
+/// for the broker's publishes and the harness's injections alike.
 pub(crate) async fn insert_routed<DB: QueueDatabase>(
     shared: &Shared<DB>,
     route: &dyn Route<DB>,
+    wake: &'static TableWake,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), SqlxBrokerError> {
     // Why a run-time check: the pool is the service's and outlives the broker, so only the
@@ -123,19 +136,29 @@ pub(crate) async fn insert_routed<DB: QueueDatabase>(
     }
     #[cfg(feature = "testing")]
     if shared.harness.in_process() {
-        return route.insert_in_process(shared, message).await;
+        route.insert_in_process(shared, wake, message).await?;
+        wake.wake(message.name());
+        return Ok(());
     }
     let mut conn = shared.pool.acquire().await.map_err(|source| {
         let description = route.description();
         failed(message, &description.spec, description.row, source)
     })?;
-    route.insert(&mut conn, message).await
+    route.insert(&mut conn, message).await?;
+    if let Some(listening) = &shared.listening {
+        announce::<DB>(listening.notify(), &mut conn, wake, message.name()).await;
+    }
+    wake.wake(message.name());
+    Ok(())
 }
 
-/// The insert of an in-process connection, off a paused clock.
+/// The insert of an in-process connection, off a paused clock, announced with `notify` when the
+/// broker listens.
 #[cfg(feature = "testing")]
 async fn publish_off_clock<DB, Row>(
     pool: &Pool<DB>,
+    notify: Option<&'static str>,
+    wake: &'static TableWake,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), sqlx::Error>
 where
@@ -149,15 +172,21 @@ where
     off_clock(async move {
         let mut conn = pool.acquire().await?;
         let message = OutgoingMessage::new(&name, &payload).with_headers(headers);
-        Row::publish(&mut conn, &message).await
+        Row::publish(&mut conn, &message).await?;
+        if let Some(notify) = notify {
+            announce::<DB>(notify, &mut conn, wake, &name).await;
+        }
+        Ok(())
     })
     .await
     .unwrap_or_else(|| Err(cancelled()))
 }
 
-/// A publisher's write: the insert, then the harness's books of what the broker published.
+/// A publisher's write: the insert, the harness's books of what the broker published, then the
+/// wake-up of the subscriptions `wake` holds for the message's group once the row is written.
 async fn write<DB, Row>(
     shared: &Shared<DB>,
+    wake: &'static TableWake,
     message: &OutgoingMessage<'_>,
 ) -> Result<(), SqlxBrokerError>
 where
@@ -166,11 +195,14 @@ where
 {
     #[cfg(feature = "testing")]
     shared.harness.expect(message.name());
-    let inserted = insert::<DB, Row>(shared, message).await;
+    let inserted = insert::<DB, Row>(shared, wake, message).await;
     #[cfg(feature = "testing")]
     match &inserted {
         Ok(()) => shared.harness.published(message),
         Err(_) => shared.harness.refused(message.name()),
+    }
+    if inserted.is_ok() {
+        wake.wake(message.name());
     }
     inserted
 }

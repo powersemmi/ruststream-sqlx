@@ -1,0 +1,30 @@
+error[E0277]: `Region` is not a header value: a field of a headers struct without a role becomes a header
+  --> tests/ui/headers_field_type.rs:13:5
+   |
+ 8 | #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+   |                        ------------ required by a bound introduced by this call
+...
+13 |     region: Region,
+   |     ^^^^^^^^^^^^^^ a header field of this type
+   |
+help: the trait `HeaderField` is not implemented for `Region`
+  --> tests/ui/headers_field_type.rs:6:1
+   |
+ 6 | struct Region(String);
+   | ^^^^^^^^^^^^^
+   = note: implement `HeaderField` for `Region`, or give the field a role with `#[field(..)]`
+   = help: the following other types implement trait `HeaderField`:
+             Option<T>
+             Vec<u8>
+             bool
+             i16
+             i32
+             i64
+             i8
+             std::string::String
+           and $N others
+note: required by a bound in `ruststream_sqlx::__private::put_header`
+  --> src/inbox/headers.rs
+   |
+   | pub fn put_header(headers: &mut HeaderMap, name: &'static str, field: &impl HeaderField) {
+   |                                                                             ^^^^^^^^^^^ required by this bound in `put_header`

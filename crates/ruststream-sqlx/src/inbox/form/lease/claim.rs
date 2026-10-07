@@ -10,12 +10,14 @@ use crate::inbox::queue::Queue;
 use crate::inbox::subscriber::{Failed, begin, take_group};
 use crate::inbox::tx::PoolTx;
 
-/// Claims up to `cx.limit` rows of a lease subscription into `rows`, and returns the lease they
+/// Claims up to `cx.limit` rows of a lease subscription into `rows` (a claim of ids reads them
+/// into `ids`), and returns the lease they
 /// hold: committed before it returns, so the rows hold their leases and no transaction does.
 pub(crate) async fn claim_leased<DB, Row>(
     pool: &Pool<DB>,
     cx: &Claiming,
     now: Now,
+    ids: &mut Row::Ids,
     rows: &mut Vec<Claimed<Row>>,
 ) -> Result<Row::Token, Failed>
 where
@@ -40,7 +42,7 @@ where
             let lease = Row::lease(queue, now).map_err(claim_failed)?;
             let taken = take_group::<DB, Row>(&mut tx, cx, Some(&lease)).await?;
             if taken {
-                Row::claim(&mut tx, cx, Some(&lease), rows)
+                Row::claim(&mut tx, cx, Some(&lease), ids, rows)
                     .await
                     .map_err(claim_failed)?;
                 if queue.prepared.stamps {
@@ -70,7 +72,7 @@ where
     // The claim writes the lease itself, in one statement that commits on its own.
     let mut conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
     let lease = Row::lease(queue, now).map_err(claim_failed)?;
-    Row::claim(&mut conn, cx, Some(&lease), rows)
+    Row::claim(&mut conn, cx, Some(&lease), ids, rows)
         .await
         .map_err(claim_failed)?;
     Ok(lease.expiry)

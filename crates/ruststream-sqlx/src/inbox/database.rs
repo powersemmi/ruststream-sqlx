@@ -17,11 +17,13 @@ use super::queue::Queue;
 mod any;
 pub(crate) mod built_in;
 mod insert;
+pub(crate) mod notify;
 
 #[cfg(feature = "any")]
 pub use any::AnyDialect;
 pub use built_in::{BuiltIn, BuiltInDialect};
 pub use insert::{InsertSql, OnConnection, no_insert};
+pub use notify::Notifies;
 
 /// A sqlx database the inbox runs on: one that binds and reads the values the queue's own
 /// statements use, runs statements on a connection, and reports the rows a statement changed.
@@ -121,13 +123,14 @@ pub trait QueueDatabase: Database {
     where
         T: for<'r> Decode<'r, Self> + Type<Self>;
 
-    /// Runs a claim of ids. Machinery.
+    /// Runs a claim of ids into `out`. Machinery.
     #[doc(hidden)]
     fn fetch_ids<'c, Id>(
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
-    ) -> impl Future<Output = Result<Vec<Id>, Error>> + Send + 'c
+        out: &'c mut Vec<Id>,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c
     where
         Id: for<'r> Decode<'r, Self> + Type<Self> + Send + Unpin + 'c;
 
@@ -259,15 +262,23 @@ where
         row.try_get::<T, _>(name)
     }
 
-    fn fetch_ids<'c, Id>(
+    async fn fetch_ids<'c, Id>(
         conn: &'c mut Self::Connection,
         sql: &'static str,
         arguments: Self::Arguments,
-    ) -> impl Future<Output = Result<Vec<Id>, Error>> + Send + 'c
+        out: &'c mut Vec<Id>,
+    ) -> Result<(), Error>
     where
         Id: for<'r> Decode<'r, Self> + Type<Self> + Send + Unpin + 'c,
     {
-        sqlx::query_scalar_with::<Self, Id, _>(sql, arguments).fetch_all(conn)
+        // Into the subscription's buffer, as the claim's rows go, and through the plain query's
+        // stream: `query_scalar`'s `fetch_all` boxes a stream per layer and collects a vector of
+        // its own on every claim.
+        let mut rows = sqlx::query_with::<Self, _>(sql, arguments).fetch(conn);
+        while let Some(row) = rows.try_next().await? {
+            out.push(row.try_get::<Id, _>(0_usize)?);
+        }
+        Ok(())
     }
 
     async fn prepare(conn: &mut Self::Connection, sql: &'static str) -> Result<(), Error> {
