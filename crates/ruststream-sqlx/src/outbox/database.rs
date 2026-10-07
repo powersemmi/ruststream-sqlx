@@ -350,6 +350,7 @@ mod tests {
     const TABLE: TableSpec<'static> = TableSpec::new("outbox", Column::new("id"), Form::RowLock)
         .group(Column::new("name"))
         .payload(Column::new("payload"))
+        .processed_at(Column::new("processed_at"))
         .database_clock();
 
     #[test]
@@ -374,24 +375,25 @@ mod tests {
         use super::{MYSQL_BACKEND, POSTGRES_BACKEND, SQLITE_BACKEND};
 
         let defaults = <Any as OutboxDatabase>::defaults(&TABLE)?;
-        let fetch = |backend| {
+        // The mark reads each database's clock, so its text differs on every dialect.
+        let mark = |backend| {
             defaults
                 .for_backend(backend)
-                .map(|statements| statements.fetch)
+                .map(|statements| statements.mark)
         };
         assert_eq!(
-            fetch(POSTGRES_BACKEND),
-            Some(dialect::Postgres.outbox_fetch(&TABLE)?.sql())
+            mark(POSTGRES_BACKEND),
+            Some(dialect::Postgres.outbox_mark(&TABLE)?.sql())
         );
         assert_eq!(
-            fetch(MYSQL_BACKEND),
-            Some(dialect::MySql.outbox_fetch(&TABLE)?.sql())
+            mark(MYSQL_BACKEND),
+            Some(dialect::MySql.outbox_mark(&TABLE)?.sql())
         );
         assert_eq!(
-            fetch(SQLITE_BACKEND),
-            Some(dialect::Sqlite.outbox_fetch(&TABLE)?.sql())
+            mark(SQLITE_BACKEND),
+            Some(dialect::Sqlite.outbox_mark(&TABLE)?.sql())
         );
-        assert_eq!(fetch("MSSQL"), None);
+        assert_eq!(mark("MSSQL"), None);
         Ok(())
     }
 
