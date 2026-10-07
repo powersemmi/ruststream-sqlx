@@ -1,8 +1,8 @@
 error[E0080]: evaluation panicked: a queue table's description names a column twice: a column plays one role or holds one field, so name each column once across the id, the roles, `data` and `fetching`
  --> src/inbox/manual.rs
   |
-  |     const SPEC: TableSpec<'static> = check::checked(Row::TABLE.spec());
-  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ruststream_sqlx::inbox::manual::<impl ruststream_sqlx::InboxRow for Doubled>::SPEC` failed inside this call
+  |     const SPEC: TableSpec<'static> = check::checked(&Row::TABLE.spec());
+  |                                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ruststream_sqlx::inbox::manual::<impl ruststream_sqlx::InboxRow for Doubled>::SPEC` failed inside this call
   |
 note: inside `ruststream_sqlx::inbox::manual::check::checked`
  --> $RUST/core/src/panic.rs
@@ -13,7 +13,7 @@ note: inside `ruststream_sqlx::inbox::manual::check::checked`
  ::: src/inbox/manual/check.rs
   |
   | /     assert!(
-  | |         !names_a_column_twice(&spec),
+  | |         !names_a_column_twice(spec),
   | |         "a queue table's description names a column twice: a column plays one role or holds one \
   | |          field, so name each column once across the id, the roles, `data` and `fetching`"
   | |     );
