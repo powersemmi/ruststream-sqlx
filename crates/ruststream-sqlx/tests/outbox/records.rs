@@ -29,9 +29,6 @@ pub(crate) struct OrderRecord {
     payload: Vec<u8>,
     #[field(headers)]
     headers: Headers,
-    // The derive reads the column's name off the field, and the default statements select only
-    // records whose mark is `NULL`, so nothing reads the value.
-    #[expect(dead_code, reason = "the field names the mark's column")]
     #[field(processed_at)]
     processed_at: Option<DateTime<Utc>>,
 }
