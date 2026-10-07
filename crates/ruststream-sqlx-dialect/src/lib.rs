@@ -56,9 +56,11 @@
 //! [`Postgres`], [`MySql`] and [`Sqlite`] are built in, behind the `postgres`, `mysql` and
 //! `sqlite` features. [`Postgres`] and [`MySql`] implement [`RowLock`], [`Lease`] and
 //! [`Advisory`], and [`MySql`] serves MariaDB too; [`Sqlite`] implements [`Lease`] and
-//! [`Advisory`]. A database without a built-in dialect takes a type of the service's own: it
-//! implements [`Dialect`], the trait of each form it builds and [`Opens`] for each level it opens,
-//! and writes every statement in its database's SQL. A service on a built-in dialect that writes
+//! [`Advisory`]. Their inserts are written by the `const fn`s of [`insert`], so a service that
+//! describes a table by hand renders its insert in a `const`, as the derive does. A database
+//! without a built-in dialect takes a type of the service's own: it implements [`Dialect`], the
+//! trait of each form it builds and [`Opens`] for each level it opens, and writes every statement
+//! in its database's SQL. A service on a built-in dialect that writes
 //! one statement its own way writes it as an event of its inbox: `#[inbox(custom(ack))]` and an
 //! `Ack` implementation of its own, in
 //! [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#an-event-of-the-services-own).
@@ -151,6 +153,8 @@ mod advisory;
 mod column;
 mod dialect;
 mod form;
+#[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
+pub mod insert;
 mod lease;
 #[cfg(feature = "mysql")]
 mod mysql;

@@ -207,7 +207,8 @@ fn the_advisory_form_settles_by_the_row_alone() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn an_advisory_fifo_group_is_refused() {
-    let fifo = ADVISED.fifo_group(Column::new("name"));
+    let fifo = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(PREFIXED_KEY))
+        .fifo_group(Column::new("name"));
     let refused = StatementError::AdvisoryFifo { dialect: "mysql" };
     assert_eq!(MySql.advisory_claim(&fifo), Err(refused.clone()));
     assert_eq!(MySql.take(&fifo, ClaimShape::Ids), Err(refused.clone()));

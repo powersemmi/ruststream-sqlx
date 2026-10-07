@@ -297,7 +297,8 @@ fn the_advisory_statements_refuse_tables_of_other_forms() {
 
 #[test]
 fn a_fifo_group_keeps_its_order_through_the_key_instead() {
-    let fifo = EMAILS.fifo_group(Column::new("name"));
+    let fifo = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(JOB_KEY))
+        .fifo_group(Column::new("name"));
     let refused = StatementError::AdvisoryFifo {
         dialect: "postgres",
     };

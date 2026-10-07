@@ -19,11 +19,11 @@ enum Grouping<'a> {
 /// open at.
 ///
 /// `#[derive(Inbox)]` builds one as a constant, and a dialect reads it to build statements. The id
-/// column is part of the constructor and every role has one slot, so a table without an id or
-/// with a role played twice cannot be described. Column names are strings, so the types do not
-/// catch a name used twice or a lock key reading a column the table lacks: `#[derive(Inbox)]`
-/// refuses both at compile time, and a description written by hand meets the database's own
-/// checks when the statements are prepared.
+/// column is part of the constructor and every role has one slot, which its setter fills once (a
+/// second call panics), so a table without an id or with a role played twice cannot be described.
+/// Column names are strings, so the types do not catch a name used twice or a lock key reading a
+/// column the table lacks: `#[derive(Inbox)]` refuses both at compile time, and a description
+/// written by hand meets the database's own checks when the statements are prepared.
 ///
 /// # Examples
 ///
@@ -143,8 +143,16 @@ impl<'a> TableSpec<'a> {
     /// The same table, inside `schema`.
     ///
     /// `#[inbox(schema = "app")]` sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already names a schema. In a `const` the panic is a build error.
     #[must_use]
     pub const fn within(self, schema: &'a str) -> Self {
+        assert!(
+            self.schema.is_none(),
+            "a table description is given the schema twice: name it once"
+        );
         Self {
             schema: Some(schema),
             ..self
@@ -154,8 +162,18 @@ impl<'a> TableSpec<'a> {
     /// The same table, split into groups by `column`; a subscription reads one group.
     ///
     /// `#[field(group)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already splits into groups, by this setter or by
+    /// [`fifo_group`](Self::fifo_group). In a `const` the panic is a build error.
     #[must_use]
     pub const fn group(self, column: Column<'a>) -> Self {
+        assert!(
+            matches!(self.grouping, Grouping::None),
+            "a table description sets its `group` column twice (`group` or `fifo_group`): a role \
+             belongs to one column"
+        );
         Self {
             grouping: Grouping::Groups(column),
             ..self
@@ -176,8 +194,18 @@ impl<'a> TableSpec<'a> {
     /// ([`StatementError::AdvisoryFifo`](crate::StatementError::AdvisoryFifo)).
     ///
     /// `#[field(group, fifo = true)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already splits into groups, by this setter or by
+    /// [`group`](Self::group). In a `const` the panic is a build error.
     #[must_use]
     pub const fn fifo_group(self, column: Column<'a>) -> Self {
+        assert!(
+            matches!(self.grouping, Grouping::None),
+            "a table description sets its `group` column twice (`group` or `fifo_group`): a role \
+             belongs to one column"
+        );
         Self {
             grouping: Grouping::Fifo(column),
             ..self
@@ -187,8 +215,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, with the delivery's partition key read from `column`.
     ///
     /// `#[field(partition_key)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `partition_key` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
     #[must_use]
     pub const fn partition_key(self, column: Column<'a>) -> Self {
+        assert!(
+            self.partition_key.is_none(),
+            "a table description sets its `partition_key` column twice: a role belongs to one column"
+        );
         Self {
             partition_key: Some(column),
             ..self
@@ -198,8 +235,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, with rows claimed in the order of `column`, a smaller value first.
     ///
     /// `#[field(priority)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `priority` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
     #[must_use]
     pub const fn priority(self, column: Column<'a>) -> Self {
+        assert!(
+            self.priority.is_none(),
+            "a table description sets its `priority` column twice: a role belongs to one column"
+        );
         Self {
             priority: Some(column),
             ..self
@@ -209,8 +255,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, where `column` holds the time before which a row is not claimed.
     ///
     /// `#[field(retry_after)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `retry_after` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
     #[must_use]
     pub const fn retry_after(self, column: Column<'a>) -> Self {
+        assert!(
+            self.retry_after.is_none(),
+            "a table description sets its `retry_after` column twice: a role belongs to one column"
+        );
         Self {
             retry_after: Some(column),
             ..self
@@ -220,8 +275,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, where `column` counts the attempts.
     ///
     /// `#[field(attempt)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `attempt` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
     #[must_use]
     pub const fn attempt(self, column: Column<'a>) -> Self {
+        assert!(
+            self.attempt.is_none(),
+            "a table description sets its `attempt` column twice: a role belongs to one column"
+        );
         Self {
             attempt: Some(column),
             ..self
@@ -231,8 +295,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, where acknowledgement sets `column` instead of deleting the row.
     ///
     /// `#[field(processed_at)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `processed_at` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
     #[must_use]
     pub const fn processed_at(self, column: Column<'a>) -> Self {
+        assert!(
+            self.processed_at.is_none(),
+            "a table description sets its `processed_at` column twice: a role belongs to one column"
+        );
         Self {
             processed_at: Some(column),
             ..self
@@ -242,8 +315,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, where `column` holds the delivery's headers.
     ///
     /// `#[field(headers)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `headers` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
     #[must_use]
     pub const fn headers(self, column: Column<'a>) -> Self {
+        assert!(
+            self.headers.is_none(),
+            "a table description sets its `headers` column twice: a role belongs to one column"
+        );
         Self {
             headers: Some(column),
             ..self
@@ -253,8 +335,27 @@ impl<'a> TableSpec<'a> {
     /// The same table, where `column` holds the message bytes a handler decodes.
     ///
     /// `#[field(payload)]` on a field sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already has a `payload` column: a role belongs to one column. In a
+    /// `const` the panic is a build error.
+    ///
+    /// ```compile_fail,E0080
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// // Two columns for one role do not build.
+    /// const JOBS: TableSpec<'static> = TableSpec::new("jobs", Column::new("id"), Form::RowLock)
+    ///     .payload(Column::new("payload"))
+    ///     .payload(Column::new("body"));
+    /// # fn main() { let _ = JOBS; }
+    /// ```
     #[must_use]
     pub const fn payload(self, column: Column<'a>) -> Self {
+        assert!(
+            self.payload.is_none(),
+            "a table description sets its `payload` column twice: a role belongs to one column"
+        );
         Self {
             payload: Some(column),
             ..self
@@ -264,8 +365,17 @@ impl<'a> TableSpec<'a> {
     /// The same table, with the columns of the message's own data: the columns without a role.
     ///
     /// `#[derive(Inbox)]` passes every field without a role here.
+    ///
+    /// # Panics
+    ///
+    /// When the description already lists data columns: the list is given once. In a `const` the
+    /// panic is a build error.
     #[must_use]
     pub const fn data(self, columns: &'a [Column<'a>]) -> Self {
+        assert!(
+            self.data.is_empty(),
+            "a table description lists its data columns twice: give the list once"
+        );
         Self {
             data: columns,
             ..self
@@ -279,8 +389,17 @@ impl<'a> TableSpec<'a> {
     /// headers struct into its `#[field(headers)]` field, which describes the rest of the table.
     /// The default fetch then names every column it reads, so a column the table lacks stops the
     /// subscription when its statements are prepared.
+    ///
+    /// # Panics
+    ///
+    /// When the description already lists fetched columns: the list is given once. In a `const`
+    /// the panic is a build error.
     #[must_use]
     pub const fn fetching(self, columns: &'a [Column<'a>]) -> Self {
+        assert!(
+            self.fetched.is_empty(),
+            "a table description lists its fetched columns twice: give the list once"
+        );
         Self {
             fetched: columns,
             ..self
@@ -316,12 +435,21 @@ impl<'a> TableSpec<'a> {
     /// The same table, with its transactions opened at the isolation level `isolation`.
     ///
     /// The row lock claim's transaction opens at it, and so does the transaction a broker opens
-    /// for a handler's writes. A table opens at one level or in one mode: the last of `isolation`
-    /// and [`mode`](Self::mode) given is the table's.
+    /// for a handler's writes. A table opens at one level or in one mode.
     ///
     /// `#[inbox(isolation = repeatable_read)]` sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already opens at a level or in a mode, by this setter or by
+    /// [`mode`](Self::mode). In a `const` the panic is a build error.
     #[must_use]
     pub const fn isolation(self, isolation: Isolation) -> Self {
+        assert!(
+            matches!(self.opening, Opening::Default),
+            "a table description sets its opening twice (`isolation` or `mode`): a table opens at \
+             one level or in one mode"
+        );
         Self {
             opening: Opening::Isolation(isolation),
             ..self
@@ -330,12 +458,21 @@ impl<'a> TableSpec<'a> {
 
     /// The same table, with its SQLite transactions opened in `mode`.
     ///
-    /// A table opens in one mode or at one level: the last of `mode` and
-    /// [`isolation`](Self::isolation) given is the table's.
+    /// A table opens in one mode or at one level.
     ///
     /// `#[inbox(mode = immediate)]` sets it.
+    ///
+    /// # Panics
+    ///
+    /// When the description already opens at a level or in a mode, by this setter or by
+    /// [`isolation`](Self::isolation). In a `const` the panic is a build error.
     #[must_use]
     pub const fn mode(self, mode: Mode) -> Self {
+        assert!(
+            matches!(self.opening, Opening::Default),
+            "a table description sets its opening twice (`isolation` or `mode`): a table opens at \
+             one level or in one mode"
+        );
         Self {
             opening: Opening::Mode(mode),
             ..self
@@ -767,6 +904,46 @@ impl<'a> TableSpec<'a> {
         self.database_clock
     }
 
+    /// The message's data columns, in the order the description lists them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .data(&[Column::new("recipient"), Column::new("subject")]);
+    ///
+    /// let names: Vec<&str> = EMAILS.data_columns().iter().map(|column| column.name()).collect();
+    /// assert_eq!(names, ["recipient", "subject"]);
+    /// ```
+    #[must_use]
+    pub const fn data_columns(&self) -> &'a [Column<'a>] {
+        self.data
+    }
+
+    /// The columns only a message assembled from the table reads, in the order the description
+    /// lists them ([`fetching`](Self::fetching)).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// const ORDERS: TableSpec<'static> =
+    ///     TableSpec::new("order_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .data(&[Column::new("tenant")])
+    ///         .fetching(&[Column::new("note")]);
+    ///
+    /// let names: Vec<&str> = ORDERS.fetched_columns().iter().map(|column| column.name()).collect();
+    /// assert_eq!(names, ["note"]);
+    /// ```
+    #[must_use]
+    pub const fn fetched_columns(&self) -> &'a [Column<'a>] {
+        self.fetched
+    }
+
     /// The column that plays `role`, or `None` when the table has none.
     ///
     /// The `locked_until` column is the one the lease form carries.
@@ -898,11 +1075,56 @@ impl<'a> TableSpec<'a> {
     /// }
     /// ```
     pub fn columns(&self) -> impl Iterator<Item = Column<'a>> {
-        Role::ALL
-            .iter()
-            .filter_map(|role| self.column(*role))
-            .chain(self.data.iter().copied())
-            .chain(self.fetched.iter().copied())
+        Columns::new(self)
+    }
+}
+
+/// Every column of a description in [`TableSpec::columns`] order, walked by a `const fn` as well
+/// as by an iterator, so a `const` insert and a statement built at run time list the same columns.
+#[derive(Debug, Clone)]
+pub(crate) struct Columns<'s, 'a> {
+    spec: &'s TableSpec<'a>,
+    role: usize,
+    data: usize,
+    fetched: usize,
+}
+
+impl<'s, 'a> Columns<'s, 'a> {
+    pub(crate) const fn new(spec: &'s TableSpec<'a>) -> Self {
+        Self {
+            spec,
+            role: 0,
+            data: 0,
+            fetched: 0,
+        }
+    }
+
+    /// The next column, or `None` past the last.
+    pub(crate) const fn next_column(&mut self) -> Option<Column<'a>> {
+        while self.role < Role::ALL.len() {
+            let role = Role::ALL[self.role];
+            self.role += 1;
+            if let Some(column) = self.spec.column(role) {
+                return Some(column);
+            }
+        }
+        if self.data < self.spec.data.len() {
+            self.data += 1;
+            return Some(self.spec.data[self.data - 1]);
+        }
+        if self.fetched < self.spec.fetched.len() {
+            self.fetched += 1;
+            return Some(self.spec.fetched[self.fetched - 1]);
+        }
+        None
+    }
+}
+
+impl<'a> Iterator for Columns<'_, 'a> {
+    type Item = Column<'a>;
+
+    fn next(&mut self) -> Option<Column<'a>> {
+        self.next_column()
     }
 }
 

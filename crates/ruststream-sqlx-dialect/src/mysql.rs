@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use crate::advisory::Advisory;
 use crate::dialect::Dialect;
 use crate::form::{Form, KeyPart};
+use crate::insert::{Placeholder, Spelling, quote_into};
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
 use crate::outbox::OutboxDialect;
@@ -59,6 +60,17 @@ const MYSQL_FLOOR: Floor = Floor {
 const MARIADB_FLOOR: Floor = Floor {
     release: (10, 6, 0),
     name: "MariaDB 10.6",
+};
+
+/// How MySQL and MariaDB spell an insert, for the `const fn` that writes it and for [`MySql`]'s own
+/// statements.
+pub(crate) const SPELLING: Spelling = Spelling {
+    dialect: "mysql",
+    quote: b'`',
+    placeholder: Placeholder::Question,
+    default_row: " () VALUES ()",
+    // MySQL and MariaDB count a name's characters, and refuse a longer one.
+    name_limit: Some(NameLimit::Characters(64)),
 };
 
 /// MySQL and MariaDB: backtick-quoted names, `?` placeholders, rows claimed with
@@ -144,12 +156,9 @@ const MARIADB_FLOOR: Floor = Floor {
 pub struct MySql;
 
 impl BuiltIn for MySql {
-    /// MySQL and MariaDB count a name's characters, and refuse a longer one.
-    const NAME_LIMIT: Option<NameLimit> = Some(NameLimit::Characters(64));
+    const SPELLING: Spelling = SPELLING;
 
     const ROW_LOCKS: bool = true;
-
-    const DEFAULT_ROW: &'static str = " () VALUES ()";
 
     /// A backslash escapes the next character of a string literal, unless the server's SQL mode
     /// has `NO_BACKSLASH_ESCAPES`; under that mode a doubled backslash reads as two, the same in
@@ -211,14 +220,7 @@ impl Dialect for MySql {
     }
 
     fn quote_into(&self, ident: &str, out: &mut String) {
-        out.push('`');
-        for character in ident.chars() {
-            if character == '`' {
-                out.push('`');
-            }
-            out.push(character);
-        }
-        out.push('`');
+        quote_into(SPELLING.quote, ident, out);
     }
 
     fn placeholder_into(&self, _: NonZeroUsize, out: &mut String) {

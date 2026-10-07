@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use crate::advisory::Advisory;
 use crate::dialect::Dialect;
 use crate::form::KeyPart;
+use crate::insert::{Placeholder, Spelling, quote_into};
 use crate::lease::Lease;
 use crate::opening::{Isolation, Opening, Opens, level};
 use crate::outbox::OutboxDialect;
@@ -27,6 +28,18 @@ const TRY_LOCK: &str = "SELECT pg_try_advisory_lock(hashtextextended($1, 0))::in
 
 /// Releases the session's lock on the 64-bit hash of a key.
 const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::bigint";
+
+/// How Postgres spells an insert, for the `const fn` that writes it and for [`Postgres`]'s own
+/// statements.
+pub(crate) const SPELLING: Spelling = Spelling {
+    dialect: "postgres",
+    quote: b'"',
+    placeholder: Placeholder::Dollar,
+    default_row: " DEFAULT VALUES",
+    // `NAMEDATALEN` less its terminator. Postgres truncates a longer identifier without an
+    // error, so the statement would address another object.
+    name_limit: Some(NameLimit::Bytes(63)),
+};
 
 /// Postgres: double-quoted names, `$1` placeholders, rows claimed with `FOR UPDATE SKIP LOCKED`.
 ///
@@ -93,13 +106,9 @@ const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::b
 pub struct Postgres;
 
 impl BuiltIn for Postgres {
-    /// `NAMEDATALEN` less its terminator. Postgres truncates a longer identifier without an
-    /// error, so the statement would address another object.
-    const NAME_LIMIT: Option<NameLimit> = Some(NameLimit::Bytes(63));
+    const SPELLING: Spelling = SPELLING;
 
     const ROW_LOCKS: bool = true;
-
-    const DEFAULT_ROW: &'static str = " DEFAULT VALUES";
 
     /// `standard_conforming_strings`, on by default since Postgres 9.1, keeps a backslash as it is.
     const BACKSLASH_ESCAPES: bool = false;
@@ -147,14 +156,7 @@ impl Dialect for Postgres {
     }
 
     fn quote_into(&self, ident: &str, out: &mut String) {
-        out.push('"');
-        for character in ident.chars() {
-            if character == '"' {
-                out.push('"');
-            }
-            out.push(character);
-        }
-        out.push('"');
+        quote_into(SPELLING.quote, ident, out);
     }
 
     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) {

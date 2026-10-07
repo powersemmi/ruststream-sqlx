@@ -5,11 +5,12 @@ use std::num::NonZeroUsize;
 use crate::advisory::Advisory;
 use crate::dialect::Dialect;
 use crate::form::KeyPart;
+use crate::insert::{Placeholder, Spelling, quote_into};
 use crate::lease::Lease;
 use crate::opening::{Mode, Opening, Opens, level};
 use crate::outbox::OutboxDialect;
 use crate::spec::TableSpec;
-use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
+use crate::statement::{ClaimShape, Param, Statement, StatementError};
 use crate::table_name::TableName;
 use crate::writer::{BuiltIn, OutboxWriter, Probe, SqlWriter};
 
@@ -20,6 +21,17 @@ const DATABASE_NOW: &str = "strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now')";
 /// How a claim of the service's own opens its transaction: with the database's write lock taken,
 /// so no other writer comes between its select and its stamps.
 const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
+
+/// How SQLite spells an insert, for the `const fn` that writes it and for [`Sqlite`]'s own
+/// statements.
+pub(crate) const SPELLING: Spelling = Spelling {
+    dialect: "sqlite",
+    quote: b'`',
+    placeholder: Placeholder::Question,
+    default_row: " DEFAULT VALUES",
+    // SQLite keeps a name of any length.
+    name_limit: None,
+};
 
 /// SQLite: backtick-quoted names, `?` placeholders, rows claimed by lease.
 ///
@@ -111,13 +123,10 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 pub struct Sqlite;
 
 impl BuiltIn for Sqlite {
-    /// SQLite keeps a name of any length.
-    const NAME_LIMIT: Option<NameLimit> = None;
+    const SPELLING: Spelling = SPELLING;
 
     /// A writer locks the whole database, so no claim can hold rows for a handler.
     const ROW_LOCKS: bool = false;
-
-    const DEFAULT_ROW: &'static str = " DEFAULT VALUES";
 
     const BACKSLASH_ESCAPES: bool = false;
 
@@ -157,14 +166,7 @@ impl Dialect for Sqlite {
     fn quote_into(&self, ident: &str, out: &mut String) {
         // SQLite reads a double-quoted name that matches no column as a string literal, so a
         // misnamed column would prepare and read as text; a backtick-quoted name is always a name.
-        out.push('`');
-        for character in ident.chars() {
-            if character == '`' {
-                out.push('`');
-            }
-            out.push(character);
-        }
-        out.push('`');
+        quote_into(SPELLING.quote, ident, out);
     }
 
     fn placeholder_into(&self, _: NonZeroUsize, out: &mut String) {
