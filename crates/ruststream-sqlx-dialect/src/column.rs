@@ -63,6 +63,26 @@ impl<'a> Column<'a> {
     /// A column the service writes.
     ///
     /// `#[derive(Inbox)]` names the column of each field with it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() {
+    /// use ruststream_sqlx_dialect::insert::{self, Sql};
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// // email_jobs: job_id BIGINT PRIMARY KEY, payload BYTEA; the service writes both.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"));
+    ///
+    /// const INSERT: Sql<128> = insert::postgres(&EMAILS);
+    /// assert_eq!(INSERT.as_str(), r#"INSERT INTO "email_jobs" ("job_id", "payload") VALUES ($1, $2)"#);
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn new(name: &'a str) -> Self {
         Self {
@@ -75,6 +95,26 @@ impl<'a> Column<'a> {
     ///
     /// `#[field(generated)]` on a field sets it, as `#[field(id, generated)]` does on a
     /// sequence's id.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() {
+    /// use ruststream_sqlx_dialect::insert::{self, Sql};
+    /// use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+    ///
+    /// // email_jobs: job_id BIGSERIAL PRIMARY KEY, payload BYTEA; the sequence numbers the rows.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id").generated(), Form::RowLock)
+    ///         .payload(Column::new("payload"));
+    ///
+    /// const INSERT: Sql<128> = insert::postgres(&EMAILS);
+    /// assert_eq!(INSERT.as_str(), r#"INSERT INTO "email_jobs" ("payload") VALUES ($1)"#);
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn generated(self) -> Self {
         Self {
