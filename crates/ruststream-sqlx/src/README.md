@@ -145,7 +145,7 @@ the host's clock unless the table names another source ([Time](#time)).
 ## An event of the service's own
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::Ack;
 use ruststream_sqlx::prelude::*;
@@ -199,7 +199,7 @@ pub fn app(pool: PgPool) -> RustStream {
 By hand, the table names the event in its chain and in its type:
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::prelude::*;

@@ -448,7 +448,7 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")]
+/// # #[cfg(all(feature = "postgres", feature = "json"))]
 /// # mod demo {
 /// use ruststream::OutgoingMessage;
 /// use ruststream_sqlx::{Outbox, outbox};

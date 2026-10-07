@@ -1,7 +1,7 @@
 # Waking a subscription
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use std::time::Duration;
 

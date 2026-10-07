@@ -1,7 +1,7 @@
 # Row mode
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -78,7 +78,7 @@ core's carried lane for its row. Its [`Insert`] writes a task with the text [`di
 renders from the description, as the derive's does:
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream::runtime::{Input, SoloCarried};
 use ruststream_sqlx::dialect::Column;

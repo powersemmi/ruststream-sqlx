@@ -1,7 +1,7 @@
 # The headers layout
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::Fetch;
 use ruststream_sqlx::prelude::*;
@@ -102,7 +102,7 @@ struct, `.data(..)` names the header columns, `.fetching(..)` the message's own,
 `.header_fields()` builds the header map from the fields through [`HeaderFields`]:
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream::HeaderMap;
 use ruststream::runtime::{Input, SoloCarried};
