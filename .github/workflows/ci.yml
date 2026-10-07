@@ -128,6 +128,18 @@ jobs:
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # The three published crates package together: the macros and the main crate pin the dialect
+      # and the macros at the workspace version, which crates.io does not hold before a release,
+      # so the multi-package form resolves them through an in-workspace overlay. Before
+      # `cargo hack`, which rewrites the manifests.
+      - name: cargo publish dry-run (no upload)
+        if: "!cancelled() && env.RUST_CHANGED == 'true'"
+        env:
+          CARGO_HTTP_MULTIPLEXING: "false"
+        run: >-
+          cargo publish --locked --dry-run --all-features
+          -p ruststream-sqlx-dialect -p ruststream-sqlx-macros -p ruststream-sqlx
+
       # Every feature is additive, so a missing `cfg` on an item or its import only shows up when
       # that feature is the only one on.
       # --no-dev-deps: a dev-dependency in scope masks a missing feature gate in the library. It

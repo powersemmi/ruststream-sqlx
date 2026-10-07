@@ -47,6 +47,11 @@ test-brokers: brokers-up
     RUSTSTREAM_SQLX_OUTBOX=on \
         cargo test -p ruststream-sqlx --all-features --no-fail-fast
 
+# The three published crates packaged and verified together, as the release publishes them:
+# the dialect, then the macros, then the crate. Nothing is uploaded.
+package:
+    cargo publish --locked --dry-run --all-features -p ruststream-sqlx-dialect -p ruststream-sqlx-macros -p ruststream-sqlx
+
 fmt:
     cargo fmt --all
 
