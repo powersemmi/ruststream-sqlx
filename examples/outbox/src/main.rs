@@ -44,10 +44,6 @@ struct OrderOutbox {
     name: String,
     #[field(payload)]
     payload: Vec<u8>,
-    // FIXME(ruststream-sqlx 0.7.0, `derive(Outbox)`): the derive names this column in its
-    // statements but never reads the field, so rustc reports it unread. Goes when the derive
-    // reads the `processed_at` field.
-    #[expect(dead_code, reason = "the database writes the mark")]
     #[field(processed_at)]
     processed_at: Option<DateTime<Utc>>,
 }

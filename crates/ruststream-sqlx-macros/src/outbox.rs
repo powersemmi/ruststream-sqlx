@@ -72,6 +72,12 @@ fn row(input: &DeriveInput, record: &Record<'_>) -> TokenStream2 {
             quote_spanned!(field.ty.span()=> #r::HeaderColumn::take_headers(&mut self.#ident))
         },
     );
+    // The mark is the database's to write and the outbox never reads it back, so a service's
+    // `processed_at` field would read as unused; the record touches it once here.
+    let processed = record.playing(OutboxRole::ProcessedAt).map(|(field, _)| {
+        let ident = field.ident;
+        quote!(let _ = &self.#ident;)
+    });
     let retry_writes = record.table.custom.retry;
     quote! {
         #[automatically_derived]
@@ -81,6 +87,7 @@ fn row(input: &DeriveInput, record: &Record<'_>) -> TokenStream2 {
             const RETRY_WRITES: bool = #retry_writes;
 
             fn id(&self) -> &#id_type {
+                #processed
                 &self.#id
             }
 
