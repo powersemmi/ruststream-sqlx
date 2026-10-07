@@ -8,6 +8,7 @@ use sqlx::Pool;
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
+use crate::inbox::FormDialect;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::delivery::settle::{Step, run_step};
 use crate::inbox::engine::{Claimed, Claiming, Events, Savepoint, Settled, Settling};
@@ -17,12 +18,11 @@ use crate::inbox::subscriber::{Failed, InboxSubscriber, Taken, begin, take_group
 use crate::inbox::testing::off_clock;
 use crate::inbox::transactional::InboxMode;
 use crate::inbox::tx::PoolTx;
-use crate::inbox::{FormDialect, PayloadRow};
 
 impl<DB, Row, Mode> InboxSubscriber<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     /// Ends the transaction of a claim that took no row; a claim by lease committed already.

@@ -167,6 +167,18 @@ CREATE TABLE unreadable_jobs (
 -- Where spent jobs of `unreadable_jobs` go.
 CREATE TABLE unreadable_jobs_dead (LIKE unreadable_jobs INCLUDING DEFAULTS);
 
+-- Mails a handler takes as rows: no payload column, the recipient and the subject in columns of
+-- their own. A recipient may be NULL, which a struct that reads it as text cannot read.
+CREATE TABLE mail_jobs (
+    job_id       BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    attempt      SMALLINT NOT NULL DEFAULT 1,
+    locked_until TIMESTAMPTZ,
+    meta         JSONB,
+    recipient    TEXT,
+    subject      TEXT
+);
+
 -- The isolation level each claim of a test's subscription ran at, written from inside the claim's
 -- transaction.
 CREATE TABLE seen_isolation (

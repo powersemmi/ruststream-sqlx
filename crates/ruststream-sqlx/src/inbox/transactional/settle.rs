@@ -7,7 +7,6 @@ use ruststream::{AckError, IncomingMessage};
 use sqlx_core::transaction::TransactionManager;
 
 use super::{Lender, Returned, Transactional};
-use crate::inbox::PayloadRow;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::delivery::settle::{Step, run_step};
 use crate::inbox::delivery::{Hold, InboxDelivery};
@@ -24,7 +23,7 @@ use crate::inbox::tx::PoolTx;
 impl<DB, Row> TransactionalDelivery<DB> for InboxDelivery<DB, Row, Transactional>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
 {
     /// Copies two references, where the transaction waits and the pool, and the attempt.
     ///

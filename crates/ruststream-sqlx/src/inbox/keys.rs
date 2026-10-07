@@ -15,7 +15,6 @@ use ruststream::runtime::{Context, Ctx, FromContext};
 use ruststream::{BuildContext, ContextField, Field, IncomingMessage};
 use sqlx::Pool as DbPool;
 
-use super::PayloadRow;
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
 use super::engine::Events;
@@ -118,7 +117,7 @@ impl<DB: QueueDatabase> fmt::Debug for PoolContext<DB> {
 impl<DB, Row, Mode> BuildContext<InboxDelivery<DB, Row, Mode>> for PoolContext<DB>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     fn build(msg: &InboxDelivery<DB, Row, Mode>) -> Self {
@@ -244,7 +243,7 @@ pub trait TransactionalDelivery<DB: QueueDatabase> {
 impl<DB, Row, Mode> BuildContext<InboxDelivery<DB, Row, Mode>> for TxContext<DB>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     InboxDelivery<DB, Row, Mode>: TransactionalDelivery<DB>,
 {
     fn build(msg: &InboxDelivery<DB, Row, Mode>) -> Self {

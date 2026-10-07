@@ -8,6 +8,7 @@ use std::future::Future;
 use std::time::Duration;
 
 use ruststream::HeaderMap;
+use ruststream::codec::CodecError;
 use ruststream_sqlx_dialect::{Param, TableSpec};
 use sqlx::{Error, FromRow};
 
@@ -268,20 +269,26 @@ impl Event {
 pub enum Claimed<Row: QueueRow> {
     /// The row.
     Row(Row),
-    /// The id; its delivery carries no payload and fails to decode.
+    /// The id; its delivery reports that its row is gone, and the decode-failure policy settles
+    /// it.
     Missing(Row::Id),
-    /// The id of a row the struct could not decode, its attempt, and why; its delivery carries
-    /// no payload and fails to decode.
+    /// The id of a row the struct could not decode, its attempt, and why; its delivery reports
+    /// the driver's error, and the decode-failure policy settles it.
     Undecodable {
         /// The row's id, read alone.
         id: Row::Id,
         /// The row's attempt, read alone: the attempt cap spends such a row as any other.
         attempt: Option<u64>,
-        /// The error of decoding the whole row.
+        /// The driver's error of decoding the whole row, as the delivery reports it.
         // Boxed: every delivery holds its `Claimed` inline, so the error would otherwise widen
         // the deliveries of rows that decode.
-        error: Box<Error>,
+        error: Box<CodecError>,
     },
+}
+
+/// The driver's `error` of decoding a whole row, as a delivery of the row reports it.
+pub(crate) fn undecodable(error: Error) -> CodecError {
+    CodecError::Decode(Box::new(error))
 }
 
 /// Where a claim's select carries the id, read alone from a row the struct could not decode.

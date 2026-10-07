@@ -61,8 +61,9 @@ row. The default policy drops the row: it is deleted, or marked where the table 
 `processed_at`. Such a row still reports its attempt: the claim reads the `attempt` column alone,
 as the struct reads it. So `max_attempts(..)` spends it like any other row, and a policy that
 retries it keeps it only up to the cap. When the `attempt` column itself does not decode, the row
-reports no attempt, and a policy that retries it keeps it in the queue until it decodes. A handler
-that takes the bytes themselves, through a `Deserialized` type, receives an empty payload for such
-a row. A row whose id does not decode fails the claim, and the error names the subscription and
-the table; every claim that reaches the row fails the same way until the row is fixed.
+reports no attempt, and a policy that retries it keeps it in the queue until it decodes. The
+policy settles such a row before the handler runs, whatever the handler takes, a `Deserialized`
+type included. It settles the same way a claimed id that the service's own fetch returned no row
+for. A row whose id does not decode fails the claim, and the error names the subscription and the
+table; every claim that reaches the row fails the same way until the row is fixed.
 

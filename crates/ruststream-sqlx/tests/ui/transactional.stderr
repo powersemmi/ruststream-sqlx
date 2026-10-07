@@ -12,8 +12,8 @@ help: the trait `ruststream_sqlx::keys::TransactionalDelivery<sqlx::Postgres>` i
    | / impl<DB, Row> TransactionalDelivery<DB> for InboxDelivery<DB, Row, Transactional>
    | | where
    | |     DB: QueueDatabase,
-   | |     Row: Events<DB> + PayloadRow,
-   | |_________________________________^
+   | |     Row: Events<DB>,
+   | |____________________^
    = help: for that trait implementation, expected `ruststream_sqlx::Transactional`, found `Plain`
    = note: required for `TxContext<sqlx::Postgres>` to implement `BuildContext<InboxDelivery<sqlx::Postgres, Job>>`
    = note: required for `runtime::router::routes::SubscribeRoute<ruststream_sqlx::InboxQueue<Job>, Typed<InboxDelivery<sqlx::Postgres, Job>, runtime::input::Decoded<Task>, JsonCodec, runtime::handle::eager::SoloBody<Solo<Task>, TxContext<sqlx::Postgres>, record>>, TxContext<sqlx::Postgres>>` to implement `runtime::router::routes::MountRoute<ruststream_sqlx::SqlxBroker<sqlx::Postgres>, (), PublishIdentity>`

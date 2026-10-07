@@ -20,6 +20,7 @@ mod transactional;
 mod tx;
 
 use std::fmt::Debug;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ruststream_sqlx_dialect::TableSpec;
 
@@ -114,9 +115,18 @@ pub trait Lane<Row>: Send + Sync + 'static {
     /// Whether the handler takes the row itself.
     const ROWS: bool;
 
+    /// What a delivery keeps of whether its handler borrowed the row: nothing in payload mode, a
+    /// flag in row mode.
+    type Lent: Default + Send + Sync;
+
     /// The bytes a delivery lends as its payload: the payload column in payload mode, none in row
     /// mode.
     fn payload(row: &Row) -> &[u8];
+
+    /// Whether a payload read now comes from a delivery whose row its handler never borrowed, by
+    /// what `lent` keeps: a handler that decodes a payload, mounted on a table in row mode. Never
+    /// in payload mode.
+    fn unlent(lent: &Self::Lent) -> bool;
 }
 
 /// Payload mode: the handler takes the payload decoded by a codec.
@@ -132,8 +142,15 @@ pub enum RowLane {}
 impl<Row: PayloadRow> Lane<Row> for PayloadLane {
     const ROWS: bool = false;
 
+    // Nothing to keep, so the field takes no room in a payload-mode delivery.
+    type Lent = ();
+
     fn payload(row: &Row) -> &[u8] {
         row.payload()
+    }
+
+    fn unlent((): &()) -> bool {
+        false
     }
 }
 
@@ -142,8 +159,16 @@ impl<Row: PayloadRow> Lane<Row> for PayloadLane {
 impl<Row: QueueRow> Lane<Row> for RowLane {
     const ROWS: bool = true;
 
+    type Lent = AtomicBool;
+
     fn payload(_row: &Row) -> &[u8] {
         &[]
+    }
+
+    fn unlent(lent: &AtomicBool) -> bool {
+        // Relaxed: one task handles a delivery, and it stored the flag when its handler borrowed
+        // the row.
+        !lent.load(Ordering::Relaxed)
     }
 }
 
@@ -172,9 +197,13 @@ impl<Row: QueueRow> Lane<Row> for RowLane {
 /// # let _ = job.id;
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` has no payload field, so a subscription has no message to hand a handler",
-    label = "no `#[field(payload)]` field",
-    note = "mark the column that holds the message bytes with `#[field(payload)]`"
+    message = "`{Self}` has no payload field, so a route has no column to write a message's bytes \
+               into",
+    label = "a table in row mode",
+    note = "write a row of a row-mode table with the derive's `insert`, or with `Repository` over \
+            a `Publish` of the service's own",
+    note = "a route and a by-name subscription read a table whose `#[field(payload)]` field holds \
+            the message"
 )]
 pub trait PayloadRow: QueueRow {
     /// The message bytes, lent from the row.

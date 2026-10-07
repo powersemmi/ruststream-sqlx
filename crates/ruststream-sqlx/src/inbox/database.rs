@@ -9,7 +9,7 @@ use sqlx::{
     Arguments, ColumnIndex, Database, Decode, Encode, Error, Executor, IntoArguments, SqlStr, Type,
 };
 
-use super::engine::{Claimed, Events, IdAt};
+use super::engine::{Claimed, Events, IdAt, undecodable};
 use super::form::advisory::events::Candidates;
 use super::queue::Queue;
 
@@ -210,7 +210,7 @@ where
                         Ok(id) => out.push(Claimed::Undecodable {
                             id,
                             attempt: Row::read_attempt(&raw, queue),
-                            error: Box::new(error),
+                            error: Box::new(undecodable(error)),
                         }),
                         Err(_) => return Err(error),
                     }

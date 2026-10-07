@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ruststream_sqlx::dialect;
-use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Postgres};
+use ruststream_sqlx::{Insert, dialect};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
+use sqlx::{AssertSqlSafe, Connection, FromRow, PgConnection, PgPool, Postgres};
 
 use super::{Database, url};
 
@@ -234,5 +234,38 @@ impl Database<Db> {
             .fetch_one(&self.pool)
             .await
             .expect("the table counts")
+    }
+
+    /// Writes `mails` through their generated insert, in order.
+    pub(crate) async fn mail<Row: Insert<PgConnection>>(&self, mails: &[Row]) {
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .expect("the pool lends a connection");
+        for mail in mails {
+            mail.insert(&mut conn).await.expect("the mail writes");
+        }
+    }
+
+    /// Writes a mail of the queue `name` whose recipient a struct reading it as text cannot read:
+    /// none, a NULL.
+    pub(crate) async fn unreadable_mail(&self, name: &str) {
+        sqlx::query("INSERT INTO mail_jobs (name, subject) VALUES ($1, 'unreadable')")
+            .bind(name)
+            .execute(&self.pool)
+            .await
+            .expect("the mail writes");
+    }
+
+    /// The mails in id order, read as `Row` reads them.
+    pub(crate) async fn mails<Row>(&self) -> Vec<Row>
+    where
+        Row: for<'r> FromRow<'r, PgRow> + Send + Unpin,
+    {
+        sqlx::query_as("SELECT * FROM mail_jobs ORDER BY job_id")
+            .fetch_all(&self.pool)
+            .await
+            .expect("the mails read")
     }
 }

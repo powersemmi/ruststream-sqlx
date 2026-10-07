@@ -2,15 +2,18 @@
 
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::ptr;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
-use ruststream::{AckError, HeaderMap, IncomingMessage};
+use ruststream::codec::CodecError;
+use ruststream::{AckError, Carries, HeaderMap, IncomingMessage};
 use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
+use thiserror::Error;
 use tokio::runtime::Handle;
 
-use super::PayloadRow;
 #[cfg(feature = "testing")]
 use super::broker::Shared;
 use super::database::QueueDatabase;
@@ -26,6 +29,7 @@ use super::queue::Queue;
 use super::testing::off_clock;
 use super::transactional::{InboxMode, Plain, TxHold};
 use super::tx::PoolTx;
+use super::{Lane, QueueRow, RowLane};
 
 pub(crate) mod settle;
 
@@ -54,14 +58,14 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 
 /// One claimed row in a handler's hands.
 ///
-/// The payload is lent from the row, without a copy. In the row lock form the delivery holds the
-/// claim's transaction: settling it runs one statement and commits, and dropping it unsettled
-/// rolls the transaction back, which returns the row to the queue at once. In the lease form the
-/// delivery holds the lease its claim wrote, which its subscription extends each half lease:
-/// settling it runs one statement on a connection of its own, which takes effect only while the
-/// row still holds that lease. A lease delivery dropped unsettled releases its row at once, on the
-/// runtime the broker connected on; with that runtime gone, the row returns once the lease runs
-/// out.
+/// The payload is lent from the row, without a copy; a table in row mode lends its handler the row
+/// itself, as the driver read it. In the row lock form the delivery holds the claim's
+/// transaction: settling it runs one statement and commits, and dropping it unsettled rolls the
+/// transaction back, which returns the row to the queue at once. In the lease form the delivery
+/// holds the lease its claim wrote, which its subscription extends each half lease: settling it
+/// runs one statement on a connection of its own, which takes effect only while the row still
+/// holds that lease. A lease delivery dropped unsettled releases its row at once, on the runtime
+/// the broker connected on; with that runtime gone, the row returns once the lease runs out.
 ///
 /// In the advisory lock form the delivery holds a connection whose session holds the lock on the
 /// row's key: settling it runs one statement on that connection, then releases the lock and
@@ -112,10 +116,57 @@ pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     queue: &'static Queue,
     /// The subscription's handle on the pool, which the delivery lends its handler.
     pub(super) pool: &'static Pool<DB>,
+    /// In row mode, whether the handler borrowed the row; nothing in payload mode.
+    row_lent: <Row::Lane as Lane<Row>>::Lent,
     /// The connection of a delivery claimed in process: its settlement keeps the harness's books.
     #[cfg(feature = "testing")]
     in_process: Option<Arc<Shared<DB>>>,
     _mode: PhantomData<fn() -> Mode>,
+}
+
+/// What a delivery of a claimed id without a row reports: the row is gone.
+static ROW_GONE: LazyLock<CodecError> = LazyLock::new(|| CodecError::Decode(Box::new(RowGone)));
+
+/// The row of a claimed id was gone when the claim read it: the fetch returned no row for the id.
+#[derive(Debug, Error)]
+#[error("the claimed row is gone: the fetch returned no row for its id")]
+struct RowGone;
+
+/// What a subscription to a table in row mode logs when a handler reads a payload from a delivery
+/// whose row it never borrowed: a handler that decodes a payload, mounted where `row`, the struct
+/// that describes the table, is what a handler takes.
+fn unlent_payload(row: &str) -> String {
+    format!(
+        "the table is in row mode: its deliveries lend the row itself and carry no payload, so a \
+         handler that decodes one fails each delivery by the decode policy; take `&{row}` as the \
+         handler's input, `&[{row}]` in a batch"
+    )
+}
+
+/// The subscriptions that logged [`unlent_payload`], by their interned queue: each logs it once.
+static UNLENT_LOGGED: Mutex<Vec<&'static Queue>> = Mutex::new(Vec::new());
+
+/// Logs [`unlent_payload`], once per subscription.
+// Why a runtime warning: the core's codec lane accepts a handler on any subscription, so a handler
+// that decodes a payload mounts on a table in row mode; refusing it at compile time needs a hook
+// in the core. Out of line and cold, as only such a handler reaches it, and the lock with it.
+#[cold]
+#[inline(never)]
+fn read_unlent(queue: &'static Queue) {
+    let mut logged = UNLENT_LOGGED.lock().unwrap_or_else(PoisonError::into_inner);
+    if logged.iter().any(|seen| ptr::eq(*seen, queue)) {
+        return;
+    }
+    logged.push(queue);
+    drop(logged);
+    tracing::warn!(
+        target: "ruststream_sqlx",
+        subscription = queue.name,
+        table = queue.table,
+        row = queue.row,
+        "{}",
+        unlent_payload(queue.row),
+    );
 }
 
 impl<DB: QueueDatabase, Row: Events<DB>, Mode> Debug for InboxDelivery<DB, Row, Mode> {
@@ -130,7 +181,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Debug for InboxDelivery<DB, Row, 
 impl<DB, Row, Mode> InboxDelivery<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     /// A delivery that owns its claim's transaction.
@@ -200,6 +251,9 @@ where
         queue: &'static Queue,
         pool: &'static Pool<DB>,
     ) -> Self {
+        // A row's headers move into the delivery in both modes: in row mode the row a handler
+        // borrows holds its headers column empty, and middleware reads the headers off the
+        // delivery.
         let headers = match &mut claimed {
             Claimed::Row(row) => Row::take_headers(row),
             Claimed::Missing(id) => {
@@ -209,8 +263,8 @@ where
                     table = queue.table,
                     row = queue.row,
                     ?id,
-                    "the fetch returned no row for a claimed id; its delivery carries no payload \
-                     and fails to decode",
+                    "the fetch returned no row for a claimed id; the decode-failure policy settles \
+                     its delivery",
                 );
                 HeaderMap::new()
             }
@@ -223,8 +277,8 @@ where
                     ?id,
                     attempt,
                     %error,
-                    "the row does not decode into its struct; its delivery carries no payload and \
-                     the decode-failure policy settles it",
+                    "the row does not decode into its struct; the decode-failure policy settles \
+                     its delivery",
                 );
                 HeaderMap::new()
             }
@@ -235,6 +289,7 @@ where
             hold: Some(hold),
             queue,
             pool,
+            row_lent: Default::default(),
             #[cfg(feature = "testing")]
             in_process: None,
             _mode: PhantomData,
@@ -252,21 +307,53 @@ where
     }
 }
 
+impl<DB, Row, Mode> Carries<Row> for InboxDelivery<DB, Row, Mode>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
+    Mode: InboxMode,
+{
+    fn carried(&self) -> Option<&Row> {
+        match &self.claimed {
+            Claimed::Row(row) => {
+                // Relaxed: one task handles a delivery, and its own `payload` alone reads the flag.
+                self.row_lent.store(true, Ordering::Relaxed);
+                Some(row)
+            }
+            Claimed::Missing(_) | Claimed::Undecodable { .. } => None,
+        }
+    }
+}
+
 impl<DB, Row, Mode> IncomingMessage for InboxDelivery<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     fn payload(&self) -> &[u8] {
         match &self.claimed {
-            Claimed::Row(row) => row.payload(),
+            Claimed::Row(row) => {
+                // A constant `false` in payload mode, where the check folds away.
+                if <Row::Lane as Lane<Row>>::unlent(&self.row_lent) {
+                    read_unlent(self.queue);
+                }
+                <Row::Lane as Lane<Row>>::payload(row)
+            }
             Claimed::Missing(_) | Claimed::Undecodable { .. } => &[],
         }
     }
 
     fn headers(&self) -> &HeaderMap {
         &self.headers
+    }
+
+    fn decode_error(&self) -> Option<&CodecError> {
+        match &self.claimed {
+            Claimed::Row(_) => None,
+            Claimed::Missing(_) => Some(LazyLock::force(&ROW_GONE)),
+            Claimed::Undecodable { error, .. } => Some(error),
+        }
     }
 
     fn partition_key(&self) -> Option<&[u8]> {
@@ -385,5 +472,20 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
         if let Some(connection) = in_process {
             connection.harness.returned(self.queue.name);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unlent_payload;
+
+    #[test]
+    fn a_payload_read_from_a_row_mode_delivery_names_the_row_to_take() {
+        assert_eq!(
+            unlent_payload("app::SendEmail"),
+            "the table is in row mode: its deliveries lend the row itself and carry no payload, so \
+             a handler that decodes one fails each delivery by the decode policy; take \
+             `&app::SendEmail` as the handler's input, `&[app::SendEmail]` in a batch",
+        );
     }
 }

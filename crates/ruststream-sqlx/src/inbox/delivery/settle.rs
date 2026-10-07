@@ -8,7 +8,6 @@ use std::time::Duration;
 use ruststream::{AckError, IncomingMessage};
 
 use super::{Hold, InboxDelivery};
-use crate::inbox::PayloadRow;
 #[cfg(feature = "testing")]
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
@@ -68,7 +67,7 @@ impl Step {
 impl<DB, Row, Mode> InboxDelivery<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     /// The declared destination, where the row's `attempt` has reached the declared cap.

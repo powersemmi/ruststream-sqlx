@@ -22,6 +22,7 @@ use super::kinds::{IntKind, Kinds};
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{
     self, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape, Values,
+    undecodable,
 };
 use crate::inbox::form::advisory::events::{self as advisory, Candidates};
 use crate::inbox::queue::Queue;
@@ -131,7 +132,7 @@ fn hold_to<D: 'static>(kinds: Kinds, claimed: &mut Claimed<NamedRow<D>>) -> Resu
     *claimed = Claimed::Undecodable {
         id,
         attempt,
-        error: Box::new(error),
+        error: Box::new(undecodable(error)),
     };
     Ok(())
 }

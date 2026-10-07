@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use futures::future::{BoxFuture, Either};
 use futures::{Stream, StreamExt};
+use ruststream::codec::CodecError;
 use ruststream::{
     AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Subscribe, Subscriber,
 };
@@ -41,6 +42,7 @@ use super::{InboxRow, PayloadRow};
 pub(crate) trait Erased: fmt::Debug + Send + Sync {
     fn payload(&self) -> &[u8];
     fn headers(&self) -> &HeaderMap;
+    fn decode_error(&self) -> Option<&CodecError>;
     fn partition_key(&self) -> Option<&[u8]>;
     fn redelivery_count(&self) -> Option<u64>;
     fn supports_nack_after(&self) -> bool;
@@ -60,6 +62,10 @@ where
 
     fn headers(&self) -> &HeaderMap {
         IncomingMessage::headers(self)
+    }
+
+    fn decode_error(&self) -> Option<&CodecError> {
+        IncomingMessage::decode_error(self)
     }
 
     fn partition_key(&self) -> Option<&[u8]> {
@@ -180,7 +186,12 @@ where
     /// A row read by role.
     Described(InboxDelivery<DB, NamedRow<D>>),
     /// A row read by its own code.
-    Erased(Box<dyn Erased>),
+    Erased {
+        delivery: Box<dyn Erased>,
+        /// Whether the delivery reports an error instead of a row, read while the row's type was
+        /// known: the box is asked for the error only where there is one.
+        refused: bool,
+    },
 }
 
 impl<DB, D> NamedDelivery<DB, D>
@@ -194,9 +205,9 @@ where
         }
     }
 
-    fn erased(delivery: Box<dyn Erased>) -> Self {
+    fn erased((delivery, refused): (Box<dyn Erased>, bool)) -> Self {
         Self {
-            delivered: Delivered::Erased(delivery),
+            delivered: Delivered::Erased { delivery, refused },
         }
     }
 }
@@ -210,7 +221,7 @@ where
         let mut tuple = f.debug_tuple("NamedDelivery");
         match &self.delivered {
             Delivered::Described(delivery) => tuple.field(delivery),
-            Delivered::Erased(delivery) => tuple.field(delivery),
+            Delivered::Erased { delivery, .. } => tuple.field(delivery),
         };
         tuple.finish()
     }
@@ -224,63 +235,75 @@ where
     fn payload(&self) -> &[u8] {
         match &self.delivered {
             Delivered::Described(delivery) => IncomingMessage::payload(delivery),
-            Delivered::Erased(delivery) => delivery.payload(),
+            Delivered::Erased { delivery, .. } => delivery.payload(),
         }
     }
 
     fn headers(&self) -> &HeaderMap {
         match &self.delivered {
             Delivered::Described(delivery) => IncomingMessage::headers(delivery),
-            Delivered::Erased(delivery) => delivery.headers(),
+            Delivered::Erased { delivery, .. } => delivery.headers(),
+        }
+    }
+
+    fn decode_error(&self) -> Option<&CodecError> {
+        match &self.delivered {
+            Delivered::Described(delivery) => IncomingMessage::decode_error(delivery),
+            Delivered::Erased {
+                delivery,
+                refused: true,
+            } => delivery.decode_error(),
+            Delivered::Erased { refused: false, .. } => None,
         }
     }
 
     fn partition_key(&self) -> Option<&[u8]> {
         match &self.delivered {
             Delivered::Described(delivery) => IncomingMessage::partition_key(delivery),
-            Delivered::Erased(delivery) => delivery.partition_key(),
+            Delivered::Erased { delivery, .. } => delivery.partition_key(),
         }
     }
 
     fn redelivery_count(&self) -> Option<u64> {
         match &self.delivered {
             Delivered::Described(delivery) => IncomingMessage::redelivery_count(delivery),
-            Delivered::Erased(delivery) => delivery.redelivery_count(),
+            Delivered::Erased { delivery, .. } => delivery.redelivery_count(),
         }
     }
 
     async fn ack(self) -> Result<(), AckError> {
         match self.delivered {
             Delivered::Described(delivery) => IncomingMessage::ack(delivery).await,
-            Delivered::Erased(delivery) => delivery.ack().await,
+            Delivered::Erased { delivery, .. } => delivery.ack().await,
         }
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         match self.delivered {
             Delivered::Described(delivery) => IncomingMessage::nack(delivery, requeue).await,
-            Delivered::Erased(delivery) => delivery.nack(requeue).await,
+            Delivered::Erased { delivery, .. } => delivery.nack(requeue).await,
         }
     }
 
     fn supports_nack_after(&self) -> bool {
         match &self.delivered {
             Delivered::Described(delivery) => IncomingMessage::supports_nack_after(delivery),
-            Delivered::Erased(delivery) => delivery.supports_nack_after(),
+            Delivered::Erased { delivery, .. } => delivery.supports_nack_after(),
         }
     }
 
     async fn nack_after(self, delay: Duration) -> Result<(), AckError> {
         match self.delivered {
             Delivered::Described(delivery) => IncomingMessage::nack_after(delivery, delay).await,
-            Delivered::Erased(delivery) => delivery.nack_after(delay).await,
+            Delivered::Erased { delivery, .. } => delivery.nack_after(delay).await,
         }
     }
 }
 
-/// The deliveries of a by-name subscription whose row runs its own code.
+/// The deliveries of a by-name subscription whose row runs its own code, each with whether it
+/// reports an error instead of a row.
 pub(crate) type ErasedStream =
-    Pin<Box<dyn Stream<Item = Result<Box<dyn Erased>, SqlxBrokerError>> + Send>>;
+    Pin<Box<dyn Stream<Item = Result<(Box<dyn Erased>, bool), SqlxBrokerError>> + Send>>;
 
 /// The subscriber a by-name subscription opens: the claim loop of the table its name's route
 /// leads to.
@@ -415,9 +438,15 @@ where
             &description,
         )
         .await?;
-        let stream = subscriber
-            .into_stream()
-            .map(|delivery| delivery.map(|delivery| -> Box<dyn Erased> { Box::new(delivery) }));
+        let stream = subscriber.into_stream().map(|delivery| {
+            delivery.map(|delivery| {
+                // Read while the row's type is known, so a delivery of a row that decoded pays no
+                // dynamic call for the runtime's question.
+                let refused = IncomingMessage::decode_error(&delivery).is_some();
+                let delivery: Box<dyn Erased> = Box::new(delivery);
+                (delivery, refused)
+            })
+        });
         let stream: ErasedStream = Box::pin(stream);
         Ok(stream)
     })

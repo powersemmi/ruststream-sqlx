@@ -24,7 +24,7 @@ use super::publish::table_of;
 use super::subscriber::InboxSubscriber;
 use super::time::LeaseRow;
 use super::transactional::{InboxMode, Plain, Transactional};
-use super::{FormOn, InboxRow, PayloadRow};
+use super::{FormOn, InboxRow};
 
 mod check;
 mod description;
@@ -289,7 +289,7 @@ impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQ
 where
     DB: QueueDatabase,
     D: Dialect + Opens<Row::Opening> + 'static,
-    Row: InboxRow + Events<DB> + PayloadRow,
+    Row: InboxRow + Events<DB>,
     Row::Form: FormOn<D>,
     Mode: InboxMode,
 {

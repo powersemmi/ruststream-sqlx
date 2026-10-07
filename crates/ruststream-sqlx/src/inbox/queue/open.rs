@@ -14,6 +14,7 @@ use sqlx::{Database, Pool};
 
 use super::check::check;
 use super::description::{Description, Timing, refused_declaration, whole_seconds};
+use crate::inbox::FormDialect;
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{Events, IdAt, Prepared, intern, intern_name};
@@ -25,7 +26,6 @@ use crate::inbox::named::kinds::Kinds;
 use crate::inbox::publish::table_of;
 use crate::inbox::subscriber::{Holding, InboxSubscriber};
 use crate::inbox::transactional::{InboxMode, TxBook};
-use crate::inbox::{FormDialect, PayloadRow};
 
 /// One open subscription, interned for the life of the process: what its deliveries read to settle
 /// and to name themselves. Machinery; statements bind its name, a service never names it.
@@ -245,7 +245,7 @@ pub(crate) async fn open<DB, Row, Mode>(
 ) -> Result<InboxSubscriber<DB, Row, Mode>, SqlxBrokerError>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     let table = table_of(&description.spec);

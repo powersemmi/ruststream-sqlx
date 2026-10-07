@@ -1,6 +1,7 @@
 //! Rows whose columns do not decode into their struct: the decode-failure policy settles them and
 //! the claim loop goes on, and each reports its attempt as its struct reads it; an id that does
-//! not decode fails the claim.
+//! not decode fails the claim. A claimed id without a row settles by the same policy, whatever the
+//! handler's input would make of no bytes.
 
 #![cfg(all(
     feature = "inbox",
@@ -10,6 +11,7 @@
     feature = "testing"
 ))]
 
+use std::future::{Future, ready};
 use std::pin::pin;
 use std::time::Duration;
 
@@ -20,7 +22,7 @@ use ruststream::{
     Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::{
-    Claim, ConnectedSqlxBroker, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerError,
+    Claim, ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerError,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool, Postgres};
@@ -447,6 +449,144 @@ async fn a_flattened_row_that_does_not_decode_is_found_by_its_id_column() {
         .assert_last_failed_to_decode();
     assert_eq!(
         rows(&db.pool, "flat_jobs").await,
+        0,
+        "the policy dropped the row"
+    );
+    tb.shutdown().await.expect("the app stops");
+    db.finish().await;
+}
+
+/// `plain_jobs` read by a fetch of the service's own that finds no rows, as after a delete between
+/// the claim and the fetch: every claimed id comes back without its row.
+#[derive(Debug, Inbox, sqlx::FromRow)]
+#[inbox(table = "plain_jobs", custom(fetch))]
+struct Vanished {
+    #[field(id, generated)]
+    id: i64,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+impl Fetch<Postgres> for Vanished {
+    fn fetch(
+        _conn: &mut PgConnection,
+        _ids: &[i64],
+    ) -> impl Future<Output = Result<Vec<Self>, sqlx::Error>> + Send {
+        ready(Ok(Vec::new()))
+    }
+}
+
+/// The payload's bytes as they arrive: an input that takes no bytes as readily as any others, as a
+/// protobuf message does.
+#[derive(Deserialized)]
+struct Raw<'a>(&'a [u8]);
+
+#[subscriber(InboxQueue::<Vanished>::new("vanished"), on_failure(decode = drop))]
+async fn took_bytes(raw: &Raw<'_>) -> HandlerOutcome {
+    // Reaching this with no bytes would acknowledge a message no row holds.
+    if raw.0.is_empty() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::retry()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_claimed_id_without_a_row_never_reaches_an_input_that_takes_no_bytes() {
+    let Some(db) = database().await else { return };
+    db.plain(&[b"{}"]).await;
+    let broker = SqlxBroker::new(db.pool.clone()).poll_interval(Duration::from_millis(20));
+    let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
+        b.include(took_bytes);
+    });
+    let tb = TestApp::start_live(app).await.expect("the app starts");
+    tb.advance(Duration::from_millis(300))
+        .await
+        .expect("the row settles");
+    tb.broker::<SqlxBroker<Postgres>>()
+        .subscriber("vanished")
+        .assert_called_once()
+        .settled(HandlerOutcome::drop())
+        .assert_last_failed_to_decode();
+    assert_eq!(
+        rows(&db.pool, "plain_jobs").await,
+        0,
+        "the policy dropped the row"
+    );
+    tb.shutdown().await.expect("the app stops");
+    let _ = |row: Vanished| (row.id, row.payload);
+    db.finish().await;
+}
+
+impl Publish<Postgres> for Vanished {
+    async fn publish(
+        conn: &mut PgConnection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO plain_jobs (payload) VALUES ($1)")
+            .bind(message.payload())
+            .execute(conn)
+            .await?;
+        Ok(())
+    }
+}
+
+#[subscriber("vanished", on_failure(decode = drop))]
+async fn took_bytes_by_name(raw: &Raw<'_>) -> HandlerOutcome {
+    // Reaching this with no bytes would acknowledge a message no row holds.
+    if raw.0.is_empty() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::retry()
+    }
+}
+
+#[subscriber("mistyped", on_failure(decode = drop))]
+async fn took_text_by_name(raw: &Raw<'_>) -> HandlerOutcome {
+    // Reaching this with no bytes would acknowledge a message its row does not hold.
+    if raw.0.is_empty() {
+        HandlerOutcome::ack()
+    } else {
+        HandlerOutcome::retry()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_by_name_delivery_without_its_row_never_reaches_an_input_that_takes_no_bytes() {
+    let Some(db) = database().await else { return };
+    db.plain(&[b"{}"]).await;
+    sqlx::query("INSERT INTO mistyped_jobs (payload) VALUES ('{}')")
+        .execute(&db.pool)
+        .await
+        .expect("the row writes");
+    // `Vanished` fetches its rows itself, so its route runs its code behind a box; `Mistyped` is
+    // read by its role columns, and its text payload is not the bytes its struct reads.
+    let broker = SqlxBroker::new(db.pool.clone())
+        .poll_interval(Duration::from_millis(20))
+        .route::<Vanished>("vanished")
+        .route::<Mistyped>("mistyped");
+    let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
+        b.include(took_bytes_by_name);
+        b.include(took_text_by_name);
+    });
+    let tb = TestApp::start_live(app).await.expect("the app starts");
+    tb.advance(Duration::from_millis(300))
+        .await
+        .expect("the rows settle");
+    for name in ["vanished", "mistyped"] {
+        tb.broker::<SqlxBroker<Postgres>>()
+            .subscriber(name)
+            .assert_called_once()
+            .settled(HandlerOutcome::drop())
+            .assert_last_failed_to_decode();
+    }
+    assert_eq!(
+        rows(&db.pool, "plain_jobs").await,
+        0,
+        "the policy dropped the row"
+    );
+    assert_eq!(
+        rows(&db.pool, "mistyped_jobs").await,
         0,
         "the policy dropped the row"
     );

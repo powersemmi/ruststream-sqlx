@@ -205,7 +205,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> fmt::Debug for InboxSubscriber<DB
 impl<DB, Row, Mode> InboxSubscriber<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     pub(crate) fn new(
@@ -479,7 +479,7 @@ pub(crate) async fn begin<DB: QueueDatabase>(
 impl<DB, Row, Mode> Subscriber for InboxSubscriber<DB, Row, Mode>
 where
     DB: QueueDatabase,
-    Row: Events<DB> + PayloadRow,
+    Row: Events<DB>,
     Mode: InboxMode,
 {
     type Message = InboxDelivery<DB, Row, Mode>;
@@ -494,7 +494,7 @@ where
 }
 
 // Transactional mode serves single deliveries: a batch handler reads no delivery's context, so
-// it could take no delivery's transaction.
+// it could take no delivery's transaction. A batch of a payload-mode table is its deliveries.
 impl<DB, Row> BatchSubscriber for InboxSubscriber<DB, Row, Plain>
 where
     DB: QueueDatabase,
