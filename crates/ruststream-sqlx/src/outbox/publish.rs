@@ -3,13 +3,14 @@
 
 use std::any::type_name;
 use std::error::Error as StdError;
-use std::fmt;
+use std::fmt::{self, Display};
+use std::io::Write;
 use std::mem;
 use std::str::{self, FromStr};
 use std::sync::{Arc, OnceLock};
 
 use ruststream::runtime::{Outgoing, PublishLayer, PublishNext, PublishPipeline};
-use ruststream::{HeaderMap, OutgoingMessage, Publisher};
+use ruststream::{Bytes, HeaderMap, OutgoingMessage, Publisher};
 use sqlx::{Database, Pool};
 
 use super::OUTBOX_ID_HEADER;
@@ -80,7 +81,7 @@ pub(super) async fn record<DB: Database, Record: Publish<DB>>(
     name: &'static str,
     pool: &OnceLock<Pool<DB>>,
     msg: &OutgoingMessage<'_>,
-) -> Result<String, OutboxError> {
+) -> Result<Bytes, OutboxError> {
     let pool = pool.get().ok_or(OutboxError::NoPool { name })?;
     let failed = |source| OutboxError::Record {
         name,
@@ -89,7 +90,24 @@ pub(super) async fn record<DB: Database, Record: Publish<DB>>(
     };
     let mut conn = pool.acquire().await.map_err(failed)?;
     let id = Record::publish(&mut conn, msg).await.map_err(failed)?;
-    Ok(id.to_string())
+    Ok(id_value(&id))
+}
+
+/// The longest id text [`id_value`] formats on the stack: a UUID's 36 characters fit.
+const ID_ON_STACK: usize = 64;
+
+/// The id header's value: the id's `Display` text in a buffer of its own length.
+///
+/// One allocation. `to_string` would take two: its `String` reserves more than an integer's
+/// digits, and a `Bytes` made from a vector with spare capacity allocates a block to share it.
+pub(super) fn id_value(id: &impl Display) -> Bytes {
+    let mut text = [0_u8; ID_ON_STACK];
+    let mut rest = &mut text[..];
+    if write!(rest, "{id}").is_ok() {
+        let len = ID_ON_STACK - rest.len();
+        return Bytes::copy_from_slice(&text[..len]);
+    }
+    Bytes::copy_from_slice(id.to_string().as_bytes())
 }
 
 /// The id a delivery carries in [`OUTBOX_ID_HEADER`]: `None` without the header, the header's
@@ -108,7 +126,7 @@ pub(super) fn carried_id<Id: FromStr>(headers: &HeaderMap) -> Option<Result<Id, 
 mod tests {
     use ruststream::HeaderMap;
 
-    use super::{OUTBOX_ID_HEADER, carried_id};
+    use super::{ID_ON_STACK, OUTBOX_ID_HEADER, carried_id, id_value};
 
     #[test]
     fn an_id_survives_the_header() {
@@ -117,6 +135,14 @@ mod tests {
         assert_eq!(carried_id::<i64>(&headers), Some(Ok(42)));
         headers.insert(OUTBOX_ID_HEADER, "7f3a".to_owned());
         assert_eq!(carried_id::<String>(&headers), Some(Ok("7f3a".to_owned())));
+    }
+
+    #[test]
+    fn an_id_value_holds_the_ids_text_whatever_its_length() {
+        assert_eq!(&id_value(&42_i64)[..], b"42");
+        assert_eq!(&id_value(&i64::MIN)[..], i64::MIN.to_string().as_bytes());
+        let long = "7".repeat(ID_ON_STACK + 1);
+        assert_eq!(&id_value(&long)[..], long.as_bytes());
     }
 
     #[test]

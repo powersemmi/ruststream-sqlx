@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
 
 use ruststream::runtime::{Context, Handler, HandlerOutcome};
-use ruststream::{OutgoingMessage, Publisher};
+use ruststream::{Bytes, OutgoingMessage, Publisher};
 use sqlx::{Database, Pool};
 
 use super::error::{OutboxError, PoolAlreadySet};
@@ -86,7 +86,7 @@ pub trait RecordList<DB: Database>: RecordNames {
         &'a self,
         pool: &'a OnceLock<Pool<DB>>,
         msg: &'a OutgoingMessage<'_>,
-    ) -> impl Future<Output = Option<Result<String, OutboxError>>> + Send + 'a;
+    ) -> impl Future<Output = Option<Result<Bytes, OutboxError>>> + Send + 'a;
 
     /// Runs `handler` on a delivery under a registered name, taking and settling its record.
     fn deliver<'a, M, C, S, H>(
@@ -117,7 +117,7 @@ impl<DB: Database> RecordList<DB> for Nil {
         &'a self,
         _pool: &'a OnceLock<Pool<DB>>,
         _msg: &'a OutgoingMessage<'_>,
-    ) -> impl Future<Output = Option<Result<String, OutboxError>>> + Send + 'a {
+    ) -> impl Future<Output = Option<Result<Bytes, OutboxError>>> + Send + 'a {
         ready(None)
     }
 
@@ -157,7 +157,7 @@ where
         &'a self,
         pool: &'a OnceLock<Pool<DB>>,
         msg: &'a OutgoingMessage<'_>,
-    ) -> Option<Result<String, OutboxError>> {
+    ) -> Option<Result<Bytes, OutboxError>> {
         if msg.name() == self.name {
             Some(record::<DB, Record>(self.name, pool, msg).await)
         } else {

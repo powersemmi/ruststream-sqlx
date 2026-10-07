@@ -14,6 +14,7 @@ use sqlx::{Database, Pool};
 use super::OUTBOX_ID_HEADER;
 use super::error::OutboxError;
 use super::events::Recover;
+use super::publish::id_value;
 use super::switch::enabled;
 
 /// The body of the startup republish, which [`republish`](super::Outbox::republish) hands to
@@ -74,7 +75,7 @@ where
     })?;
     for mut record in recovered {
         let mut headers = record.take_headers();
-        headers.insert(OUTBOX_ID_HEADER, record.id().to_string());
+        headers.insert(OUTBOX_ID_HEADER, id_value(record.id()));
         let payload = <Live::Payload as PayloadForm>::Form::from(record.payload());
         let msg = OutgoingMessage::with_payload(record.name(), payload).with_headers(headers);
         if let Err(source) = publisher.publish(msg, None).await {
