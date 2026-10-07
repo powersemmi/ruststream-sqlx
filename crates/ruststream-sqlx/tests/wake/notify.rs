@@ -210,6 +210,9 @@ async fn a_publish_announces_its_row_to_other_processes() {
     let tb = TestApp::start_live_within(app(&db.pool), WOKEN)
         .await
         .expect("the app starts");
+    tb.advance(IDLE)
+        .await
+        .expect("both subscriptions wait their interval");
     announces_its_publish(tb, &db.pool).await;
     db.finish().await;
 }
