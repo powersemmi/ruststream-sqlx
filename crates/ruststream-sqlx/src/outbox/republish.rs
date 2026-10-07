@@ -12,8 +12,9 @@ use ruststream::{OutgoingMessage, PayloadForm, Publisher};
 use sqlx::{Database, Pool};
 
 use super::OUTBOX_ID_HEADER;
+use super::database::Defaults;
 use super::error::OutboxError;
-use super::events::Recover;
+use super::events::Tracked;
 use super::publish::id_value;
 use super::switch::enabled;
 
@@ -54,18 +55,19 @@ impl fmt::Debug for Republishing {
 /// Publishes every unprocessed record `Record` of `name` through `publisher`.
 pub(super) async fn recover_and_publish<DB, Record, Live>(
     name: &'static str,
+    defaults: &Defaults,
     pool: &OnceLock<Pool<DB>>,
     publisher: &Live,
 ) -> Result<(), OutboxError>
 where
     DB: Database,
-    Record: Recover<DB>,
+    Record: Tracked<DB>,
     Live: Publisher,
 {
     let pool = pool.get().ok_or(OutboxError::NoPool { name })?;
     let recovered = async {
         let mut conn = pool.acquire().await?;
-        Record::recover(&mut conn, name).await
+        Record::recover_records(&mut conn, name, defaults).await
     }
     .await
     .map_err(|source| OutboxError::Recover {

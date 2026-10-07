@@ -1,0 +1,34 @@
+error[E0080]: evaluation panicked: a name is tracked with the outbox twice: track each name once
+ --> $RUST/core/src/panic.rs
+  |
+  |           $crate::panicking::panic_fmt($crate::const_format_args!($($t)+));
+  |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ruststream_sqlx::Outbox::<sqlx::Sqlite, ruststream_sqlx::outbox::Registered<Event, ruststream_sqlx::outbox::Checked<Refunds, ruststream_sqlx::outbox::Registered<Event, ruststream_sqlx::outbox::Checked<Orders, ruststream_sqlx::outbox::Nil>>>>>::track::<Event, OrdersAgain>::{constant#0}` failed here
+  |
+ ::: src/outbox/registry.rs
+  |
+  | /             assert!(
+  | |                 <Records as Lacks<Name>>::LACKS,
+  | |                 "a name is tracked with the outbox twice: track each name once"
+  | |             );
+  | |_____________- in this macro invocation
+
+note: erroneous constant encountered
+ --> src/outbox/registry.rs
+  |
+  | /         const {
+  | |             assert!(
+  | |                 <Records as Lacks<Name>>::LACKS,
+  | |                 "a name is tracked with the outbox twice: track each name once"
+  | |             );
+  | |         }
+  | |_________^
+
+note: the above error was encountered while instantiating `fn ruststream_sqlx::Outbox::<sqlx::Sqlite, Registered<Event, Checked<Refunds, Registered<Event, Checked<Orders, Nil>>>>>::track::<Event, OrdersAgain>`
+  --> tests/ui_build/manual_outbox_tracked_twice.rs:65:13
+   |
+65 |       let _ = Outbox::<Sqlite>::deferred()
+   |  _____________^
+66 | |         .track::<Event, Orders>()
+67 | |         .track::<Event, Refunds>()
+68 | |         .track::<Event, OrdersAgain>();
+   | |______________________________________^

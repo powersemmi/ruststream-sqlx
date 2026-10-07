@@ -1,0 +1,33 @@
+error[E0277]: `Event` names its own fetch and does not implement `outbox::Fetch<sqlx::Sqlite>`
+  --> tests/ui/manual_outbox_own_missing.rs:57:42
+   |
+57 |     let _ = Outbox::<Sqlite>::deferred().track::<Event, Orders>();
+   |                                          ^^^^^ the service's own fetch is missing
+   |
+help: the trait `ruststream_sqlx::outbox::Fetch<sqlx::Sqlite>` is not implemented for `Event`
+  --> tests/ui/manual_outbox_own_missing.rs:8:1
+   |
+ 8 | struct Event {
+   | ^^^^^^^^^^^^
+   = note: implement `outbox::Fetch<sqlx::Sqlite>` for `Event`, or drop `fetch` from `#[outbox(custom(..))]` (or `.own::<own::Fetch>()` from its `OutboxSpec`)
+help: the trait `ruststream_sqlx::outbox::RecordList<DB>` is conditionally implemented for `Registered<Record, Rest>`
+  --> src/outbox/registry.rs
+   |
+   | / impl<DB, Record, Rest> RecordList<DB> for Registered<Record, Rest>
+   | | where
+   | |     DB: Database,
+   | |     Record: Tracked<DB>,
+   | |             ----------- unsatisfied requirement introduced here: `Event: ruststream_sqlx::outbox::Tracked<sqlx::Sqlite>`
+   | |     Rest: RecordList<DB>,
+   | |_________________________^
+   = note: required for `Set<ruststream_sqlx::outbox::spec::own::Fetch>` to implement `ruststream_sqlx::outbox::FetchBy<sqlx::Sqlite, Event>`
+   = note: required for `Event` to implement `ruststream_sqlx::outbox::Tracked<sqlx::Sqlite>`
+   = note: required for `Registered<Event, Checked<Orders, Nil>>` to implement `ruststream_sqlx::outbox::RecordList<sqlx::Sqlite>`
+note: required by a bound in `ruststream_sqlx::Outbox::<DB, Records>::track`
+  --> src/outbox/registry.rs
+   |
+   |     pub fn track<Record: OutboxTable, Name: TrackedName>(
+   |            ----- required by a bound in this associated function
+...
+   |         Registered<Record, Checked<Name, Records>>: RecordList<DB>,
+   |                                                     ^^^^^^^^^^^^^^ required by this bound in `Outbox::<DB, Records>::track`

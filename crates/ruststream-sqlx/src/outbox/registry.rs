@@ -2,8 +2,10 @@
 //! shares.
 //!
 //! The registrations are a type-level list, `Registered<Record, Rest>` ending in [`Nil`], each
-//! node holding its name. A lookup walks the list comparing names, and every node is its own
-//! monomorphized code: no map, no `dyn`.
+//! node holding its name and its record's default statements, built when the record type was
+//! registered. A lookup walks the list comparing names, and every node is its own monomorphized
+//! code: no map, no `dyn`. A name tracked by type adds a [`Checked`] node, which holds nothing and
+//! forwards every call.
 
 use std::any::type_name;
 use std::fmt;
@@ -15,11 +17,13 @@ use ruststream::runtime::{Context, Handler, HandlerOutcome};
 use ruststream::{Bytes, OutgoingMessage, Publisher};
 use sqlx::{Database, Pool};
 
+use super::database::{Defaults, OutboxDatabase};
 use super::error::{OutboxError, PoolAlreadySet};
 use super::events::Tracked;
 use super::layer::{TrackingLayer, deliver};
 use super::publish::{TrackingPublishLayer, record};
 use super::republish::{Republishing, recover_and_publish};
+use super::spec::{Described, OutboxTable};
 use super::wrap::TrackedPublisher;
 
 /// The end of the registrations.
@@ -29,6 +33,7 @@ pub struct Nil;
 /// A name the outbox tracks with `Record`, in front of the registrations `Rest`.
 pub struct Registered<Record, Rest> {
     name: &'static str,
+    defaults: Defaults,
     rest: Rest,
     record: PhantomData<fn() -> Record>,
 }
@@ -37,6 +42,7 @@ impl<Record, Rest: Clone> Clone for Registered<Record, Rest> {
     fn clone(&self) -> Self {
         Self {
             name: self.name,
+            defaults: self.defaults,
             rest: self.rest.clone(),
             record: PhantomData,
         }
@@ -49,6 +55,7 @@ impl<Record, Rest: fmt::Debug> fmt::Debug for Registered<Record, Rest> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Registered")
             .field("name", &self.name)
+            .field("defaults", &self.defaults)
             .field("record", &type_name::<Record>())
             .field("rest", &self.rest)
             .finish()
@@ -179,7 +186,8 @@ where
         H: Handler<M, C, S>,
     {
         if ctx.name() == self.name {
-            deliver::<DB, Record, M, C, S, H>(self.name, pool, handler, msg, ctx).await
+            deliver::<DB, Record, M, C, S, H>(self.name, &self.defaults, pool, handler, msg, ctx)
+                .await
         } else {
             self.rest.deliver(pool, handler, msg, ctx).await
         }
@@ -192,10 +200,28 @@ where
         only: Option<&'a [&'static str]>,
     ) -> Result<(), OutboxError> {
         if only.is_none_or(|names| names.contains(&self.name)) {
-            recover_and_publish::<DB, Record, Live>(self.name, pool, publisher).await?;
+            recover_and_publish::<DB, Record, Live>(self.name, &self.defaults, pool, publisher)
+                .await?;
         }
         self.rest.republish(pool, publisher, only).await
     }
+}
+
+/// The default statements of `Record` on `DB`, built from its table's description.
+///
+/// # Panics
+///
+/// Panics when the table does not fit a dialect of `DB`.
+#[track_caller]
+fn defaults<DB: OutboxDatabase, Record: OutboxTable>() -> Defaults {
+    // Why at run time: the dialects write their statements at run time; the derive checks the
+    // same description while the service compiles.
+    DB::defaults(&Record::TABLE.spec()).unwrap_or_else(|error| {
+        panic!(
+            "`{}` describes an outbox table its database cannot run: {error}",
+            type_name::<Record>()
+        )
+    })
 }
 
 /// The outbox of a service: the record type of each name it tracks, and the pool their records
@@ -396,11 +422,15 @@ impl<DB: Database> Outbox<DB, Nil> {
 }
 
 impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
-    /// Tracks the messages published under `name` with the record type `Record`.
+    /// Tracks the messages published under `name` with the record type `Record`, for a name known
+    /// only at run time; [`track`](Self::track) refuses a repeated name while the service
+    /// compiles. The record's default statements are built here, once.
     ///
     /// # Panics
     ///
-    /// Panics when `name` is registered already: each name has one record type.
+    /// Panics when `name` is registered already (each name has one record type), and when
+    /// `Record`'s table does not fit a dialect of `DB` (an identifier longer than the database
+    /// takes).
     ///
     /// # Examples
     ///
@@ -445,12 +475,18 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     /// ```
     #[must_use]
     #[track_caller]
-    pub fn register<Record: Tracked<DB>>(
+    pub fn register<Record: OutboxTable>(
         self,
         name: &'static str,
-    ) -> Outbox<DB, Registered<Record, Records>> {
-        // Why at run time: the names are run-time strings here; `outbox!` rejects a repeated
-        // literal at compile time.
+    ) -> Outbox<DB, Registered<Record, Records>>
+    where
+        DB: OutboxDatabase,
+        // On the node rather than on `Record`: rustc then reports the unmet bound underneath (a
+        // missing `Publish`, an event of the record's own without its impl) with its own message.
+        Registered<Record, Records>: RecordList<DB>,
+    {
+        // Why at run time: the names are run-time strings here; `track` and `outbox!` reject a
+        // repeated name at compile time.
         assert!(
             !self.records.contains(name),
             "`{name}` is registered with the outbox twice; register each name once"
@@ -459,7 +495,143 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
             pool: self.pool,
             records: Registered {
                 name,
+                defaults: defaults::<DB, Record>(),
                 rest: self.records,
+                record: PhantomData,
+            },
+        }
+    }
+
+    /// Tracks the messages published under `Name::NAME` with the record type `Record`. A name
+    /// tracked twice does not compile. The record's default statements are built here, once.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the name is registered already through [`register`](Self::register), whose
+    /// names the compiler does not see, and when `Record`'s table does not fit a dialect of `DB`
+    /// (an identifier longer than the database takes).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+    /// # mod demo {
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream::memory::prelude::*;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use serde::{Deserialize, Serialize};
+    /// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Postgres> for OrderOutbox {
+    /// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "orders")] pub struct OrderPlaced { id: u64 }
+    /// # #[derive(Serialize, Deserialize, Outgoing)] #[outgoing(name = "refunds")] pub struct OrderCancelled { id: u64 }
+    /// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+    /// # #[subscriber("cancel", reply)] async fn cancel(cmd: &PlaceOrder) -> OrderCancelled { OrderCancelled { id: cmd.id } }
+    /// use ruststream_sqlx::outbox::TrackedName;
+    ///
+    /// pub struct Orders;
+    ///
+    /// impl TrackedName for Orders {
+    ///     const NAME: &'static str = "orders";
+    /// }
+    ///
+    /// pub struct Refunds;
+    ///
+    /// impl TrackedName for Refunds {
+    ///     const NAME: &'static str = "refunds";
+    /// }
+    ///
+    /// /// One record type tracks both names; a third `track::<OrderOutbox, Orders>()` would not
+    /// /// compile.
+    /// pub fn app(pool: PgPool) -> impl App {
+    ///     let tracking = Outbox::new(pool)
+    ///         .track::<OrderOutbox, Orders>()
+    ///         .track::<OrderOutbox, Refunds>();
+    ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+    ///         .publish_layer(tracking.publish_layer())
+    ///         .with_broker(MemoryBroker::new(), |b| {
+    ///             b.include(place).out_reply(Publish);
+    ///             b.include(cancel).out_reply(Publish);
+    ///             b.after_startup(Publish, tracking.republish());
+    ///         })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    ///
+    /// A name tracked twice stops the build:
+    ///
+    /// ```compile_fail,E0080
+    /// # use ruststream::OutgoingMessage;
+    /// # use ruststream_sqlx::{Outbox, outbox};
+    /// # use sqlx::{Sqlite, SqliteConnection};
+    /// # #[derive(Outbox, sqlx::FromRow)]
+    /// # #[outbox(table = "outbox")]
+    /// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+    /// # impl outbox::Publish<Sqlite> for OrderOutbox {
+    /// #     async fn publish(conn: &mut SqliteConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+    /// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+    /// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+    /// #     }
+    /// # }
+    /// use ruststream_sqlx::outbox::TrackedName;
+    ///
+    /// pub struct Orders;
+    ///
+    /// impl TrackedName for Orders {
+    ///     const NAME: &'static str = "orders";
+    /// }
+    ///
+    /// pub struct OrdersAgain;
+    ///
+    /// impl TrackedName for OrdersAgain {
+    ///     const NAME: &'static str = "orders";
+    /// }
+    ///
+    /// fn main() {
+    ///     let _ = Outbox::<Sqlite>::deferred()
+    ///         .track::<OrderOutbox, Orders>()
+    ///         .track::<OrderOutbox, OrdersAgain>();
+    /// }
+    /// ```
+    #[must_use]
+    #[track_caller]
+    pub fn track<Record: OutboxTable, Name: TrackedName>(
+        self,
+    ) -> Outbox<DB, Registered<Record, Checked<Name, Records>>>
+    where
+        DB: OutboxDatabase,
+        Records: Lacks<Name>,
+        Registered<Record, Checked<Name, Records>>: RecordList<DB>,
+    {
+        // The message cannot carry the name: a `const` panic formats only literals. The build
+        // names the call that repeats it, `track::<Record, Name>`.
+        const {
+            assert!(
+                <Records as Lacks<Name>>::LACKS,
+                "a name is tracked with the outbox twice: track each name once"
+            );
+        }
+        // Why at run time: a name registered through `register` is a run-time string.
+        assert!(
+            !self.records.contains(Name::NAME),
+            "`{}` is registered with the outbox twice; register each name once",
+            Name::NAME
+        );
+        Outbox {
+            pool: self.pool,
+            records: Registered {
+                name: Name::NAME,
+                defaults: defaults::<DB, Record>(),
+                rest: Checked(self.records, PhantomData),
                 record: PhantomData,
             },
         }
@@ -791,13 +963,170 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     }
 }
 
+/// A name the outbox tracks, as a type: [`Outbox::track`] refuses a name tracked twice while the
+/// service compiles.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "outbox", feature = "postgres"))]
+/// # mod demo {
+/// # use ruststream::OutgoingMessage;
+/// # use ruststream::memory::prelude::*;
+/// # use ruststream_sqlx::{Outbox, outbox};
+/// # use serde::{Deserialize, Serialize};
+/// # use sqlx::postgres::{PgConnection, PgPool, Postgres};
+/// # #[derive(Outbox, sqlx::FromRow)]
+/// # #[outbox(table = "outbox")]
+/// # pub struct OrderOutbox { #[field(id)] id: i64, #[field(name)] name: String, #[field(payload)] payload: Vec<u8> }
+/// # impl outbox::Publish<Postgres> for OrderOutbox {
+/// #     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+/// #         sqlx::query_scalar("INSERT INTO outbox (name, payload) VALUES ($1, $2) RETURNING id")
+/// #             .bind(msg.name()).bind(msg.payload()).fetch_one(conn).await
+/// #     }
+/// # }
+/// # #[derive(Deserialize)] pub struct PlaceOrder { id: u64 }
+/// # #[subscriber("checkout", reply)] async fn place(cmd: &PlaceOrder) -> OrderPlaced { OrderPlaced { id: cmd.id } }
+/// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
+/// use ruststream_sqlx::outbox::TrackedName;
+///
+/// /// The name `OrderPlaced` is published under, as a type.
+/// pub struct Orders;
+///
+/// impl TrackedName for Orders {
+///     const NAME: &'static str = "orders";
+/// }
+///
+/// #[derive(Serialize, Deserialize, Outgoing)]
+/// #[outgoing(name = "orders")]
+/// pub struct OrderPlaced {
+///     id: u64,
+/// }
+///
+/// pub fn app(pool: PgPool) -> impl App {
+///     let tracking = Outbox::new(pool).track::<OrderOutbox, Orders>();
+///     RustStream::new(AppInfo::new("orders", "0.1.0"))
+///         .layer(tracking.layer())
+///         .publish_layer(tracking.publish_layer())
+///         .with_broker(MemoryBroker::new(), |b| {
+///             b.include(place).out_reply(Publish);
+///             b.include(fulfil);
+///         })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a name the outbox tracks",
+    label = "not a `TrackedName`",
+    note = "implement `TrackedName` for `{Self}` with the name as `NAME`, or register the name as \
+            a string with `register`"
+)]
+pub trait TrackedName: 'static {
+    /// The name.
+    const NAME: &'static str;
+}
+
+/// A name tracked by type, kept in the registry's type for the compile-time check; it holds no
+/// record and forwards every call. Machinery behind [`Outbox::track`].
+#[derive(Debug)]
+pub struct Checked<Name, Rest>(Rest, PhantomData<fn() -> Name>);
+
+impl<Name, Rest: Clone> Clone for Checked<Name, Rest> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone(), PhantomData)
+    }
+}
+
+impl<Name, Rest: Copy> Copy for Checked<Name, Rest> {}
+
+/// Whether a list of registrations lacks `Name` among the names tracked by type. Machinery.
+#[doc(hidden)]
+pub trait Lacks<Name: TrackedName> {
+    /// `true` when no node tracks `Name::NAME` by type.
+    const LACKS: bool;
+}
+
+impl<Name: TrackedName> Lacks<Name> for Nil {
+    const LACKS: bool = true;
+}
+
+impl<Name: TrackedName, Record, Rest: Lacks<Name>> Lacks<Name> for Registered<Record, Rest> {
+    const LACKS: bool = <Rest as Lacks<Name>>::LACKS;
+}
+
+impl<Name: TrackedName, Earlier: TrackedName, Rest: Lacks<Name>> Lacks<Name>
+    for Checked<Earlier, Rest>
+{
+    const LACKS: bool = !same(Earlier::NAME, Name::NAME) && <Rest as Lacks<Name>>::LACKS;
+}
+
+/// Whether two names are one, while the service compiles.
+const fn same(one: &str, other: &str) -> bool {
+    let (one, other) = (one.as_bytes(), other.as_bytes());
+    if one.len() != other.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < one.len() {
+        if one[index] != other[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+impl<Name: 'static, Rest: RecordNames> RecordNames for Checked<Name, Rest> {
+    #[inline]
+    fn contains(&self, name: &str) -> bool {
+        self.0.contains(name)
+    }
+}
+
+impl<DB: Database, Name: 'static, Rest: RecordList<DB>> RecordList<DB> for Checked<Name, Rest> {
+    fn record<'a>(
+        &'a self,
+        pool: &'a OnceLock<Pool<DB>>,
+        msg: &'a OutgoingMessage<'_>,
+    ) -> impl Future<Output = Option<Result<Bytes, OutboxError>>> + Send + 'a {
+        self.0.record(pool, msg)
+    }
+
+    fn deliver<'a, M, C, S, H>(
+        &'a self,
+        pool: &'a OnceLock<Pool<DB>>,
+        handler: &'a H,
+        msg: &'a M,
+        ctx: &'a mut Context<'_, C, S>,
+    ) -> impl Future<Output = HandlerOutcome> + Send + 'a
+    where
+        M: Sync,
+        C: Send,
+        S: Send + Sync,
+        H: Handler<M, C, S>,
+    {
+        self.0.deliver(pool, handler, msg, ctx)
+    }
+
+    fn republish<'a, Live: Publisher>(
+        &'a self,
+        pool: &'a OnceLock<Pool<DB>>,
+        publisher: &'a Live,
+        only: Option<&'a [&'static str]>,
+    ) -> impl Future<Output = Result<(), OutboxError>> + Send + 'a {
+        self.0.republish(pool, publisher, only)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Nil, PhantomData, RecordNames, Registered};
+    use super::{Checked, Defaults, Lacks, Nil, PhantomData, RecordNames, Registered, TrackedName};
 
     fn node<Rest>(name: &'static str, rest: Rest) -> Registered<(), Rest> {
         Registered {
             name,
+            defaults: Defaults::default(),
             rest,
             record: PhantomData,
         }
@@ -813,5 +1142,42 @@ mod tests {
         assert!(!names.contains("order"));
         assert!(!names.contains(""));
         assert!(!Nil.contains("orders"));
+    }
+
+    struct Orders;
+
+    impl TrackedName for Orders {
+        const NAME: &'static str = "orders";
+    }
+
+    struct Order;
+
+    impl TrackedName for Order {
+        const NAME: &'static str = "order";
+    }
+
+    struct Refunds;
+
+    impl TrackedName for Refunds {
+        const NAME: &'static str = "refunds";
+    }
+
+    type Tracked = Registered<(), Checked<Refunds, Registered<(), Checked<Orders, Nil>>>>;
+
+    #[test]
+    fn a_name_tracked_by_type_is_found_by_its_text_alone() {
+        const {
+            assert!(!<Tracked as Lacks<Orders>>::LACKS);
+            assert!(!<Tracked as Lacks<Refunds>>::LACKS);
+            assert!(<Tracked as Lacks<Order>>::LACKS);
+            assert!(<Nil as Lacks<Orders>>::LACKS);
+        }
+        let names = node(
+            "refunds",
+            Checked(node("orders", Nil), PhantomData::<fn() -> Refunds>),
+        );
+        assert!(names.contains("orders"));
+        assert!(names.contains("refunds"));
+        assert!(!names.contains("order"));
     }
 }

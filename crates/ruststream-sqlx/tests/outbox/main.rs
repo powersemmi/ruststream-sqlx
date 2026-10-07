@@ -21,6 +21,7 @@ use std::env;
 #[path = "../live/mod.rs"]
 mod live;
 
+mod manual;
 mod records;
 mod registry;
 mod stand;

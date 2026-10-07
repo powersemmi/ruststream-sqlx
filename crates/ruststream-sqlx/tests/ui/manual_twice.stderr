@@ -4,10 +4,10 @@ error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::spec::Lease
 15 |     type Table = InboxSpec<(Lease<DateTime<Utc>>, Advisory)>;
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ set twice
    |
-   = note: a table has one form, one message mode, one clock and one opening, and sets each role and each event of its own once: drop one of the two setter calls on `InboxSpec`, and its marker from `type Table`
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
 help: the trait `Merge<Set<ruststream_sqlx::spec::Advisory>>` is not implemented for `Set<ruststream_sqlx::spec::Lease<DateTime<Utc>>>`
       but trait `Merge<Unset>` is implemented for it
-  --> src/inbox/spec/declaration.rs
+  --> src/settings.rs
    |
    | impl<Value> Merge<Unset> for Set<Value> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -26,10 +26,10 @@ error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::spec::Attem
 32 |     type Table = InboxSpec<(Attempt, Payload, Attempt)>;
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ set twice
    |
-   = note: a table has one form, one message mode, one clock and one opening, and sets each role and each event of its own once: drop one of the two setter calls on `InboxSpec`, and its marker from `type Table`
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
 help: the trait `Merge<Set<ruststream_sqlx::spec::Attempt>>` is not implemented for `Set<ruststream_sqlx::spec::Attempt>`
       but trait `Merge<Unset>` is implemented for it
-  --> src/inbox/spec/declaration.rs
+  --> src/settings.rs
    |
    | impl<Value> Merge<Unset> for Set<Value> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -48,10 +48,10 @@ error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::spec::own::
 50 |     type Table = InboxSpec<(own::Ack, own::Ack)>;
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ set twice
    |
-   = note: a table has one form, one message mode, one clock and one opening, and sets each role and each event of its own once: drop one of the two setter calls on `InboxSpec`, and its marker from `type Table`
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
 help: the trait `Merge<Set<ruststream_sqlx::spec::own::Ack>>` is not implemented for `Set<ruststream_sqlx::spec::own::Ack>`
       but trait `Merge<Unset>` is implemented for it
-  --> src/inbox/spec/declaration.rs
+  --> src/settings.rs
    |
    | impl<Value> Merge<Unset> for Set<Value> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -70,10 +70,10 @@ error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::spec::Lease
 18 |         .advisory(KEY);
    |          ^^^^^^^^ set twice
    |
-   = note: a table has one form, one message mode, one clock and one opening, and sets each role and each event of its own once: drop one of the two setter calls on `InboxSpec`, and its marker from `type Table`
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
 help: the trait `Merge<Set<ruststream_sqlx::spec::Advisory>>` is not implemented for `Set<ruststream_sqlx::spec::Lease<_>>`
       but trait `Merge<Unset>` is implemented for it
-  --> src/inbox/spec/declaration.rs
+  --> src/settings.rs
    |
    | impl<Value> Merge<Unset> for Set<Value> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -94,10 +94,10 @@ error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::spec::Attem
 36 |         .attempt(Column::new("tries"));
    |          ^^^^^^^ set twice
    |
-   = note: a table has one form, one message mode, one clock and one opening, and sets each role and each event of its own once: drop one of the two setter calls on `InboxSpec`, and its marker from `type Table`
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
 help: the trait `Merge<Set<ruststream_sqlx::spec::Attempt>>` is not implemented for `Set<ruststream_sqlx::spec::Attempt>`
       but trait `Merge<Unset>` is implemented for it
-  --> src/inbox/spec/declaration.rs
+  --> src/settings.rs
    |
    | impl<Value> Merge<Unset> for Set<Value> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -118,10 +118,10 @@ error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::spec::own::
 53 |         .own::<own::Ack>();
    |          ^^^ set twice
    |
-   = note: a table has one form, one message mode, one clock and one opening, and sets each role and each event of its own once: drop one of the two setter calls on `InboxSpec`, and its marker from `type Table`
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
 help: the trait `Merge<Set<ruststream_sqlx::spec::own::Ack>>` is not implemented for `Set<ruststream_sqlx::spec::own::Ack>`
       but trait `Merge<Unset>` is implemented for it
-  --> src/inbox/spec/declaration.rs
+  --> src/settings.rs
    |
    | impl<Value> Merge<Unset> for Set<Value> {
    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

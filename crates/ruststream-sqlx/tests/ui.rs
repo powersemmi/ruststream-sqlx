@@ -1,8 +1,10 @@
-//! Compile-fail snapshots of the diagnostics `#[derive(Inbox)]` owns.
+//! Compile-fail snapshots of the diagnostics the derives and the typed builders own.
 //!
-//! Each `tests/ui/*.rs` case feeds the derive a struct that cannot drive a queue and pins the
-//! compile error against a `.stderr` snapshot, so a reworded or dropped message, or a span that
-//! moved off the offending field, fails the build.
+//! Each `tests/ui/*.rs` case feeds the crate a description it refuses and pins the compile error
+//! against a `.stderr` snapshot, so a reworded or dropped message, or a span that moved off the
+//! offending field, fails the build. The `tests/ui_build/*.rs` cases are refused while the crate
+//! builds rather than while it is checked (a `const` evaluated per instantiation), so they run
+//! under `cargo build`, next to a case that builds.
 //!
 //! The snapshots record one toolchain's exact wording, so they run on the stable toolchain this
 //! repository selects, and only when `RUN_UI_TESTS=1`. To refresh them after an intentional
@@ -44,4 +46,9 @@ fn ui() {
     }
     let cases = trybuild::TestCases::new();
     cases.compile_fail("tests/ui/*.rs");
+    drop(cases);
+    // A case that passes makes trybuild build, not only check, every case of this run.
+    let built = trybuild::TestCases::new();
+    built.pass("tests/ui_build/*_once.rs");
+    built.compile_fail("tests/ui_build/*_twice.rs");
 }

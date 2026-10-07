@@ -152,6 +152,98 @@ pub trait HeaderColumn {
     fn unfit(headers: &HeaderMap) -> Option<&str>;
 }
 
+/// A record or a row whose headers live in one column: the field holding the column, which the
+/// table's description names with its `headers` setter.
+///
+/// `#[derive(Outbox)]` implements it for the field playing `headers`; a record described by hand
+/// implements it where its `OutboxSpec` sets `outbox::spec::Headers`, and a
+/// republished record carries the headers it took out of the field.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(all(feature = "outbox", feature = "json", feature = "postgres"))]
+/// # mod demo {
+/// # use ruststream::OutgoingMessage;
+/// use std::collections::BTreeMap;
+///
+/// use ruststream_sqlx::dialect::Column;
+/// use ruststream_sqlx::outbox::spec::Headers;
+/// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
+/// use ruststream_sqlx::{HeaderColumn, HeaderRow};
+/// use sqlx::types::Json;
+/// use sqlx::{PgConnection, Postgres};
+///
+/// #[derive(sqlx::FromRow)]
+/// pub struct OrderEvent {
+///     id: i64,
+///     name: String,
+///     payload: Vec<u8>,
+///     headers: Option<Json<BTreeMap<String, String>>>,
+/// }
+///
+/// impl HeaderRow for OrderEvent {
+///     type Column = Option<Json<BTreeMap<String, String>>>;
+///
+///     fn headers_mut(&mut self) -> &mut Self::Column {
+///         &mut self.headers
+///     }
+/// }
+///
+/// impl OutboxTable for OrderEvent {
+///     type Id = i64;
+///     type Table = OutboxSpec<(Headers,)>;
+///     const TABLE: Self::Table = OutboxSpec::new(
+///         "outbox",
+///         Column::new("id"),
+///         Column::new("name"),
+///         Column::new("payload"),
+///     )
+///     .headers(Column::new("headers"));
+///
+///     fn id(&self) -> &i64 {
+///         &self.id
+///     }
+///
+///     fn name(&self) -> &str {
+///         &self.name
+///     }
+///
+///     fn payload(&self) -> &[u8] {
+///         &self.payload
+///     }
+/// }
+///
+/// // The record keeps what the message carried, so a republish sends the headers again.
+/// impl outbox::Publish<Postgres> for OrderEvent {
+///     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+///         sqlx::query_scalar(
+///             "INSERT INTO outbox (name, payload, headers) VALUES ($1, $2, $3) RETURNING id",
+///         )
+///         .bind(msg.name())
+///         .bind(msg.payload())
+///         .bind(Option::<Json<BTreeMap<String, String>>>::from_headers(msg.headers()))
+///         .fetch_one(conn)
+///         .await
+///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` names a headers column and does not implement `HeaderRow`",
+    label = "no `HeaderRow` for this record",
+    note = "implement `HeaderRow` for `{Self}`, handing out the field that holds the headers \
+            column, or drop `headers` from its description"
+)]
+pub trait HeaderRow {
+    /// The column's type.
+    type Column: HeaderColumn;
+
+    /// The field holding the column, which the headers are taken out of.
+    fn headers_mut(&mut self) -> &mut Self::Column;
+}
+
 impl<T: HeaderColumn> HeaderColumn for Option<T> {
     fn take_headers(&mut self) -> HeaderMap {
         self.as_mut()

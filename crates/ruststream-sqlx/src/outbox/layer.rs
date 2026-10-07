@@ -9,6 +9,7 @@ use ruststream::runtime::{BlanketLayer, Context, Handler, HandlerOutcome};
 use sqlx::{Database, Error, Pool};
 use tracing::warn;
 
+use super::database::Defaults;
 use super::events::Tracked;
 use super::publish::carried_id;
 use super::registry::RecordList;
@@ -122,12 +123,13 @@ impl Settlement {
         self,
         pool: &Pool<DB>,
         id: &Record::Id,
+        defaults: &Defaults,
     ) -> Result<(), Error> {
         let mut conn = pool.acquire().await?;
         match self {
-            Self::Ack => Record::ack(&mut conn, id).await,
-            Self::Retry => Record::retry(&mut conn, id).await,
-            Self::Discard => Record::discard(&mut conn, id).await,
+            Self::Ack => Record::ack_record(&mut conn, id, defaults).await,
+            Self::Retry => Record::retry_record(&mut conn, id, defaults).await,
+            Self::Discard => Record::discard_record(&mut conn, id, defaults).await,
         }
     }
 }
@@ -135,6 +137,7 @@ impl Settlement {
 /// Takes the record `Record` of a delivery under `name`, runs `handler`, and settles the record.
 pub(super) async fn deliver<DB, Record, M, C, S, H>(
     name: &'static str,
+    defaults: &Defaults,
     pool: &OnceLock<Pool<DB>>,
     handler: &H,
     msg: &M,
@@ -177,7 +180,7 @@ where
     // and each of those takes one.
     let taken = async {
         let mut conn = pool.acquire().await?;
-        Record::fetch(&mut conn, &id).await
+        Record::fetch_record(&mut conn, &id, defaults).await
     }
     .await;
     match taken {
@@ -197,7 +200,7 @@ where
     }
     let outcome = handler.handle(msg, ctx).await;
     if let Some(settlement) = Settlement::of::<DB, Record>(&outcome)
-        && let Err(error) = settlement.run::<DB, Record>(pool, &id).await
+        && let Err(error) = settlement.run::<DB, Record>(pool, &id, defaults).await
     {
         warn!(
             target: "ruststream_sqlx",

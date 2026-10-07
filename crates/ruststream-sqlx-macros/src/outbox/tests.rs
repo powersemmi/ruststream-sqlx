@@ -337,3 +337,102 @@ fn outbox_refuses_a_key_other_than_pool() {
         "unknown key `connection`: `outbox!` takes `pool: <expr>` before the names"
     );
 }
+
+#[test]
+fn the_derive_writes_the_manual_description_and_no_statement() -> syn::Result<()> {
+    let input: DeriveInput = parse_quote! {
+        #[outbox(table = "outbox", schema = "app", custom(fetch, retry))]
+        struct Order {
+            #[field(id)]
+            id: i64,
+            #[field(name)]
+            #[sqlx(rename = "channel")]
+            name: String,
+            #[field(payload)]
+            payload: Vec<u8>,
+            #[field(headers)]
+            headers: Option<String>,
+            #[field(processed_at)]
+            processed_at: Option<String>,
+            created_at: String,
+        }
+    };
+    let expanded = super::expand(&input)?;
+    let column = |name: &str| quote!(::ruststream_sqlx::dialect::Column::new(#name));
+    let (id, channel, payload, created_at, headers, processed_at) = (
+        column("id"),
+        column("channel"),
+        column("payload"),
+        column("created_at"),
+        column("headers"),
+        column("processed_at"),
+    );
+    let spec = quote!(::ruststream_sqlx::outbox::spec);
+    let expected = quote! {
+        #[automatically_derived]
+        impl ::ruststream_sqlx::OutboxTable for Order {
+            type Id = i64;
+            type Table = ::ruststream_sqlx::OutboxSpec<(
+                #spec::Headers,
+                #spec::ProcessedAt,
+                #spec::own::Fetch,
+                #spec::own::Retry,
+            )>;
+
+            const TABLE: Self::Table =
+                ::ruststream_sqlx::OutboxSpec::new("outbox", #id, #channel, #payload)
+                    .within("app")
+                    .data(&[#created_at])
+                    .headers(#headers)
+                    .processed_at(#processed_at)
+                    .own::<#spec::own::Fetch>()
+                    .own::<#spec::own::Retry>();
+
+            fn id(&self) -> &i64 {
+                let _ = &self.processed_at;
+                &self.id
+            }
+
+            fn name(&self) -> &str {
+                ::core::convert::AsRef::<str>::as_ref(&self.name)
+            }
+
+            fn payload(&self) -> &[u8] {
+                ::core::convert::AsRef::<[u8]>::as_ref(&self.payload)
+            }
+        }
+
+        #[automatically_derived]
+        impl ::ruststream_sqlx::HeaderRow for Order {
+            type Column = Option<String>;
+
+            fn headers_mut(&mut self) -> &mut Option<String> {
+                &mut self.headers
+            }
+        }
+    };
+    assert_eq!(expanded.to_string(), expected.to_string());
+    Ok(())
+}
+
+#[test]
+fn an_id_read_through_json_is_refused_on_its_field() {
+    let input: DeriveInput = parse_quote! {
+        #[outbox(table = "outbox")]
+        struct Order {
+            #[field(id)]
+            #[sqlx(json)]
+            id: Key,
+            #[field(name)]
+            name: String,
+            #[field(payload)]
+            payload: Vec<u8>,
+        }
+    };
+    let error = super::expand(&input).map_or_else(|error| error.to_string(), |_| String::new());
+    assert_eq!(
+        error,
+        "the outbox binds a record's id as itself: the `id` field reads its column without \
+         `#[sqlx(json)]`"
+    );
+}

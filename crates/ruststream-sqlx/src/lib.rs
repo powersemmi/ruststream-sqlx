@@ -27,11 +27,13 @@ pub use ruststream_sqlx_dialect as dialect;
 mod header_column;
 #[cfg(feature = "outbox")]
 pub mod outbox;
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+mod settings;
 
 #[cfg(any(feature = "inbox", feature = "outbox"))]
-pub use header_column::HeaderColumn;
+pub use header_column::{HeaderColumn, HeaderRow};
 #[cfg(feature = "outbox")]
-pub use outbox::{Outbox, OutboxDatabase, OutboxRow};
+pub use outbox::{Outbox, OutboxDatabase, OutboxRow, OutboxSpec, OutboxTable};
 
 #[cfg(feature = "inbox")]
 mod inbox;
@@ -69,9 +71,6 @@ pub use inbox::spec;
 pub mod __private {
     pub use ruststream::HeaderMap;
     pub use sqlx;
-
-    #[cfg(feature = "outbox")]
-    pub use crate::outbox::{OutboxSql, no_outbox_statement};
 
     #[cfg(feature = "inbox")]
     pub use inbox::*;
@@ -438,13 +437,15 @@ pub use ruststream_sqlx_macros::Inbox;
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::InboxHeaders;
 
-/// Describes a service's outbox table with a struct and implements its record contract
-/// ([`OutboxRow`]) and the default events.
+/// Describes a service's outbox table with a struct: implements [`OutboxTable`], the description
+/// a record by hand writes, and [`HeaderRow`] for a `headers` field.
 ///
 /// The struct is an ordinary sqlx struct: `#[outbox(..)]` names the table, sqlx's own attributes
 /// name the columns, and `#[field(..)]` marks the columns the outbox reads. The service writes the
-/// record of a published message itself, in [`outbox::Publish`]; the derive writes the other
-/// events, each for every [`OutboxDatabase`], with its statement built at compile time.
+/// record of a published message itself, in [`outbox::Publish`]; the registry runs the other
+/// events on every [`OutboxDatabase`], from statements it builds from the description when the
+/// record type is registered. The derive checks the description against each built-in dialect
+/// while the service compiles.
 ///
 /// # Examples
 ///
@@ -508,7 +509,8 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 /// `#[field(..)]` gives a field one role:
 ///
 /// - `id`, required: the record's identity, which a tracked message carries in
-///   [`OUTBOX_ID_HEADER`](outbox::OUTBOX_ID_HEADER) through its `Display` and `FromStr`.
+///   [`OUTBOX_ID_HEADER`](outbox::OUTBOX_ID_HEADER) through its `Display` and `FromStr`, and which
+///   the default events bind as its own type.
 /// - `name`, required: the name the record was published under, read through `AsRef<str>`.
 /// - `payload`, required: the published bytes, read through `AsRef<[u8]>`.
 /// - `headers`: the published headers, a [`HeaderColumn`] type.
@@ -532,7 +534,7 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 /// A struct the outbox cannot read does not compile, and the error points at the struct, the
 /// field or the word that causes it: no `id`, `name` or `payload`, a role played twice, a column
 /// named twice, a role on a field without a column, an unknown role or event, a dot in `table` or
-/// `schema`.
+/// `schema`, an `id` read through `#[sqlx(json)]`.
 #[cfg(feature = "outbox")]
 pub use ruststream_sqlx_macros::Outbox;
 /// Registers outbox records under the names they track, and returns the registry.
