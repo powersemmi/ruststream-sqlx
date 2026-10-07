@@ -3,8 +3,9 @@
 //! in both forms and whatever its ids hold, a `Routed` publish what a `Repository` one does, a
 //! row-mode subscription, single or batched, what a payload-mode one over the same table does, a
 //! headers-layout delivery what a flat row-mode one does until its headers are read and then what
-//! its header map needs, and a publish that wakes a waiting subscription what one that wakes none
-//! does.
+//! its header map needs, a fetch of the service's own over a join what a raw sqlx loop running
+//! the same statements does, and a publish that wakes a waiting subscription what one that wakes
+//! none does.
 
 #![cfg(all(
     feature = "inbox",
@@ -26,17 +27,20 @@ use ruststream::{
     IncomingMessage, Lend, OutgoingMessage, PublishPolicy, Publisher, Str, Subscribe, Subscriber,
     SubscriptionSource, nonzero,
 };
+use ruststream_sqlx::dialect::{ClaimShape, Dialect, Param, RowLock, Statement};
 use ruststream_sqlx::{
-    ConnectedSqlxBroker, Inbox, InboxQueue, Publish, Repository, Routed, SqlxBroker,
-    SqlxBrokerError,
+    ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, InboxRow, Publish, Repository, Routed,
+    SqlxBroker, SqlxBrokerError,
 };
+use sqlx::postgres::PgArguments;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use sqlx::{PgConnection, PgPool, Postgres};
+use sqlx::{Arguments, Database as SqlxDatabase, PgConnection, PgPool, Postgres, Row};
+use sqlx_core::transaction::TransactionManager;
 use tokio::time::timeout;
 
 use live::postgres::{URL, database};
 use live::rows::lease;
-use live::rows::row_lock::{OrderJob, Plain};
+use live::rows::row_lock::{OrderJob, OrderMail, Plain};
 use live::{Database, url};
 
 #[global_allocator]
@@ -429,6 +433,113 @@ async fn assert_headers_layout(connected: &ConnectedSqlxBroker<Postgres>, fills:
     dhat::assert_eq!(read_cost, unread_cost + map_cost);
 }
 
+/// Writes `count` orders, one per job `fill_headed` writes, for a fetch that joins them.
+async fn fill_orders(pool: &PgPool, count: u64) {
+    sqlx::query(
+        "INSERT INTO customer_orders (id, customer, total) \
+         SELECT n, 'customer-' || lpad(n::text, 6, '0'), n FROM generate_series(1, $1) AS n \
+         ON CONFLICT (id) DO NOTHING",
+    )
+    .bind(i64::try_from(count).expect("a count of rows"))
+    .execute(pool)
+    .await
+    .expect("the orders write");
+}
+
+/// The arguments of `statement`, bound as the crate binds a claim of one row of the group
+/// `orders` and an acknowledgement of the row `id`.
+fn raw_arguments(statement: &Statement, id: i64) -> PgArguments {
+    let mut arguments = PgArguments::default();
+    for param in statement.params() {
+        match param {
+            Param::Group => arguments.add(ORDERS),
+            Param::Limit => arguments.add(1_i64),
+            Param::Id => arguments.add(id),
+            other => panic!("a raw loop binds no {other:?}"),
+        }
+        .expect("the argument encodes");
+    }
+    arguments
+}
+
+/// Allocations per message of a raw sqlx loop over `OrderMail`: in one transaction each, opened as
+/// the crate opens its own, the
+/// dialect's claim of ids into a buffer the loop reuses, the service's fetch over the join, the
+/// row taken by its id, the dialect's acknowledgement, the commit.
+async fn raw_join_cost(pool: &PgPool) -> u64 {
+    let claim = ruststream_sqlx::dialect::Postgres
+        .lock_claim(&OrderMail::SPEC, ClaimShape::Ids)
+        .expect("the claim of ids");
+    let ack = ruststream_sqlx::dialect::Postgres
+        .ack(&OrderMail::SPEC)
+        .expect("the acknowledgement");
+    // The statements live as long as the crate's prepared ones do: a query takes its text for good.
+    let claim_sql: &'static str = Box::leak(claim.sql().into());
+    let ack_sql: &'static str = Box::leak(ack.sql().into());
+    let mut ids: Vec<i64> = Vec::new();
+    let mut start = 0;
+    for message in 0..WARMUP + MESSAGES {
+        if message == WARMUP {
+            start = blocks();
+        }
+        // The transaction the crate opens: sqlx's `Transaction` boxes its begin, the crate runs
+        // the transaction manager on its pooled connection.
+        let mut tx = pool.acquire().await.expect("a connection");
+        <Postgres as SqlxDatabase>::TransactionManager::begin(&mut tx, None)
+            .await
+            .expect("begin");
+        ids.clear();
+        {
+            let mut claimed = sqlx::query_with(claim_sql, raw_arguments(&claim, 0)).fetch(&mut *tx);
+            while let Some(row) = claimed.next().await {
+                ids.push(row.expect("the claim").try_get::<i64, _>(0).expect("an id"));
+            }
+        }
+        let mut mails = <OrderMail as Fetch<Postgres>>::fetch(&mut *tx, &ids)
+            .await
+            .expect("the fetch");
+        let id = ids[0];
+        let position = mails
+            .iter()
+            .position(|mail| mail.headers.job_id == id)
+            .expect("the joined row");
+        let mail = mails.swap_remove(position);
+        assert_eq!(mail.headers.job_id, id, "the row of the claimed id");
+        sqlx::query_with(ack_sql, raw_arguments(&ack, id))
+            .execute(&mut *tx)
+            .await
+            .expect("the ack");
+        <Postgres as SqlxDatabase>::TransactionManager::commit(&mut tx)
+            .await
+            .expect("the commit");
+    }
+    (blocks() - start) / MESSAGES
+}
+
+/// A fetch of the service's own over a join: a delivery costs what a raw sqlx loop running the
+/// same claim, fetch and acknowledgement does. `fills` writes the rows.
+async fn assert_join_fetch(
+    connected: &ConnectedSqlxBroker<Postgres>,
+    pool: &PgPool,
+    fills: &PgPool,
+) {
+    sqlx::query("DELETE FROM headed_jobs")
+        .execute(fills)
+        .await
+        .expect("the table empties");
+    fill_orders(fills, 2 * (WARMUP + MESSAGES)).await;
+    fill_headed(fills, WARMUP + MESSAGES).await;
+    let raw_cost = raw_join_cost(pool).await;
+    fill_headed(fills, WARMUP + MESSAGES).await;
+    let crate_cost = typed_subscription_cost(
+        connected,
+        InboxQueue::<OrderMail>::new(ORDERS),
+        read_row::<OrderMail, _>,
+    )
+    .await;
+    dhat::assert_eq!(crate_cost, raw_cost);
+}
+
 /// The wake-up: a publish into a table no subscription of the broker reads wakes nobody; one into
 /// a table whose subscription waits on its interval wakes it, and costs the same. `fills` empties
 /// the table between the measures.
@@ -559,6 +670,7 @@ async fn each_path_allocates_what_its_reference_does() {
     dhat::assert_eq!(routed_cost, repository_cost);
 
     assert_headers_layout(&connected, &db.pool).await;
+    assert_join_fetch(&connected, &pool, &db.pool).await;
     connected.shutdown().await.expect("the broker shuts down");
     assert_wake_ups(&pool, &db.pool).await;
     db.finish().await;

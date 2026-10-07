@@ -47,6 +47,11 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
     /// settlements match; `()` for a table in another form.
     type Token: Copy + Debug + Send + Sync + 'static;
 
+    /// What a claim keeps of the ids it took until its fetch reads their rows: `Vec<Self::Id>` for
+    /// the crate's claim of ids before a fetch of the service's own, `()` for every other claim.
+    /// The subscription owns it and hands it to each claim, so its storage is reused.
+    type Ids: Default + Send + Sync + 'static;
+
     /// Where a delivery keeps its header map: the map moved out of the `headers` field for a flat
     /// struct, a cell built on the first read for a message assembled from a headers struct.
     type Headers: HeaderCell<DB, Self>;
@@ -95,11 +100,13 @@ pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + U
     /// clock, or the table is in another form.
     fn lease(queue: &'static Queue, now: Now) -> Result<Leasing<Self::Token>, Error>;
 
-    /// Claims up to `cx.limit` rows into `out`; in the lease form the claim takes `lease`.
+    /// Claims up to `cx.limit` rows into `out`; in the lease form the claim takes `lease`. A claim
+    /// of ids for a fetch reads them into `ids`, the subscription's buffer.
     fn claim<'a>(
         conn: &'a mut DB::Connection,
         cx: &'a Claiming,
         lease: Option<&'a Leasing<Self::Token>>,
+        ids: &'a mut Self::Ids,
         out: &'a mut Vec<Claimed<Self>>,
     ) -> impl Future<Output = Result<(), Error>> + Send + 'a;
 

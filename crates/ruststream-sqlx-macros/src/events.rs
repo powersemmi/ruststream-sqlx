@@ -562,23 +562,37 @@ pub(crate) fn event_parts(
     event_bound(custom.unlock.is_some(), quote!(Unlock), predicates);
 
     let claim = match (claimed, custom.fetch) {
-        (false, false) => quote!(#p::claim_rows::<__DB, Self>(conn, cx, lease, out)),
+        (false, false) => quote!({
+            // A claim of whole rows reads no ids.
+            let _ = ids;
+            #p::claim_rows::<__DB, Self>(conn, cx, lease, out)
+        }),
         (claim, fetch) => {
+            // The crate's claim reads the ids into the subscription's buffer; the service's
+            // claim returns a vector of its own, which takes the buffer's place for this claim.
             let ids = if claim {
-                quote!(<Self as #r::Claim<__DB>>::claim(&mut *conn, cx.queue.name, cx.limit).await?)
+                quote! {
+                    let mut own = <Self as #r::Claim<__DB>>::claim(&mut *conn, cx.queue.name, cx.limit)
+                        .await?;
+                    let _ = ids;
+                    let ids = &mut own;
+                }
             } else {
-                quote!(#p::claim_ids::<__DB, Self>(&mut *conn, cx, lease).await?)
+                quote! {
+                    ids.clear();
+                    #p::claim_ids::<__DB, Self>(&mut *conn, cx, lease, ids).await?;
+                }
             };
             // The service's fetch decodes its own rows; the crate's hands over those it could
             // not decode too.
             let (rows, matched) = if fetch {
                 (
-                    quote!(<Self as #r::Fetch<__DB>>::fetch(&mut *conn, &ids).await?),
+                    quote!(<Self as #r::Fetch<__DB>>::fetch(&mut *conn, ids).await?),
                     quote!(match_rows),
                 )
             } else {
                 (
-                    quote!(#p::fetch_by_ids::<__DB, Self>(&mut *conn, cx, lease, &ids).await?),
+                    quote!(#p::fetch_by_ids::<__DB, Self>(&mut *conn, cx, lease, ids).await?),
                     quote!(match_claimed),
                 )
             };
@@ -590,7 +604,7 @@ pub(crate) fn event_parts(
             // MySQL refuses.
             quote!(async move {
                 #unbound
-                let ids = #ids;
+                #ids
                 if ids.is_empty() {
                     return ::core::result::Result::Ok(());
                 }
@@ -692,11 +706,22 @@ pub(crate) fn event_parts(
         custom.lock.is_some(),
         custom.unlock.is_some(),
     ];
+    // Only the crate's claim of ids for a fetch of the service's own keeps ids between its claim
+    // and its fetch: the subscription owns their buffer, and a table that reads rows whole, or
+    // claims with the service's own `Claim`, keeps none.
+    let ids_buffer = if custom.fetch && !claimed {
+        quote!(::std::vec::Vec<<Self as #p::QueueRow>::Id>)
+    } else {
+        quote!(())
+    };
     let methods = quote! {
+        type Ids = #ids_buffer;
+
         fn claim<'__a>(
             conn: &'__a mut <__DB as #p::sqlx::Database>::Connection,
             cx: &'__a #p::Claiming,
             lease: ::core::option::Option<&'__a #p::Leasing<<Self as #p::Events<__DB>>::Token>>,
+            ids: &'__a mut <Self as #p::Events<__DB>>::Ids,
             out: &'__a mut ::std::vec::Vec<#p::Claimed<Self>>,
         ) -> impl ::core::future::Future<Output = ::core::result::Result<(), #p::sqlx::Error>>
                + ::core::marker::Send + '__a {

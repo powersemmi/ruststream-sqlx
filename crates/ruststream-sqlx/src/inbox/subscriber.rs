@@ -204,6 +204,9 @@ pub(crate) enum Taken<DB: QueueDatabase, Row: Events<DB>> {
 pub(crate) struct ClaimBuffers<DB: QueueDatabase, Row: Events<DB>> {
     /// The claim's rows, oldest first.
     rows: Vec<Claimed<Row>>,
+    /// The ids a claim of ids for a fetch of the service's own reads, before the fetch reads their
+    /// rows; nothing for a table whose claim reads its rows whole.
+    ids: Row::Ids,
     /// What only the advisory lock form keeps, made at its first claim: a subscription in another
     /// form carries the pointer alone.
     advised: Option<Box<Advised<DB, Row>>>,
@@ -217,6 +220,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> Default for ClaimBuffers<DB, Row> {
     fn default() -> Self {
         Self {
             rows: Vec::new(),
+            ids: Row::Ids::default(),
             advised: None,
             transactions: SyncWrapper::new(Vec::new()),
         }
@@ -466,12 +470,13 @@ where
     claimed.clear();
     let ClaimBuffers {
         rows,
+        ids,
         advised,
         transactions,
     } = claimed;
     let book = match holding {
         Holding::Transaction => {
-            return claim_locked::<DB, Row>(pool, &cx, rows)
+            return claim_locked::<DB, Row>(pool, &cx, ids, rows)
                 .await
                 .map(Taken::Locked);
         }
@@ -482,7 +487,7 @@ where
             return Ok(Taken::Advised);
         }
     };
-    let lease = claim_leased::<DB, Row>(pool, &cx, now, rows).await?;
+    let lease = claim_leased::<DB, Row>(pool, &cx, now, ids, rows).await?;
     // In transactional mode each row's delivery writes in a transaction of its own, opened once
     // the claim committed: the lease, not this transaction, keeps other claims off the row. A
     // transaction that fails to open fails the claim, and the rows it took return once their
