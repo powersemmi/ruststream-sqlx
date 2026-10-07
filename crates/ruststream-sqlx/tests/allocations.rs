@@ -5,7 +5,8 @@
 //! headers-layout delivery what a flat row-mode one does until its headers are read and then what
 //! its header map needs, a fetch of the service's own over a join what a raw sqlx loop running
 //! the same statements does, and a publish that wakes a waiting subscription what one that wakes
-//! none does.
+//! none does. Under the outbox, a message it does not track allocates what it does without the
+//! middlewares, and a tracked one what a raw sqlx loop does plus its id header.
 
 #![cfg(all(
     feature = "inbox",
@@ -15,6 +16,10 @@
 ))]
 
 mod live;
+
+#[cfg(all(feature = "outbox", feature = "testing"))]
+#[path = "allocations/outbox.rs"]
+mod outbox_paths;
 
 use std::num::NonZeroUsize;
 use std::pin::pin;
@@ -673,5 +678,7 @@ async fn each_path_allocates_what_its_reference_does() {
     assert_join_fetch(&connected, &pool, &db.pool).await;
     connected.shutdown().await.expect("the broker shuts down");
     assert_wake_ups(&pool, &db.pool).await;
+    #[cfg(all(feature = "outbox", feature = "testing"))]
+    outbox_paths::assert_outbox(&pool).await;
     db.finish().await;
 }
