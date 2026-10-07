@@ -1,5 +1,7 @@
 #![doc = include_str!("README.md")]
 #![doc = include_str!("overview/manual.md")]
+#![doc = include_str!("overview/roles.md")]
+#![doc = include_str!("overview/time.md")]
 #![doc = include_str!("overview/row_mode.md")]
 // The compile errors of row mode need the inbox and a driver: without them each example would fail
 // for that reason alone. They render where both are on, as on docs.rs.

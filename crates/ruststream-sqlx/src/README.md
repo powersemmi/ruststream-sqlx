@@ -13,6 +13,12 @@ The crate also serves a transactional outbox over any RustStream broker: what a 
 is recorded in its own table until a consumer has processed it, and what was not processed is
 published again at startup. It is described in [the transactional outbox](#the-transactional-outbox).
 
+The inbox fits work that belongs to the service's data: a task written in the same transaction as
+the data it serves, a queue in the database the service already runs, a handler that writes its
+results in its delivery's transaction. The outbox fits messages a service publishes on another broker
+and must not lose. A service may use both: the outbox's middlewares wrap inbox handlers as they
+wrap any other.
+
 The `inbox` feature turns the broker on, the `outbox` feature the outbox, and a service adds what
 its database and its tables need:
 
@@ -28,6 +34,7 @@ Where things are:
 - [`InboxTable`] and [`InboxSpec`]: a queue table described by hand, its settings in
   [`spec`].
 - [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
+- [Roles](#roles) and [Time](#time): what each column turns on, and where "now" comes from.
 - [`Repository`] and [`Routed`]: publishing into tables.
 - [`keys`]: what a handler reads off a delivery.
 - [`InboxSettings::transactional`] and [`Tx`]: transactional mode, where a handler writes through
@@ -131,9 +138,8 @@ What a handler answers decides the row's fate:
   columns. With `max_attempts(1)` every failure moves the row at once. A mount that declares one
   without the other stops at startup.
 
-"Now" comes from [`SystemClock`] unless the table names another source:
-`#[inbox(clock = DatabaseClock)]` reads the database's clock, `.clock::<DatabaseClock>()` by hand,
-and a service's own [`Clock`] fits there too. Hosts that bind "now" keep their clocks in step.
+Each `#[field(..)]` role turns on one behaviour of the queue ([Roles](#roles)). "Now" comes from
+the host's clock unless the table names another source ([Time](#time)).
 
 
 ## An event of the service's own
