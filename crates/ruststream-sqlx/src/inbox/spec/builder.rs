@@ -233,6 +233,60 @@ impl<Settings> Eq for InboxSpec<Settings> {}
 impl InboxSpec {
     /// A table in the connection's default schema, with the column that identifies a row: in the
     /// row lock form, in row mode, with no other setting.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::Payload;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // webhooks: id BIGSERIAL PRIMARY KEY, body BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct Webhook {
+    ///     id: i64,
+    ///     body: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for Webhook {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload,)>;
+    ///     // The database numbers the rows, so an insert leaves `id` out.
+    ///     const TABLE: Self::Table = InboxSpec::new("webhooks", Column::new("id").generated())
+    ///         .payload(Column::new("body"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for Webhook {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.body
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Event { kind: String }
+    /// # #[subscriber(InboxQueue::<Webhook>::new("webhooks"))]
+    /// # async fn receive(event: &Event) -> HandlerOutcome {
+    /// #     tracing::info!(kind = %event.kind, "received");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("hooks", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(receive);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn new(table: &'static str, id: Column<'static>) -> Self {
         Self {
@@ -244,12 +298,134 @@ impl InboxSpec {
 
 impl<Settings> InboxSpec<Settings> {
     /// The table's description, which every statement is built from.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::dialect::insert::{self, Sql};
+    /// use ruststream_sqlx::spec::Payload;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// use sqlx::PgConnection;
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct ReceiptJob {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for ReceiptJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload,)>;
+    ///     const TABLE: Self::Table = InboxSpec::new("receipt_jobs", Column::new("id").generated())
+    ///         .group(Column::new("name"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for ReceiptJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// // INSERT INTO "receipt_jobs" ("name", "payload") VALUES ($1, $2)
+    /// const INSERT: Sql<128> = insert::postgres(&ReceiptJob::TABLE.spec());
+    ///
+    /// /// Queues a receipt in the order's transaction, so the two commit together.
+    /// pub async fn enqueue(tx: &mut PgConnection, receipt: &[u8]) -> Result<(), sqlx::Error> {
+    ///     sqlx::query(INSERT.as_str())
+    ///         .bind("receipts")
+    ///         .bind(receipt)
+    ///         .execute(tx)
+    ///         .await?;
+    ///     Ok(())
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Receipt { order: i64 }
+    /// # #[subscriber(InboxQueue::<ReceiptJob>::new("receipts"))]
+    /// # async fn send(receipt: &Receipt) -> HandlerOutcome {
+    /// #     tracing::info!(order = receipt.order, "sending a receipt");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("shop", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(send);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn spec(&self) -> TableSpec<'static> {
         self.spec
     }
 
     /// The same table, inside `schema`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::Payload;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct InvoiceJob {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for InvoiceJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload,)>;
+    ///     // The queue lives beside the tables it serves: `billing.invoice_jobs`.
+    ///     const TABLE: Self::Table = InboxSpec::new("invoice_jobs", Column::new("id").generated())
+    ///         .within("billing")
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for InvoiceJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Invoice { number: String }
+    /// # #[subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
+    /// # async fn issue(invoice: &Invoice) -> HandlerOutcome {
+    /// #     tracing::info!(number = %invoice.number, "issuing");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("billing", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(issue);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn within(self, schema: &'static str) -> Self {
         Self {
@@ -259,6 +435,71 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table, split into groups by `column`; a subscription reads one group.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::spec::Payload;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct MediaJob {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for MediaJob {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload,)>;
+    ///     // One table holds two queues: the `kind` column names the queue of each row.
+    ///     const TABLE: Self::Table = InboxSpec::new("media_jobs", Column::new("id").generated())
+    ///         .group(Column::new("kind"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for MediaJob {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Upload {
+    ///     file: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<MediaJob>::new("thumbnails"))]
+    /// async fn thumbnail(upload: &Upload) -> HandlerOutcome {
+    ///     tracing::info!(file = %upload.file, "drawing a thumbnail");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<MediaJob>::new("transcodes"))]
+    /// async fn transcode(upload: &Upload) -> HandlerOutcome {
+    ///     tracing::info!(file = %upload.file, "transcoding");
+    ///     HandlerOutcome::ack()
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("media", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+    /// #         b.include(thumbnail);
+    /// #         b.include(transcode);
+    /// #     })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn group(self, column: Column<'static>) -> Self {
         Self {
@@ -268,6 +509,62 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table, with rows claimed in the order of `column`, a smaller value first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec::Payload;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use serde::Deserialize;
+    /// # use sqlx::PgPool;
+    ///
+    /// // tickets: id BIGSERIAL PRIMARY KEY, severity SMALLINT NOT NULL, payload BYTEA NOT NULL
+    /// #[derive(sqlx::FromRow)]
+    /// pub struct Ticket {
+    ///     id: i64,
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// impl InboxTable for Ticket {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(Payload,)>;
+    ///     // An outage (severity 0) is answered before a question (severity 3).
+    ///     const TABLE: Self::Table = InboxSpec::new("tickets", Column::new("id").generated())
+    ///         .priority(Column::new("severity"))
+    ///         .payload(Column::new("payload"));
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl PayloadRow for Ticket {
+    ///     type Column = Vec<u8>;
+    ///
+    ///     fn payload(&self) -> &[u8] {
+    ///         &self.payload
+    ///     }
+    /// }
+    /// # #[derive(Deserialize)]
+    /// # struct Request { subject: String }
+    /// # #[subscriber(InboxQueue::<Ticket>::new("support"))]
+    /// # async fn triage(request: &Request) -> HandlerOutcome {
+    /// #     tracing::info!(subject = %request.subject, "triaging");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("support", "1.0.0"))
+    /// #         .with_broker(SqlxBroker::new(pool), |b| {
+    /// #             b.include(triage);
+    /// #         })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn priority(self, column: Column<'static>) -> Self {
         Self {
@@ -277,6 +574,56 @@ impl<Settings> InboxSpec<Settings> {
     }
 
     /// The same table, with the columns of the message's own data: the columns without a role.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream::runtime::{Input, SoloCarried};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::prelude::*;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable};
+    /// # use sqlx::PgPool;
+    ///
+    /// // shipments: id BIGSERIAL PRIMARY KEY, carrier TEXT NOT NULL, tracking TEXT NOT NULL
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// pub struct Shipment {
+    ///     id: i64,
+    ///     carrier: String,
+    ///     tracking: String,
+    /// }
+    ///
+    /// impl InboxTable for Shipment {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec;
+    ///     // Row mode: the claim reads these columns, and the handler takes the row.
+    ///     const TABLE: Self::Table = InboxSpec::new("shipments", Column::new("id").generated())
+    ///         .data(&[Column::new("carrier"), Column::new("tracking")]);
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl Input for Shipment {
+    ///     type Axis = SoloCarried<Self>;
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<Shipment>::new("shipments"))]
+    /// async fn track(shipment: &Shipment) -> HandlerOutcome {
+    ///     tracing::info!(carrier = %shipment.carrier, tracking = %shipment.tracking, "tracking");
+    ///     HandlerOutcome::ack()
+    /// }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("logistics", "1.0.0"))
+    /// #         .with_broker(SqlxBroker::new(pool), |b| {
+    /// #             b.include(track);
+    /// #         })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn data(self, columns: &'static [Column<'static>]) -> Self {
         Self {
@@ -287,6 +634,76 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, with the columns a message assembled from header fields reads beside
     /// them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream::HeaderMap;
+    /// use ruststream::runtime::{Input, SoloCarried};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::spec;
+    /// use ruststream_sqlx::{HeaderFields, InboxSpec, InboxTable, put_header};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use sqlx::PgPool;
+    ///
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// pub struct RefundHeaders {
+    ///     id: i64,
+    ///     tenant: String,
+    ///     order_id: i64,
+    /// }
+    ///
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// pub struct Refund {
+    ///     #[sqlx(flatten)]
+    ///     headers: RefundHeaders,
+    ///     reason: Option<String>,
+    /// }
+    ///
+    /// impl InboxTable for Refund {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec<(spec::HeaderFields,)>;
+    ///     // `tenant` and `order_id` become headers; the claim reads `reason` for the message.
+    ///     const TABLE: Self::Table = InboxSpec::new("refunds", Column::new("id").generated())
+    ///         .data(&[Column::new("tenant"), Column::new("order_id")])
+    ///         .fetching(&[Column::new("reason")])
+    ///         .header_fields();
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.headers.id
+    ///     }
+    /// }
+    ///
+    /// impl Input for Refund {
+    ///     type Axis = SoloCarried<Self>;
+    /// }
+    ///
+    /// impl HeaderFields for Refund {
+    ///     const NAMES: &'static [&'static str] = &["tenant", "order_id"];
+    ///
+    ///     fn header_map(&self) -> HeaderMap {
+    ///         let mut headers = HeaderMap::with_capacity(Self::NAMES.len());
+    ///         put_header(&mut headers, "tenant", &self.headers.tenant);
+    ///         put_header(&mut headers, "order_id", &self.headers.order_id);
+    ///         headers
+    ///     }
+    /// }
+    /// # #[subscriber(InboxQueue::<Refund>::new("refunds"))]
+    /// # async fn pay_back(job: &Refund) -> HandlerOutcome {
+    /// #     tracing::info!(order = job.headers.order_id, reason = ?job.reason, "refunding");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("payments", "1.0.0"))
+    /// #         .with_broker(SqlxBroker::new(pool), |b| {
+    /// #             b.include(pay_back);
+    /// #         })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn fetching(self, columns: &'static [Column<'static>]) -> Self {
         Self {
@@ -297,6 +714,61 @@ impl<Settings> InboxSpec<Settings> {
 
     /// The same table, read with `*`: the row flattens another struct, so the columns are not
     /// all known.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream::runtime::{Input, SoloCarried};
+    /// use ruststream_sqlx::dialect::Column;
+    /// use ruststream_sqlx::{InboxSpec, InboxTable};
+    /// # use ruststream_sqlx::prelude::*;
+    /// # use sqlx::PgPool;
+    ///
+    /// /// The address type the service shares with its other tables.
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// pub struct Address {
+    ///     street: String,
+    ///     city: String,
+    /// }
+    ///
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// pub struct Parcel {
+    ///     id: i64,
+    ///     #[sqlx(flatten)]
+    ///     address: Address,
+    /// }
+    ///
+    /// impl InboxTable for Parcel {
+    ///     type Id = i64;
+    ///     type Table = InboxSpec;
+    ///     // The claim reads every column, whatever `Address` holds.
+    ///     const TABLE: Self::Table =
+    ///         InboxSpec::new("parcels", Column::new("id").generated()).selecting_all();
+    ///
+    ///     fn id(&self) -> &i64 {
+    ///         &self.id
+    ///     }
+    /// }
+    ///
+    /// impl Input for Parcel {
+    ///     type Axis = SoloCarried<Self>;
+    /// }
+    /// # #[subscriber(InboxQueue::<Parcel>::new("parcels"))]
+    /// # async fn route(parcel: &Parcel) -> HandlerOutcome {
+    /// #     tracing::info!(street = %parcel.address.street, city = %parcel.address.city, "routing");
+    /// #     HandlerOutcome::ack()
+    /// # }
+    /// # pub fn app(pool: PgPool) -> RustStream {
+    /// #     RustStream::new(AppInfo::new("logistics", "1.0.0"))
+    /// #         .with_broker(SqlxBroker::new(pool), |b| {
+    /// #             b.include(route);
+    /// #         })
+    /// # }
+    /// # }
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn selecting_all(self) -> Self {
         Self {
