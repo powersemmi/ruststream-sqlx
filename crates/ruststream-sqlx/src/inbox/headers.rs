@@ -4,11 +4,12 @@
 //! `headers()` call.
 
 use std::fmt::Debug;
+use std::io::Write;
 use std::sync::OnceLock;
 
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
-use ruststream::HeaderMap;
+use ruststream::{HeaderMap, Str};
 use ruststream_sqlx_dialect::{Param, TableSpec};
 use sqlx::Error;
 #[cfg(feature = "time")]
@@ -282,13 +283,24 @@ impl HeaderField for bool {
     }
 }
 
+/// The longest decimal text of a 64-bit integer: `i64::MIN` and `u64::MAX` take 20 bytes.
+const DECIMAL_TEXT: usize = 20;
+
 /// `HeaderField` for integers: the decimal text.
 macro_rules! decimal {
     ($($integer:ty),*) => {
         $(
             impl HeaderField for $integer {
                 fn header(&self) -> Option<Vec<u8>> {
-                    Some(self.to_string().into_bytes())
+                    // The text goes into a buffer of its own length: a `Vec` with spare capacity
+                    // costs the map one more allocation as it turns into `Bytes`.
+                    let mut text = [0_u8; DECIMAL_TEXT];
+                    let mut rest = &mut text[..];
+                    // The buffer holds the longest decimal of a 64-bit integer, so the write
+                    // cannot run out of room.
+                    write!(rest, "{self}").ok()?;
+                    let written = DECIMAL_TEXT - rest.len();
+                    Some(text[..written].to_vec())
                 }
             }
         )*
@@ -323,7 +335,8 @@ impl HeaderField for OffsetDateTime {
 #[doc(hidden)]
 pub fn put_header(headers: &mut HeaderMap, name: &'static str, field: &impl HeaderField) {
     if let Some(value) = field.header() {
-        headers.insert(name, value);
+        // A column's name is a constant: the map holds it as it is, where a `&str` copies.
+        headers.insert(Str::from_static(name), value);
     }
 }
 

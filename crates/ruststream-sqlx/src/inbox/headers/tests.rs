@@ -75,3 +75,17 @@ fn a_header_no_field_is_named_for_is_unfit() {
     );
     assert_eq!(unnamed_header(&headers, &["tenant", "x-other"]), None);
 }
+
+#[test]
+fn an_integer_header_is_its_decimal_text_at_every_width() {
+    assert_eq!(
+        i64::MIN.header().as_deref(),
+        Some(&b"-9223372036854775808"[..])
+    );
+    assert_eq!(
+        u64::MAX.header().as_deref(),
+        Some(&b"18446744073709551615"[..])
+    );
+    assert_eq!(0_u8.header().as_deref(), Some(&b"0"[..]));
+    assert_eq!((-7_i16).header().as_deref(), Some(&b"-7"[..]));
+}
