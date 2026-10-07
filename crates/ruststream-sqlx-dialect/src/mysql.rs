@@ -103,77 +103,40 @@ const MARIADB_FLOOR: Floor = Floor {
 ///
 /// # Examples
 ///
-/// A dialect of the service's own wraps MySQL and changes one statement:
+/// A subscription asks MySQL for the statements of its table, as `ruststream-sqlx` does when the
+/// subscription starts:
 ///
 /// ```
-/// # use std::num::NonZeroUsize;
-/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Dialect, MySql, Opening, Param, RowLock, Statement, StatementError, TableSpec,
+///     ClaimShape, Column, Form, Lease, MySql, Statement, StatementError, TableSpec,
 /// };
 ///
-/// /// MySQL, with an acknowledgement of the service's own.
-/// #[derive(Debug)]
-/// pub struct Audited;
+/// // The jobs table as `#[derive(Inbox)]` describes it, with a `#[field(locked_until)]` field.
+/// const JOBS: TableSpec<'static> = TableSpec::new(
+///     "jobs",
+///     Column::new("job_id"),
+///     Form::Lease(Column::new("locked_until")),
+/// );
 ///
-/// impl Dialect for Audited {
-///     fn name(&self) -> &'static str {
-///         "audited"
+/// // What a subscription to a lease table prepares: the claim, and the stamp where the claim
+/// // only selects its rows.
+/// fn lease_statements(
+///     dialect: &impl Lease,
+///     spec: &TableSpec<'_>,
+/// ) -> Result<Vec<Statement>, StatementError> {
+///     let mut statements = vec![dialect.lease_claim(spec, ClaimShape::Rows)?];
+///     if !dialect.claim_writes_lease() {
+///         statements.push(dialect.stamp(spec)?);
 ///     }
-///
-///     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         if spec.table() == "email_jobs" {
-///             return Ok(Statement::new(
-///                 "UPDATE `email_jobs` SET `name` = 'sent' WHERE `job_id` = ?",
-///                 [Param::Id],
-///             ));
-///         }
-///         MySql.ack(spec)
-///     }
-///
-///     // What MySQL answers beside its statements stays MySQL's: claims open at READ COMMITTED, a
-///     // FIFO group is taken before its claim, and an older server stops the subscription.
-///     fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
-///         MySql.begin(opening)
-///     }
-///
-///     fn fifo_guard(
-///         &self,
-///         spec: &TableSpec<'_>,
-///     ) -> Result<Option<Statement>, StatementError> {
-///         MySql.fifo_guard(spec)
-///     }
-///
-///     fn server_version(&self) -> Option<&'static str> {
-///         MySql.server_version()
-///     }
-///
-///     fn check_server(
-///         &self,
-///         spec: &TableSpec<'_>,
-///         version: &str,
-///     ) -> Result<(), StatementError> {
-///         MySql.check_server(spec, version)
-///     }
-/// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
-/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
-/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
-/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
-/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
-/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
-/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
-/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
-/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
+///     Ok(statements)
 /// }
 ///
-/// impl RowLock for Audited {
-///     fn lock_claim(
-///         &self,
-///         spec: &TableSpec<'_>,
-///         shape: ClaimShape,
-///     ) -> Result<Statement, StatementError> {
-///         MySql.lock_claim(spec, shape)
-///     }
+/// fn main() -> Result<(), StatementError> {
+///     // MySQL's claim selects the rows, and each row it took is stamped with its lease before
+///     // the claim's transaction commits.
+///     let statements = lease_statements(&MySql, &JOBS)?;
+///     assert_eq!(statements.len(), 2);
+///     Ok(())
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

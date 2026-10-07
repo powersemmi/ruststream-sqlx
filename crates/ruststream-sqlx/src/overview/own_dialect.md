@@ -5,18 +5,16 @@
 # mod demo {
 use std::num::NonZeroUsize;
 
-use ruststream::HeaderMap;
 use ruststream_sqlx::dialect::{
-    self, ClaimShape, Dialect, Opening, Param, RowLock, Statement, StatementError, TableName,
-    TableSpec,
+    ClaimShape, Dialect, Param, Role, RowLock, Statement, StatementError, TableSpec,
 };
+# use ruststream_sqlx::dialect::{self, TableName};
 use ruststream_sqlx::prelude::*;
-use ruststream_sqlx::{BuiltIn, ByName, NamedTime};
 use serde::Deserialize;
-use sqlx::error::BoxDynError;
-use sqlx::postgres::{PgArguments, PgValueRef};
-use sqlx::{PgPool, Postgres};
+use sqlx::PgPool;
 
+// email_jobs: job_id INT8 PRIMARY KEY DEFAULT unique_rowid(), name STRING NOT NULL,
+// payload BYTES NOT NULL
 #[derive(Inbox, sqlx::FromRow)]
 #[inbox(table = "email_jobs")]
 pub struct SendEmail {
@@ -28,42 +26,34 @@ pub struct SendEmail {
     payload: Vec<u8>,
 }
 
-/// Postgres, with an acknowledgement of the service's own: a sent email stays in its table, in
-/// the `sent` group, for an audit.
+/// CockroachDB, reached through sqlx's Postgres driver.
 #[derive(Debug)]
-pub struct Audited;
+pub struct Cockroach;
 
-impl Dialect for Audited {
+impl Dialect for Cockroach {
     fn name(&self) -> &'static str {
-        "audited"
+        "cockroach"
+    }
+
+    fn quote_into(&self, ident: &str, out: &mut String) {
+        out.push('"');
+        out.push_str(&ident.replace('"', "\"\""));
+        out.push('"');
+    }
+
+    fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) {
+        out.push('$');
+        out.push_str(&index.to_string());
     }
 
     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        if spec.table() == "email_jobs" {
-            return Ok(Statement::new(
-                r#"UPDATE "email_jobs" SET "name" = 'sent' WHERE "job_id" = $1"#,
-                [Param::Id],
-            ));
-        }
-        dialect::Postgres.ack(spec)
+        let mut sql = String::from("DELETE FROM ");
+        self.quote_into(spec.table(), &mut sql);
+        sql.push_str(" WHERE ");
+        self.quote_into(spec.id().name(), &mut sql);
+        sql.push_str(" = $1");
+        Ok(Statement::new(sql, [Param::Id]))
     }
-
-    // The provided methods the built-in dialect overrides: its transactions' opening and the
-    // guard of a FIFO group. A wrapper of `dialect::MySql` delegates `server_version` and
-    // `check_server` too, and one that serves leases the `Lease` hooks.
-    fn begin(&self, opening: Opening) -> Result<Option<&'static str>, StatementError> {
-        dialect::Postgres.begin(opening)
-    }
-
-    fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
-        dialect::Postgres.fifo_guard(spec)
-    }
-
-    // Every other statement is the built-in dialect's.
-    fn quote_into(&self, ident: &str, out: &mut String) {
-        dialect::Postgres.quote_into(ident, out);
-    }
-#    fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { dialect::Postgres.placeholder_into(index, out) }
 #    fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.fetch(spec) }
 #    fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { dialect::Postgres.retry(spec) }
 #    fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.retry_after(spec) }
@@ -73,25 +63,88 @@ impl Dialect for Audited {
 #    fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { dialect::Postgres.insert(spec) }
 }
 
-// The row lock form, which `SendEmail` takes.
-impl RowLock for Audited {
+// The row lock form, which `SendEmail` takes: the due rows of the subscription's group in claim
+// order, locked for the claim's transaction, with the rows other claims hold passed over.
+impl RowLock for Cockroach {
     fn lock_claim(
         &self,
         spec: &TableSpec<'_>,
         shape: ClaimShape,
     ) -> Result<Statement, StatementError> {
-        dialect::Postgres.lock_claim(spec, shape)
-    }
-}
+        if spec.is_fifo() {
+            return Err(StatementError::UnsupportedFifo { dialect: self.name() });
+        }
+        let mut sql = String::from("SELECT ");
+        match shape {
+            ClaimShape::Ids => self.quote_into(spec.id().name(), &mut sql),
+            ClaimShape::Rows if spec.selects_all() => sql.push('*'),
+            ClaimShape::Rows => {
+                for (i, column) in spec.columns().enumerate() {
+                    if i > 0 {
+                        sql.push_str(", ");
+                    }
+                    self.quote_into(column.name(), &mut sql);
+                }
+            }
+            ClaimShape::Roles => {
+                let roles = [
+                    Role::Id,
+                    Role::PartitionKey,
+                    Role::Attempt,
+                    Role::Headers,
+                    Role::Payload,
+                ];
+                let played = roles
+                    .into_iter()
+                    .filter_map(|role| Some((role, spec.column(role)?)));
+                for (i, (role, column)) in played.enumerate() {
+                    if i > 0 {
+                        sql.push_str(", ");
+                    }
+                    self.quote_into(column.name(), &mut sql);
+                    sql.push_str(" AS ");
+                    self.quote_into(role.attribute(), &mut sql);
+                }
+            }
+        }
+        sql.push_str(" FROM ");
+        self.quote_into(spec.table(), &mut sql);
 
-// Subscriptions by name, as `#[subscriber("emails")]` would mount.
-impl ByName<Postgres> for Audited {
-    fn headers(value: PgValueRef<'_>) -> Result<HeaderMap, BoxDynError> {
-        <BuiltIn<Postgres> as ByName<Postgres>>::headers(value)
-    }
+        let mut params = Vec::new();
+        let mut conditions = Vec::new();
+        if let Some(group) = spec.column(Role::Group) {
+            params.push(Param::Group);
+            conditions.push((group, " = "));
+        }
+        if let Some(due) = spec.column(Role::RetryAfter) {
+            params.push(Param::Now);
+            conditions.push((due, " <= "));
+        }
+        for (i, (column, operator)) in conditions.into_iter().enumerate() {
+            sql.push_str(if i == 0 { " WHERE " } else { " AND " });
+            self.quote_into(column.name(), &mut sql);
+            sql.push_str(operator);
+            self.placeholder_into(NonZeroUsize::MIN.saturating_add(i), &mut sql);
+        }
+        if let Some(processed) = spec.column(Role::ProcessedAt) {
+            sql.push_str(if params.is_empty() { " WHERE " } else { " AND " });
+            self.quote_into(processed.name(), &mut sql);
+            sql.push_str(" IS NULL");
+        }
 
-    fn bind_time(arguments: &mut PgArguments, time: NamedTime) -> Result<(), sqlx::Error> {
-        <BuiltIn<Postgres> as ByName<Postgres>>::bind_time(arguments, time)
+        sql.push_str(" ORDER BY ");
+        for role in [Role::Priority, Role::RetryAfter] {
+            if let Some(column) = spec.column(role) {
+                self.quote_into(column.name(), &mut sql);
+                sql.push_str(", ");
+            }
+        }
+        self.quote_into(spec.id().name(), &mut sql);
+        sql.push_str(" LIMIT ");
+        self.placeholder_into(NonZeroUsize::MIN.saturating_add(params.len()), &mut sql);
+        params.push(Param::Limit);
+        sql.push_str(" FOR UPDATE SKIP LOCKED");
+        Ok(Statement::new(sql, params))
     }
 }
 
@@ -107,9 +160,9 @@ async fn send(email: &Email) -> HandlerOutcome {
 }
 
 pub fn app(pool: PgPool) -> RustStream {
-    // A `SqlxBroker<Postgres, Audited>`: the dialect is part of the broker's type.
+    // A `SqlxBroker<Postgres, Cockroach>`: the dialect is part of the broker's type.
     RustStream::new(AppInfo::new("mailer", "0.1.0"))
-        .with_broker(SqlxBroker::with_dialect(pool, Audited), |b| {
+        .with_broker(SqlxBroker::with_dialect(pool, Cockroach), |b| {
             b.include(send);
         })
 }
@@ -119,9 +172,8 @@ pub fn app(pool: PgPool) -> RustStream {
 
 A dialect builds the statements of a broker's tables. [`SqlxBroker::new`] takes the one built
 into the crate for its database, [`BuiltIn`]; [`SqlxBroker::with_dialect`] takes the service's
-own, for a database whose sqlx driver lives outside sqlx, or to write a statement its own way.
-The dialect is the broker's second type parameter, and each thing its tables can do is a trait it
-implements:
+own, for a database without a built-in dialect. The dialect is the broker's second type
+parameter, and each thing its tables can do is a trait it implements:
 
 - [`Dialect`](dialect::Dialect): names, placeholders, the statement that opens a transaction at a
   table's level, the savepoint a [transactional](#transactional-mode) handler's writes start
@@ -136,14 +188,13 @@ implements:
 - [`ByName<DB>`](ByName): subscriptions by name, the JSON headers and the times their rows hold.
 
 A table in a form whose trait the dialect lacks does not compile, and neither does a by-name
-mount on a dialect without [`ByName`]; the error names the trait. A dialect that wraps a built-in
-one writes the statements it changes and delegates the rest: the statements to
-[`dialect::Postgres`], [`dialect::MySql`] or [`dialect::Sqlite`], the by-name binding to
-[`BuiltIn<DB>`](BuiltIn). It delegates the provided methods the wrapped dialect overrides as well
-(`begin`, `fifo_guard`, `server_version`, `check_server`, and on [`Lease`](dialect::Lease)
-`claim_writes_lease`, `claim_counts_attempt` and `begin_lease_claim`): a default left in their
-place drops the FIFO guard, MySQL's READ COMMITTED claims and its server version check. Its
-statements are built once, when a subscription opens, so a message costs the same as through the
-built-in dialect. A test addresses the broker by its type,
-`tb.broker::<SqlxBroker<Postgres, Audited>>()`.
+mount on a dialect without [`ByName`]; the error names the trait. A dialect refuses with a
+[`StatementError`](dialect::StatementError) what it does not build, such as FIFO groups above,
+and the subscription of such a table stops at startup. The provided methods of
+[`Dialect`](dialect::Dialect) and [`Lease`](dialect::Lease) state what their defaults mean for a database
+without the feature. The statements are built once, when a subscription opens, so a message
+costs the same as through a built-in dialect. A test addresses the broker by its type,
+`tb.broker::<SqlxBroker<Postgres, Cockroach>>()`.
 
+One statement of a built-in dialect written the service's own way is an event of the table
+instead (see [An event of the service's own](#an-event-of-the-services-own)).

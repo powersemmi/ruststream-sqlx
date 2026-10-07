@@ -124,3 +124,66 @@ What a handler answers decides the row's fate:
 `#[inbox(clock = DatabaseClock)]` reads the database's clock, and a service's own [`Clock`] fits
 there too. Hosts that bind "now" keep their clocks in step.
 
+
+## An event of the service's own
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::Ack;
+use ruststream_sqlx::prelude::*;
+use serde::Deserialize;
+use sqlx::{PgConnection, PgPool, Postgres};
+
+// email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL
+#[derive(Inbox, sqlx::FromRow)]
+#[inbox(table = "email_jobs", custom(ack))]
+pub struct SendEmail {
+    #[field(id, generated)]
+    job_id: i64,
+    #[field(group)]
+    name: String,
+    #[field(payload)]
+    payload: Vec<u8>,
+}
+
+// A sent email stays in its table, in the `sent` group, for an audit.
+impl Ack<Postgres> for SendEmail {
+    async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE email_jobs SET name = 'sent' WHERE job_id = $1")
+            .bind(id)
+            .execute(conn)
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+pub struct Email {
+    to: String,
+}
+
+#[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+async fn send(email: &Email) -> HandlerOutcome {
+    tracing::info!(to = %email.to, "sending");
+    HandlerOutcome::ack()
+}
+
+pub fn app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        .with_broker(SqlxBroker::new(pool), |b| {
+            b.include(send);
+        })
+}
+# }
+# fn main() {}
+```
+
+An event listed in `custom(..)` runs the service's own SQL in place of the statement the dialect
+builds, and every other event keeps the dialect's. The table and the broker stay as they were.
+Each event is a trait the struct implements for its database: [`Claim`], [`Fetch`], [`Ack`],
+[`Retry`], [`RetryAfter`], [`Discard`], [`DeadLetter`], [`Extend`], and [`Lock`] and [`Unlock`]
+in the advisory lock form. A listed event without its impl does not compile, and the error names
+the trait. A settlement of the service's own runs in the transaction the crate commits, so it
+settles the row as the built-in one does. An acknowledgement takes the row out of what the claim
+selects: a row it leaves claimable is delivered again.

@@ -56,51 +56,36 @@ const UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended($1, 0))::int::b
 ///
 /// # Examples
 ///
-/// A dialect of the service's own wraps Postgres and changes one statement:
+/// A subscription asks Postgres for the statements of its table, as `ruststream-sqlx` does when the
+/// subscription starts:
 ///
 /// ```
-/// # use std::num::NonZeroUsize;
-/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Dialect, Postgres, RowLock, Statement, StatementError, TableSpec,
+///     ClaimShape, Column, Dialect, Form, Postgres, RowLock, Statement, StatementError, TableSpec,
 /// };
 ///
-/// /// Postgres, with an insert of the service's own.
-/// #[derive(Debug)]
-/// pub struct Idempotent;
+/// // The ledger as `#[derive(Inbox)]` describes it: one entry of an account in work at a time.
+/// const LEDGER: TableSpec<'static> =
+///     TableSpec::new("ledger", Column::new("entry_id"), Form::RowLock)
+///         .fifo_group(Column::new("account"));
 ///
-/// impl Dialect for Idempotent {
-///     fn name(&self) -> &'static str {
-///         "idempotent"
-///     }
-///
-///     // Publishing a job twice keeps one row: the insert skips a row whose id is already there.
-///     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         let insert = Postgres.insert(spec)?;
-///         Ok(Statement::new(
-///             format!("{} ON CONFLICT DO NOTHING", insert.sql()),
-///             insert.params().iter().copied(),
-///         ))
-///     }
-/// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
-/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
-/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
-/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
-/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
-/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
-/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
-/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
-/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
+/// // What a claim's transaction runs on a row lock table: the guard of its group, where the
+/// // table keeps groups in order, then the claim.
+/// fn claim_statements(
+///     dialect: &impl RowLock,
+///     spec: &TableSpec<'_>,
+/// ) -> Result<Vec<Statement>, StatementError> {
+///     let mut statements: Vec<Statement> = dialect.fifo_guard(spec)?.into_iter().collect();
+///     statements.push(dialect.lock_claim(spec, ClaimShape::Rows)?);
+///     Ok(statements)
 /// }
 ///
-/// impl RowLock for Idempotent {
-///     fn lock_claim(
-///         &self,
-///         spec: &TableSpec<'_>,
-///         shape: ClaimShape,
-///     ) -> Result<Statement, StatementError> {
-///         Postgres.lock_claim(spec, shape)
-///     }
+/// fn main() -> Result<(), StatementError> {
+///     // Postgres takes the account's group with a lock the transaction holds, then claims the
+///     // group's head.
+///     let statements = claim_statements(&Postgres, &LEDGER)?;
+///     assert_eq!(statements.len(), 2);
+///     Ok(())
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]

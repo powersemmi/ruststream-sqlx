@@ -30,54 +30,65 @@ enum Grouping<'a> {
 /// A dialect of the service's own reads the description to build a statement:
 ///
 /// ```
-/// # #[cfg(feature = "postgres")]
-/// # mod demo {
 /// # use std::num::NonZeroUsize;
 /// use ruststream_sqlx_dialect::{
-///     Dialect, Form, Param, Postgres, Role, Statement, StatementError, TableSpec,
+///     Dialect, Form, Param, Role, Statement, StatementError, TableSpec,
 /// };
 /// # use ruststream_sqlx_dialect::TableName;
 ///
-/// /// Postgres, keeping the finished rows of a table with groups in its `done` group.
+/// /// SQL Server, a database without a built-in dialect, keeping the finished rows of a table with
+/// /// groups in its `done` group.
 /// #[derive(Debug)]
-/// pub struct Kept;
+/// pub struct Mssql;
 ///
-/// impl Dialect for Kept {
+/// impl Dialect for Mssql {
 ///     fn name(&self) -> &'static str {
-///         "kept"
+///         "mssql"
 ///     }
 ///
 ///     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         // The service's row lock tables with groups live in the default schema.
-///         let (Form::RowLock, Some(group), None) =
-///             (spec.form(), spec.column(Role::Group), spec.schema())
-///         else {
-///             return Postgres.ack(spec);
+///         // The service's tables take their rows by row lock.
+///         if spec.form() != Form::RowLock {
+///             return Err(StatementError::UnsupportedForm {
+///                 dialect: self.name(),
+///                 form: spec.form().name(),
+///             });
+///         }
+///         // A table that names no schema lives in SQL Server's default one, `dbo`.
+///         let mut table = String::new();
+///         self.quote_into(spec.schema().unwrap_or("dbo"), &mut table);
+///         table.push('.');
+///         self.quote_into(spec.table(), &mut table);
+///         let mut id = String::new();
+///         self.quote_into(spec.id().name(), &mut id);
+///         let Some(group) = spec.column(Role::Group) else {
+///             return Ok(Statement::new(
+///                 format!("DELETE FROM {table} WHERE {id} = @p1"),
+///                 [Param::Id],
+///             ));
 ///         };
-///         let mut sql = String::from("UPDATE ");
-///         self.quote_into(spec.table(), &mut sql);
-///         sql.push_str(" SET ");
-///         self.quote_into(group.name(), &mut sql);
-///         sql.push_str(" = 'done' WHERE ");
-///         self.quote_into(spec.id().name(), &mut sql);
-///         sql.push_str(" = $1");
-///         Ok(Statement::new(sql, [Param::Id]))
+///         let mut done = String::new();
+///         self.quote_into(group.name(), &mut done);
+///         Ok(Statement::new(
+///             format!("UPDATE {table} SET {done} = 'done' WHERE {id} = @p1"),
+///             [Param::Id],
+///         ))
 ///     }
 ///
 ///     fn quote_into(&self, ident: &str, out: &mut String) {
-///         Postgres.quote_into(ident, out);
+///         out.push('[');
+///         out.push_str(&ident.replace(']', "]]"));
+///         out.push(']');
 ///     }
-/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
-/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
-/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
-/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
-/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
-/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
-/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
-/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
 /// }
-/// # }
-/// # fn main() {}
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TableSpec<'a> {
@@ -319,44 +330,45 @@ impl<'a> TableSpec<'a> {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
-    /// use ruststream_sqlx_dialect::{
-    ///     Dialect, Param, Postgres, Statement, StatementError, TableSpec,
-    /// };
+    /// use ruststream_sqlx_dialect::{Dialect, Param, Statement, StatementError, TableSpec};
     /// # use ruststream_sqlx_dialect::TableName;
     ///
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Audited;
+    /// pub struct Mssql;
     ///
-    /// impl Dialect for Audited {
+    /// impl Dialect for Mssql {
     ///     fn name(&self) -> &'static str {
-    ///         "audited"
+    ///         "mssql"
     ///     }
     ///
-    ///     // The service writes the acknowledgement of one table its own way.
+    ///     // The service keeps its finished emails for an audit, in the `sent` group; every other
+    ///     // table deletes its finished rows.
     ///     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
     ///         if spec.table() == "email_jobs" {
     ///             return Ok(Statement::new(
-    ///                 r#"UPDATE "email_jobs" SET "name" = 'sent' WHERE "job_id" = $1"#,
+    ///                 "UPDATE [email_jobs] SET [name] = 'sent' WHERE [job_id] = @p1",
     ///                 [Param::Id],
     ///             ));
     ///         }
-    ///         Postgres.ack(spec)
+    ///         let mut sql = String::from("DELETE FROM ");
+    ///         self.quote_into(spec.table(), &mut sql);
+    ///         sql.push_str(" WHERE ");
+    ///         self.quote_into(spec.id().name(), &mut sql);
+    ///         sql.push_str(" = @p1");
+    ///         Ok(Statement::new(sql, [Param::Id]))
     ///     }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # }
-    /// # fn main() {}
     /// ```
     #[must_use]
     pub const fn table(&self) -> &'a str {

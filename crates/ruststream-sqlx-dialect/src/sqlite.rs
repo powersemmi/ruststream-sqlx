@@ -57,71 +57,36 @@ const BEGIN_CLAIM: &str = "BEGIN IMMEDIATE";
 ///
 /// # Examples
 ///
-/// A dialect of the service's own wraps SQLite and changes one statement:
+/// A subscription asks SQLite for the statements of its table, as `ruststream-sqlx` does when the
+/// subscription starts:
 ///
 /// ```
-/// # use std::num::NonZeroUsize;
-/// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Dialect, Lease, Param, Sqlite, Statement, StatementError, TableSpec,
+///     Advisory, Column, Form, KeyPart, Sqlite, Statement, StatementError, TableSpec,
 /// };
 ///
-/// /// SQLite, with an acknowledgement of the service's own.
-/// #[derive(Debug)]
-/// pub struct Audited;
+/// // The jobs table as `#[derive(Inbox)]` describes it, with `advisory_lock = "jobs-{job_id}"`.
+/// const JOBS: TableSpec<'static> = TableSpec::new(
+///     "jobs",
+///     Column::new("job_id"),
+///     Form::Advisory(&[KeyPart::Literal("jobs-"), KeyPart::Column("job_id")]),
+/// );
 ///
-/// impl Dialect for Audited {
-///     fn name(&self) -> &'static str {
-///         "audited"
-///     }
-///
-///     // A finished email stays in its table, in the `sent` group. The row changes only while it
-///     // holds the delivery's lease.
-///     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         if spec.table() == "email_jobs" {
-///             return Ok(Statement::new(
-///                 "UPDATE `email_jobs` SET `name` = 'sent', `locked_until` = NULL \
-///                  WHERE `job_id` = ? AND `locked_until` = ?",
-///                 [Param::Id, Param::Held],
-///             ));
-///         }
-///         Sqlite.ack(spec)
-///     }
-/// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
-/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
-/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
-/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
-/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
-/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
-/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
-/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
-/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
+/// // What a subscription to an advisory lock table prepares: the claim of candidates, and the
+/// // lock on a key where the database keeps locks; without one the broker keeps the keys in work
+/// // in the process.
+/// fn advisory_statements(
+///     dialect: &impl Advisory,
+///     spec: &TableSpec<'_>,
+/// ) -> Result<(Statement, Option<Statement>), StatementError> {
+///     Ok((dialect.advisory_claim(spec)?, dialect.lock()))
 /// }
 ///
-/// impl Lease for Audited {
-///     fn lease_claim(
-///         &self,
-///         spec: &TableSpec<'_>,
-///         shape: ClaimShape,
-///     ) -> Result<Statement, StatementError> {
-///         Sqlite.lease_claim(spec, shape)
-///     }
-///
-///     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         Sqlite.extend(spec)
-///     }
-///
-///     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         Sqlite.stamp(spec)
-///     }
-///
-///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
-///         Sqlite.claim_counts_attempt(spec)
-///     }
-///
-///     fn begin_lease_claim(&self) -> Option<&'static str> {
-///         Sqlite.begin_lease_claim()
-///     }
+/// fn main() -> Result<(), StatementError> {
+///     // SQLite keeps no locks a session holds, so the process keeps the keys in work.
+///     let (_claim, lock) = advisory_statements(&Sqlite, &JOBS)?;
+///     assert!(lock.is_none());
+///     Ok(())
 /// }
 /// ```
 ///

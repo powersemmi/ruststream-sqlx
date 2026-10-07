@@ -24,66 +24,86 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 ///
 /// # Examples
 ///
-/// A dialect of the service's own that wraps SQLite keeps its lease form whole:
+/// A dialect for a database without a built-in one builds the lease form itself. SQL Server takes
+/// the claimable rows, writes their lease and counts the attempt in one update, and returns the
+/// rows as they were before:
 ///
 /// ```
-/// # #[cfg(feature = "sqlite")]
-/// # mod demo {
 /// # use std::num::NonZeroUsize;
 /// # use ruststream_sqlx_dialect::TableName;
 /// use ruststream_sqlx_dialect::{
-///     ClaimShape, Dialect, Lease, Sqlite, Statement, StatementError, TableSpec,
+///     ClaimShape, Dialect, Lease, Param, Statement, StatementError, TableSpec,
 /// };
 ///
-/// /// SQLite, with statements of the service's own in its `Dialect` impl.
+/// /// SQL Server, a database without a built-in dialect.
 /// #[derive(Debug)]
-/// pub struct Audited;
+/// pub struct Mssql;
 ///
-/// impl Lease for Audited {
+/// // The service's one lease table, `email_jobs`, mounts on `Mssql`.
+/// impl Lease for Mssql {
 ///     fn lease_claim(
 ///         &self,
-///         spec: &TableSpec<'_>,
+///         _spec: &TableSpec<'_>,
 ///         shape: ClaimShape,
 ///     ) -> Result<Statement, StatementError> {
-///         Sqlite.lease_claim(spec, shape)
+///         let returned = match shape {
+///             ClaimShape::Rows => {
+///                 "deleted.[job_id], deleted.[attempt], deleted.[locked_until], \\
+///                  deleted.[payload]"
+///             }
+///             ClaimShape::Ids => "deleted.[job_id]",
+///             ClaimShape::Roles => {
+///                 "deleted.[job_id] AS [id], deleted.[attempt] AS [attempt], \
+///                  deleted.[payload] AS [payload]"
+///             }
+///         };
+///         Ok(Statement::new(
+///             format!(
+///                 "WITH [claimed] AS (SELECT TOP (@p3) * FROM [email_jobs] \
+///                  WITH (UPDLOCK, READPAST, ROWLOCK) \
+///                  WHERE [locked_until] IS NULL OR [locked_until] <= @p2 ORDER BY [job_id]) \
+///                  UPDATE [claimed] SET [locked_until] = @p1, [attempt] = [attempt] + 1 \
+///                  OUTPUT {returned}"
+///             ),
+///             [Param::Lease, Param::LeaseNow, Param::Limit],
+///         ))
 ///     }
 ///
-///     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         Sqlite.extend(spec)
+///     fn extend(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Ok(Statement::new(
+///             "UPDATE [email_jobs] SET [locked_until] = @p1 \
+///              WHERE [job_id] = @p2 AND [locked_until] = @p3",
+///             [Param::Lease, Param::Id, Param::Held],
+///         ))
 ///     }
 ///
-///     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-///         Sqlite.stamp(spec)
+///     fn stamp(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+///         Ok(Statement::new(
+///             "UPDATE [email_jobs] SET [locked_until] = @p1, [attempt] = [attempt] + 1 \
+///              WHERE [job_id] = @p2 AND ([locked_until] IS NULL OR [locked_until] <= @p3)",
+///             [Param::Lease, Param::Id, Param::LeaseNow],
+///         ))
 ///     }
 ///
-///     // The answers come from the dialect the statements come from.
-///     fn claim_writes_lease(&self) -> bool {
-///         Sqlite.claim_writes_lease()
-///     }
-///
-///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
-///         Sqlite.claim_counts_attempt(spec)
-///     }
-///
+///     // A claim of the service's own (`custom(claim)`) selects its rows, then stamps them, in
+///     // the transaction this opens. SQL Server starts one with `BEGIN TRANSACTION`.
 ///     fn begin_lease_claim(&self) -> Option<&'static str> {
-///         Sqlite.begin_lease_claim()
+///         Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; BEGIN TRANSACTION")
 ///     }
 /// }
-/// # impl Dialect for Audited {
-/// #     fn name(&self) -> &'static str { "audited" }
-/// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
-/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
-/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
-/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.ack(spec) }
-/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
-/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
-/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
-/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
-/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
-/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
+/// # impl Dialect for Mssql {
+/// #     fn name(&self) -> &'static str { "mssql" }
+/// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+/// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+/// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+/// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+/// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
 /// # }
-/// # }
-/// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
     message = "the `{Self}` dialect builds no lease claim, so a table on it cannot take its rows \
@@ -119,63 +139,63 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
     /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     ClaimShape, Dialect, Lease, Param, Postgres, Statement, StatementError, TableSpec,
+    ///     ClaimShape, Dialect, Lease, Param, Statement, StatementError, TableSpec,
     /// };
     ///
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Returning;
+    /// pub struct Mssql;
     ///
-    /// impl Lease for Returning {
-    ///     // One update takes the rows of `email_jobs`, writes their lease, counts the attempt and
-    ///     // returns them as it left them.
+    /// impl Lease for Mssql {
+    ///     // One update takes the rows of the service's one lease table, `email_jobs`, in id
+    ///     // order, skipping the rows another claim holds. It writes their lease, counts the
+    ///     // attempt and returns them as they were before (`deleted`).
     ///     fn lease_claim(
     ///         &self,
-    ///         spec: &TableSpec<'_>,
+    ///         _spec: &TableSpec<'_>,
     ///         shape: ClaimShape,
     ///     ) -> Result<Statement, StatementError> {
-    ///         if spec.table() != "email_jobs" {
-    ///             return Postgres.lease_claim(spec, shape);
-    ///         }
     ///         let returned = match shape {
-    ///             ClaimShape::Rows => r#""job_id", "attempt", "locked_until", "payload""#,
-    ///             ClaimShape::Ids => r#""job_id""#,
-    ///             ClaimShape::Roles => r#""job_id" AS "id", "attempt", "payload""#,
+    ///             ClaimShape::Rows => {
+    ///                 "deleted.[job_id], deleted.[attempt], deleted.[locked_until], \\
+    ///                  deleted.[payload]"
+    ///             }
+    ///             ClaimShape::Ids => "deleted.[job_id]",
+    ///             ClaimShape::Roles => {
+    ///                 "deleted.[job_id] AS [id], deleted.[attempt] AS [attempt], \
+    ///                  deleted.[payload] AS [payload]"
+    ///             }
     ///         };
     ///         Ok(Statement::new(
     ///             format!(
-    ///                 r#"UPDATE "email_jobs" SET "locked_until" = $1, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "locked_until" IS NULL OR "locked_until" <= $2 ORDER BY "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED) RETURNING {returned}"#
+    ///                 "WITH [claimed] AS (SELECT TOP (@p3) * FROM [email_jobs] \
+    ///                  WITH (UPDLOCK, READPAST, ROWLOCK) \
+    ///                  WHERE [locked_until] IS NULL OR [locked_until] <= @p2 ORDER BY [job_id]) \
+    ///                  UPDATE [claimed] SET [locked_until] = @p1, [attempt] = [attempt] + 1 \
+    ///                  OUTPUT {returned}"
     ///             ),
     ///             [Param::Lease, Param::LeaseNow, Param::Limit],
     ///         ))
     ///     }
-    ///
-    ///     // So the rows of `email_jobs` carry the attempt the claim counted.
-    ///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
-    ///         spec.table() == "email_jobs"
-    ///     }
-    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.extend(spec) }
-    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.stamp(spec) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # impl Dialect for Returning {
-    /// #     fn name(&self) -> &'static str { "returning" }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
-    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # }
-    /// # fn main() {}
     /// ```
     fn lease_claim(
         &self,
@@ -196,48 +216,42 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
     /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     ClaimShape, Dialect, Lease, Param, Postgres, Statement, StatementError, TableSpec,
+    ///     ClaimShape, Dialect, Lease, Param, Statement, StatementError, TableSpec,
     /// };
     ///
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Heartbeat;
+    /// pub struct Mssql;
     ///
-    /// impl Lease for Heartbeat {
+    /// impl Lease for Mssql {
     ///     // An extension of an email's lease also records when its handler was last seen. It
-    ///     // changes
-    ///     // the row only while the row holds the delivery's lease.
-    ///     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-    ///         if spec.table() == "email_jobs" {
-    ///             return Ok(Statement::new(
-    ///                 r#"UPDATE "email_jobs" SET "locked_until" = $1, "seen_at" = $2 WHERE "job_id" = $3 AND "locked_until" = $4"#,
-    ///                 [Param::Lease, Param::Now, Param::Id, Param::Held],
-    ///             ));
-    ///         }
-    ///         Postgres.extend(spec)
+    ///     // changes the row only while the row holds the delivery's lease.
+    ///     fn extend(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+    ///         Ok(Statement::new(
+    ///             "UPDATE [email_jobs] SET [locked_until] = @p1, [seen_at] = @p2 \
+    ///              WHERE [job_id] = @p3 AND [locked_until] = @p4",
+    ///             [Param::Lease, Param::Now, Param::Id, Param::Held],
+    ///         ))
     ///     }
-    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { Postgres.lease_claim(spec, shape) }
-    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.stamp(spec) }
+    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # impl Dialect for Heartbeat {
-    /// #     fn name(&self) -> &'static str { "heartbeat" }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
-    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # }
-    /// # fn main() {}
     /// ```
     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 
@@ -257,57 +271,51 @@ pub trait Lease: Dialect {
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "mysql")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
     /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     ClaimShape, Dialect, Lease, MySql, Param, Statement, StatementError, TableSpec,
+    ///     ClaimShape, Dialect, Lease, Param, Statement, StatementError, TableSpec,
     /// };
     ///
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Stamped;
+    /// pub struct Mssql;
     ///
-    /// impl Lease for Stamped {
-    ///     // MySQL's claim only selects, so the broker stamps each row it took.
+    /// impl Lease for Mssql {
+    ///     // The claim only selects, so the broker stamps each row it took.
     ///     fn claim_writes_lease(&self) -> bool {
-    ///         MySql.claim_writes_lease()
+    ///         false
     ///     }
     ///
     ///     fn begin_lease_claim(&self) -> Option<&'static str> {
-    ///         MySql.begin_lease_claim()
+    ///         Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; BEGIN TRANSACTION")
     ///     }
     ///
-    ///     // The stamp of an email also records when it was claimed.
-    ///     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-    ///         if spec.table() == "email_jobs" {
-    ///             return Ok(Statement::new(
-    ///                 "UPDATE `email_jobs` SET `locked_until` = ?, `attempt` = `attempt` + 1, \
-    ///                  `claimed_at` = UTC_TIMESTAMP(6) WHERE `job_id` = ? \
-    ///                  AND (`locked_until` IS NULL OR `locked_until` <= ?)",
-    ///                 [Param::Lease, Param::Id, Param::LeaseNow],
-    ///             ));
-    ///         }
-    ///         MySql.stamp(spec)
+    ///     // The stamp of an email also records when it was claimed, on the server's clock.
+    ///     fn stamp(&self, _spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
+    ///         Ok(Statement::new(
+    ///             "UPDATE [email_jobs] SET [locked_until] = @p1, [attempt] = [attempt] + 1, \
+    ///              [claimed_at] = SYSUTCDATETIME() WHERE [job_id] = @p2 \
+    ///              AND ([locked_until] IS NULL OR [locked_until] <= @p3)",
+    ///             [Param::Lease, Param::Id, Param::LeaseNow],
+    ///         ))
     ///     }
-    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { MySql.lease_claim(spec, shape) }
-    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.extend(spec) }
+    /// #     fn lease_claim(&self, _spec: &TableSpec<'_>, _shape: ClaimShape) -> Result<Statement, StatementError> { Ok(Statement::new("SELECT TOP (@p2) [job_id], [attempt], [payload] FROM [email_jobs] WITH (UPDLOCK, READPAST, ROWLOCK) WHERE [locked_until] IS NULL OR [locked_until] <= @p1 ORDER BY [job_id]", [Param::LeaseNow, Param::Limit])) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # impl Dialect for Stamped {
-    /// #     fn name(&self) -> &'static str { "stamped" }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
-    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.ack(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # }
-    /// # fn main() {}
     /// ```
     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError>;
 
@@ -315,47 +323,62 @@ pub trait Lease: Dialect {
     /// the rows answers `false`, and the claim's transaction then runs [`stamp`](Self::stamp) for
     /// each claimed row before it commits.
     ///
+    /// The provided method answers `true`, which suits a claim that writes the lease in its own
+    /// statement. A dialect whose claim only selects answers `false`, or the rows it selects reach
+    /// their handlers without a lease.
+    ///
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "mysql")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
     /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     ClaimShape, Dialect, Lease, MySql, Statement, StatementError, TableSpec,
+    ///     ClaimShape, Dialect, Lease, Param, Statement, StatementError, TableSpec,
     /// };
     ///
-    /// /// MySQL, with statements of the service's own in its `Dialect` impl.
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Audited;
+    /// pub struct Mssql;
     ///
-    /// impl Lease for Audited {
-    ///     // MySQL's claim only selects. A dialect that keeps the claim answers as MySQL does, so
-    ///     // the
-    ///     // broker stamps each row the claim took before the claim's transaction commits.
-    ///     fn claim_writes_lease(&self) -> bool {
-    ///         MySql.claim_writes_lease()
+    /// impl Lease for Mssql {
+    ///     // The claim reads the claimable rows under an update lock and writes nothing.
+    ///     fn lease_claim(
+    ///         &self,
+    ///         _spec: &TableSpec<'_>,
+    ///         _shape: ClaimShape,
+    ///     ) -> Result<Statement, StatementError> {
+    ///         Ok(Statement::new(
+    ///             "SELECT TOP (@p2) [job_id], [attempt], [payload] FROM [email_jobs] \
+    ///              WITH (UPDLOCK, READPAST, ROWLOCK) \
+    ///              WHERE [locked_until] IS NULL OR [locked_until] <= @p1 ORDER BY [job_id]",
+    ///             [Param::LeaseNow, Param::Limit],
+    ///         ))
     ///     }
-    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { MySql.lease_claim(spec, shape) }
-    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.extend(spec) }
-    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.stamp(spec) }
+    ///
+    ///     // So the broker stamps each row the claim took before the claim's transaction commits.
+    ///     fn claim_writes_lease(&self) -> bool {
+    ///         false
+    ///     }
+    ///
+    ///     fn begin_lease_claim(&self) -> Option<&'static str> {
+    ///         Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; BEGIN TRANSACTION")
+    ///     }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # impl Dialect for Audited {
-    /// #     fn name(&self) -> &'static str { "audited" }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { MySql.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { MySql.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.fetch(spec) }
-    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.ack(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { MySql.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { MySql.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { MySql.insert(spec) }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # }
-    /// # fn main() {}
     /// ```
     fn claim_writes_lease(&self) -> bool {
         true
@@ -365,66 +388,74 @@ pub trait Lease: Dialect {
     /// dialect whose claim returns the rows as they were before answers `false`; where it answers
     /// `true`, a delivery reports one less than its row carries.
     ///
+    /// The provided method answers `false`, which suits a claim that returns its rows as they were
+    /// before the count. A dialect whose claim returns them as it left them answers `true`, or each
+    /// delivery reports one attempt more than it is.
+    ///
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "postgres")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
     /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     ClaimShape, Dialect, Lease, Param, Postgres, Statement, StatementError, TableSpec,
+    ///     ClaimShape, Dialect, Lease, Param, Statement, StatementError, TableSpec,
     /// };
     ///
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Returning;
+    /// pub struct Mssql;
     ///
-    /// impl Lease for Returning {
+    /// impl Lease for Mssql {
     ///     // One update takes the rows of `email_jobs`, writes their lease, counts the attempt and
-    ///     // returns them as it left them.
+    ///     // returns them as it left them (`inserted`).
     ///     fn lease_claim(
     ///         &self,
-    ///         spec: &TableSpec<'_>,
+    ///         _spec: &TableSpec<'_>,
     ///         shape: ClaimShape,
     ///     ) -> Result<Statement, StatementError> {
-    ///         if spec.table() != "email_jobs" {
-    ///             return Postgres.lease_claim(spec, shape);
-    ///         }
     ///         let returned = match shape {
-    ///             ClaimShape::Rows => r#""job_id", "attempt", "locked_until", "payload""#,
-    ///             ClaimShape::Ids => r#""job_id""#,
-    ///             ClaimShape::Roles => r#""job_id" AS "id", "attempt", "payload""#,
+    ///             ClaimShape::Rows => {
+    ///                 "inserted.[job_id], inserted.[attempt], inserted.[locked_until], \
+    ///                  inserted.[payload]"
+    ///             }
+    ///             ClaimShape::Ids => "inserted.[job_id]",
+    ///             ClaimShape::Roles => {
+    ///                 "inserted.[job_id] AS [id], inserted.[attempt] AS [attempt], \
+    ///                  inserted.[payload] AS [payload]"
+    ///             }
     ///         };
     ///         Ok(Statement::new(
     ///             format!(
-    ///                 r#"UPDATE "email_jobs" SET "locked_until" = $1, "attempt" = "attempt" + 1 WHERE "job_id" IN (SELECT "job_id" FROM "email_jobs" WHERE "locked_until" IS NULL OR "locked_until" <= $2 ORDER BY "job_id" LIMIT $3 FOR UPDATE SKIP LOCKED) RETURNING {returned}"#
+    ///                 "WITH [claimed] AS (SELECT TOP (@p3) * FROM [email_jobs] \
+    ///                  WITH (UPDLOCK, READPAST, ROWLOCK) \
+    ///                  WHERE [locked_until] IS NULL OR [locked_until] <= @p2 ORDER BY [job_id]) \
+    ///                  UPDATE [claimed] SET [locked_until] = @p1, [attempt] = [attempt] + 1 \
+    ///                  OUTPUT {returned}"
     ///             ),
     ///             [Param::Lease, Param::LeaseNow, Param::Limit],
     ///         ))
     ///     }
     ///
-    ///     // So the rows of `email_jobs` carry the attempt the claim counted.
-    ///     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
-    ///         spec.table() == "email_jobs"
+    ///     // So each delivery reports the attempt before the count.
+    ///     fn claim_counts_attempt(&self, _spec: &TableSpec<'_>) -> bool {
+    ///         true
     ///     }
-    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.extend(spec) }
-    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.stamp(spec) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # impl Dialect for Returning {
-    /// #     fn name(&self) -> &'static str { "returning" }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Postgres.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Postgres.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.fetch(spec) }
-    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.ack(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Postgres.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Postgres.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Postgres.insert(spec) }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # }
-    /// # fn main() {}
     /// ```
     fn claim_counts_attempt(&self, spec: &TableSpec<'_>) -> bool {
         let _ = spec;
@@ -437,50 +468,46 @@ pub trait Lease: Dialect {
     /// The transaction holds the claim's select and the stamp of each row it took, and commits
     /// before the handlers run. MySQL opens it at READ COMMITTED, as its row lock claim; SQLite
     /// opens it with the write lock taken, so no other writer comes between the select and the
-    /// stamps.
+    /// stamps. The provided method returns `None`: the transaction opens with a plain `BEGIN`, at
+    /// the connection's level.
     ///
     /// # Examples
     ///
     /// ```
-    /// # #[cfg(feature = "sqlite")]
-    /// # mod demo {
     /// # use std::num::NonZeroUsize;
     /// # use ruststream_sqlx_dialect::TableName;
     /// use ruststream_sqlx_dialect::{
-    ///     ClaimShape, Dialect, Lease, Sqlite, Statement, StatementError, TableSpec,
+    ///     ClaimShape, Dialect, Lease, Statement, StatementError, TableSpec,
     /// };
     ///
-    /// /// SQLite, with statements of the service's own in its `Dialect` impl.
+    /// /// SQL Server, a database without a built-in dialect.
     /// #[derive(Debug)]
-    /// pub struct Audited;
+    /// pub struct Mssql;
     ///
-    /// impl Lease for Audited {
+    /// impl Lease for Mssql {
     ///     // A table with a claim of its own (`custom(claim)`) selects its rows, then stamps them,
-    ///     // in
-    ///     // the transaction this opens: `BEGIN IMMEDIATE` takes SQLite's write lock before the
-    ///     // select.
+    ///     // in the transaction this opens. SQL Server starts one with `BEGIN TRANSACTION`, at the
+    ///     // level the statement names.
     ///     fn begin_lease_claim(&self) -> Option<&'static str> {
-    ///         Sqlite.begin_lease_claim()
+    ///         Some("SET TRANSACTION ISOLATION LEVEL READ COMMITTED; BEGIN TRANSACTION")
     ///     }
-    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { Sqlite.lease_claim(spec, shape) }
-    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.extend(spec) }
-    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.stamp(spec) }
+    /// #     fn lease_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn extend(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn stamp(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// }
-    /// # impl Dialect for Audited {
-    /// #     fn name(&self) -> &'static str { "audited" }
-    /// #     fn quote_into(&self, ident: &str, out: &mut String) { Sqlite.quote_into(ident, out); }
-    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { Sqlite.placeholder_into(index, out); }
-    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.fetch(spec) }
-    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.ack(spec) }
-    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Sqlite.retry(spec) }
-    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.retry_after(spec) }
-    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.discard(spec) }
-    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.dead_letter_group(spec) }
-    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Sqlite.dead_letter_table(spec, target) }
-    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Sqlite.insert(spec) }
+    /// # impl Dialect for Mssql {
+    /// #     fn name(&self) -> &'static str { "mssql" }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
     /// # }
-    /// # }
-    /// # fn main() {}
     /// ```
     fn begin_lease_claim(&self) -> Option<&'static str> {
         None
