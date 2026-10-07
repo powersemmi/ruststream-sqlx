@@ -19,8 +19,8 @@ use crate::inbox::headers::{self, HeaderCell, LazyHeaders};
 use crate::inbox::named::kinds::KindsOf;
 use crate::inbox::queue::Queue;
 use crate::inbox::spec::{
-    self, Advisory, Attempt, Clock, Headers, Key, Lease, OpeningLevel, Opens, Payload, ProcessedAt,
-    RetryAfter, Set, Unset,
+    self, Advisory, Attempt, AttemptFrom, Clock, Headers, Key, Lease, OpeningLevel, Opens, Payload,
+    ProcessedAt, RetryAfter, Set, Unset,
 };
 use crate::inbox::time::{QueueTime, SystemClock, TimeSource};
 use crate::inbox::{Lane, PayloadLane, PayloadRow, RowLane};
@@ -255,6 +255,26 @@ where
 
     fn read(row: &DB::Row, column: Option<&str>) -> Option<u64> {
         engine::attempt_in::<DB, Row::Attempt, Row::Attempt>(row, column?)
+    }
+
+    fn kinds(kinds: KindsOf) -> KindsOf {
+        kinds.attempt::<Row::Attempt>()
+    }
+}
+
+impl<DB, Row, Decoded> AttemptAxis<DB, Row> for Set<AttemptFrom<Decoded>>
+where
+    DB: QueueDatabase,
+    Row: AttemptRow,
+    Row::Attempt: TryFrom<Decoded>,
+    Decoded: for<'r> Decode<'r, DB> + Type<DB>,
+{
+    fn attempt(row: &Row) -> Option<u64> {
+        Some(crate::AttemptColumn::attempt(row.attempt()))
+    }
+
+    fn read(row: &DB::Row, column: Option<&str>) -> Option<u64> {
+        engine::attempt_in::<DB, Decoded, Row::Attempt>(row, column?)
     }
 
     fn kinds(kinds: KindsOf) -> KindsOf {

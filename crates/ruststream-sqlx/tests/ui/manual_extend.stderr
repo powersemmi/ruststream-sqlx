@@ -5,7 +5,7 @@ error[E0277]: `own::Extend` is an event of the lease form
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Extend` outside the lease form
    |
    = help: the trait `ExtendInLease` is not implemented for `(Unset, Set<ruststream_sqlx::spec::own::Extend>)`
-   = note: set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` and `own::Extend`
+   = note: set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` and `own::Extend` (with the derive: a `locked_until` field, or `extend` from `custom(..)`; a message's form is its headers struct's)
 help: the following other types implement trait `ExtendInLease`
   --> src/inbox/spec/rules.rs
    |
@@ -27,7 +27,7 @@ error[E0277]: `own::Extend` is an event of the lease form
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Extend` outside the lease form
    |
    = help: the trait `ExtendInLease` is not implemented for `(Set<ruststream_sqlx::spec::Advisory>, Set<ruststream_sqlx::spec::own::Extend>)`
-   = note: set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` and `own::Extend`
+   = note: set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` and `own::Extend` (with the derive: a `locked_until` field, or `extend` from `custom(..)`; a message's form is its headers struct's)
 help: the following other types implement trait `ExtendInLease`
   --> src/inbox/spec/rules.rs
    |

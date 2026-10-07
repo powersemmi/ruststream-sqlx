@@ -26,26 +26,22 @@ mod settle;
 mod statements;
 mod values;
 
-pub use claim::{claim_ids, claim_rows, fetch_by_ids, match_claimed, match_rows};
-pub(crate) use claim::{stamp, take_group};
+pub(crate) use claim::{
+    claim_ids, claim_rows, fetch_by_ids, match_claimed, match_rows, stamp, take_group,
+};
 pub use context::{Claiming, Leasing, Now, Settling, TimeFor, Via};
+pub use helpers::put;
 use helpers::run;
-pub(crate) use helpers::{arguments, unbound, unprepared};
-pub use helpers::{attempt_in, first_header, later, lease, micros, no_lease, now, put};
-pub use settle::{ack, dead_letter, discard, extend, retry, retry_after};
+pub(crate) use helpers::{
+    arguments, attempt_in, first_header, later, lease, micros, no_lease, now, unbound, unprepared,
+};
+pub(crate) use settle::{ack, dead_letter, discard, extend, retry, retry_after};
 pub use statements::{Prepared, Savepoint, Stmt};
 pub(crate) use statements::{intern, intern_name};
 pub use values::Values;
 
-/// A row's whole contract with the broker. Machinery; the derive implements it, a service never
-/// names it.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` does not run on `{DB}`: an event it names as its own, or a role it reads \
-               off its row, is not implemented",
-    label = "not a queue table on `{DB}`",
-    note = "implement each event `{Self}` names in `custom(..)` (by hand: with `.own::<..>()`) \
-            for `{DB}`, and each accessor trait of the roles it sets"
-)]
+/// A row's whole contract with the broker. Machinery; the crate implements it for every
+/// [`InboxTable`](crate::InboxTable), a service never names it.
 pub trait Events<DB: QueueDatabase>: QueueRow + for<'r> FromRow<'r, DB::Row> + Unpin {
     /// Which events the service implements itself.
     const SHAPE: Shape;

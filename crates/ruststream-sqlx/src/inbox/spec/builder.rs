@@ -7,8 +7,8 @@ use std::marker::PhantomData;
 use ruststream_sqlx_dialect::{Column, Form, KeyPart, Opening, Role, TableSpec};
 
 use super::{
-    Advisory, Attempt, Clock, Declaration, Fifo, HeaderFields, Headers, Key, Lease, OpeningLevel,
-    Opens, OwnEvent, Payload, ProcessedAt, Push, RetryAfter, Valid,
+    Advisory, Attempt, AttemptFrom, Clock, Declaration, Fifo, HeaderFields, Headers, Key, Lease,
+    OpeningLevel, Opens, OwnEvent, Payload, ProcessedAt, Push, RetryAfter, Valid,
 };
 use crate::TimeSource;
 
@@ -368,6 +368,22 @@ impl<Settings> InboxSpec<Settings> {
     where
         Settings: Push<Attempt>,
         <Settings as Push<Attempt>>::Out: Declaration,
+    {
+        Self::with(&self.spec.attempt(column))
+    }
+
+    /// The same table, with `column` counting the row's attempts, decoded as `Decoded` and
+    /// converted into the row's attempt field: what `#[sqlx(try_from = "..")]` on the derive's
+    /// `attempt` field spells. Adds [`AttemptFrom`].
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn attempt_from<Decoded>(
+        self,
+        column: Column<'static>,
+    ) -> InboxSpec<<Settings as Push<AttemptFrom<Decoded>>>::Out>
+    where
+        Settings: Push<AttemptFrom<Decoded>>,
+        <Settings as Push<AttemptFrom<Decoded>>>::Out: Declaration,
     {
         Self::with(&self.spec.attempt(column))
     }

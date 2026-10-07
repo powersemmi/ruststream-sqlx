@@ -88,7 +88,7 @@ impl<Id> Candidates<Id> {
 /// # Errors
 ///
 /// The database's error.
-pub async fn candidates<DB, Row>(
+pub(crate) async fn candidates<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     out: &mut Candidates<Row::Id>,
@@ -115,7 +115,7 @@ where
 ///
 /// The database's error, or [`Error::Configuration`] where the subscription prepared no lock: its
 /// dialect leaves the locks to the process.
-pub async fn lock<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn lock<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     key: &str,
@@ -138,7 +138,7 @@ pub async fn lock<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// As [`lock`].
-pub async fn unlock<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn unlock<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     key: &str,
@@ -170,7 +170,7 @@ async fn flag<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// The database's error, or the decode error of a row whose id does not decode either.
-pub async fn take<DB, Row>(
+pub(crate) async fn take<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     id: &Row::Id,
@@ -213,7 +213,7 @@ where
 /// # Errors
 ///
 /// The database's error.
-pub async fn take_id<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn take_id<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     id: &Row::Id,
@@ -238,7 +238,7 @@ pub async fn take_id<DB: QueueDatabase, Row: Events<DB>>(
 
 /// Pairs the taken `id` with the rows the service's fetch returned for it: its row, or
 /// [`Claimed::Missing`] where the fetch found none.
-pub fn match_taken<DB, Row>(id: &Row::Id, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
+pub(crate) fn match_taken<DB, Row>(id: &Row::Id, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
 where
     DB: QueueDatabase,
     Row: Events<DB>,

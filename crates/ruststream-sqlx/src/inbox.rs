@@ -111,14 +111,15 @@ pub trait InboxRow: QueueRow {
     const SPEC: TableSpec<'static>;
 
     /// The form the table's rows are claimed in, as a type: a subscription requires its dialect
-    /// to serve it ([`FormOn`]). Machinery; the derive sets it.
+    /// to serve it ([`FormOn`]). Machinery; the crate reads it off the table's description.
     #[doc(hidden)]
     type Form;
 
     /// What the table's transactions open at, as a type: a [`level`](crate::dialect::level)
     /// marker for the isolation level or SQLite mode the struct declares, `()` where it declares
     /// neither. A subscription requires its dialect to open it
-    /// ([`Opens`](crate::dialect::Opens)). Machinery; the derive sets it.
+    /// ([`Opens`](crate::dialect::Opens)). Machinery; the crate reads it off the table's
+    /// description.
     #[doc(hidden)]
     type Opening;
 }

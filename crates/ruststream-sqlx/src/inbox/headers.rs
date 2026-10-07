@@ -14,19 +14,15 @@ use chrono::format::{Fixed, Item};
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 use ruststream::{HeaderMap, Str};
-use ruststream_sqlx_dialect::{Param, TableSpec};
-use sqlx::Error;
 #[cfg(feature = "time")]
 use time::OffsetDateTime;
 #[cfg(feature = "time")]
 use time::format_description::well_known::Rfc3339;
 
-use super::QueueRow;
+use super::InboxSpec;
 use super::database::QueueDatabase;
-use super::engine::{Events, Leasing, Now, Values};
-use super::form::{AdvisoryForm, LeaseForm, RowLockForm};
-use super::queue::Queue;
-use super::time::QueueTime;
+use super::engine::Events;
+use super::spec::Declaration;
 
 /// A struct that describes a queue table whose message is assembled from it: the mechanics a
 /// subscription runs the queue by, and the service's own headers. `#[derive(InboxHeaders)]`
@@ -105,90 +101,36 @@ use super::time::QueueTime;
             `#[sqlx(flatten)]` to read the field as a header column"
 )]
 pub trait InboxHeaders: Sized + Send + Sync + 'static {
-    /// The queue table: the mechanics and the headers, without the message's own columns.
-    /// Machinery; the derive sets it.
-    #[doc(hidden)]
-    const SPEC: TableSpec<'static>;
-
-    /// The form the table's rows are claimed in, as a type. Machinery; the derive sets it.
-    #[doc(hidden)]
-    type Form;
-
-    /// What the table's transactions open at, as a type. Machinery; the derive sets it.
-    #[doc(hidden)]
-    type Opening;
-
     /// The type of the field that plays `id`. Machinery; the derive sets it.
     #[doc(hidden)]
     type Id: Clone + Debug + Send + Sync + 'static;
 
+    /// The queue table's settings, as the markers of [`spec`](crate::spec): the mechanics and
+    /// the header fields. Machinery; the derive sets it.
+    #[doc(hidden)]
+    type Settings: Declaration;
+
+    /// The queue table: the mechanics and the headers, without the message's own columns, which
+    /// the message's own description adds. Machinery; the derive sets it.
+    #[doc(hidden)]
+    const TABLE: InboxSpec<Self::Settings>;
+
+    /// The headers the fields without a role hold, by their columns' names. Machinery; the
+    /// derive sets it.
+    #[doc(hidden)]
+    const NAMES: &'static [&'static str];
+
+    /// The row's id. Machinery; the derive writes it.
+    #[doc(hidden)]
+    fn id(&self) -> &Self::Id;
+
     /// The header map of the fields without a role. Machinery; the derive writes it.
     #[doc(hidden)]
     fn header_map(&self) -> HeaderMap;
-
-    /// The first of `headers` that no field without a role is named for: the broker refuses a
-    /// publish that carries it. Machinery; the derive writes it.
-    #[doc(hidden)]
-    fn unfit_header(headers: &HeaderMap) -> Option<&str>;
 }
 
-/// What a headers struct gives the contract of a message that flattens it, on the database `DB`:
-/// the per-row half of [`Events`]. Machinery; `#[derive(InboxHeaders)]` implements it, and the
-/// message's `Events` calls it.
-#[doc(hidden)]
-pub trait HeadersRow<DB: QueueDatabase>: InboxHeaders {
-    /// The lease a delivery holds; `()` outside the lease form.
-    type Token: Copy + Debug + Send + Sync + 'static;
-
-    /// The row's id.
-    fn id(&self) -> &Self::Id;
-
-    /// The delivery's key: the `partition_key` field's bytes.
-    fn partition_key(&self) -> Option<&[u8]>;
-
-    /// The delivery's attempt: the `attempt` field's.
-    fn attempt(&self) -> Option<u64>;
-
-    /// The attempt of a claimed `row` that did not decode, read alone.
-    fn read_attempt(row: &DB::Row, queue: &'static Queue) -> Option<u64>;
-
-    /// Binds one parameter of a default statement of the message `Row`; `false` when the table
-    /// has no value for it.
-    ///
-    /// # Errors
-    ///
-    /// The driver's encoding error.
-    fn bind<Row>(
-        param: Param,
-        arguments: &mut DB::Arguments,
-        values: &Values<'_, DB, Row>,
-    ) -> Result<bool, Error>
-    where
-        Row: Events<DB, Token = Self::Token> + QueueRow<Id = Self::Id>;
-
-    /// The lease the queue's claim takes now.
-    ///
-    /// # Errors
-    ///
-    /// As [`Events::lease`].
-    fn lease(queue: &'static Queue, now: Now) -> Result<Leasing<Self::Token>, Error>;
-}
-
-/// The lease of a headers struct with a `locked_until` field: what the message that flattens it
-/// takes its [`LeaseRow`](crate::LeaseRow) from. Machinery; the derive implements it.
-#[doc(hidden)]
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has no `locked_until` field, so its subscription holds no lease",
-    note = "add `#[field(locked_until)] locked_until: Option<..>` to the headers struct `{Self}` \
-            to take rows by lease"
-)]
-pub trait HeadersLease: InboxHeaders {
-    /// The time `locked_until` holds.
-    type Lease: QueueTime;
-}
-
-/// A message struct that flattens a headers struct: where its delivery builds its header map
-/// from. Machinery; `#[derive(Inbox)]` implements it.
+/// A row whose delivery builds its header map from its fields: where the map comes from.
+/// Machinery; every [`HeaderFields`](crate::HeaderFields) row implements it.
 #[doc(hidden)]
 pub trait Assembled {
     /// The header map of the headers struct's fields without a role.
@@ -359,7 +301,7 @@ impl HeaderField for OffsetDateTime {
 /// Puts the header `name` holding `field` into `headers`, unless `field` holds none. Machinery;
 /// the derive's header map calls it for each field without a role.
 #[doc(hidden)]
-pub fn put_header(headers: &mut HeaderMap, name: &'static str, field: &impl HeaderField) {
+pub(crate) fn put_header(headers: &mut HeaderMap, name: &'static str, field: &impl HeaderField) {
     if let Some(value) = field.header() {
         // A column's name is a constant: the map holds it as it is, where a `&str` copies.
         headers.insert(Str::from_static(name), value);
@@ -370,7 +312,7 @@ pub fn put_header(headers: &mut HeaderMap, name: &'static str, field: &impl Head
 /// hold. Machinery.
 #[must_use]
 #[doc(hidden)]
-pub fn unnamed_header<'h>(headers: &'h HeaderMap, names: &[&str]) -> Option<&'h str> {
+pub(crate) fn unnamed_header<'h>(headers: &'h HeaderMap, names: &[&str]) -> Option<&'h str> {
     headers
         .iter()
         .map(|(name, _)| name)
@@ -441,48 +383,6 @@ impl LazyHeaders {
             .get_or_init(|| row.map_or_else(HeaderMap::new, Assembled::header_map))
     }
 }
-
-/// A headers struct's form that takes a claim of the service's own: every form but the advisory
-/// lock form, which selects its candidates with their keys itself. Machinery.
-#[doc(hidden)]
-#[diagnostic::on_unimplemented(
-    message = "the headers struct's table is in the advisory lock form, which selects its \
-               candidates with their keys itself",
-    label = "the form of the message's headers struct",
-    note = "drop `claim` from the message struct's `custom(..)`"
-)]
-pub trait OwnClaim {}
-
-impl OwnClaim for RowLockForm {}
-impl OwnClaim for LeaseForm {}
-
-/// A headers struct's form that takes an extension of the service's own: the lease form.
-/// Machinery.
-#[doc(hidden)]
-#[diagnostic::on_unimplemented(
-    message = "`extend` is an event of the lease form, and the headers struct's table is in \
-               another form",
-    label = "the form of the message's headers struct",
-    note = "add `#[field(locked_until)]` to the headers struct, or drop `extend` from the \
-            message struct's `custom(..)`"
-)]
-pub trait OwnExtend {}
-
-impl OwnExtend for LeaseForm {}
-
-/// A headers struct's form that takes a lock and an unlock of the service's own: the advisory
-/// lock form. Machinery.
-#[doc(hidden)]
-#[diagnostic::on_unimplemented(
-    message = "`lock` and `unlock` are events of the advisory lock form, and the headers \
-               struct's table is in another form",
-    label = "the form of the message's headers struct",
-    note = "add `advisory_lock = \"..\"` to the headers struct's `#[inbox(..)]`, or drop `lock` \
-            and `unlock` from the message struct's `custom(..)`"
-)]
-pub trait OwnLock {}
-
-impl OwnLock for AdvisoryForm {}
 
 #[cfg(test)]
 mod tests;

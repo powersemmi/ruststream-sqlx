@@ -46,6 +46,13 @@ setting!(
     Attempt, Attempt
 );
 setting!(
+    /// The attempt count of a field sqlx converts from the column's `Decoded`
+    /// (`#[sqlx(try_from = "..")]`): a row that does not decode reads its attempt as `Decoded`.
+    /// Set by `#[derive(Inbox)]`.
+    #[doc(hidden)]
+    AttemptFrom<Decoded>, Attempt
+);
+setting!(
     /// The delivery's headers, read from one column: set by
     /// [`InboxSpec::headers`](crate::InboxSpec::headers).
     Headers, Headers

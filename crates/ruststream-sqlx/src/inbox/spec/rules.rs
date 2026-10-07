@@ -65,7 +65,7 @@ impl ClockSlot for Set<Clock<DatabaseClock>> {
                the database's",
     label = "the lease form on `DatabaseClock`",
     note = "drop `.clock::<DatabaseClock>()` and `Clock<DatabaseClock>`, or `.lease(..)` and \
-            `Lease<..>`"
+            `Lease<..>` (with the derive: `clock = DatabaseClock`, or the `locked_until` field)"
 )]
 pub trait LeaseOnServiceClock {}
 
@@ -93,7 +93,8 @@ impl FifoOutsideAdvisory for (Set<Advisory>, Unset) {}
     message = "the advisory lock form selects its candidates with their keys itself, so it takes \
                no claim of the service's own",
     label = "`own::Claim` in the advisory lock form",
-    note = "drop `.own::<own::Claim>()` and `own::Claim`"
+    note = "drop `.own::<own::Claim>()` and `own::Claim` (with the derive: `claim` from \
+            `custom(..)`; a message's form is its headers struct's)"
 )]
 pub trait ClaimOutsideAdvisory {}
 
@@ -106,7 +107,8 @@ impl ClaimOutsideAdvisory for (Set<Advisory>, Unset) {}
     message = "`own::Extend` is an event of the lease form",
     label = "`own::Extend` outside the lease form",
     note = "set the lease form with `.lease(..)` and `Lease<..>`, or drop `.own::<own::Extend>()` \
-            and `own::Extend`"
+            and `own::Extend` (with the derive: a `locked_until` field, or `extend` from \
+            `custom(..)`; a message's form is its headers struct's)"
 )]
 pub trait ExtendInLease {}
 
@@ -119,7 +121,9 @@ impl<Time> ExtendInLease for (Set<Lease<Time>>, Set<own::Extend>) {}
     message = "`own::Lock` and `own::Unlock` are events of the advisory lock form",
     label = "`own::Lock` or `own::Unlock` outside the advisory lock form",
     note = "set the advisory lock form with `.advisory(..)` and `Advisory`, or drop \
-            `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers"
+            `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers (with the derive: \
+            `advisory_lock = \"..\"`, or `lock` and `unlock` from `custom(..)`; a message's form \
+            is its headers struct's)"
 )]
 pub trait LockInAdvisory {}
 

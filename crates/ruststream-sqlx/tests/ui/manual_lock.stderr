@@ -27,7 +27,7 @@ error[E0277]: `own::Lock` and `own::Unlock` are events of the advisory lock form
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Lock` or `own::Unlock` outside the advisory lock form
    |
    = help: the trait `LockInAdvisory` is not implemented for `(Unset, Set<ruststream_sqlx::spec::own::Lock>)`
-   = note: set the advisory lock form with `.advisory(..)` and `Advisory`, or drop `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers
+   = note: set the advisory lock form with `.advisory(..)` and `Advisory`, or drop `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers (with the derive: `advisory_lock = ".."`, or `lock` and `unlock` from `custom(..)`; a message's form is its headers struct's)
 help: the following other types implement trait `LockInAdvisory`
   --> src/inbox/spec/rules.rs
    |
@@ -49,7 +49,7 @@ error[E0277]: `own::Lock` and `own::Unlock` are events of the advisory lock form
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Lock` or `own::Unlock` outside the advisory lock form
    |
    = help: the trait `LockInAdvisory` is not implemented for `(Unset, Set<ruststream_sqlx::spec::own::Unlock>)`
-   = note: set the advisory lock form with `.advisory(..)` and `Advisory`, or drop `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers
+   = note: set the advisory lock form with `.advisory(..)` and `Advisory`, or drop `.own::<own::Lock>()`, `.own::<own::Unlock>()` and their markers (with the derive: `advisory_lock = ".."`, or `lock` and `unlock` from `custom(..)`; a message's form is its headers struct's)
 help: the following other types implement trait `LockInAdvisory`
   --> src/inbox/spec/rules.rs
    |

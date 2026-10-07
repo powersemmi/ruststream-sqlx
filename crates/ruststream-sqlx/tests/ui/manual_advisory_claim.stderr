@@ -5,7 +5,7 @@ error[E0277]: the advisory lock form selects its candidates with their keys itse
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `own::Claim` in the advisory lock form
    |
    = help: the trait `ClaimOutsideAdvisory` is not implemented for `(Set<ruststream_sqlx::spec::Advisory>, Set<ruststream_sqlx::spec::own::Claim>)`
-   = note: drop `.own::<own::Claim>()` and `own::Claim`
+   = note: drop `.own::<own::Claim>()` and `own::Claim` (with the derive: `claim` from `custom(..)`; a message's form is its headers struct's)
 help: the following other types implement trait `ClaimOutsideAdvisory`
   --> src/inbox/spec/rules.rs
    |

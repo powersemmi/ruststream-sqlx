@@ -53,18 +53,31 @@ fn the_fields_without_a_role_are_the_headers_under_their_columns_names() -> syn:
             #[sqlx(skip)] cache: u8,
         }
     };
-    let impls = expand(&input)?.to_string();
-    assert!(
-        impls.contains("put_header (& mut headers , \"tenantName\" , & self . tenant_name)"),
-        "{impls}"
-    );
-    assert!(impls.contains("put_header (& mut headers , \"trace\" , & self . trace_id)"));
-    assert!(impls.contains("unnamed_header (headers , & [\"tenantName\" , \"trace\"])"));
+    let impls = expand(&input)?.to_string().replace(' ', "");
+    for expected in [
+        "impl::ruststream_sqlx::InboxHeadersforHead{typeId=i64;\
+         typeSettings=(::ruststream_sqlx::spec::HeaderFields,);\
+         constTABLE:::ruststream_sqlx::InboxSpec<Self::Settings>=\
+         ::ruststream_sqlx::InboxSpec::new(\"jobs\",\
+         ::ruststream_sqlx::dialect::Column::new(\"jobId\").generated())",
+        ".group(::ruststream_sqlx::dialect::Column::new(\"name\"))\
+         .data(&[::ruststream_sqlx::dialect::Column::new(\"tenantName\"),\
+         ::ruststream_sqlx::dialect::Column::new(\"trace\")]).header_fields();",
+        "fnid(&self)->&i64{&self.job_id}",
+        "constNAMES:&'static[&'staticstr]=&[\"tenantName\",\"trace\"];",
+        "::ruststream_sqlx::put_header(&mutheaders,\"tenantName\",&self.tenant_name);",
+        "::ruststream_sqlx::put_header(&mutheaders,\"trace\",&self.trace_id);",
+    ] {
+        assert!(impls.contains(expected), "{expected}\n{impls}");
+    }
     assert!(!impls.contains("\"cache\""), "a skipped field is no header");
+    for machinery in ["HeadersRow", "HeadersLease", "Events"] {
+        assert!(!impls.contains(machinery), "{machinery}: {impls}");
+    }
     // The insert is built with each dialect the macros are built with.
     #[cfg(any(feature = "postgres", feature = "mysql", feature = "sqlite"))]
     assert!(
-        impls.contains("impl < __C >"),
+        impls.contains("impl<__C>"),
         "the headers struct gets the generated insert"
     );
     Ok(())

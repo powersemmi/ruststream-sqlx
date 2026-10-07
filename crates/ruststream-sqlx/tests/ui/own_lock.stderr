@@ -1,56 +1,100 @@
-error[E0277]: `Unlocked` does not run on `sqlx::Postgres`: an event it names as its own, or a role it reads off its row, is not implemented
+error[E0277]: `Unlocked` runs its own `lock` (`custom(lock)` in `#[inbox(..)]`, or `own::Lock` in its `InboxSpec`) and does not implement `Lock<sqlx::Postgres>`
   --> tests/ui/own_lock.rs:37:16
    |
 37 |     subscribes(InboxQueue::<Unlocked>::new("jobs"));
-   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a queue table on `sqlx::Postgres`
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the service's own lock is missing
    |     |
    |     required by a bound introduced by this call
    |
-help: the trait `ruststream_sqlx::__private::Events<sqlx::Postgres>` is not implemented for `Unlocked`
+help: the trait `ruststream_sqlx::Lock<sqlx::Postgres>` is not implemented for `Unlocked`
   --> tests/ui/own_lock.rs:13:1
    |
 13 | struct Unlocked {
    | ^^^^^^^^^^^^^^^
-   = note: implement each event `Unlocked` names in `custom(..)` (by hand: with `.own::<..>()`) for `sqlx::Postgres`, and each accessor trait of the roles it sets
-help: the trait `ruststream_sqlx::__private::Events<__DB>` is conditionally implemented for `Unlocked`
-  --> tests/ui/own_lock.rs:11:10
+   = note: implement `Lock<sqlx::Postgres>` for `Unlocked`, or drop `lock` from `custom(..)` (by hand: `.own::<own::Lock>()` and `own::Lock` in `type Table`)
+help: the trait `ruststream_sqlx::Lock<sqlx::Postgres>` is implemented for `HalfLocked`
+  --> tests/ui/own_lock.rs:30:1
    |
-11 | #[derive(Inbox, sqlx::FromRow)]
-   |          ^^^^^
-   |          |
-   |          unsatisfied requirement introduced here: `Unlocked: ruststream_sqlx::Lock<sqlx::Postgres>`
-   |          unsatisfied requirement introduced here: `Unlocked: ruststream_sqlx::Unlock<sqlx::Postgres>`
+30 | impl Lock<Postgres> for HalfLocked {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `Set<ruststream_sqlx::spec::own::Lock>` to implement `ruststream_sqlx::__private::LockAxis<sqlx::Postgres, Unlocked>`
+   = note: required for `Unlocked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
    = note: required for `InboxQueue<Unlocked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres>>`
 note: required by a bound in `subscribes`
   --> tests/ui/own_lock.rs:6:23
    |
  6 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Postgres>>>>(source: Source) {
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
-   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: `HalfLocked` does not run on `sqlx::Postgres`: an event it names as its own, or a role it reads off its row, is not implemented
-  --> tests/ui/own_lock.rs:38:16
+error[E0277]: `Unlocked` runs its own `unlock` (`custom(unlock)` in `#[inbox(..)]`, or `own::Unlock` in its `InboxSpec`) and does not implement `Unlock<sqlx::Postgres>`
+  --> tests/ui/own_lock.rs:37:16
    |
-38 |     subscribes(InboxQueue::<HalfLocked>::new("jobs"));
-   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a queue table on `sqlx::Postgres`
+37 |     subscribes(InboxQueue::<Unlocked>::new("jobs"));
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the service's own unlock is missing
    |     |
    |     required by a bound introduced by this call
    |
-help: the trait `ruststream_sqlx::__private::Events<sqlx::Postgres>` is not implemented for `HalfLocked`
+help: the trait `ruststream_sqlx::Unlock<sqlx::Postgres>` is not implemented for `Unlocked`
+  --> tests/ui/own_lock.rs:13:1
+   |
+13 | struct Unlocked {
+   | ^^^^^^^^^^^^^^^
+   = note: implement `Unlock<sqlx::Postgres>` for `Unlocked`, or drop `unlock` from `custom(..)` (by hand: `.own::<own::Unlock>()` and `own::Unlock` in `type Table`)
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
+  --> src/inbox/queue.rs
+   |
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     D: Dialect + Opens<Row::Opening> + 'static,
+   | |     Row: InboxRow + Events<DB>,
+   | |                     ----------
+   | |                     |
+   | |                     unsatisfied requirement introduced here: `Unlocked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   | |                     unsatisfied requirement introduced here: `Unlocked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   | |     Row::Form: FormOn<D>,
+   | |     Mode: InboxMode,
+   | |____________________^
+   = note: required for `Set<ruststream_sqlx::spec::own::Unlock>` to implement `ruststream_sqlx::__private::UnlockAxis<sqlx::Postgres, Unlocked>`
+   = note: required for `Unlocked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   = note: required for `InboxQueue<Unlocked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres>>`
+note: required by a bound in `subscribes`
+  --> tests/ui/own_lock.rs:6:23
+   |
+ 6 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Postgres>>>>(source: Source) {
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
+
+error[E0277]: `HalfLocked` runs its own `unlock` (`custom(unlock)` in `#[inbox(..)]`, or `own::Unlock` in its `InboxSpec`) and does not implement `Unlock<sqlx::Postgres>`
+  --> tests/ui/own_lock.rs:38:16
+   |
+38 |     subscribes(InboxQueue::<HalfLocked>::new("jobs"));
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the service's own unlock is missing
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `ruststream_sqlx::Unlock<sqlx::Postgres>` is not implemented for `HalfLocked`
   --> tests/ui/own_lock.rs:23:1
    |
 23 | struct HalfLocked {
    | ^^^^^^^^^^^^^^^^^
-   = note: implement each event `HalfLocked` names in `custom(..)` (by hand: with `.own::<..>()`) for `sqlx::Postgres`, and each accessor trait of the roles it sets
-help: the trait `ruststream_sqlx::__private::Events<__DB>` is conditionally implemented for `HalfLocked`
-  --> tests/ui/own_lock.rs:21:10
+   = note: implement `Unlock<sqlx::Postgres>` for `HalfLocked`, or drop `unlock` from `custom(..)` (by hand: `.own::<own::Unlock>()` and `own::Unlock` in `type Table`)
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
+  --> src/inbox/queue.rs
    |
-21 | #[derive(Inbox, sqlx::FromRow)]
-   |          ^^^^^ unsatisfied requirement introduced here: `HalfLocked: ruststream_sqlx::Unlock<sqlx::Postgres>`
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     D: Dialect + Opens<Row::Opening> + 'static,
+   | |     Row: InboxRow + Events<DB>,
+   | |                     ---------- unsatisfied requirement introduced here: `HalfLocked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   | |     Row::Form: FormOn<D>,
+   | |     Mode: InboxMode,
+   | |____________________^
+   = note: required for `Set<ruststream_sqlx::spec::own::Unlock>` to implement `ruststream_sqlx::__private::UnlockAxis<sqlx::Postgres, HalfLocked>`
+   = note: required for `HalfLocked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
    = note: required for `InboxQueue<HalfLocked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres>>`
 note: required by a bound in `subscribes`
   --> tests/ui/own_lock.rs:6:23
    |
  6 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Postgres>>>>(source: Source) {
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
-   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)

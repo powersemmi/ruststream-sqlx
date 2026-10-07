@@ -189,8 +189,10 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 /// transaction, holds the row while the handler runs. The expiry it wrote is the delivery's
 /// ownership token: a settlement takes effect only while the row still holds it. While the
 /// handler runs, the subscription extends the lease each half lease, and each extension's expiry
-/// becomes the token. The derive implements it for a struct with the field, and a subscription of
-/// such a struct can set its own lease ([`InboxQueue::lease`](crate::InboxQueue::lease)).
+/// becomes the token. The crate implements it for every table in the lease form, a struct with the
+/// field or a description that sets [`InboxSpec::lease`](crate::InboxSpec::lease), and a
+/// subscription of such a table can set its own lease
+/// ([`InboxQueue::lease`](crate::InboxQueue::lease)).
 ///
 /// # Examples
 ///
@@ -239,7 +241,8 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 /// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no `locked_until` field, so its subscription holds no lease",
-    note = "add `#[field(locked_until)] locked_until: Option<..>` to take rows by lease"
+    note = "add `#[field(locked_until)] locked_until: Option<..>` to take rows by lease (by hand: \
+            `.lease(..)` and `Lease<..>` in `type Table`)"
 )]
 pub trait LeaseRow: InboxRow {
     /// The time `locked_until` holds: the lease's expiry, and the delivery's ownership token.

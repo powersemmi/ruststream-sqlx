@@ -25,7 +25,7 @@ const fn settled(queue: &Queue, changed: u64) -> Settled {
 /// # Errors
 ///
 /// The database's error.
-pub async fn ack<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn ack<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
@@ -41,7 +41,7 @@ pub async fn ack<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// The database's error.
-pub async fn retry<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn retry<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
@@ -60,7 +60,7 @@ pub async fn retry<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// The database's error.
-pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
@@ -80,7 +80,7 @@ pub async fn retry_after<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// The database's error.
-pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn discard<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
@@ -101,7 +101,7 @@ pub async fn discard<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// The database's error.
-pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,
@@ -133,7 +133,7 @@ pub async fn dead_letter<DB: QueueDatabase, Row: Events<DB>>(
 /// # Errors
 ///
 /// The database's error.
-pub async fn extend<DB: QueueDatabase, Row: Events<DB>>(
+pub(crate) async fn extend<DB: QueueDatabase, Row: Events<DB>>(
     conn: &mut DB::Connection,
     cx: &Settling,
     id: &Row::Id,

@@ -29,29 +29,37 @@ note: required by a bound in `SqlxBroker::<DB, D>::route`
    |                                         ^^^^^^^^^^ required by this bound in `SqlxBroker::<DB, D>::route`
    = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)
 
-error[E0277]: `Unacked` does not run on `sqlx::Postgres`: an event it names as its own, or a role it reads off its row, is not implemented
+error[E0277]: `Unacked` runs its own `ack` (`custom(ack)` in `#[inbox(..)]`, or `own::Ack` in its `InboxSpec`) and does not implement `Ack<sqlx::Postgres>`
   --> tests/ui/mount.rs:40:16
    |
 40 |     subscribes(InboxQueue::<Unacked>::new("jobs"));
-   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not a queue table on `sqlx::Postgres`
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the service's own event is missing
    |     |
    |     required by a bound introduced by this call
    |
-help: the trait `ruststream_sqlx::__private::Events<sqlx::Postgres>` is not implemented for `Unacked`
+help: the trait `ruststream_sqlx::Ack<sqlx::Postgres>` is not implemented for `Unacked`
   --> tests/ui/mount.rs:27:1
    |
 27 | struct Unacked {
    | ^^^^^^^^^^^^^^
-   = note: implement each event `Unacked` names in `custom(..)` (by hand: with `.own::<..>()`) for `sqlx::Postgres`, and each accessor trait of the roles it sets
-help: the trait `ruststream_sqlx::__private::Events<__DB>` is conditionally implemented for `Unacked`
-  --> tests/ui/mount.rs:25:10
+   = note: implement `Ack<sqlx::Postgres>` for `Unacked`, or drop `ack` from `custom(..)` (by hand: `.own::<own::Ack>()` and `own::Ack` in `type Table`)
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
+  --> src/inbox/queue.rs
    |
-25 | #[derive(Inbox, sqlx::FromRow)]
-   |          ^^^^^ unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::Ack<sqlx::Postgres>`
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     D: Dialect + Opens<Row::Opening> + 'static,
+   | |     Row: InboxRow + Events<DB>,
+   | |                     ---------- unsatisfied requirement introduced here: `Unacked: ruststream_sqlx::__private::Events<sqlx::Postgres>`
+   | |     Row::Form: FormOn<D>,
+   | |     Mode: InboxMode,
+   | |____________________^
+   = note: required for `Set<ruststream_sqlx::spec::own::Ack>` to implement `ruststream_sqlx::__private::AckAxis<sqlx::Postgres, Unacked>`
+   = note: required for `Unacked` to implement `ruststream_sqlx::__private::Events<sqlx::Postgres>`
    = note: required for `InboxQueue<Unacked>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres>>`
 note: required by a bound in `subscribes`
   --> tests/ui/mount.rs:6:23
    |
  6 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Postgres>>>>(source: Source) {
    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
-   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)

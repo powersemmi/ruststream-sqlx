@@ -358,6 +358,9 @@ where
     type Opening = <Settings::Opening as OpeningAxis>::Opening;
 }
 
+// Reported as the row without `LeaseRow`, whose message names the fix, not as the form setting
+// it reads.
+#[diagnostic::do_not_recommend]
 impl<Row, Settings> LeaseRow for Row
 where
     Row: InboxRow + InboxTable<Table = InboxSpec<Settings>>,

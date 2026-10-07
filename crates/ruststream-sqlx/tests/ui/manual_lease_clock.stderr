@@ -5,7 +5,7 @@ error[E0277]: the lease form computes its expiry from the crate's clock, and thi
    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the lease form on `DatabaseClock`
    |
    = help: the trait `LeaseOnServiceClock` is not implemented for `(Set<ruststream_sqlx::spec::Lease<DateTime<Utc>>>, DatabaseClock)`
-   = note: drop `.clock::<DatabaseClock>()` and `Clock<DatabaseClock>`, or `.lease(..)` and `Lease<..>`
+   = note: drop `.clock::<DatabaseClock>()` and `Clock<DatabaseClock>`, or `.lease(..)` and `Lease<..>` (with the derive: `clock = DatabaseClock`, or the `locked_until` field)
 help: the following other types implement trait `LeaseOnServiceClock`
   --> src/inbox/spec/rules.rs
    |

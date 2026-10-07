@@ -86,17 +86,10 @@ pub mod __private {
         pub use crate::inbox::batch::{BatchClaim, BatchLane};
         pub use crate::inbox::engine::{
             Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
-            Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
-            dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, match_claimed,
-            match_rows, micros, no_lease, now, put, retry, retry_after,
+            Settling, Shape, Stmt, TimeFor, Values, Via, put,
         };
-        pub use crate::inbox::form::advisory::events::{
-            Candidates, candidates, lock, match_taken, take, take_id, unlock,
-        };
-        pub use crate::inbox::headers::{
-            Assembled, HeaderCell, HeadersLease, HeadersRow, LazyHeaders, OwnClaim, OwnExtend,
-            OwnLock, put_header, unnamed_header,
-        };
+        pub use crate::inbox::form::advisory::events::Candidates;
+        pub use crate::inbox::headers::HeaderCell;
         pub use crate::inbox::manual::{
             AckAxis, AttemptAxis, Axes, ClaimAxes, ClockAxis, DeadLetterAxis, DiscardAxis,
             ExtendAxis, FormAxis, FormBind, HeadersAxis, KeyAxis, LeaseAxis, LockAxis,
