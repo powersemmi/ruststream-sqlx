@@ -75,6 +75,24 @@ pub enum Isolation {
 
 impl Isolation {
     /// The level as SQL names it: `READ COMMITTED`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Postgres};
+    ///
+    /// // A dialect's test: each level it serves opens a transaction at that level.
+    /// for level in [Isolation::ReadCommitted, Isolation::RepeatableRead, Isolation::Serializable] {
+    ///     let begin = Postgres.begin(Opening::Isolation(level))?;
+    ///     assert_eq!(begin, Some(format!("BEGIN ISOLATION LEVEL {}", level.sql())).as_deref());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn sql(self) -> &'static str {
         match self {
@@ -168,6 +186,24 @@ pub enum Mode {
 
 impl Mode {
     /// The mode as SQL names it: `IMMEDIATE`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "sqlite")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Dialect, Mode, Opening, Sqlite};
+    ///
+    /// // A dialect's test: each mode opens a transaction in that mode.
+    /// for mode in [Mode::Deferred, Mode::Immediate, Mode::Exclusive] {
+    ///     let begin = Sqlite.begin(Opening::Mode(mode))?;
+    ///     assert_eq!(begin, Some(format!("BEGIN {}", mode.sql())).as_deref());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "sqlite"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn sql(self) -> &'static str {
         match self {
