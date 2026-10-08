@@ -1,12 +1,13 @@
 //! What a message costs in allocations on the paths that look a name up at run time, in row mode,
 //! in the headers layout and on a wake-up: a by-name subscription allocates what a typed one does,
-//! in both forms and whatever its ids hold, a `Routed` publish what a `Repository` one does, a
-//! row-mode subscription, single or batched, what a payload-mode one over the same table does, a
-//! headers-layout delivery what a flat row-mode one does until its headers are read and then what
-//! its header map needs, a fetch of the service's own over a join what a raw sqlx loop running
-//! the same statements does, and a publish that wakes a waiting subscription what one that wakes
-//! none does. Under the outbox, a message it does not track allocates what it does without the
-//! middlewares, and a tracked one what a raw sqlx loop does plus its id header.
+//! in both forms and whatever its ids hold, a table described by hand what its derived twin does, a
+//! `Routed` publish what a `Repository` one does, a row-mode subscription, single or batched, what
+//! a payload-mode one over the same table does, a headers-layout delivery what a flat row-mode one
+//! does until its headers are read and then what its header map needs, a fetch of the service's own
+//! over a join what a raw sqlx loop running the same statements does, and a publish that wakes a
+//! waiting subscription what one that wakes none does. Under the outbox, a message it does not
+//! track allocates what it does without the middlewares, and a tracked one what a raw sqlx loop
+//! does plus its id header.
 
 #![cfg(all(
     feature = "inbox",
@@ -32,10 +33,11 @@ use ruststream::{
     IncomingMessage, Lend, OutgoingMessage, PublishPolicy, Publisher, Str, Subscribe, Subscriber,
     SubscriptionSource, nonzero,
 };
-use ruststream_sqlx::dialect::{ClaimShape, Dialect, Param, RowLock, Statement};
+use ruststream_sqlx::dialect::{ClaimShape, Column, Dialect, Param, RowLock, Statement};
+use ruststream_sqlx::spec::{Attempt, Lease, Payload};
 use ruststream_sqlx::{
-    ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, InboxRow, Publish, Repository, Routed,
-    SqlxBroker, SqlxBrokerError,
+    AttemptRow, ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, InboxRow, InboxSpec, InboxTable,
+    PayloadRow, Publish, Repository, Routed, SqlxBroker, SqlxBrokerError,
 };
 use sqlx::postgres::PgArguments;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -109,6 +111,44 @@ struct LeasedAsRow {
     #[field(locked_until)]
     locked_until: Option<DateTime<Utc>>,
     payload: Vec<u8>,
+}
+
+/// `lease::Plain` described by hand: the same table, so a delivery costs what the derived one does.
+/// The struct holds what the service reads; the lease column is named in the description alone.
+#[derive(Debug, sqlx::FromRow)]
+struct LeasedByHand {
+    id: i64,
+    attempt: i16,
+    payload: Vec<u8>,
+}
+
+impl InboxTable for LeasedByHand {
+    type Id = i64;
+    type Table = InboxSpec<(Lease<DateTime<Utc>>, Attempt, Payload)>;
+    const TABLE: Self::Table = InboxSpec::new("plain_jobs", Column::new("id").generated())
+        .lease(Column::new("locked_until"))
+        .attempt(Column::new("attempt").generated())
+        .payload(Column::new("payload"));
+
+    fn id(&self) -> &i64 {
+        &self.id
+    }
+}
+
+impl PayloadRow for LeasedByHand {
+    type Column = Vec<u8>;
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+impl AttemptRow for LeasedByHand {
+    type Attempt = i16;
+
+    fn attempt(&self) -> &i16 {
+        &self.attempt
+    }
 }
 
 /// `headed_jobs` read flat, in row mode: the headers layout's columns as the struct's own fields,
@@ -653,6 +693,15 @@ async fn each_path_allocates_what_its_reference_does() {
     )
     .await;
     dhat::assert_eq!(leased_row, leased_typed);
+    // A table described by hand runs the derive's code: the same delivery, the same cost.
+    fill(&db.pool, WARMUP + MESSAGES).await;
+    let leased_by_hand = typed_subscription_cost(
+        &leased,
+        InboxQueue::<LeasedByHand>::new("plain"),
+        read_payload,
+    )
+    .await;
+    dhat::assert_eq!(leased_by_hand, leased_typed);
     // Ids with storage of their own: a text id costs its decode alone, for the book copies each
     // into the storage the id before it left.
     fill_keyed(&db.pool, 2 * (WARMUP + MESSAGES)).await;
