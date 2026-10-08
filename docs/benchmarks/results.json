@@ -1,0 +1,178 @@
+{
+  "schema": 3,
+  "code": [
+    {
+      "name": "Row lock claim and delete, JSON payload",
+      "messages": 1000,
+      "framework": {
+        "instructions": 50774.0,
+        "allocations": 32.0
+      },
+      "raw": {
+        "instructions": 46046.5,
+        "allocations": 33.0
+      },
+      "cold": {
+        "instructions": 412981,
+        "allocations": 353
+      },
+      "gated": true
+    },
+    {
+      "name": "Lease claim and delete, JSON payload",
+      "messages": 1000,
+      "framework": {
+        "instructions": 56585.7,
+        "allocations": 28.0
+      },
+      "raw": {
+        "instructions": 53859.5,
+        "allocations": 28.0
+      },
+      "cold": {
+        "instructions": 479309,
+        "allocations": 391
+      },
+      "gated": true
+    },
+    {
+      "name": "Advisory lock claim and delete, JSON payload",
+      "messages": 1000,
+      "framework": {
+        "instructions": 72023.2,
+        "allocations": 47.1
+      },
+      "raw": {
+        "instructions": 66016.2,
+        "allocations": 47.1
+      },
+      "cold": {
+        "instructions": 472475,
+        "allocations": 492
+      },
+      "gated": true
+    },
+    {
+      "name": "By-name subscription, row lock claim and delete",
+      "messages": 1000,
+      "framework": {
+        "instructions": 50327.5,
+        "allocations": 32.0
+      },
+      "raw": {
+        "instructions": 45261.2,
+        "allocations": 33.0
+      },
+      "cold": {
+        "instructions": 374958,
+        "allocations": 356
+      },
+      "gated": true
+    },
+    {
+      "name": "Row lock batches of 16, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 17529.1,
+        "allocations": 13.3
+      },
+      "raw": {
+        "instructions": 15660.3,
+        "allocations": 13.3
+      },
+      "cold": {
+        "instructions": 417251,
+        "allocations": 357
+      },
+      "gated": true
+    },
+    {
+      "name": "Row mode, row lock claim and delete",
+      "messages": 1000,
+      "framework": {
+        "instructions": 48591.7,
+        "allocations": 32.0
+      },
+      "raw": {
+        "instructions": 45418.3,
+        "allocations": 33.0
+      },
+      "cold": {
+        "instructions": 373531,
+        "allocations": 362
+      },
+      "gated": true
+    },
+    {
+      "name": "Repository publish, one insert each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 23834.3,
+        "allocations": 15.0
+      },
+      "raw": {
+        "instructions": 21973.5,
+        "allocations": 12.0
+      },
+      "cold": {
+        "instructions": 180321,
+        "allocations": 127
+      },
+      "gated": true
+    },
+    {
+      "name": "Routed publish, one insert each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 25080.4,
+        "allocations": 15.0
+      },
+      "raw": {
+        "instructions": 21973.5,
+        "allocations": 12.0
+      },
+      "cold": {
+        "instructions": 178692,
+        "allocations": 128
+      },
+      "gated": true
+    },
+    {
+      "name": "Outbox: a reply recorded, fetched and marked",
+      "messages": 1000,
+      "framework": {
+        "instructions": 77840.3,
+        "allocations": 42.1
+      },
+      "raw": {
+        "instructions": 76625.9,
+        "allocations": 39.1
+      },
+      "cold": {
+        "instructions": 405130,
+        "allocations": 273
+      },
+      "gated": true
+    },
+    {
+      "name": "Outbox: both middlewares, nothing tracked",
+      "messages": 1000,
+      "framework": {
+        "instructions": 8164.6,
+        "allocations": 6.0
+      },
+      "raw": {
+        "instructions": 7769.8,
+        "allocations": 6.0
+      },
+      "cold": {
+        "instructions": 318154,
+        "allocations": 211
+      },
+      "gated": true
+    }
+  ],
+  "environment": {
+    "valgrind": "3.25.1"
+  }
+}
