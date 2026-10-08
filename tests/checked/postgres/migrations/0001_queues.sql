@@ -20,6 +20,15 @@ CREATE TABLE checked_emails (
     note         TEXT NOT NULL
 );
 
+-- Reminders timed by the database's clock.
+CREATE TABLE checked_reminders (
+    id           BIGSERIAL PRIMARY KEY,
+    name         TEXT NOT NULL,
+    retry_after  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at TIMESTAMPTZ,
+    payload      BYTEA NOT NULL
+);
+
 -- Ledger entries claimed by lease, in order within each account.
 CREATE TABLE checked_ledger (
     id           BIGSERIAL PRIMARY KEY,

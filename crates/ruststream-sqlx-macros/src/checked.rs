@@ -938,6 +938,34 @@ mod tests {
     }
 
     #[test]
+    fn the_clocks_reading_is_held_to_the_clocks_own_answer() -> syn::Result<()> {
+        let database: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", clock = ruststream_sqlx::DatabaseClock, checked, db = postgres)]
+            struct Job { #[field(id)] id: i64, #[field(retry_after)] at: DateTime<Utc> }
+        };
+        let impls = expanded(&database)?;
+        assert!(
+            impls.contains(
+                "<ruststream_sqlx::DatabaseClockas::ruststream_sqlx::TimeSource>::DATABASE==true"
+            ),
+            "{impls}"
+        );
+        // The database's clock binds no time: the statements read it themselves.
+        assert!(!impls.contains("retry_at:"), "{impls}");
+        let host: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", clock = Frozen, checked, db = postgres)]
+            struct Job { #[field(id)] id: i64, #[field(retry_after)] at: DateTime<Utc> }
+        };
+        let impls = expanded(&host)?;
+        assert!(
+            impls.contains("<Frozenas::ruststream_sqlx::TimeSource>::DATABASE==false"),
+            "{impls}"
+        );
+        assert!(impls.contains("retry_at:"), "{impls}");
+        Ok(())
+    }
+
+    #[test]
     fn a_struct_without_checked_emits_no_query() -> syn::Result<()> {
         let input: DeriveInput = parse_quote! {
             #[inbox(table = "jobs")]

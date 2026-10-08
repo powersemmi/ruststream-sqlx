@@ -5,8 +5,8 @@
 #![cfg(feature = "checked")]
 
 use chrono::{DateTime, Utc};
-use ruststream_sqlx::Fetch;
 use ruststream_sqlx::prelude::*;
+use ruststream_sqlx::{DatabaseClock, Fetch};
 use sqlx::{Error, FromRow, PgConnection, Postgres};
 
 /// The email of the crate overview's example, whose statements its doctest reads from this
@@ -53,6 +53,28 @@ pub struct Email {
     pub payload: Vec<u8>,
     /// A note the handler reads beside the message.
     pub note: String,
+}
+
+/// A reminder claimed by row lock and timed by the database's clock: its statements read now
+/// themselves and bind no time.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "checked_reminders", clock = DatabaseClock, checked, db = postgres)]
+pub struct Reminder {
+    /// The row's id.
+    #[field(id, generated)]
+    pub id: i64,
+    /// The queue the reminder belongs to.
+    #[field(group)]
+    pub name: String,
+    /// When the reminder is claimed again after a delayed retry.
+    #[field(retry_after, generated)]
+    pub retry_after: DateTime<Utc>,
+    /// When the reminder was processed.
+    #[field(processed_at)]
+    pub processed_at: Option<DateTime<Utc>>,
+    /// The message.
+    #[field(payload)]
+    pub payload: Vec<u8>,
 }
 
 /// A ledger entry claimed by lease, in order within its account.

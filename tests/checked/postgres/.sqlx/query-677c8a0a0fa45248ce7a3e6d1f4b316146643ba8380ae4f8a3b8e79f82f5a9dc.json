@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO \"checked_reminders\" (\"name\", \"processed_at\", \"payload\") VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "677c8a0a0fa45248ce7a3e6d1f4b316146643ba8380ae4f8a3b8e79f82f5a9dc"
+}

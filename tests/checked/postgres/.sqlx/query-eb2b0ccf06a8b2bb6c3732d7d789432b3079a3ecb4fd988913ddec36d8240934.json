@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE \"checked_reminders\" SET \"retry_after\" = statement_timestamp() + $1::bigint * interval '1 microsecond' WHERE \"id\" = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb2b0ccf06a8b2bb6c3732d7d789432b3079a3ecb4fd988913ddec36d8240934"
+}
