@@ -96,6 +96,9 @@ CREATE TABLE lifecycle_jobs (
     locked_until DATETIME,
     payload      LONGBLOB NOT NULL
 );
+-- The claim order, which keeps a claim to the rows it takes: without it a claim locks every row
+-- of its group it reads.
+CREATE INDEX lifecycle_order ON lifecycle_jobs (name, retry_after, id);
 
 -- Jobs another table may still point at: acknowledging a referenced job fails its statement.
 CREATE TABLE fragile_jobs (
