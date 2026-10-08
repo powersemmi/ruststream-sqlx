@@ -50,6 +50,10 @@ pub mod prelude;
 #[cfg(feature = "inbox")]
 #[doc(hidden)]
 pub use inbox::RowDeliveries;
+/// Machinery behind [`InboxSettings::on_threads`]; a service never names it.
+#[cfg(feature = "inbox")]
+#[doc(hidden)]
+pub use inbox::ThreadsStep;
 /// Machinery behind [`InboxSettings::transactional`]; a service never names it.
 #[cfg(feature = "inbox")]
 #[doc(hidden)]
@@ -59,11 +63,11 @@ pub use inbox::{
     Ack, AttemptColumn, AttemptRow, BuiltIn, BuiltInDialect, ByName, Claim, Clock,
     ClosedSqlxBroker, ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch,
     HeaderField, HeaderFields, InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings,
-    InboxSpec, InboxSubscriber, InboxTable, Insert, KeyColumn, KeyRow, LeaseRow, Lock,
-    NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow, Plain, Publish, QueueDatabase,
-    QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher,
-    RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource, Transactional, Tx,
-    Unlock, put_header,
+    InboxSpec, InboxSubscriber, InboxTable, InboxThreads, Insert, KeyColumn, KeyRow, LeaseRow,
+    Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow, Plain, Publish,
+    QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed,
+    RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource,
+    Transactional, Tx, Unlock, put_header,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.

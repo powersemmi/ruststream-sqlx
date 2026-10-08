@@ -5,8 +5,8 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use ruststream::Outgoing;
 use ruststream::runtime::RunningApp;
+use ruststream::{Outgoing, nonzero};
 use ruststream_sqlx::prelude::*;
 use serde::Serialize;
 use sqlx::Pool;
@@ -29,6 +29,9 @@ enum Mount {
     Typed,
     /// Nothing, after a query of the handler's own through `Ctx<keys::Pool>`.
     Queries,
+    /// Nothing, after the handler held two connections of its thread's pool at once, on threads
+    /// whose pools open two.
+    TwoAtOnce,
 }
 
 /// What each handled row answers with, written to `email_jobs` under `replies`.
@@ -87,6 +90,16 @@ live::matrix! {
         probe.handled("plain", *id);
     }
 
+    /// Holds two connections of its thread's pool at once.
+    #[subscriber(InboxQueue::<Plain>::new("plain"))]
+    async fn paired(id: &i64, Ctx(pool): Ctx<keys::Pool<Db>>, State(probe): State<Probe>) {
+        let mut first = pool.acquire().await.expect("a connection");
+        let mut second = pool.acquire().await.expect("a second connection");
+        sqlx::raw_sql("SELECT 1").execute(&mut *first).await.expect("the first query");
+        sqlx::raw_sql("SELECT 1").execute(&mut *second).await.expect("the second query");
+        probe.handled("plain", *id);
+    }
+
     async fn started(pool: &Pool<Db>, probe: &Probe, mount: Mount) -> RunningApp {
         let probe = probe.clone();
         let broker = SqlxBroker::new(pool.clone())
@@ -106,6 +119,10 @@ live::matrix! {
                 }
                 Mount::Queries => {
                     b.include(queried);
+                }
+                Mount::TwoAtOnce => {
+                    let threads = InboxThreads::new(nonzero!(2)).connections(nonzero!(2));
+                    b.include(paired.on_threads(threads));
                 }
             });
         tokio::time::timeout(GUARD, app.start())
@@ -175,5 +192,10 @@ live::matrix! {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_handler_query_leaves_no_connection_that_dies_with_its_thread() {
         outlived(Mount::Queries).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_thread_pool_opens_the_connections_the_mount_sets() {
+        outlived(Mount::TwoAtOnce).await;
     }
 }

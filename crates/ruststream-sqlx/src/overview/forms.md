@@ -161,6 +161,26 @@ the pool, and the connections the handlers take for their own queries and insert
 a connection of its own for its insert. In the lease form a pool of n + 1 lets every free worker
 claim at once.
 
+A handler that computes runs on dedicated threads with
+[`on_threads`](crate::InboxSettings::on_threads), the inbox's spelling of `threads(n)`:
+
+```text
+b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))));
+```
+
+The subscription claims on the app's runtime and runs each handler on one of its threads.
+Claims, settlements, transactions and publishes take the service's pool, and their connections
+open on the app's runtime. A handler's `Ctx<keys::Pool<DB>>` is the thread's own pool, with the
+service pool's options. It opens one connection at most, or the number
+[`connections`](crate::InboxThreads::connections) sets, on the thread, and they close when the
+thread ends. The service then opens the pool's connections and threads times connections for each
+such subscription. [`connection_limit`](crate::SqlxBroker::connection_limit) holds that sum to
+what the database allows: a subscription that would pass it does not start. The framework's own
+`threads(n)` gives the threads pools of one connection too, and the limit does not count them.
+A subscription's threads hold deliveries in their rings beside the handlers, and in the row lock
+form each one holds a connection of the service's pool, so the pool's bound applies as with
+`workers(n)`.
+
 ## The lease form
 
 - The claim writes the lease's expiry into `locked_until`, counts the attempt and commits.

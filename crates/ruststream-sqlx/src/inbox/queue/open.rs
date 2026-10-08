@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use ruststream::RetryDeclaration;
 use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Role, TableSpec};
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use super::build::{build, counted_attempt};
 use super::check::check;
@@ -23,8 +23,10 @@ use crate::inbox::form::advisory::LockBook;
 use crate::inbox::form::lease::{self, LeaseBook};
 use crate::inbox::form::row_lock::savepoint_of;
 use crate::inbox::named::kinds::Kinds;
+use crate::inbox::pools::ServicePool;
 use crate::inbox::publish::table_of;
 use crate::inbox::subscriber::{Holding, InboxSubscriber, Opened};
+use crate::inbox::threads::InboxThreads;
 use crate::inbox::transactional::{InboxMode, TxBook};
 
 /// One open subscription, interned for the life of the process: what its deliveries read to settle
@@ -90,6 +92,25 @@ impl Queue {
         queues.push(queue);
         queue
     }
+}
+
+/// The subscription's handle on the service's pool, sizing its dedicated threads' pools. A
+/// subscription mounted on threads of the crate's own counts their connections first: one that
+/// would pass the connection limit refuses to start.
+fn service_pool<DB: Database>(
+    shared: &Shared<DB>,
+    name: &str,
+    threads: Option<&InboxThreads>,
+) -> Result<&'static ServicePool<DB>, SqlxBrokerError> {
+    if let Some(threads) = threads {
+        shared.count_threads(name, threads)?;
+    }
+    let per_thread = threads.map_or(NonZeroU32::MIN, InboxThreads::connections_each);
+    Ok(ServicePool::leak(
+        shared.pool.clone(),
+        shared.runtime.clone(),
+        per_thread,
+    ))
 }
 
 /// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
@@ -197,7 +218,7 @@ where
     };
     // The subscription's own handle on the pool, which each delivery copies for the handler's
     // context instead of counting a reference.
-    let pool: &'static Pool<DB> = Box::leak(Box::new(shared.pool.clone()));
+    let pool = service_pool(shared, name, timing.threads.as_ref())?;
     // A transactional delivery's transaction waits in the book while its handler does not hold it;
     // in the advisory lock form the lock book keeps the session that holds it.
     let lending = (Mode::TRANSACTIONAL && !description.advisory()).then(TxBook::leak);

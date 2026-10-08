@@ -33,6 +33,7 @@ use super::queue::{Queue, Registration};
 use super::testing::{cancelled, off_clock};
 use super::transactional::{InboxMode, Plain, TxBook};
 use super::tx::PoolTx;
+use crate::inbox::pools::ServicePool;
 
 /// How long a subscription waits after a claim failed, so a persistent failure cannot spin the
 /// loop.
@@ -141,7 +142,7 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     queue: &'static Queue,
     holding: Holding<DB, Row>,
     /// The subscription's handle on the pool, which its deliveries lend their handlers.
-    pool: &'static Pool<DB>,
+    pool: &'static ServicePool<DB>,
     /// Where a transactional delivery's transaction waits while its handler does not hold it, in
     /// the row lock and lease forms; `None` in the plain mode, and in the advisory lock form, whose
     /// book keeps the session that holds the transaction.
@@ -181,7 +182,7 @@ pub(crate) struct Opened<DB: QueueDatabase, Row: Events<DB>> {
     pub(crate) holding: Holding<DB, Row>,
     pub(crate) registration: Registration<DB>,
     pub(crate) keeper: Option<DropGuard>,
-    pub(crate) pool: &'static Pool<DB>,
+    pub(crate) pool: &'static ServicePool<DB>,
     pub(crate) lending: Option<&'static TxBook<DB>>,
     pub(crate) wake: &'static Notify,
 }
@@ -417,7 +418,7 @@ where
     }
 
     /// The subscription's handle on the pool, which its deliveries lend their handlers.
-    pub(crate) const fn pool(&self) -> &'static Pool<DB> {
+    pub(crate) const fn pool(&self) -> &'static ServicePool<DB> {
         self.pool
     }
 
@@ -599,7 +600,7 @@ where
 
 /// What a single claim runs with.
 pub(crate) struct ClaimOne<DB: QueueDatabase, Row: Events<DB>> {
-    pool: &'static Pool<DB>,
+    pool: &'static ServicePool<DB>,
     queue: &'static Queue,
     holding: Holding<DB, Row>,
     /// The other claims of the subscription in flight.

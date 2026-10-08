@@ -17,6 +17,7 @@
 mod live;
 
 mod bound;
+mod budget;
 mod locks;
 mod order;
 mod pool;

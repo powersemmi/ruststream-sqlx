@@ -2,9 +2,10 @@
 //! acknowledgement commits; the step that switches a registration to it, the transaction the
 //! handler borrows, and the book a subscription lends its deliveries' transactions from.
 
-use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings};
+use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings, WorkersStep};
 
 use super::queue::InboxQueue;
+use super::threads::{InboxThreads, ThreadsStep};
 
 mod book;
 pub(crate) mod settle;
@@ -257,6 +258,71 @@ pub trait InboxSettings: Declared {
         Self::Settings: TransactionalStep,
     {
         self.declare().apply_transactional()
+    }
+
+    /// Runs an `InboxQueue` subscription's handlers on dedicated threads, as `threads(n)` does,
+    /// with a pool of each thread's own for their queries.
+    ///
+    /// It fills the position `workers(n)` and `threads(n)` fill, so the attribute names neither.
+    /// A handler on a thread reads `Ctx<keys::Pool<..>>` as the thread's pool. Its connections
+    /// open on the thread and close with it, so none outlives the thread in the service's pool.
+    /// Claims, settlements, transactions and publishes take the service's pool. The subscription
+    /// counts the threads' connections against the broker's
+    /// [`connection_limit`](crate::SqlxBroker::connection_limit) when it opens.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream::nonzero;
+    /// use ruststream_sqlx::prelude::*;
+    /// use sqlx::{PgPool, Postgres};
+    ///
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "scan_jobs")]
+    /// pub struct ScanJob {
+    ///     #[field(id)]
+    ///     id: i64,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(serde::Deserialize)]
+    /// struct Image {
+    ///     path: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<ScanJob>::new("scans"))]
+    /// async fn scan(image: &Image, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
+    ///     let noted = sqlx::query("INSERT INTO scanned (path) VALUES ($1)")
+    ///         .bind(&image.path)
+    ///         .execute(&pool)
+    ///         .await;
+    ///     if noted.is_ok() { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // The service opens 30 connections at most: the pool's and the threads' 4 x 2.
+    ///     let broker = SqlxBroker::new(pool).connection_limit(nonzero!(30u32));
+    ///     RustStream::new(AppInfo::new("scanner", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))));
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    fn on_threads(
+        self,
+        threads: InboxThreads,
+    ) -> <<Self::Settings as WorkersStep>::Out as ThreadsStep>::Out
+    where
+        Self::Settings: WorkersStep,
+        <Self::Settings as WorkersStep>::Out: ThreadsStep,
+    {
+        self.declare()
+            .apply_workers(threads.workers())
+            .apply_threads(threads)
     }
 }
 

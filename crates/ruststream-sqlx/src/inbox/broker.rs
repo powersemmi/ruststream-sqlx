@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -39,6 +40,7 @@ use super::events::Publish;
 use super::form::advisory::LockBook;
 use super::form::advisory::session::Closing;
 use super::publish::{Routes, TableWake, Wakes};
+use super::threads::InboxThreads;
 use super::{FormDialect, FormOn, PayloadRow};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
@@ -183,6 +185,7 @@ pub struct SqlxBroker<DB: Database, D = BuiltIn<DB>> {
     routes: Routes<DB, FormOf<D>>,
     poll_interval: Duration,
     lease: Duration,
+    connection_limit: Option<NonZeroU32>,
     /// The start of the listening connection, with `listen_notify`.
     pub(crate) listen: Option<StartListening<DB>>,
 }
@@ -194,6 +197,7 @@ impl<DB: Database, D: Dialect> fmt::Debug for SqlxBroker<DB, D> {
             .field("routes", &self.routes)
             .field("poll_interval", &self.poll_interval)
             .field("lease", &self.lease)
+            .field("connection_limit", &self.connection_limit)
             .field("listen_notify", &self.listen.is_some())
             .finish_non_exhaustive()
     }
@@ -363,6 +367,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
             routes: Routes::default(),
             poll_interval: DEFAULT_POLL_INTERVAL,
             lease: DEFAULT_LEASE,
+            connection_limit: None,
             listen: None,
         }
     }
@@ -570,6 +575,54 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
         self
     }
 
+    /// The most connections the service opens on the database: the pool's size, and the
+    /// connections of the dedicated threads of every subscription mounted with
+    /// [`on_threads`](crate::InboxSettings::on_threads). No limit unless set.
+    ///
+    /// Each such subscription counts its threads times their connections when it opens. One
+    /// that would take the sum past the limit refuses to open, with
+    /// [`SqlxBrokerError::ConnectionLimit`] naming the numbers, and the service does not start.
+    /// Set it to what the database lets this service open.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream::nonzero;
+    /// use ruststream_sqlx::prelude::*;
+    /// use sqlx::{PgPool, Postgres};
+    /// # #[derive(Inbox, sqlx::FromRow)]
+    /// # #[inbox(table = "scan_jobs")]
+    /// # pub struct ScanJob { #[field(id)] id: i64, #[field(payload)] payload: Vec<u8> }
+    /// # #[derive(serde::Deserialize)]
+    /// # struct Image { path: String }
+    ///
+    /// #[subscriber(InboxQueue::<ScanJob>::new("scans"))]
+    /// async fn scan(image: &Image, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
+    ///     let noted = sqlx::query("INSERT INTO scanned (path) VALUES ($1)")
+    ///         .bind(&image.path)
+    ///         .execute(&pool)
+    ///         .await;
+    ///     if noted.is_ok() { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
+    /// }
+    ///
+    /// pub fn app(pool: PgPool) -> RustStream {
+    ///     // The database lets this service open 20 connections: the pool's and 4 threads' own.
+    ///     let broker = SqlxBroker::new(pool).connection_limit(nonzero!(20u32));
+    ///     RustStream::new(AppInfo::new("scanner", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4))));
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    #[must_use]
+    pub const fn connection_limit(mut self, limit: NonZeroU32) -> Self {
+        self.connection_limit = Some(limit);
+        self
+    }
+
     /// Wakes the broker's subscriptions on Postgres notifications: a row another process announced
     /// with `pg_notify` is claimed at once, not on the next poll.
     ///
@@ -692,6 +745,10 @@ pub(crate) struct Shared<DB: Database> {
     /// The runtime `connect` ran on: the lease keepers run there, and so do the releases of lease
     /// deliveries dropped unsettled.
     pub(crate) runtime: Handle,
+    /// The most connections the service opens on the database, where it set a limit.
+    connection_limit: Option<NonZeroU32>,
+    /// The connections the dedicated threads of the subscriptions opened so far open at most.
+    thread_connections: Mutex<u64>,
     /// The `Closed` flag: set by `shutdown`, read with one atomic load per publish and per claim.
     closed: AtomicBool,
     /// Wakes the claim loops waiting for their next claim when `shutdown` sets the flag, and stops
@@ -716,6 +773,40 @@ impl<DB: Database> Shared<DB> {
     /// Whether `shutdown` ran: the flag every handle of the connection reads before it works.
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Counts `threads`, the dedicated threads of the subscription `name` opens, against the
+    /// connection limit: the pool's size and every subscription's threads so far must fit it.
+    ///
+    /// # Errors
+    ///
+    /// [`SqlxBrokerError::ConnectionLimit`] when the sum passes the limit; the threads are not
+    /// counted then.
+    pub(crate) fn count_threads(
+        &self,
+        name: &str,
+        threads: &InboxThreads,
+    ) -> Result<(), SqlxBrokerError> {
+        let pool = u64::from(self.pool.options().get_max_connections());
+        let mut counted = self
+            .thread_connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let wanted = counted.saturating_add(threads.total_connections());
+        if let Some(limit) = self.connection_limit
+            && pool.saturating_add(wanted) > u64::from(limit.get())
+        {
+            drop(counted);
+            return Err(SqlxBrokerError::ConnectionLimit {
+                subscription: name.to_owned(),
+                limit: limit.get(),
+                pool,
+                threads: wanted,
+            });
+        }
+        *counted = wanted;
+        drop(counted);
+        Ok(())
     }
 }
 
@@ -814,6 +905,8 @@ impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
                 wakes,
                 poll_interval: broker.poll_interval,
                 lease: broker.lease,
+                connection_limit: broker.connection_limit,
+                thread_connections: Mutex::new(0),
                 closing: Closing::leak(runtime.clone()),
                 runtime,
                 closed: AtomicBool::new(false),
