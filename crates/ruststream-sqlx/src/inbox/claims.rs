@@ -24,9 +24,10 @@ pub(crate) struct Flow {
     /// After a claim that took nothing, one claim at a time until one takes a row: an empty table
     /// sees one claim per wait, not one per worker.
     probing: bool,
-    /// Whether the table's groups keep their order: one claim in flight, as a second claim of the
-    /// group takes nothing while the first holds it.
-    fifo: bool,
+    /// Whether the subscription keeps one claim in flight: on a table whose groups keep their
+    /// order, where a second claim of the group takes nothing while the first holds it, and on a
+    /// database that takes one writer at a time.
+    one_claim: bool,
     /// The connections the subscription holds at most: the pool's size less one, which it leaves
     /// to the handlers' own queries, their publishes and the settlements that take one.
     budget: usize,
@@ -37,14 +38,14 @@ pub(crate) struct Flow {
 
 impl Flow {
     /// The flow of a subscription on a pool of `max_connections`, whose deliveries hold a
-    /// connection each where `holds`, on a table whose groups keep their order where `fifo`.
-    pub(crate) fn new(max_connections: u32, holds: bool, fifo: bool) -> Self {
+    /// connection each where `holds`, with one claim in flight where `one_claim`.
+    pub(crate) fn new(max_connections: u32, holds: bool, one_claim: bool) -> Self {
         let size = usize::try_from(max_connections).unwrap_or(usize::MAX);
         let budget = size.saturating_sub(1).max(1);
         Self {
             workers: 1,
             probing: true,
-            fifo,
+            one_claim,
             budget,
             holds,
         }
@@ -69,7 +70,7 @@ impl Flow {
         } else {
             self.workers
                 .saturating_sub(in_work)
-                .clamp(1, if self.fifo { 1 } else { self.budget })
+                .clamp(1, if self.one_claim { 1 } else { self.budget })
         };
         running < wanted
             && self.held(running, in_work) < self.budget
@@ -322,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fifo_table_keeps_one_claim() {
+    fn a_table_in_order_or_a_database_of_one_writer_keeps_one_claim() {
         let mut flow = Flow::new(8, true, true);
         for in_work in 0..4 {
             flow.polled(in_work);

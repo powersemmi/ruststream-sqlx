@@ -44,7 +44,8 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// a single-message handler, with a claim in flight for each free worker of a handler mounted with
 /// `workers(n)`. The subscription holds at most the pool's size less one connection, and a claim
 /// beside another one starts only while the pool has a connection to spare, so the pool keeps one
-/// for the handlers. After a claim that filled its limit the next one runs at once;
+/// for the handlers. On SQLite, which takes one writer at a time, the subscription keeps one claim
+/// in flight. After a claim that filled its limit the next one runs at once;
 /// after one that found fewer rows it waits the poll interval, or until a publisher of the same
 /// broker writes a row of its table and group (a row the service writes through its own SQL or a
 /// handler's transaction waits for the interval). A write that lands while the subscription
@@ -281,7 +282,7 @@ where
                 opened.pool.options().get_max_connections(),
                 !matches!(opened.holding, Holding::Leases(_))
                     || opened.queue.prepared.transactional,
-                opened.queue.prepared.fifo_guard.is_some(),
+                opened.queue.prepared.fifo_guard.is_some() || opened.queue.one_writer,
             ),
             made: 0,
             // Once per subscription, as its queue and books are: deliveries outlive the borrow of

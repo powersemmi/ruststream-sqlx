@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::RetryDeclaration;
-use ruststream_sqlx_dialect::{Isolation, Opening, Role, TableSpec};
+use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Role, TableSpec};
 use sqlx::{Database, Pool};
 
 use super::build::{build, counted_attempt};
@@ -54,6 +54,9 @@ pub struct Queue {
     /// Whether the rows a claim hands out carry the attempt it counted, so a delivery reports one
     /// less.
     pub counted_attempt: bool,
+    /// Whether the database takes one writer at a time, so the subscription keeps one claim in
+    /// flight: a second one would only wait for the first and for the settlements.
+    pub one_writer: bool,
     /// How long the claim loop waits after a claim that found the queue short.
     pub poll_interval: Duration,
     /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
@@ -166,6 +169,7 @@ where
         prepared,
         begin_claim,
         counted_attempt: counted_attempt(form, description, &prepared),
+        one_writer: one_writer::<DB>(form.dialect()),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
             .leased()
@@ -231,6 +235,13 @@ where
 // Why a startup refusal: the dialect is known by its name, and the backend behind an `AnyPool` only
 // once the broker connected. MySQL and MariaDB read the latest row in an update at every level, so
 // they keep the acknowledgement at theirs.
+/// Whether the database behind `DB` and `dialect` takes one writer at a time: SQLite, through a
+/// pool of its own or an `AnyPool`. Its busy handler sleeps instead of queueing a writer, so claims
+/// that run at once collide and wait out the sleeps.
+fn one_writer<DB: Database>(dialect: &dyn Dialect) -> bool {
+    DB::NAME == "SQLite" || dialect.name() == "sqlite"
+}
+
 fn lease_unseen_at<Mode: InboxMode>(
     form: &FormDialect,
     description: &Description,
@@ -315,5 +326,31 @@ impl<DB: Database> fmt::Debug for Registration<DB> {
             .field("table", &self.table)
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruststream_sqlx_dialect as dialect;
+
+    use super::one_writer;
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_takes_one_writer_at_a_time() {
+        assert!(one_writer::<sqlx::Sqlite>(&dialect::Sqlite));
+    }
+
+    #[cfg(all(feature = "any", feature = "sqlite"))]
+    #[test]
+    fn an_any_pool_on_sqlite_takes_one_writer_at_a_time() {
+        assert!(one_writer::<sqlx::Any>(&dialect::Sqlite));
+    }
+
+    #[cfg(all(feature = "any", feature = "postgres"))]
+    #[test]
+    fn a_server_takes_writers_at_once() {
+        assert!(!one_writer::<sqlx::Postgres>(&dialect::Postgres));
+        assert!(!one_writer::<sqlx::Any>(&dialect::Postgres));
     }
 }

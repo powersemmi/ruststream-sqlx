@@ -140,7 +140,9 @@ workers take rows at once instead of one after another. It never holds more than
 less one connection, so the pool always keeps a connection for the handlers' own queries, their
 publishes and the settlements that take one. A claim beside another one starts only while the
 pool has a connection to spare, so subscriptions that share a pool, and handlers that hold its
-connections, leave each other room. A pool short of room runs fewer deliveries at once.
+connections, leave each other room. A pool short of room runs fewer deliveries at once. SQLite
+takes one writer at a time, so a SQLite subscription keeps one claim in flight, and so does a
+table whose groups keep their order.
 
 What a subscription holds depends on the form. In the row lock form each delivery in work and
 each claim in flight holds a connection: with `workers(n)` up to n. In the lease form a claim and
