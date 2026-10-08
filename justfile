@@ -29,6 +29,8 @@ test:
     cargo test --workspace --no-default-features
     # The inbox without the built-in dialect, as a service with a dialect of its own builds it.
     cargo test -p ruststream-sqlx --no-default-features --features inbox
+    # The outbox without the inbox: its doc examples gate themselves on the outbox alone.
+    cargo test -p ruststream-sqlx --doc --no-default-features --features outbox,postgres
 
 brokers-up:
     docker compose -f docker-compose.test.yml up -d --wait

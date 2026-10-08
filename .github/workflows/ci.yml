@@ -228,6 +228,10 @@ jobs:
       - name: cargo test (inbox alone)
         run: cargo test -p ruststream-sqlx --no-default-features --features inbox --no-fail-fast
 
+      # The outbox without the inbox: its doc examples gate themselves on the outbox alone.
+      - name: cargo test (outbox alone, doc examples)
+        run: cargo test -p ruststream-sqlx --doc --no-default-features --features outbox,postgres --no-fail-fast
+
       # The checked fixtures build from their committed `.sqlx` data alone: a statement the derive
       # generates without data there fails this build.
       - name: cargo build (checked fixtures, offline)
