@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE \"email_jobs\" SET \"attempt\" = \"attempt\" + 1 WHERE \"job_id\" = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a599e2ee1a72c3ec28c65d9876ac8fa24f9c435f7b1139fbd267c2add48b73fa"
+}

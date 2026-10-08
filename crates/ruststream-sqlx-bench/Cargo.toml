@@ -1,0 +1,83 @@
+[package]
+name = "ruststream-sqlx-bench"
+description = "The benchmarks of ruststream-sqlx: the crate against a raw sqlx loop, per message and in throughput. Never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# The benchmark lives in its own package so that the measured binary links the crate the way a
+# service does. `ruststream-sqlx`'s own dev-dependencies pull `ruststream/testing`, whose harness
+# changes the dispatch path, and a benchmark inside that package would be built against it.
+# `just bench` and `just bench-code` build this package alone, so nothing turns it on.
+[dev-dependencies]
+# The code-cost benchmarks: callgrind and DHAT through gungraun, at the release the family pins.
+# `just bench-code` installs the runner of the same release.
+gungraun = "=0.20.0"
+ruststream-sqlx = { path = "../ruststream-sqlx", features = [
+    "inbox",
+    "outbox",
+    "postgres",
+    "mysql",
+    "sqlite",
+    "chrono",
+] }
+ruststream = { workspace = true, features = ["macros", "json", "memory"] }
+sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "derive"] }
+chrono.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+# The wall clock: every scenario as a raw sqlx loop and as a service, in interleaved rounds on a
+# multi-threaded runtime.
+[[bench]]
+name = "paired"
+harness = false
+
+# Messages per second: a filled table drained by n workers, on Postgres, MySQL and SQLite.
+[[bench]]
+name = "throughput"
+harness = false
+
+# The code-cost benchmarks: one scenario per binary, each a service and the raw sqlx loop that
+# runs the same statements, against the stand's Postgres. `just bench-code` runs them under
+# valgrind; `benches/common` is the shared setup.
+[[bench]]
+name = "row_lock"
+harness = false
+
+[[bench]]
+name = "lease"
+harness = false
+
+[[bench]]
+name = "advisory"
+harness = false
+
+[[bench]]
+name = "by_name"
+harness = false
+
+[[bench]]
+name = "batch"
+harness = false
+
+[[bench]]
+name = "row_mode"
+harness = false
+
+[[bench]]
+name = "publish"
+harness = false
+
+[[bench]]
+name = "outbox"
+harness = false

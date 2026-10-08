@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH __claimed AS (SELECT \"id\", \"account\", \"attempt\", \"locked_until\", \"payload\" FROM \"checked_ledger\" WHERE \"id\" = (SELECT \"id\" FROM \"checked_ledger\" WHERE \"account\" = $1 ORDER BY \"id\" LIMIT 1) AND (\"locked_until\" IS NULL OR \"locked_until\" <= $2) AND NOT EXISTS (SELECT 1 FROM \"checked_ledger\" AS __work WHERE __work.\"account\" = $3 AND __work.\"locked_until\" > $4) FOR UPDATE SKIP LOCKED), __stamped AS (UPDATE \"checked_ledger\" AS __row SET \"locked_until\" = $5, \"attempt\" = __row.\"attempt\" + 1 FROM __claimed WHERE __row.\"id\" = __claimed.\"id\") SELECT * FROM __claimed ORDER BY \"id\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "account",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "attempt",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "attempt"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "locked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "locked_until"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "payload",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "9934809edf6266f2b42d30961a2f5963361e19266a7b7a2b1ff13a206aa6a589"
+}

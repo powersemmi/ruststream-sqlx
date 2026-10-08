@@ -187,7 +187,7 @@ claim at once.
 ## The advisory lock form
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::prelude::*;
 use serde::Deserialize;
@@ -235,7 +235,7 @@ pub fn app(pool: PgPool) -> RustStream {
 By hand, `.advisory(..)` takes the key as its parts, text and columns:
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::dialect::{Column, KeyPart};
 use ruststream_sqlx::spec::{Advisory, Attempt, Payload};
@@ -360,7 +360,7 @@ Each database keeps the locks in its own way, and keeps the locks of two databas
 ### A lock of the service's own
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::prelude::*;
 use ruststream_sqlx::{Lock, Unlock};

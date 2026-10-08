@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO `checked_webhooks` (`payload`, `endpoint`) VALUES (?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6694633e2a6560d0fb05d123a04823a0f047e6082c701e83bb3fe6bfbddd1230"
+}

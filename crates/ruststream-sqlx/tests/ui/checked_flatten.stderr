@@ -1,0 +1,5 @@
+error: `recipient` flattens a struct whose columns `checked` cannot see: list its columns as fields of `SendEmail`, or drop `checked`
+  --> tests/ui/checked_flatten.rs:15:5
+   |
+15 |     recipient: Recipient,
+   |     ^^^^^^^^^

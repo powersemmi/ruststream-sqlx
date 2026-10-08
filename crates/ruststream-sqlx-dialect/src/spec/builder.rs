@@ -12,6 +12,27 @@ impl<'a> TableSpec<'a> {
     ///
     /// `#[derive(Inbox)]` builds the description from `#[inbox(table = "..")]`, the `#[field(id)]`
     /// field and the form the struct declares.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // The service's email queue, its rows taken by row lock.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"));
+    ///
+    /// // A row the handler acknowledged leaves the table.
+    /// let ack = Postgres.ack(&EMAILS)?;
+    /// assert_eq!(ack.sql(), r#"DELETE FROM "email_jobs" WHERE "job_id" = $1"#);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn new(table: &'a str, id: Column<'a>, form: Form<'a>) -> Self {
         Self {
@@ -42,6 +63,27 @@ impl<'a> TableSpec<'a> {
     /// # Panics
     ///
     /// When the description already names a schema. In a `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // The queue lives in the `app` schema, and every statement names it.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .within("app")
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let ack = Postgres.ack(&EMAILS)?;
+    /// assert_eq!(ack.sql(), r#"DELETE FROM "app"."email_jobs" WHERE "job_id" = $1"#);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn within(self, schema: &'a str) -> Self {
         assert!(
@@ -62,6 +104,33 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already splits into groups, by this setter or by
     /// [`fifo_group`](Self::fifo_group). In a `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Column, Form, Param, Postgres, RowLock, TableSpec,
+    /// };
+    ///
+    /// // One table serves several queues; a subscription binds its queue's name.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .group(Column::new("queue"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let claim = Postgres.lock_claim(&EMAILS, ClaimShape::Ids)?;
+    /// assert_eq!(
+    ///     claim.sql(),
+    ///     r#"SELECT "job_id" FROM "email_jobs" WHERE "queue" = $1 ORDER BY "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED"#
+    /// );
+    /// assert_eq!(claim.params(), [Param::Group, Param::Limit]);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn group(self, column: Column<'a>) -> Self {
         assert!(
@@ -94,6 +163,28 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already splits into groups, by this setter or by
     /// [`group`](Self::group). In a `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// // The emails of one customer go out in order.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .fifo_group(Column::new("customer"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// // The claim's transaction first takes the customer's group.
+    /// let guard = Postgres.fifo_guard(&EMAILS)?;
+    /// assert_eq!(guard.map(|guard| guard.params().to_vec()), Some(vec![Param::Group]));
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn fifo_group(self, column: Column<'a>) -> Self {
         assert!(
@@ -115,6 +206,30 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already has a `partition_key` column: a role belongs to one column. In a
     /// `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
+    ///
+    /// // The emails of one tenant run in one lane of `workers(n, by_key)`.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .partition_key(Column::new("tenant"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let claim = Postgres.lock_claim(&EMAILS, ClaimShape::Roles)?;
+    /// assert_eq!(
+    ///     claim.sql(),
+    ///     r#"SELECT "job_id" AS "id", "tenant" AS "partition_key", "payload" AS "payload" FROM "email_jobs" ORDER BY "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn partition_key(self, column: Column<'a>) -> Self {
         assert!(
@@ -135,6 +250,30 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already has a `priority` column: a role belongs to one column. In a
     /// `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{ClaimShape, Column, Form, Postgres, RowLock, TableSpec};
+    ///
+    /// // An email with a smaller `priority` goes out first.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .priority(Column::new("priority"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let claim = Postgres.lock_claim(&EMAILS, ClaimShape::Ids)?;
+    /// assert_eq!(
+    ///     claim.sql(),
+    ///     r#"SELECT "job_id" FROM "email_jobs" ORDER BY "priority", "job_id" LIMIT $1 FOR UPDATE SKIP LOCKED"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn priority(self, column: Column<'a>) -> Self {
         assert!(
@@ -155,6 +294,33 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already has a `retry_after` column: a role belongs to one column. In a
     /// `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{
+    ///     ClaimShape, Column, Form, Param, Postgres, RowLock, TableSpec,
+    /// };
+    ///
+    /// // An email waits in the table until its `run_at`.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .retry_after(Column::new("run_at"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let claim = Postgres.lock_claim(&EMAILS, ClaimShape::Ids)?;
+    /// assert_eq!(
+    ///     claim.sql(),
+    ///     r#"SELECT "job_id" FROM "email_jobs" WHERE "run_at" <= $1 ORDER BY "run_at", "job_id" LIMIT $2 FOR UPDATE SKIP LOCKED"#
+    /// );
+    /// assert_eq!(claim.params(), [Param::Now, Param::Limit]);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn retry_after(self, column: Column<'a>) -> Self {
         assert!(
@@ -175,6 +341,30 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already has a `attempt` column: a role belongs to one column. In a
     /// `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // A retried email counts one more attempt.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .attempt(Column::new("attempt"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let retry = Postgres.retry(&EMAILS)?.map(|retry| retry.sql().to_owned());
+    /// assert_eq!(
+    ///     retry.as_deref(),
+    ///     Some(r#"UPDATE "email_jobs" SET "attempt" = "attempt" + 1 WHERE "job_id" = $1"#),
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn attempt(self, column: Column<'a>) -> Self {
         assert!(
@@ -195,6 +385,28 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already has a `processed_at` column: a role belongs to one column. In a
     /// `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// // A sent email stays in the table, stamped with the time it was sent.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .processed_at(Column::new("sent_at"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let ack = Postgres.ack(&EMAILS)?;
+    /// assert_eq!(ack.sql(), r#"UPDATE "email_jobs" SET "sent_at" = $1 WHERE "job_id" = $2"#);
+    /// assert_eq!(ack.params(), [Param::Now, Param::Id]);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn processed_at(self, column: Column<'a>) -> Self {
         assert!(
@@ -215,6 +427,30 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already has a `headers` column: a role belongs to one column. In a
     /// `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // An email carries its headers in one column, which the insert writes.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .headers(Column::new("headers"))
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let insert = Postgres.insert(&EMAILS)?;
+    /// assert_eq!(
+    ///     insert.sql(),
+    ///     r#"INSERT INTO "email_jobs" ("job_id", "headers", "payload") VALUES ($1, $2, $3)"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn headers(self, column: Column<'a>) -> Self {
         assert!(
@@ -245,6 +481,29 @@ impl<'a> TableSpec<'a> {
     ///     .payload(Column::new("body"));
     /// # fn main() { let _ = JOBS; }
     /// ```
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // The handler decodes the email from `payload`, which the fetch reads.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"));
+    ///
+    /// let fetch = Postgres.fetch(&EMAILS)?;
+    /// assert_eq!(
+    ///     fetch.sql(),
+    ///     r#"SELECT "job_id", "payload" FROM "email_jobs" WHERE "job_id" = ANY($1)"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn payload(self, column: Column<'a>) -> Self {
         assert!(
@@ -265,6 +524,30 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already lists data columns: the list is given once. In a `const` the
     /// panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // The email's recipient and subject are columns of their own, after the roles.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"))
+    ///         .data(&[Column::new("recipient"), Column::new("subject")]);
+    ///
+    /// let insert = Postgres.insert(&EMAILS)?;
+    /// assert_eq!(
+    ///     insert.sql(),
+    ///     r#"INSERT INTO "email_jobs" ("job_id", "payload", "recipient", "subject") VALUES ($1, $2, $3, $4)"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn data(self, columns: &'a [Column<'a>]) -> Self {
         assert!(
@@ -289,6 +572,31 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already lists fetched columns: the list is given once. In a `const`
     /// the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // The message flattens a headers struct into `headers` and reads `recipient` itself.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .headers(Column::new("headers"))
+    ///         .payload(Column::new("payload"))
+    ///         .fetching(&[Column::new("recipient")]);
+    ///
+    /// let fetch = Postgres.fetch(&EMAILS)?;
+    /// assert_eq!(
+    ///     fetch.sql(),
+    ///     r#"SELECT "job_id", "headers", "payload", "recipient" FROM "email_jobs" WHERE "job_id" = ANY($1)"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn fetching(self, columns: &'a [Column<'a>]) -> Self {
         assert!(
@@ -308,6 +616,27 @@ impl<'a> TableSpec<'a> {
     /// same columns in the same order.
     ///
     /// A struct with a `#[sqlx(flatten)]` field sets it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableSpec};
+    ///
+    /// // The email struct flattens another, so the fetch reads every column.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"))
+    ///         .selecting_all();
+    ///
+    /// let fetch = Postgres.fetch(&EMAILS)?;
+    /// assert_eq!(fetch.sql(), r#"SELECT * FROM "email_jobs" WHERE "job_id" = ANY($1)"#);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn selecting_all(self) -> Self {
         Self {
@@ -319,6 +648,32 @@ impl<'a> TableSpec<'a> {
     /// Makes the statements read the database's own clock instead of a time the service binds.
     ///
     /// `#[inbox(clock = DatabaseClock)]` sets it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Param, Postgres, TableSpec};
+    ///
+    /// // A sent email is stamped by the database's clock, so the service binds no time.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .processed_at(Column::new("sent_at"))
+    ///         .payload(Column::new("payload"))
+    ///         .database_clock();
+    ///
+    /// let ack = Postgres.ack(&EMAILS)?;
+    /// assert_eq!(
+    ///     ack.sql(),
+    ///     r#"UPDATE "email_jobs" SET "sent_at" = statement_timestamp() WHERE "job_id" = $1"#
+    /// );
+    /// assert_eq!(ack.params(), [Param::Id]);
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn database_clock(self) -> Self {
         Self {
@@ -338,6 +693,27 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already opens at a level or in a mode, by this setter or by
     /// [`mode`](Self::mode). In a `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Isolation, Postgres, TableSpec};
+    ///
+    /// // The handler's reads of other tables see one snapshot.
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"))
+    ///         .isolation(Isolation::RepeatableRead);
+    ///
+    /// let begin = Postgres.begin(EMAILS.opening())?;
+    /// assert_eq!(begin, Some("BEGIN ISOLATION LEVEL REPEATABLE READ"));
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn isolation(self, isolation: Isolation) -> Self {
         assert!(
@@ -361,6 +737,30 @@ impl<'a> TableSpec<'a> {
     ///
     /// When the description already opens at a level or in a mode, by this setter or by
     /// [`isolation`](Self::isolation). In a `const` the panic is a build error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "sqlite")]
+    /// # fn main() -> Result<(), ruststream_sqlx_dialect::StatementError> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Mode, Sqlite, TableSpec};
+    ///
+    /// // The handler's transaction takes the write lock before its first read.
+    /// const EMAILS: TableSpec<'static> = TableSpec::new(
+    ///     "email_jobs",
+    ///     Column::new("job_id"),
+    ///     Form::Lease(Column::new("locked_until")),
+    /// )
+    /// .payload(Column::new("payload"))
+    /// .mode(Mode::Immediate);
+    ///
+    /// let begin = Sqlite.begin(EMAILS.opening())?;
+    /// assert_eq!(begin, Some("BEGIN IMMEDIATE"));
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "sqlite"))]
+    /// # fn main() {}
+    /// ```
     #[must_use]
     pub const fn mode(self, mode: Mode) -> Self {
         assert!(

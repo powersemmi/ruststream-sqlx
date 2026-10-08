@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE \"checked_reminders\" SET \"processed_at\" = statement_timestamp() WHERE \"id\" = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "63673b462976e569e5cbc411f6740f2d7b3af320c1aeeb1967881c044b8a3e16"
+}

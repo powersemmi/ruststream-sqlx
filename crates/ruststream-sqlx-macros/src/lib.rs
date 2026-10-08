@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod check;
+mod checked;
 mod headers;
 mod inbox;
 mod insert;

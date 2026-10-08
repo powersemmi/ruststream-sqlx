@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO \"order_jobs\" (\"name\", \"processed_at\", \"trace\") VALUES ($1, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "adb394bd3c437fc46aca84a532ae435dd4bdd3e81596a7ef7f916c0b533be09a"
+}

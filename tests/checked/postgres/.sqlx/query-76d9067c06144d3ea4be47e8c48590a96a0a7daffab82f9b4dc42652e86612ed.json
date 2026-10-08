@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM \"checked_ledger\" WHERE \"id\" = $1 AND \"locked_until\" = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "76d9067c06144d3ea4be47e8c48590a96a0a7daffab82f9b4dc42652e86612ed"
+}

@@ -78,6 +78,8 @@ pub enum Role {
 
 impl Role {
     /// Every role, in the order the documentation lists them.
+    // The derives and the crate read it to parse and check a table; a service never names it.
+    #[doc(hidden)]
     pub const ALL: &'static [Self] = &[
         Self::Id,
         Self::Group,
@@ -186,6 +188,8 @@ impl Role {
     }
 
     /// The role `#[field(..)]` names with `name`, or `None` when no role has that name.
+    // The derives and the crate read it to parse and check a table; a service never names it.
+    #[doc(hidden)]
     #[must_use]
     pub fn from_attribute(name: &str) -> Option<Self> {
         Self::ALL

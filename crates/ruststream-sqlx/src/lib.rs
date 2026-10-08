@@ -1,5 +1,7 @@
 #![doc = include_str!("README.md")]
 #![doc = include_str!("overview/manual.md")]
+#![doc = include_str!("overview/roles.md")]
+#![doc = include_str!("overview/time.md")]
 #![doc = include_str!("overview/row_mode.md")]
 // The compile errors of row mode need the inbox and a driver: without them each example would fail
 // for that reason alone. They render where both are on, as on docs.rs.
@@ -14,6 +16,7 @@
 #![doc = include_str!("overview/fifo.md")]
 #![doc = include_str!("overview/databases.md")]
 #![doc = include_str!("overview/own_dialect.md")]
+#![doc = include_str!("overview/checked.md")]
 #![doc = include_str!("overview/decoding.md")]
 #![doc = include_str!("overview/batches.md")]
 #![doc = include_str!("overview/names.md")]
@@ -333,6 +336,14 @@ pub mod __private {
 /// The other options of `#[sqlx(..)]`, such as `json`, `try_from` and `default`, belong to sqlx's
 /// own derive and pass through untouched.
 ///
+/// # Checked at compile time
+///
+/// `#[inbox(checked, db = postgres)]` (or `mysql`, `sqlite`) also puts the statements the struct
+/// determines into sqlx's compile-time check, against `DATABASE_URL` or the `.sqlx` data of
+/// `cargo sqlx prepare`; the service's sqlx needs its `macros` feature. In the headers layout
+/// `checked` goes on the headers struct. [Statements checked at compile
+/// time](crate#statements-checked-at-compile-time) shows what it covers and what it refuses.
+///
 /// # Compile errors
 ///
 /// A struct that cannot drive a queue does not compile, and the error points at the field or
@@ -388,7 +399,9 @@ pub use ruststream_sqlx_macros::Inbox;
 /// The struct takes the table's attributes and the fields that play a role, as a struct deriving
 /// [`Inbox`](derive@Inbox) does; every field without a role is a header (see [`InboxHeaders`]).
 /// `custom(..)`, `payload` and `headers` belong to the message struct, which flattens this one
-/// into its `#[field(headers)]` field.
+/// into its `#[field(headers)]` field. `#[inbox(checked, db = ..)]` checks the table's statements
+/// at compile time, and the message then reads its rows in a `Fetch` of its own ([the headers
+/// layout, checked](crate#the-headers-layout-checked)).
 ///
 /// # Examples
 ///
@@ -446,7 +459,7 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "postgres")]
+/// # #[cfg(all(feature = "postgres", feature = "json"))]
 /// # mod demo {
 /// use ruststream::OutgoingMessage;
 /// use ruststream_sqlx::{Outbox, outbox};

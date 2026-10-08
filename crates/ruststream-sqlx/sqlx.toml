@@ -1,0 +1,4 @@
+# sqlx's compile-time macros read this crate's time columns as `chrono` types, also where cargo
+# turns on sqlx's `time` feature beside `chrono` (a workspace build with every feature).
+[macros.preferred-crates]
+date-time = "chrono"

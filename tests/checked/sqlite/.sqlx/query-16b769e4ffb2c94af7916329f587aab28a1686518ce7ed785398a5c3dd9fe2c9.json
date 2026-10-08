@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE `checked_ledger` SET `locked_until` = NULL WHERE `id` = ? AND `locked_until` = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "16b769e4ffb2c94af7916329f587aab28a1686518ce7ed785398a5c3dd9fe2c9"
+}

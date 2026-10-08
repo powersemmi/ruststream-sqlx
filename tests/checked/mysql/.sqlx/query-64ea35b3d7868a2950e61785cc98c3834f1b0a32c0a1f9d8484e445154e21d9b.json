@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE `checked_emails` SET `retry_after` = ?, `attempt` = `attempt` + 1 WHERE `id` = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "64ea35b3d7868a2950e61785cc98c3834f1b0a32c0a1f9d8484e445154e21d9b"
+}

@@ -1,7 +1,7 @@
 # Transactional mode
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use std::error::Error;
 

@@ -11,7 +11,7 @@ use syn::spanned::Spanned;
 use crate::check::{self, Errors};
 use crate::inbox::{Description, accessors, bounded_generics, describe, valid_generics};
 use crate::parse::{self, Field, Inbox, Storage};
-use crate::{insert, template};
+use crate::{checked, insert, template};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let inbox = parse::headers_table(input)?;
@@ -36,6 +36,14 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let valid = valid(input, inbox.table.clock.as_ref(), &description);
     let rows = accessors(input, &generics, &inbox);
     let insert = insert::insert(input, &generics, &inbox)?;
+    let checked = checked::item(
+        input,
+        &generics,
+        &inbox,
+        (id_field, id_column),
+        key.as_deref(),
+        checked::Layout::Headers,
+    )?;
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics #r::InboxHeaders for #name #ty_generics #where_clause {
@@ -58,6 +66,8 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         #rows
 
         #insert
+
+        #checked
     })
 }
 

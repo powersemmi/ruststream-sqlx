@@ -68,6 +68,9 @@ pub struct Now {
 
 impl Now {
     /// Now as the host reads it, from `Source`; `None` where the database reads its own clock.
+    // Without `testing` the value carries no clock of its own, and the method keeps one signature
+    // for both builds.
+    #[cfg_attr(not(feature = "testing"), allow(clippy::unused_self))]
     pub(super) fn instant<Source: TimeSource>(self) -> Option<SystemTime> {
         #[cfg(feature = "testing")]
         if let Some(clock) = self.test

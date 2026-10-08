@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE \"checked_emails\" SET \"attempt\" = \"attempt\" + 1 WHERE \"id\" = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d96be1c3964cdfeb2799dddf35a4f018ce51f936b0414922bdc60dd8ba91a8bb"
+}

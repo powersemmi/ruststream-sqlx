@@ -31,6 +31,10 @@ The workspace publishes three crates, released together under one version:
 - `crates/ruststream-sqlx-macros`: its procedural macros;
 - `crates/ruststream-sqlx-dialect`: the SQL text generation shared by the macros and the runtime.
 
+The version is the workspace's, and each crate pins the others at it exactly. A release publishes
+the dialect first, then the macros, then the crate. `just package` packages and verifies the three
+the same way, without uploading anything; CI runs it on every change to the crates.
+
 ## Environment
 
 - **Rust** through rustup. `rust-toolchain.toml` selects stable with rustfmt and clippy. The

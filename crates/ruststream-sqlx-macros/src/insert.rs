@@ -109,14 +109,11 @@ fn sql(statements: &[(&'static str, Statement)]) -> TokenStream2 {
     quote!(::ruststream_sqlx::__private::InsertSql { #(#fields),* })
 }
 
-/// What binds `params` in order, a field of the struct each, and the bound each field's type puts
-/// on the connection's database.
-fn binds(
-    inbox: &Inbox<'_>,
-    columns: &[(&Field<'_>, &ColumnField)],
-    params: &[Param],
-) -> syn::Result<(Vec<TokenStream2>, Vec<WherePredicate>)> {
-    // `TableSpec::columns` lists every role in `Role::ALL` order, then the data columns.
+/// The struct's columns in the order of [`TableSpec::columns`], which an insert's
+/// [`Param::Column`] counts in: every role in `Role::ALL` order, then the data columns.
+pub(crate) fn ordered<'i, 'a>(
+    columns: &[(&'i Field<'a>, &'i ColumnField)],
+) -> Vec<(&'i Field<'a>, &'i ColumnField)> {
     let mut ordered: Vec<(&Field<'_>, &ColumnField)> = Role::ALL
         .iter()
         .filter_map(|role| {
@@ -132,6 +129,17 @@ fn binds(
             .filter(|(_, slot)| slot.role.is_none())
             .copied(),
     );
+    ordered
+}
+
+/// What binds `params` in order, a field of the struct each, and the bound each field's type puts
+/// on the connection's database.
+fn binds(
+    inbox: &Inbox<'_>,
+    columns: &[(&Field<'_>, &ColumnField)],
+    params: &[Param],
+) -> syn::Result<(Vec<TokenStream2>, Vec<WherePredicate>)> {
+    let ordered = ordered(columns);
     let p = quote!(::ruststream_sqlx::__private);
     let database = quote!(<__C as #p::OnConnection>::Database);
     let mut binds = Vec::new();

@@ -1,0 +1,11 @@
+error: `checked` describes the queue table, which the headers struct `OrderHeaders` describes: put it on `OrderHeaders`'s `#[inbox(..)]`
+  --> tests/ui/checked_on_message.rs:12:24
+   |
+12 | #[inbox(custom(fetch), checked, db = postgres)]
+   |                        ^^^^^^^
+
+error: `db` describes the queue table, which the headers struct `OrderHeaders` describes: put it on `OrderHeaders`'s `#[inbox(..)]`
+  --> tests/ui/checked_on_message.rs:12:33
+   |
+12 | #[inbox(custom(fetch), checked, db = postgres)]
+   |                                 ^^

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pg_try_advisory_lock(hashtextextended($1, 0))::int::bigint",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pg_try_advisory_lock",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4babf9d6014fdefbaccb4f89f2599d61ca4afabb5bab2801e3e638445922817e"
+}

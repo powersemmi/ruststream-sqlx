@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO `checked_ledger` (`account`, `locked_until`, `payload`) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "d3c95cf1b0ee8e1831dccdd01b08a11063f434be5bea9444e583c5c1809fa534"
+}

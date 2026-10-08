@@ -67,3 +67,7 @@ the service's migrations applied. SQLite needs no server: a named in-memory data
 connection that names it and lives while one of them is open. The clock is real as well: a paused
 tokio clock jumps to the next timer while a database reply is in flight, so a test starts with
 `TestApp::start_live`, and `tb.advance(by)` lets that much real time pass.
+
+A test build of a service that also tracks its publishes with the outbox leaves the outbox off,
+so such a test needs no outbox table. `RUSTSTREAM_SQLX_OUTBOX=on` in the environment turns it on
+for the whole test process.

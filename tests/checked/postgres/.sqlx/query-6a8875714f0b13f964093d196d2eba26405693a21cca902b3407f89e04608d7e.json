@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO \"checked_webhooks\" (\"payload\", \"endpoint\") VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a8875714f0b13f964093d196d2eba26405693a21cca902b3407f89e04608d7e"
+}
