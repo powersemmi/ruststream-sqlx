@@ -59,6 +59,10 @@ package:
 sqlx-prepare:
     #!/usr/bin/env bash
     set -euo pipefail
+    # sqlx's macros write the query data while they run. A compiler cache that returns a crate it
+    # built before runs none of them, so `prepare` would write nothing and `--check` would pass
+    # without checking: the recipe turns kache off.
+    export KACHE_DISABLED=1
     sqlite=$(mktemp -d)
     trap 'rm -rf "$sqlite"' EXIT
     prepare() {
