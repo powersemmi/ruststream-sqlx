@@ -22,8 +22,9 @@
 //! inside. Everything the service's thread runs there is counted: the dispatcher, the codec, this
 //! crate's code, and sqlx's driver encoding, sending, receiving and decoding on that thread. The
 //! database server is another process and is not counted, and neither is the kernel's side of a
-//! system call. DHAT is pointed at the same frame; the number read is `Total blocks`, allocations
-//! per run.
+//! system call. Neither is the runtime waiting for the server: collection is off while the
+//! scheduler parks on its driver, whose work follows the server's timing rather than the code.
+//! DHAT is pointed at the same frame; the number read is `Total blocks`, allocations per run.
 
 use std::thread;
 

@@ -76,9 +76,9 @@ fn none(run: Pending) {
     start_and_drain(run);
 }
 
-// Twice MESSAGES deliveries allocated 12,244 blocks over 5 runs. The floor is the
+// Twice MESSAGES deliveries allocated 12,246 blocks over 5 runs. The floor is the
 // highest, stated over a thousand deliveries, plus a 0.1% margin of 13 blocks.
-#[library_benchmark(config = common::config_every(6_122, 1_000, 13))]
+#[library_benchmark(config = common::config_every(6_123, 1_000, 13))]
 #[bench::first(outbox_run(1))]
 #[bench::base(outbox_run(MESSAGES))]
 #[bench::twice(outbox_run(2 * MESSAGES))]

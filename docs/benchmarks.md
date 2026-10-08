@@ -97,7 +97,11 @@ start and the drain, so the fill is in neither.
 
 What is counted is everything the service's thread runs: the framework, this crate, and sqlx's
 driver encoding, sending, receiving and decoding on that thread. The database server is another
-process and is not counted, and neither is the kernel's side of a system call.
+process and is not counted, and neither is the kernel's side of a system call. Neither is the
+runtime waiting for the server: the count stops while the scheduler parks on its driver, which
+polls the socket, wakes the waiting task and advances the timer wheel. That work follows the
+server's timing rather than the code. Counted, it moved a raw loop's figure by tens of percent
+between two runs of the same tree.
 
 Instructions and allocations are per message in the steady state: the slope between a run of 1000
 deliveries and a run of 2000. The last column is what starting the service cost once: opening the
@@ -105,11 +109,15 @@ pool's connections, the broker's startup checks and the first delivery. The numb
 the framework's own cost included; the core publishes that cost alone on its
 [benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
 
-The service talks to a real server, and a count depends a little on how the socket hands the
-driver its bytes, so it moves a little between runs. Each limit is therefore the highest count a
-scenario reached over several full runs, plus a margin of 0.1%. `just bench-code` fails on an
-allocation above the limit a scenario declares, and with `--baseline=main` on more than two
-percent more instructions: `just bench-code --save-baseline=main` records the baseline on `main`,
+The service talks to a real server, and the instruction count still moves between runs: how often
+a reply is still in flight when the client polls for it changes how much of sqlx's reading and
+the runtime's scheduling a message takes. Over five runs of the same tree a scenario's total moved
+by up to about 7%, and its figure per message by up to about 15%; the scenarios that never touch
+the database (the outbox rows over `MemoryBroker` with no outbox) agree to the instruction. Read
+an instruction figure here to within a few percent, not to the digit. Allocations do not move:
+each limit is the highest count a scenario reached over five full runs, plus a margin of 0.1%.
+`just bench-code` fails on an allocation above the limit a scenario declares, and with
+`--baseline=main` on more than ten percent more instructions, which noise alone does not reach: `just bench-code --save-baseline=main` records the baseline on `main`,
 and `just bench-code --baseline=main` measures a change against it. A failed run prints every
 limit it breached, the old value beside the new one. A pull request that changes the cost cites
 its numbers.

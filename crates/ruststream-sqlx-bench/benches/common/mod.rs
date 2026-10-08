@@ -142,6 +142,7 @@ fn callgrind() -> Callgrind {
     let mut callgrind = Callgrind::with_args([
         "--collect-atstart=no",
         &format!("--toggle-collect={REGION}"),
+        &format!("--toggle-collect={PARK}"),
     ]);
     callgrind.entry_point(EntryPoint::None);
     callgrind
@@ -165,6 +166,15 @@ fn dhat() -> Dhat {
 
 /// The frame both tools are pointed at.
 const REGION: &str = "*common::measure*";
+
+/// Where the runtime waits for the database: the current-thread scheduler parking on its driver,
+/// which polls the socket, dispatches readiness and advances the timer wheel. Collection is
+/// switched off inside it, because what it runs follows the server's timing, not the code: how
+/// often a reply is still in flight when a task polls for it, and how far the clock moved
+/// meanwhile. Counted, it swung a raw loop's figure by tens of percent between two runs of the
+/// same tree; excluded, the same runs agree within a few percent. The tasks the driver wakes run
+/// outside it and are counted.
+const PARK: &str = "*current_thread*Context*park*";
 
 /// The lease the lease form's scenarios take: the broker's default, which the raw loop writes too.
 pub const LEASE: Duration = Duration::from_secs(30);

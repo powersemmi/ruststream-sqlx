@@ -87,9 +87,9 @@ fn none(run: Pending) {
     start_and_drain(run);
 }
 
-// Twice MESSAGES deliveries allocated 78,464 to 78,474 blocks over 5 runs. The floor is the
+// Twice MESSAGES deliveries allocated 78,464 to 78,472 blocks over 5 runs. The floor is the
 // highest, stated over a thousand deliveries, plus a 0.1% margin of 79 blocks.
-#[library_benchmark(config = common::config_every(39_237, 1_000, 79))]
+#[library_benchmark(config = common::config_every(39_236, 1_000, 79))]
 #[bench::first(by_hand_run(1))]
 #[bench::base(by_hand_run(MESSAGES))]
 #[bench::twice(by_hand_run(2 * MESSAGES))]
@@ -97,9 +97,9 @@ fn by_hand(run: Pending) {
     start_and_drain(run);
 }
 
-// Twice MESSAGES deliveries allocated 84,495 to 84,507 blocks over 5 runs. The floor is the
+// Twice MESSAGES deliveries allocated 84,495 to 84,503 blocks over 5 runs. The floor is the
 // highest, stated over a thousand deliveries, plus a 0.1% margin of 85 blocks.
-#[library_benchmark(config = common::config_every(42_254, 1_000, 85))]
+#[library_benchmark(config = common::config_every(42_252, 1_000, 85))]
 #[bench::first(outbox_run(1))]
 #[bench::base(outbox_run(MESSAGES))]
 #[bench::twice(outbox_run(2 * MESSAGES))]

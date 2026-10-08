@@ -120,8 +120,9 @@ bench *ARGS: brokers-up
 # counted under valgrind: instructions through callgrind and allocations through DHAT, each
 # scenario a service on the production broker and the raw sqlx loop beside it, against the
 # stand's Postgres; an outbox scenario is one app over `MemoryBroker` with no outbox, with the
-# outbox written by hand, and with this crate's. The page it feeds is the code table of docs/benchmarks.md. RUSTFLAGS is
-# cleared because valgrind aborts on the instructions a recent CPU advertises. Needs valgrind.
+# outbox written by hand, and with this crate's. The page it feeds is the code table of
+# docs/benchmarks.md. RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU
+# advertises. Needs valgrind.
 #
 # The benchmarks hand the measurement to gungraun's runner, which has to be the release of the
 # library the lock file pins. The recipe installs that release into `target/gungraun-runner` on
@@ -137,10 +138,12 @@ bench *ARGS: brokers-up
 # not comparable, so each count keeps its runs and baselines in a directory of its own,
 # `target/gungraun/<count>`.
 #
-# A run against a baseline, named with `--baseline` or in `GUNGRAUN_BASELINE`, fails on two
+# A run against a baseline, named with `--baseline` or in `GUNGRAUN_BASELINE`, fails on ten
 # percent more instructions than the baseline in a scenario. The limit is relative, so it applies
 # only there: a plain run would be held to whichever run came before it, on whatever tree that
-# was. The allocation limits are absolute, and every run is held to them.
+# was. It is that wide because every scenario talks to a real Postgres, and how often a reply is
+# still in flight when the client polls for it moves a total by up to about 7% between two runs
+# of the same tree. The allocation limits are absolute, and every run is held to them.
 #
 # A benchmark that breaches a limit fails the run, and the run still goes to the end: the table
 # prints, every breach under it with the value it was compared against beside the new one, and
@@ -173,7 +176,7 @@ bench-code *ARGS: brokers-up
     done
     limits=()
     if [ -n "$baseline" ]; then
-        limits=(--callgrind-limits='ir=2.0%')
+        limits=(--callgrind-limits='ir=10.0%')
     fi
     mkdir -p target
     cargo bench -p ruststream-sqlx-bench {{ code_benches }} --no-run
