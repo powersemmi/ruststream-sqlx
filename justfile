@@ -52,6 +52,28 @@ test-brokers: brokers-up
 package:
     cargo publish --locked --dry-run --all-features -p ruststream-sqlx-dialect -p ruststream-sqlx-macros -p ruststream-sqlx
 
+# Regenerates the offline query data of the checked fixtures (`tests/checked/*`) against the
+# stand (`just brokers-up`), each fixture in a database of its own rebuilt from its migrations, and
+# checks it. Needs sqlx-cli 0.9:
+# cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,mysql,sqlite,rustls,sqlx-toml
+sqlx-prepare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sqlite=$(mktemp -d)
+    trap 'rm -rf "$sqlite"' EXIT
+    prepare() {
+        (
+            cd "tests/checked/$1"
+            export DATABASE_URL="$2"
+            sqlx database reset -y --source migrations
+            cargo sqlx prepare
+            cargo sqlx prepare --check
+        )
+    }
+    prepare postgres postgres://ruststream:ruststream@127.0.0.1:55432/ruststream_checked
+    prepare mysql mysql://root:ruststream@127.0.0.1:53306/ruststream_checked
+    prepare sqlite "sqlite://$sqlite/checked.db"
+
 fmt:
     cargo fmt --all
 

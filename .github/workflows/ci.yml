@@ -228,6 +228,15 @@ jobs:
       - name: cargo test (inbox alone)
         run: cargo test -p ruststream-sqlx --no-default-features --features inbox --no-fail-fast
 
+      # The checked fixtures build from their committed `.sqlx` data alone: a statement the derive
+      # generates without data there fails this build.
+      - name: cargo build (checked fixtures, offline)
+        env:
+          SQLX_OFFLINE: "true"
+        run: >-
+          cargo build -p ruststream-sqlx-checked-postgres -p ruststream-sqlx-checked-mysql
+          -p ruststream-sqlx-checked-sqlite
+
       # The gate the later toolchains wait on: it succeeds only when every stable step did.
       - name: Stable passed
         id: stable
@@ -311,6 +320,38 @@ jobs:
           RUSTSTREAM_REQUIRE_LIVE: "1"
           RUSTSTREAM_SQLX_OUTBOX: "on"
         run: cargo test -p ruststream-sqlx --all-features --no-fail-fast
+
+      # The checked fixtures' statements are the ones the broker prepares at startup.
+      - name: Run the checked fixtures' startup tests
+        env:
+          POSTGRES_TEST_URL: postgres://ruststream:ruststream@127.0.0.1:55432/ruststream
+          MYSQL_TEST_URL: mysql://root:ruststream@127.0.0.1:53306
+          RUSTSTREAM_REQUIRE_LIVE: "1"
+        run: >-
+          cargo test -p ruststream-sqlx-checked-postgres -p ruststream-sqlx-checked-mysql
+          --test startup --no-fail-fast
+
+      # The committed `.sqlx` data matches what each database describes for the fixtures' tables
+      # today. sqlx-cli builds from source, about three minutes on a cold runner; the cargo cache
+      # keeps the binary afterwards.
+      - name: Install sqlx-cli
+        run: >-
+          cargo install sqlx-cli --version 0.9.0 --locked --no-default-features
+          --features postgres,mysql,sqlite,rustls,sqlx-toml
+
+      - name: Check the checked fixtures' offline data
+        run: |
+          check() {
+            (
+              cd "tests/checked/$1"
+              export DATABASE_URL="$2"
+              sqlx database setup --source migrations
+              cargo sqlx prepare --check
+            )
+          }
+          check postgres postgres://ruststream:ruststream@127.0.0.1:55432/ruststream_checked
+          check mysql mysql://root:ruststream@127.0.0.1:53306/ruststream_checked
+          check sqlite "sqlite://$RUNNER_TEMP/checked.db"
 
       - name: Stop the databases
         if: always()

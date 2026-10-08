@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE \"checked_orders\" SET \"processed_at\" = $1 WHERE \"job_id\" = $2",
+  "query": "UPDATE \"order_jobs\" SET \"processed_at\" = $1 WHERE \"job_id\" = $2",
   "describe": {
     "columns": [],
     "parameters": {
@@ -11,5 +11,5 @@
     },
     "nullable": []
   },
-  "hash": "220158572b869eda0edb3a48fc373679d91c93193a11c3262b9555ee438ac3f2"
+  "hash": "21c48bfdb6b83e0dfee367ec7680400262bf65634148a8e87dd9e7a6cdb8e740"
 }

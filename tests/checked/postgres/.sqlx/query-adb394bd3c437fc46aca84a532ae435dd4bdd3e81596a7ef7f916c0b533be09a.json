@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO \"checked_orders\" (\"name\", \"processed_at\", \"trace\") VALUES ($1, $2, $3)",
+  "query": "INSERT INTO \"order_jobs\" (\"name\", \"processed_at\", \"trace\") VALUES ($1, $2, $3)",
   "describe": {
     "columns": [],
     "parameters": {
@@ -12,5 +12,5 @@
     },
     "nullable": []
   },
-  "hash": "bd4cc6e21dd889bb4ab062f7d6c4ba556a540da95707e2075d53db6a3ad32820"
+  "hash": "adb394bd3c437fc46aca84a532ae435dd4bdd3e81596a7ef7f916c0b533be09a"
 }

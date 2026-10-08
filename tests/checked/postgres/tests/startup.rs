@@ -14,7 +14,7 @@ use std::path::Path;
 
 use ruststream::{Broker, ConnectedBroker, SubscriptionSource};
 use ruststream_sqlx::{InboxQueue, SqlxBroker};
-use ruststream_sqlx_checked_postgres::{Email, Entry, Order, Webhook};
+use ruststream_sqlx_checked_postgres::{Email, Entry, Order, SendEmail, Webhook};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool};
 
@@ -79,6 +79,9 @@ async fn the_broker_prepares_at_startup_the_texts_the_derive_checked() {
         .expect("the broker connects");
     // Opening a subscription runs its startup check, which prepares every statement it runs on
     // the pool's one connection.
+    let send = InboxQueue::<SendEmail>::new("outgoing")
+        .subscribe(&connected)
+        .await;
     let email = InboxQueue::<Email>::new("emails")
         .subscribe(&connected)
         .await;
@@ -91,7 +94,7 @@ async fn the_broker_prepares_at_startup_the_texts_the_derive_checked() {
     let order = InboxQueue::<Order>::new("orders")
         .subscribe(&connected)
         .await;
-    assert!(email.is_ok() && entry.is_ok() && webhook.is_ok() && order.is_ok());
+    assert!(send.is_ok() && email.is_ok() && entry.is_ok() && webhook.is_ok() && order.is_ok());
     let prepared: Vec<String> =
         sqlx::query_scalar("SELECT statement FROM pg_prepared_statements WHERE NOT from_sql")
             .fetch_all(&pool)
@@ -109,7 +112,7 @@ async fn the_broker_prepares_at_startup_the_texts_the_derive_checked() {
         unchecked.is_empty(),
         "prepared at startup, not checked: {unchecked:#?}"
     );
-    drop((email, entry, webhook, order));
+    drop((send, email, entry, webhook, order));
     connected.shutdown().await.expect("the broker stops");
     pool.close().await;
     sqlx::raw_sql(AssertSqlSafe(format!(

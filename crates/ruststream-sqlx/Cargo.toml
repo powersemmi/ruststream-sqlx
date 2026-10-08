@@ -104,7 +104,9 @@ foldhash = { workspace = true, optional = true }
 
 [dev-dependencies]
 ruststream = { workspace = true, features = ["macros", "json", "memory", "testing", "conformance"] }
-sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "json", "derive"] }
+# `macros`: the overview's checked structs read their statements' offline data from `.sqlx`, a
+# link to the Postgres fixture's; `sqlx-toml`: `sqlx.toml` reads time columns as `chrono` types.
+sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "json", "derive", "macros", "sqlx-toml"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 chrono.workspace = true
 futures = { workspace = true, features = ["executor"] }

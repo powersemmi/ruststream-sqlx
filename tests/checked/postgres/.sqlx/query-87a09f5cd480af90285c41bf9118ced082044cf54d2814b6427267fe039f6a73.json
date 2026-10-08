@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT \"job_id\" FROM \"checked_orders\" WHERE \"name\" = $1 AND \"processed_at\" IS NULL ORDER BY \"job_id\" LIMIT $2 FOR UPDATE SKIP LOCKED",
+  "query": "SELECT \"job_id\" FROM \"order_jobs\" WHERE \"name\" = $1 AND \"processed_at\" IS NULL ORDER BY \"job_id\" LIMIT $2 FOR UPDATE SKIP LOCKED",
   "describe": {
     "columns": [
       {
@@ -9,7 +9,7 @@
         "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "checked_orders",
+            "table": "order_jobs",
             "name": "job_id"
           }
         }
@@ -25,5 +25,5 @@
       false
     ]
   },
-  "hash": "5c0c12b8b1058da12054b7b3f1a33e1e813525fdb58f443cd91de95323bc5916"
+  "hash": "87a09f5cd480af90285c41bf9118ced082044cf54d2814b6427267fe039f6a73"
 }

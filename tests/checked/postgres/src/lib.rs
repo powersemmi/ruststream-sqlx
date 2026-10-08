@@ -9,6 +9,25 @@ use ruststream_sqlx::Fetch;
 use ruststream_sqlx::prelude::*;
 use sqlx::{Error, FromRow, PgConnection, Postgres};
 
+/// The email of the crate overview's example, whose statements its doctest reads from this
+/// crate's offline data.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "email_jobs", checked, db = postgres)]
+pub struct SendEmail {
+    /// The row's id.
+    #[field(id, generated)]
+    pub job_id: i64,
+    /// The queue the email belongs to.
+    #[field(group)]
+    pub name: String,
+    /// How many times the email was claimed.
+    #[field(attempt, generated)]
+    pub attempt: i16,
+    /// The message.
+    #[field(payload)]
+    pub payload: Vec<u8>,
+}
+
 /// An email claimed by row lock: a group per name, a delayed retry, a counted attempt and a mark
 /// once processed.
 #[derive(Debug, Inbox, FromRow)]
@@ -76,7 +95,7 @@ pub struct Webhook {
 
 /// The queue table of an order, described by its headers struct.
 #[derive(Debug, Clone, InboxHeaders, FromRow)]
-#[inbox(table = "checked_orders", checked, db = postgres)]
+#[inbox(table = "order_jobs", checked, db = postgres)]
 pub struct OrderHeaders {
     /// The row's id.
     #[field(id, generated)]
@@ -107,7 +126,7 @@ pub struct Order {
 impl Fetch<Postgres> for Order {
     async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
         let rows = sqlx::query!(
-            "SELECT job_id, name, processed_at, trace, total FROM checked_orders \
+            "SELECT job_id, name, processed_at, trace, total FROM order_jobs \
              WHERE job_id = ANY($1)",
             ids
         )

@@ -23,7 +23,7 @@ chrono = { workspace = true, optional = true }
 ruststream-sqlx = { path = "../../../crates/ruststream-sqlx", optional = true, features = ["inbox", "mysql", "chrono"] }
 # The service's own sqlx: `macros` checks the derive's statements against `DATABASE_URL`, or
 # against the committed `.sqlx` data where it is unset.
-sqlx = { workspace = true, optional = true, features = ["macros", "mysql", "chrono"] }
+sqlx = { workspace = true, optional = true, features = ["macros", "mysql", "chrono", "sqlx-toml"] }
 
 [dev-dependencies]
 ruststream.workspace = true

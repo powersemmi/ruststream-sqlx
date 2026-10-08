@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO \"email_jobs\" (\"name\", \"payload\") VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "216bbafadcb92deb7273632ce5b824ef003d024b2d3fcb4e2093bd99b3513333"
+}
