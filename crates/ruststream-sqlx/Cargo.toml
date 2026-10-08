@@ -48,6 +48,7 @@ outbox = [
     "dep:ruststream-sqlx-macros",
     "dep:ruststream",
     "dep:sqlx",
+    "dep:tokio",
     "dep:tracing",
     "dep:thiserror",
 ]

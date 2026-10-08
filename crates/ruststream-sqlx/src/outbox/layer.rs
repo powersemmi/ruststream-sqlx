@@ -3,7 +3,7 @@
 
 use std::any::type_name;
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use ruststream::runtime::{BlanketLayer, Context, Handler, HandlerOutcome};
 use sqlx::{Database, Error, Pool};
@@ -14,6 +14,7 @@ use super::events::Tracked;
 use super::publish::carried_id;
 use super::registry::RecordList;
 use super::switch::enabled;
+use crate::outbox::store::Store;
 
 /// The subscription middleware of an [`Outbox`](super::Outbox), from
 /// [`layer`](super::Outbox::layer).
@@ -27,20 +28,20 @@ use super::switch::enabled;
 /// A delivery under any other name, or without the header, runs the handler as it is, and its
 /// headers are not read.
 pub struct TrackingLayer<DB: Database, Records> {
-    pool: Arc<OnceLock<Pool<DB>>>,
+    store: Arc<Store<DB>>,
     records: Records,
 }
 
 impl<DB: Database, Records> TrackingLayer<DB, Records> {
-    pub(super) const fn new(pool: Arc<OnceLock<Pool<DB>>>, records: Records) -> Self {
-        Self { pool, records }
+    pub(super) const fn new(store: Arc<Store<DB>>, records: Records) -> Self {
+        Self { store, records }
     }
 }
 
 impl<DB: Database, Records: Copy> Clone for TrackingLayer<DB, Records> {
     fn clone(&self) -> Self {
         Self {
-            pool: Arc::clone(&self.pool),
+            store: Arc::clone(&self.store),
             records: self.records,
         }
     }
@@ -64,7 +65,7 @@ impl<DB: Database, Records: RecordList<DB>> BlanketLayer for TrackingLayer<DB, R
     {
         Tracking {
             inner: handler,
-            pool: Arc::clone(&self.pool),
+            store: Arc::clone(&self.store),
             records: self.records,
         }
     }
@@ -73,7 +74,7 @@ impl<DB: Database, Records: RecordList<DB>> BlanketLayer for TrackingLayer<DB, R
 /// A handler wrapped by [`TrackingLayer`].
 struct Tracking<H, DB: Database, Records> {
     inner: H,
-    pool: Arc<OnceLock<Pool<DB>>>,
+    store: Arc<Store<DB>>,
     records: Records,
 }
 
@@ -87,9 +88,15 @@ where
     Records: RecordList<DB>,
 {
     async fn handle(&self, msg: &M, ctx: &mut Context<'_, C, S>) -> HandlerOutcome {
-        if enabled() && self.records.contains(ctx.name()) {
+        if !enabled() {
+            return self.inner.handle(msg, ctx).await;
+        }
+        // The service's runtime, for the publishes of handlers on dedicated threads: the
+        // context of every delivery names it.
+        self.store.learn_home(ctx.main_runtime().as_handle());
+        if self.records.contains(ctx.name()) {
             self.records
-                .deliver(&self.pool, &self.inner, msg, ctx)
+                .deliver(&self.store, &self.inner, msg, ctx)
                 .await
         } else {
             self.inner.handle(msg, ctx).await
@@ -121,11 +128,12 @@ impl Settlement {
 
     async fn run<DB: Database, Record: Tracked<DB>>(
         self,
+        store: &Store<DB>,
         pool: &Pool<DB>,
         id: &Record::Id,
         defaults: &Defaults,
     ) -> Result<(), Error> {
-        let mut conn = pool.acquire().await?;
+        let mut conn = store.acquire(pool).await?;
         match self {
             Self::Ack => Record::ack_record(&mut conn, id, defaults).await,
             Self::Retry => Record::retry_record(&mut conn, id, defaults).await,
@@ -138,7 +146,7 @@ impl Settlement {
 pub(super) async fn deliver<DB, Record, M, C, S, H>(
     name: &'static str,
     defaults: &Defaults,
-    pool: &OnceLock<Pool<DB>>,
+    store: &Store<DB>,
     handler: &H,
     msg: &M,
     ctx: &mut Context<'_, C, S>,
@@ -166,7 +174,7 @@ where
             return handler.handle(msg, ctx).await;
         }
     };
-    let Some(pool) = pool.get() else {
+    let Some(pool) = store.get() else {
         warn!(
             target: "ruststream_sqlx",
             subscription = name,
@@ -179,7 +187,7 @@ where
     // The connection goes back before the handler runs: the handler may publish tracked messages,
     // and each of those takes one.
     let taken = async {
-        let mut conn = pool.acquire().await?;
+        let mut conn = store.acquire(pool).await?;
         Record::fetch_record(&mut conn, &id, defaults).await
     }
     .await;
@@ -200,7 +208,9 @@ where
     }
     let outcome = handler.handle(msg, ctx).await;
     if let Some(settlement) = Settlement::of::<DB, Record>(&outcome)
-        && let Err(error) = settlement.run::<DB, Record>(pool, &id, defaults).await
+        && let Err(error) = settlement
+            .run::<DB, Record>(store, pool, &id, defaults)
+            .await
     {
         warn!(
             target: "ruststream_sqlx",

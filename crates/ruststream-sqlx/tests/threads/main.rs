@@ -17,5 +17,6 @@
 mod live;
 
 mod locks;
+mod pool;
 mod probe;
 mod runtimes;

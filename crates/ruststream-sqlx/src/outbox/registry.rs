@@ -9,7 +9,7 @@
 
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use ruststream::Publisher;
 use sqlx::{Database, Pool};
@@ -21,6 +21,7 @@ use super::publish::TrackingPublishLayer;
 use super::republish::Republishing;
 use super::spec::OutboxTable;
 use super::wrap::TrackedPublisher;
+use crate::outbox::store::Store;
 
 mod list;
 mod tracked;
@@ -96,14 +97,14 @@ pub use tracked::{Checked, Lacks, TrackedName};
 /// # fn main() {}
 /// ```
 pub struct Outbox<DB: Database, Records = Nil> {
-    pool: Arc<OnceLock<Pool<DB>>>,
+    store: Arc<Store<DB>>,
     records: Records,
 }
 
 impl<DB: Database, Records: Copy> Clone for Outbox<DB, Records> {
     fn clone(&self) -> Self {
         Self {
-            pool: Arc::clone(&self.pool),
+            store: Arc::clone(&self.store),
             records: self.records,
         }
     }
@@ -113,7 +114,7 @@ impl<DB: Database, Records: fmt::Debug> fmt::Debug for Outbox<DB, Records> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Outbox")
             .field("records", &self.records)
-            .field("pool_set", &self.pool.get().is_some())
+            .field("pool_set", &self.store.get().is_some())
             .finish()
     }
 }
@@ -165,7 +166,7 @@ impl<DB: Database> Outbox<DB, Nil> {
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
         Self {
-            pool: Arc::new(OnceLock::from(pool)),
+            store: Arc::new(Store::from(pool)),
             records: Nil,
         }
     }
@@ -220,7 +221,7 @@ impl<DB: Database> Outbox<DB, Nil> {
     #[must_use]
     pub fn deferred() -> Self {
         Self {
-            pool: Arc::new(OnceLock::new()),
+            store: Arc::new(Store::default()),
             records: Nil,
         }
     }
@@ -297,7 +298,7 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
             "`{name}` is registered with the outbox twice; register each name once"
         );
         Outbox {
-            pool: self.pool,
+            store: self.store,
             records: Registered {
                 name,
                 defaults: defaults::<DB, Record>(),
@@ -432,7 +433,7 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
             Name::NAME
         );
         Outbox {
-            pool: self.pool,
+            store: self.store,
             records: Registered {
                 name: Name::NAME,
                 defaults: defaults::<DB, Record>(),
@@ -496,7 +497,7 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     pub fn set_pool(&self, pool: Pool<DB>) -> Result<(), PoolAlreadySet> {
         // Why at run time: a pool is built asynchronously, often in `on_startup`, after the
         // registry and its handles were made.
-        self.pool.set(pool).map_err(|_| PoolAlreadySet)
+        self.store.set(pool).map_err(|_| PoolAlreadySet)
     }
 }
 
@@ -543,7 +544,7 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// ```
     #[must_use]
     pub fn layer(&self) -> TrackingLayer<DB, Records> {
-        TrackingLayer::new(Arc::clone(&self.pool), self.records)
+        TrackingLayer::new(Arc::clone(&self.store), self.records)
     }
 
     /// The publish middleware: a message a handler publishes under a registered name is recorded
@@ -588,7 +589,7 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// ```
     #[must_use]
     pub fn publish_layer(&self) -> TrackingPublishLayer<DB, Records> {
-        TrackingPublishLayer::new(Arc::clone(&self.pool), self.records)
+        TrackingPublishLayer::new(Arc::clone(&self.store), self.records)
     }
 
     /// The startup republish of every registered name: an `after_startup` hook that publishes
@@ -706,7 +707,7 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
         &self,
         only: Option<Vec<&'static str>>,
     ) -> impl FnOnce(Live) -> Republishing + Send + 'static {
-        let pool = Arc::clone(&self.pool);
+        let pool = Arc::clone(&self.store);
         let records = self.records;
         move |publisher: Live| {
             Republishing::new(
@@ -764,6 +765,6 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     /// ```
     #[must_use]
     pub fn wrap<Live: Publisher>(&self, publisher: Live) -> TrackedPublisher<Live, DB, Records> {
-        TrackedPublisher::new(publisher, Arc::clone(&self.pool), self.records)
+        TrackedPublisher::new(publisher, Arc::clone(&self.store), self.records)
     }
 }

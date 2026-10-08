@@ -1,15 +1,16 @@
 //! A publisher with the publish middleware's tracking, for publishes outside the handlers.
 
 use std::fmt;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use ruststream::{OutgoingFor, OutgoingMessage, Publisher};
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use super::OUTBOX_ID_HEADER;
 use super::error::TrackedPublishError;
 use super::registry::RecordList;
 use super::switch::enabled;
+use crate::outbox::store::Store;
 
 /// A publisher that records what it publishes under a registered name, from
 /// [`wrap`](super::Outbox::wrap).
@@ -63,15 +64,15 @@ use super::switch::enabled;
 /// ```
 pub struct TrackedPublisher<Live, DB: Database, Records> {
     live: Live,
-    pool: Arc<OnceLock<Pool<DB>>>,
+    store: Arc<Store<DB>>,
     records: Records,
 }
 
 impl<Live, DB: Database, Records> TrackedPublisher<Live, DB, Records> {
-    pub(super) const fn new(live: Live, pool: Arc<OnceLock<Pool<DB>>>, records: Records) -> Self {
+    pub(super) const fn new(live: Live, store: Arc<Store<DB>>, records: Records) -> Self {
         Self {
             live,
-            pool,
+            store,
             records,
         }
     }
@@ -81,7 +82,7 @@ impl<Live: Clone, DB: Database, Records: Copy> Clone for TrackedPublisher<Live, 
     fn clone(&self) -> Self {
         Self {
             live: self.live.clone(),
-            pool: Arc::clone(&self.pool),
+            store: Arc::clone(&self.store),
             records: self.records,
         }
     }
@@ -118,7 +119,7 @@ where
             // The record reads a view that borrows the payload in whatever form the publisher
             // takes it, so the payload is neither copied nor converted.
             let view = OutgoingMessage::with_payload(name, payload.as_ref()).with_headers(headers);
-            let recorded = self.records.record(&self.pool, &view).await;
+            let recorded = self.records.record(&self.store, &view).await;
             let (_, _, mut headers) = view.into_parts();
             if let Some(id) = recorded {
                 headers.insert(OUTBOX_ID_HEADER, id.map_err(TrackedPublishError::Outbox)?);
