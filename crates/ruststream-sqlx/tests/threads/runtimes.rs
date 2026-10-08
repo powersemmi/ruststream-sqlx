@@ -27,6 +27,8 @@ enum Mount {
     Routed,
     /// A reply through the typed `Repository` policy.
     Typed,
+    /// Nothing, after a query of the handler's own through `Ctx<keys::Pool>`.
+    Queries,
 }
 
 /// What each handled row answers with, written to `email_jobs` under `replies`.
@@ -74,6 +76,17 @@ live::matrix! {
         Reply { id: *id }
     }
 
+    /// Queries through the pool its context lends, after it took every idle connection of that
+    /// pool, so the query opens one on this thread's runtime.
+    #[subscriber(InboxQueue::<Plain>::new("plain"), threads(2))]
+    async fn queried(id: &i64, Ctx(pool): Ctx<keys::Pool<Db>>, State(probe): State<Probe>) {
+        take_every_connection(&pool, &probe).await;
+        let mut conn = pool.acquire().await.expect("a connection");
+        sqlx::raw_sql("SELECT 1").execute(&mut *conn).await.expect("the handler's query");
+        drop(conn);
+        probe.handled("plain", *id);
+    }
+
     async fn started(pool: &Pool<Db>, probe: &Probe, mount: Mount) -> RunningApp {
         let probe = probe.clone();
         let broker = SqlxBroker::new(pool.clone())
@@ -90,6 +103,9 @@ live::matrix! {
                 }
                 Mount::Typed => {
                     b.include(answered).out_reply(Repository::<SendEmail>::default());
+                }
+                Mount::Queries => {
+                    b.include(queried);
                 }
             });
         tokio::time::timeout(GUARD, app.start())
@@ -118,7 +134,7 @@ live::matrix! {
         probe.release();
         let runs = i64::try_from(run).expect("a count");
         assert_eq!(db.count("plain_jobs").await, 0, "run {run}: the row settled");
-        let replies = if matches!(mount, Mount::Settles) { 0 } else { runs };
+        let replies = if matches!(mount, Mount::Routed | Mount::Typed) { runs } else { 0 };
         assert_eq!(db.count("email_jobs").await, replies, "run {run}: the replies written");
         // A fresh database numbers its rows from one.
         let ids: Vec<i64> = (1..=runs).collect();
@@ -154,5 +170,10 @@ live::matrix! {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_typed_reply_opens_its_connection_on_the_app_runtime() {
         outlived(Mount::Typed).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_handler_query_leaves_no_connection_that_dies_with_its_thread() {
+        outlived(Mount::Queries).await;
     }
 }
