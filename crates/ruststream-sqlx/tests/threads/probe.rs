@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use std::any::Any;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -32,6 +32,8 @@ struct Inner {
     handled: AtomicUsize,
     order: Mutex<Vec<(String, i64)>>,
     kept: Mutex<Vec<Box<dyn Any + Send>>>,
+    open: AtomicBool,
+    opened: Notify,
     wake: Notify,
 }
 
@@ -60,6 +62,25 @@ impl Probe {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// Waits until the test opens the gate.
+    pub(crate) async fn gate(&self) {
+        loop {
+            let opened = self.0.opened.notified();
+            tokio::pin!(opened);
+            opened.as_mut().enable();
+            if self.0.open.load(Ordering::Acquire) {
+                return;
+            }
+            opened.await;
+        }
+    }
+
+    /// Lets every handler waiting at the gate, and every later one, through.
+    pub(crate) fn open_gate(&self) {
+        self.0.open.store(true, Ordering::Release);
+        self.0.opened.notify_waiters();
     }
 
     /// Keeps `value`, a connection a handler holds on to, until [`Probe::release`].

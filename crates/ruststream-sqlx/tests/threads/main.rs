@@ -16,8 +16,11 @@
 #[path = "../live/mod.rs"]
 mod live;
 
+mod bound;
 mod locks;
 mod order;
 mod pool;
 mod probe;
 mod runtimes;
+mod shutdown;
+mod transactional;
