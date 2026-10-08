@@ -145,7 +145,8 @@ connections, leave each other room. A pool short of room runs fewer deliveries a
 A subscription keeps one claim in flight where claims that run at once would cost more than they
 give. On SQLite, which takes one writer at a time, they only collide. On a table whose groups keep
 their order, or with a `partition_key` column for `workers_by_key(n)`, they could finish out of
-claim order.
+claim order. On MySQL and MariaDB a lease claim stamps its rows in a transaction of several
+statements, which locks the rows it reads, leases in work included, until it commits.
 
 What a subscription holds depends on the form. In the row lock form each delivery in work and
 each claim in flight holds a connection: with `workers(n)` up to n. In the lease form a claim and

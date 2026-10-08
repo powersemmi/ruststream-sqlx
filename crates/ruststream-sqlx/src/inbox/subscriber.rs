@@ -47,7 +47,8 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// beside another one starts only while the pool has a connection to spare, so the pool keeps one
 /// for the handlers. It keeps one claim in flight on SQLite, which takes one writer at a time, and
 /// on a table whose groups keep their order or that has a `partition_key` column, whose order claims
-/// that run at once could break. After a claim that filled its limit the next one runs at once;
+/// that run at once could break, and where a lease claim stamps its rows in a transaction, as on
+/// MySQL and MariaDB. After a claim that filled its limit the next one runs at once;
 /// after one that found fewer rows it waits the poll interval, or until a publisher of the same
 /// broker writes a row of its table and group (a row the service writes through its own SQL or a
 /// handler's transaction waits for the interval). A write that lands while the subscription
@@ -657,11 +658,14 @@ where
 
 /// Whether a subscription to `queue` keeps one claim in flight: claims that run at once may
 /// finish out of their claim order, which a table whose groups keep their order and a keyed table
-/// read their order from; and on a database of one writer they only collide.
+/// read their order from; on a database of one writer they only collide; and a lease claim that
+/// stamps its rows in a transaction of several statements locks the rows it reads, leases in work
+/// included, until it commits, so a claim nobody polls would hold up their settlements.
 fn one_claim(queue: &Queue) -> bool {
     queue.prepared.fifo_guard.is_some()
         || queue.spec.column(Role::PartitionKey).is_some()
         || queue.one_writer
+        || queue.prepared.stamps
 }
 
 /// The connections `pool` can lend at once: its idle ones, and room for new ones.
@@ -851,6 +855,13 @@ mod tests {
     fn a_keyed_table_keeps_its_claim_order() {
         let keyed = PLAIN.partition_key(Column::new("customer"));
         assert!(one_claim(&queue(&keyed, false)));
+    }
+
+    #[test]
+    fn a_lease_claim_that_stamps_in_a_transaction_keeps_one_claim() {
+        let mut stamping = queue(&PLAIN, false);
+        stamping.prepared.stamps = true;
+        assert!(one_claim(&stamping));
     }
 
     #[test]
