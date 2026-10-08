@@ -16,8 +16,8 @@
 mod common;
 
 use common::code::{Pending, start_and_drain};
+use common::framework::{self, Mount};
 use common::raw::{Statements, lease, read_payload};
-use common::services::{self, Mount};
 use common::stand::Table;
 use common::tables::LeaseJob;
 use common::{LEASE, MESSAGES};
@@ -30,7 +30,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::Lease, messages, POOL, |pool, latch| {
-        services::postgres_lease(pool, latch, Mount::SEQUENTIAL)
+        framework::postgres_lease(pool, latch, Mount::SEQUENTIAL)
     })
 }
 
@@ -50,10 +50,9 @@ fn raw_run(messages: usize) -> Pending {
     })
 }
 
-// At most 28 allocations per delivery and 393 once per run, over four smoke runs of 20 deliveries.
-// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
-// part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(28_280, 1_000, 413))]
+// Twice MESSAGES deliveries allocated 56,464 to 56,491 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 57 blocks.
+#[library_benchmark(config = common::config_every(28_246, 1_000, 57))]
 #[bench::first(service_run(1))]
 #[bench::base(service_run(MESSAGES))]
 #[bench::twice(service_run(2 * MESSAGES))]
@@ -61,10 +60,9 @@ fn service(run: Pending) {
     start_and_drain(run);
 }
 
-// At most 28 allocations per delivery and 262 once per run, over four smoke runs of 20 deliveries.
-// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
-// part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(28_280, 1_000, 276))]
+// Twice MESSAGES deliveries allocated 56,311 to 56,338 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 57 blocks.
+#[library_benchmark(config = common::config_every(28_169, 1_000, 57))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]

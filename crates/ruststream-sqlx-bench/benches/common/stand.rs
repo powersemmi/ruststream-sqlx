@@ -37,6 +37,7 @@ pub enum Table {
     Lease,
     Advisory,
     Named,
+    Replies,
     RowMode,
     Outbox,
 }
@@ -49,6 +50,7 @@ impl Table {
             Self::Lease => "bench_lease",
             Self::Advisory => "bench_advisory",
             Self::Named => "bench_named",
+            Self::Replies => "bench_replies",
             Self::RowMode => "bench_row_mode",
             Self::Outbox => "bench_outbox",
         }
@@ -56,7 +58,7 @@ impl Table {
 
     fn postgres(self) -> &'static str {
         match self {
-            Self::RowLock | Self::Advisory | Self::Named => {
+            Self::RowLock | Self::Advisory | Self::Named | Self::Replies => {
                 "(id BIGSERIAL PRIMARY KEY, attempt SMALLINT NOT NULL DEFAULT 1, \
                  payload BYTEA NOT NULL)"
             }
@@ -138,7 +140,18 @@ pub async fn postgres_table(pool: &PgPool, table: Table) {
 pub async fn postgres_fill(pool: &PgPool, table: Table, rows: usize) {
     let rows = i64::try_from(rows).expect("a row count fits a bigint");
     let name = table.name();
-    let filled = if table == Table::RowMode {
+    let filled = if table == Table::Outbox {
+        // Unprocessed records of the tracked name, numbered from one: a tracked delivery names
+        // its record by that id.
+        sqlx::query(AssertSqlSafe(format!(
+            "INSERT INTO {name} (name, payload) SELECT $1, $2 FROM generate_series(1, $3)"
+        )))
+        .bind(super::outbox::TRACKED)
+        .bind(json_body())
+        .bind(rows)
+        .execute(pool)
+        .await
+    } else if table == Table::RowMode {
         sqlx::query(AssertSqlSafe(format!(
             "INSERT INTO {name} (customer, quantity) SELECT $1, $2 FROM generate_series(1, $3)"
         )))

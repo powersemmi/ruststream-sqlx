@@ -1417,6 +1417,7 @@ dependencies = [
  "futures",
  "gungraun",
  "ruststream",
+ "ruststream-fred",
  "ruststream-sqlx",
  "serde",
  "serde_json",

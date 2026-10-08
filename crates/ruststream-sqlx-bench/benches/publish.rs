@@ -16,8 +16,8 @@
 mod common;
 
 use common::code::{Pending, Started, start_and_drain, warm};
+use common::framework;
 use common::raw::publish;
-use common::services;
 use common::stand::{Table, postgres_pool};
 use common::{Latch, MESSAGES, OrderPlaced};
 use gungraun::{library_benchmark, library_benchmark_group, main};
@@ -66,11 +66,11 @@ macro_rules! publishing {
 }
 
 fn repository_run(messages: usize) -> Pending {
-    publishing!(messages, |pool| services::postgres_repository(pool))
+    publishing!(messages, |pool| framework::postgres_repository(pool))
 }
 
 fn routed_run(messages: usize) -> Pending {
-    publishing!(messages, |pool| services::postgres_routed(pool))
+    publishing!(messages, |pool| framework::postgres_routed(pool))
 }
 
 fn raw_run(messages: usize) -> Pending {
@@ -86,10 +86,9 @@ fn raw_run(messages: usize) -> Pending {
     })
 }
 
-// At most 15 allocations per delivery and 126 once per run, over four smoke runs of 20 deliveries.
-// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
-// part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(15_150, 1_000, 133))]
+// Twice MESSAGES deliveries allocated 30,141 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 31 blocks.
+#[library_benchmark(config = common::config_every(15_071, 1_000, 31))]
 #[bench::first(repository_run(1))]
 #[bench::base(repository_run(MESSAGES))]
 #[bench::twice(repository_run(2 * MESSAGES))]
@@ -97,10 +96,9 @@ fn repository(run: Pending) {
     start_and_drain(run);
 }
 
-// At most 15 allocations per delivery and 127 once per run, over four smoke runs of 20 deliveries.
-// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
-// part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(15_150, 1_000, 134))]
+// Twice MESSAGES deliveries allocated 30,142 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 31 blocks.
+#[library_benchmark(config = common::config_every(15_071, 1_000, 31))]
 #[bench::first(routed_run(1))]
 #[bench::base(routed_run(MESSAGES))]
 #[bench::twice(routed_run(2 * MESSAGES))]
@@ -108,10 +106,9 @@ fn routed(run: Pending) {
     start_and_drain(run);
 }
 
-// At most 12 allocations per delivery and 107 once per run, over four smoke runs of 20 deliveries.
-// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
-// part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(12_120, 1_000, 113))]
+// Twice MESSAGES deliveries allocated 24,124 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 25 blocks.
+#[library_benchmark(config = common::config_every(12_062, 1_000, 25))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]

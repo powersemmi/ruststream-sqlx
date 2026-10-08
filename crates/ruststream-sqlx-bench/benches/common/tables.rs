@@ -76,6 +76,35 @@ impl Publish<Postgres> for NamedJob {
     }
 }
 
+/// The table the reply scenario answers into: the reply type's name leads here through a route,
+/// the destination the connected broker's default publisher writes to.
+#[derive(Debug, Inbox, FromRow)]
+#[inbox(table = "bench_replies")]
+pub struct ReplyJob {
+    #[field(id, generated)]
+    pub id: i64,
+    #[field(attempt, generated)]
+    pub attempt: i16,
+    #[field(payload)]
+    pub payload: Vec<u8>,
+}
+
+/// The insert a reply into [`ReplyJob`]'s table runs: the service's own statement.
+pub const REPLY_INSERT: &str = "INSERT INTO bench_replies (payload) VALUES ($1)";
+
+impl Publish<Postgres> for ReplyJob {
+    async fn publish(
+        conn: &mut PgConnection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(REPLY_INSERT)
+            .bind(message.payload())
+            .execute(conn)
+            .await?;
+        Ok(())
+    }
+}
+
 /// Row mode: no payload column, so a handler takes the row the driver decoded.
 #[derive(Debug, Clone, Inbox, FromRow)]
 #[inbox(table = "bench_row_mode")]
@@ -102,7 +131,7 @@ pub struct OutboxRecord {
     pub processed_at: Option<DateTime<Utc>>,
 }
 
-/// The record's insert: the service's own statement, which the raw half runs too.
+/// The record's insert: the service's own statement, which the hand-written variant runs too.
 pub const OUTBOX_INSERT: &str =
     "INSERT INTO bench_outbox (name, payload) VALUES ($1, $2) RETURNING id";
 

@@ -2,11 +2,14 @@
  * Renders the Benchmarks page from the document the crate publishes next to it,
  * `benchmarks/results.json`.
  *
- * Three tables. The scenario table is the wall clock: a raw sqlx loop and the service a user
- * writes, and the difference between them. The code table is what a message costs on the
+ * The inbox's tables first. The scenario table is the wall clock: a raw sqlx loop, this crate
+ * driven by hand, and the service a user writes, with the two differences against the raw loop,
+ * each with its own verdict. The code table is what a message costs on the
  * service's thread in instructions and allocations, the raw loop's cost beside it, and what
  * starting the service cost once. The throughput table is messages per second for a filled table
- * drained on each database, at each worker count, single deliveries and batches.
+ * drained on each database, at each worker count, single deliveries and batches. Then the
+ * outbox's three, which read one app in three variants: no outbox, the outbox written by hand,
+ * and this crate's, with the plugin's whole cost and the crate's own overhead beside them.
  *
  * The figures are fetched in the reader's browser rather than written into the page. A
  * re-measurement rewrites one JSON document, and a table copied into three translated pages
@@ -61,8 +64,12 @@
     }
   }
 
-  const number = (value, lang) =>
-    typeof value === "number" ? value.toLocaleString(lang, { maximumFractionDigits: 1 }) : "-";
+  // Allocations per message are published to three decimals: one allocation per thousand
+  // messages is a cost, and one decimal would print it as zero.
+  const number = (value, lang, digits = 1) =>
+    typeof value === "number"
+      ? value.toLocaleString(lang, { maximumFractionDigits: digits })
+      : "-";
 
   // The best round, and the median round in parentheses.
   function side(measurement, unit, lang) {
@@ -79,10 +86,18 @@
   // The honesty rule of the methodology, enforced where it is read: a difference smaller than the
   // run-to-run spread is a verdict, never a percentage. The run decides it and the document
   // carries the decision, so this only renders it.
-  const overhead = (percent, verdict, labels) =>
-    verdict === "indistinguishable"
+  const overhead = (percent, verdict, labels) => {
+    if (typeof percent !== "number") {
+      return "-";
+    }
+    return verdict === "indistinguishable"
       ? labels.indistinguishable
       : (percent >= 0 ? "+" : "") + percent + "%";
+  };
+
+  // A row the database paced says so next to its name, as the framework's page marks it.
+  const scenarioName = (scenario, labels) =>
+    scenario.broker_bound ? scenario.name + " (" + labels.brokerBound + ")" : scenario.name;
 
   function table(columns, rows) {
     const element = document.createElement("table");
@@ -100,19 +115,62 @@
     return element;
   }
 
-  function scenarios(results, labels, lang) {
+  // The inbox's rows and the outbox's: the outbox is a plugin, and its rows compare one app in
+  // three variants rather than three loops of one broker, so they are read in tables of their own.
+  const inbox = (rows) => rows.filter((row) => !row.plugin);
+  const outbox = (rows) => rows.filter((row) => row.plugin === "outbox");
+
+  function scenarios(rows, labels, lang) {
     return table(
-      [labels.scenario, labels.raw, labels.framework, labels.overhead],
-      results.scenarios.map((scenario) => [
-        scenario.name,
+      [
+        labels.scenario,
+        labels.raw,
+        labels.adapter,
+        labels.framework,
+        labels.adapterOverhead,
+        labels.overhead,
+      ],
+      rows.map((scenario) => [
+        scenarioName(scenario, labels),
         side(scenario.raw, scenario.unit, lang),
+        side(scenario.adapter, scenario.unit, lang),
         side(scenario.framework, scenario.unit, lang),
+        overhead(scenario.adapter_overhead_percent, scenario.adapter_verdict, labels),
         overhead(scenario.overhead_percent, scenario.verdict, labels),
       ]),
     );
   }
 
-  function code(results, labels, lang) {
+  function outboxScenarios(rows, labels, lang) {
+    return table(
+      [
+        labels.scenario,
+        labels.outboxNone,
+        labels.outboxByHand,
+        labels.outboxCrate,
+        labels.outboxTotal,
+        labels.outboxOwn,
+      ],
+      rows.map((scenario) => [
+        scenario.name,
+        side(scenario.raw, scenario.unit, lang),
+        // Written by hand, an untracked message costs nothing: that row has no middle variant,
+        // and the cell stays empty rather than borrowing a number from either side.
+        side(scenario.adapter, scenario.unit, lang),
+        side(scenario.framework, scenario.unit, lang),
+        overhead(scenario.overhead_percent, scenario.verdict, labels),
+        overhead(scenario.plugin_overhead_percent, scenario.plugin_verdict, labels),
+      ]),
+    );
+  }
+
+  // Two numbers in one cell: what starting cost in instructions, and in allocations.
+  const cold = (scenario, lang) =>
+    scenario.cold
+      ? number(scenario.cold.instructions, lang) + " / " + number(scenario.cold.allocations, lang)
+      : "-";
+
+  function code(rows, labels, lang) {
     return table(
       [
         labels.scenario,
@@ -122,39 +180,82 @@
         labels.rawAllocations,
         labels.cold,
       ],
-      results.code.map((scenario) => [
+      rows.map((scenario) => [
         scenario.name,
         number(scenario.framework?.instructions, lang),
         number(scenario.raw?.instructions, lang),
-        number(scenario.framework?.allocations, lang),
-        number(scenario.raw?.allocations, lang),
-        // Two numbers in one cell: what starting cost in instructions, and in allocations.
-        scenario.cold
-          ? number(scenario.cold.instructions, lang) + " / " + number(scenario.cold.allocations, lang)
-          : "-",
+        number(scenario.framework?.allocations, lang, 3),
+        number(scenario.raw?.allocations, lang, 3),
+        cold(scenario, lang),
       ]),
     );
   }
 
-  function throughput(results, labels, lang) {
+  // The three variants of one metric in one cell, in the order the header names them.
+  const variants = (scenario, metric, lang, digits) =>
+    ["raw", "adapter", "framework"]
+      .map((variant) => number(scenario[variant]?.[metric], lang, digits))
+      .join(" / ");
+
+  function outboxCode(rows, labels, lang) {
+    return table(
+      [labels.scenario, labels.outboxInstructions, labels.outboxAllocations, labels.cold],
+      rows.map((scenario) => [
+        scenario.name,
+        variants(scenario, "instructions", lang, 1),
+        variants(scenario, "allocations", lang, 3),
+        cold(scenario, lang),
+      ]),
+    );
+  }
+
+  const delivery = (run, labels) =>
+    typeof run.batch === "number"
+      ? labels.batchOf.replace("{size}", String(run.batch))
+      : labels.single;
+
+  function throughput(rows, labels, lang) {
     return table(
       [
         labels.database,
         labels.delivery,
         labels.workers,
         labels.raw,
+        labels.adapter,
         labels.framework,
+        labels.adapterOverhead,
         labels.overhead,
       ],
-      results.throughput.map((run) => [
+      rows.map((run) => [
         run.database + ", " + (labels.forms[run.form] || run.form),
-        typeof run.batch === "number"
-          ? labels.batchOf.replace("{size}", String(run.batch))
-          : labels.single,
+        delivery(run, labels),
         String(run.workers),
         side(run.raw, "msg/s", lang),
+        side(run.adapter, "msg/s", lang),
+        side(run.framework, "msg/s", lang),
+        overhead(run.adapter_overhead_percent, run.adapter_verdict, labels),
+        overhead(run.overhead_percent, run.verdict, labels),
+      ]),
+    );
+  }
+
+  function outboxThroughput(rows, labels, lang) {
+    return table(
+      [
+        labels.workers,
+        labels.outboxNone,
+        labels.outboxByHand,
+        labels.outboxCrate,
+        labels.outboxTotal,
+        labels.outboxOwn,
+      ],
+      rows.map((run) => [
+        String(run.workers),
+        side(run.raw, "msg/s", lang),
+        side(run.adapter, "msg/s", lang),
         side(run.framework, "msg/s", lang),
         overhead(run.overhead_percent, run.verdict, labels),
+        overhead(run.plugin_overhead_percent, run.plugin_verdict, labels),
       ]),
     );
   }
@@ -181,6 +282,15 @@
       results.crate + " " + results.crate_version + ", ruststream " + results.core_version,
     );
     row(labels.measured, results.measured_at);
+    // The code table is counted by a run of its own, which may be on another version and day.
+    const coded = results.code_measured;
+    if (coded) {
+      row(
+        labels.codeMeasured,
+        results.crate + " " + coded.crate_version + ", ruststream " + coded.core_version + ", " +
+          coded.measured_at,
+      );
+    }
     return element;
   }
 
@@ -190,22 +300,31 @@
       return;
     }
     const machine = document.getElementById("benchmark-environment");
+    // Each table: its container, the section of the document it reads, which rows, and how.
     const sections = [
-      [document.getElementById("benchmark-code"), "code", code],
-      [document.getElementById("benchmark-throughput"), "throughput", throughput],
+      [container, "scenarios", inbox, scenarios],
+      [document.getElementById("benchmark-code"), "code", inbox, code],
+      [document.getElementById("benchmark-throughput"), "throughput", inbox, throughput],
+      [document.getElementById("benchmark-outbox"), "scenarios", outbox, outboxScenarios],
+      [document.getElementById("benchmark-outbox-code"), "code", outbox, outboxCode],
+      [
+        document.getElementById("benchmark-outbox-throughput"),
+        "throughput",
+        outbox,
+        outboxThroughput,
+      ],
     ];
     const lang = document.documentElement.lang || "en";
     const labels = JSON.parse(container.dataset.benchmarkLabels);
     const url = container.dataset.benchmarkResults || DEFAULT_RESULTS;
     const unavailable = () =>
       labels.unavailable.replace("{url}", new URL(url, location.href).href);
-    for (const element of [container, machine, ...sections.map(([element]) => element)]) {
+    for (const element of [machine, ...sections.map(([element]) => element)]) {
       element?.replaceChildren(text("p", labels.loading));
     }
 
     const results = await load(url);
     const decline = (message) => {
-      container.replaceChildren(text("p", message));
       machine?.replaceChildren();
       for (const [element] of sections) {
         element?.replaceChildren(text("p", message));
@@ -219,19 +338,13 @@
       decline(labels.unknownSchema.replace("{schema}", String(results.schema)));
       return;
     }
-    if (results.scenarios?.length) {
-      container.replaceChildren(scenarios(results, labels, lang));
-    } else {
-      container.replaceChildren(text("p", unavailable()));
-    }
     machine?.replaceChildren(environment(results, labels));
     // Each section is written by a run of its own, so one can be published while another is not.
-    for (const [element, field, render] of sections) {
-      if (results[field]?.length) {
-        element?.replaceChildren(render(results, labels, lang));
-      } else {
-        element?.replaceChildren(text("p", unavailable()));
-      }
+    for (const [element, field, pick, render] of sections) {
+      const rows = pick(results[field] || []);
+      element?.replaceChildren(
+        rows.length ? render(rows, labels, lang) : text("p", unavailable()),
+      );
     }
   }
 
