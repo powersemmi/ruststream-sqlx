@@ -62,14 +62,16 @@ fn by_key(order: Vec<(String, i64)>) -> BTreeMap<String, Vec<i64>> {
     keys
 }
 
+/// The `n`th row's place, as its payload carries it.
+fn place(n: usize) -> i64 {
+    i64::try_from(n).expect("a count")
+}
+
 /// The rows of each key in the order they were written.
 fn written() -> BTreeMap<String, Vec<i64>> {
     by_key(
         (0..ROWS)
-            .map(|n| {
-                let n = i64::try_from(n).expect("a count");
-                (KEYS[n.unsigned_abs() as usize % KEYS.len()].to_owned(), n)
-            })
+            .map(|n| (KEYS[n % KEYS.len()].to_owned(), place(n)))
             .collect(),
     )
 }
@@ -92,9 +94,9 @@ mod keyed {
             let Some(db) = database().await else { return };
             let rows: Vec<SendEmail> = (0..ROWS)
                 .map(|n| {
-                    let n = i64::try_from(n).expect("a count");
-                    let key = KEYS[n.unsigned_abs() as usize % KEYS.len()];
-                    let mut row = SendEmail::queued("mail", payload(&Step { key: key.to_owned(), n }));
+                    let key = KEYS[n % KEYS.len()];
+                    let step = Step { key: key.to_owned(), n: place(n) };
+                    let mut row = SendEmail::queued("mail", payload(&step));
                     row.customer = Some(key.to_owned());
                     row
                 })

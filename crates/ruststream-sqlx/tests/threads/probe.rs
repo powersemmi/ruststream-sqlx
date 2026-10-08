@@ -1,6 +1,10 @@
 //! What the handlers of a suite report to the test: how many deliveries they handled, in which
 //! order, and that each ran on a dedicated thread.
 
+// The outbox suite shares this module and uses a part of it, so what it leaves alone is not dead
+// code.
+#![allow(dead_code)]
+
 use std::any::Any;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};

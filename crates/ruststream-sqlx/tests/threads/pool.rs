@@ -1,6 +1,10 @@
 //! The pool a suite hands its service: empty at first, and checked connection by connection once
 //! the service stopped.
 
+// The outbox suite shares this module and uses a part of it, so what it leaves alone is not dead
+// code.
+#![allow(dead_code)]
+
 use std::time::Duration;
 
 use sqlx::Pool;
