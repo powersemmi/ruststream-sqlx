@@ -42,12 +42,12 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-`checked` puts the statements the derive generates into sqlx's compile-time check. The derive
-builds them with the dialect `db` names, the code the broker runs when a subscription opens, and
-wraps each in `sqlx::query!` inside a function nothing calls. The service's build then checks each
-statement against its database: a column the struct names and the table lacks fails the build, and
-`cargo sqlx prepare --check` fails in CI. The subscription runs the statements it runs without
-`checked`, so a message costs the same.
+`checked` puts the statements the derive generates into sqlx's compile-time check. The derive builds
+them with the dialect `db` names, the code the broker runs when a subscription opens, and wraps each
+in `sqlx::query!` (`query_scalar!` for a lock's outcome) inside a function nothing calls. The
+service's build then checks each statement against its database: a column the struct names and the
+table lacks fails the build, and `cargo sqlx prepare --check` fails in CI. The subscription runs the
+statements it runs without `checked`, so a message costs the same.
 
 ## What it needs
 
@@ -59,8 +59,8 @@ statement against its database: a column the struct names and the table lacks fa
 - The feature of the dialect `db` names on `ruststream-sqlx`: `postgres`, `mysql` or `sqlite`.
 
 Each statement meets sqlx's own rules. A parameter takes the Rust type sqlx picks for its column,
-so with both `chrono` and `time` on, `sqlx.toml` names the preferred crate; a column of a type sqlx
-does not know takes a type override there.
+so with both `chrono` and `time` on, `sqlx.toml` (sqlx's `sqlx-toml` feature) names the preferred
+crate; a column of a type sqlx does not know takes a type override there.
 
 ## What it covers
 
@@ -71,9 +71,9 @@ a group; the lease's extension and stamp; the advisory lock form's lock, unlock 
 generated insert. A statement the service writes itself is its own code, which `sqlx::query!`
 checks the same way.
 
-The startup check still runs: each statement is prepared when its subscription opens. It also holds
-what the struct does not determine: the move into a dead-letter table, which the registration names,
-and the opening of a transaction.
+The startup check still runs: each statement is prepared when its subscription opens, and the
+server's version is read where the dialect depends on it. It also holds the statement the struct
+does not determine: the move into a dead-letter table, which the registration names.
 
 ## The headers layout, checked
 
