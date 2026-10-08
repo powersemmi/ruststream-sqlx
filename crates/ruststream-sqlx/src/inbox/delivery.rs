@@ -16,6 +16,7 @@ use tokio::runtime::Handle;
 
 #[cfg(feature = "testing")]
 use super::broker::Shared;
+use super::claims::InWork;
 use super::database::QueueDatabase;
 use super::engine::{Claimed, Events, Now};
 use super::form::advisory::LockHold;
@@ -194,6 +195,9 @@ pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     /// The connection of a delivery claimed in process: its settlement keeps the harness's books.
     #[cfg(feature = "testing")]
     in_process: Option<Arc<Shared<DB>>>,
+    /// Counts the delivery settled in its subscription's books when it drops; a delivery of a
+    /// batch counts nothing.
+    in_work: Option<InWork>,
     _mode: PhantomData<fn() -> Mode>,
 }
 
@@ -370,8 +374,15 @@ where
             row_lent: Default::default(),
             #[cfg(feature = "testing")]
             in_process: None,
+            in_work: None,
             _mode: PhantomData,
         }
+    }
+
+    /// The delivery counted in work until it drops.
+    pub(crate) fn counted(mut self, in_work: InWork) -> Self {
+        self.in_work = Some(in_work);
+        self
     }
 
     /// The delivery of `connection`, which keeps it when the connection runs in process.
@@ -408,6 +419,7 @@ where
             row_lent: AtomicBool::new(true),
             #[cfg(feature = "testing")]
             in_process: None,
+            in_work: None,
             _mode: PhantomData,
         }
     }

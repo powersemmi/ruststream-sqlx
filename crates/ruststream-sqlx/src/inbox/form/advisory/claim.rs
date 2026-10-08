@@ -41,12 +41,14 @@ impl<DB: QueueDatabase, Row: Events<DB>> Default for Advised<DB, Row> {
 /// many rows past `limit` as there are keys in work it cannot leave out. A session left over holds
 /// nothing and goes back to the pool. A claim that fails or is dropped midway leaves no lock: what
 /// it took drops, so each session ends, one that may hold a lock closed after an unlock of its key,
-/// and each row returns.
+/// and each row returns. The select reads one more candidate for each of the `beside` claims of the
+/// subscription in flight, which may lock the first ones meanwhile.
 pub(crate) async fn claim_advised<DB, Row>(
     pool: &Pool<DB>,
     book: &'static LockBook<DB>,
     cx: &Claiming,
     limit: usize,
+    beside: usize,
     rows: &mut Vec<Claimed<Row>>,
     advised: &mut Advised<DB, Row>,
 ) -> Result<(), Failed>
@@ -75,7 +77,7 @@ where
     let mut session = Session::acquire(pool, book.closing())
         .await
         .map_err(|source| ("acquire", source))?;
-    select_candidates::<DB, Row>(&mut session, book, cx, candidates)
+    select_candidates::<DB, Row>(&mut session, book, cx, beside, candidates)
         .await
         .map_err(named(prepared.claim, "claim"))?;
     let mut spare = Some(session);
@@ -161,7 +163,8 @@ where
 }
 
 /// Selects the candidates of an advisory claim on `session` into `candidates`: up to `cx.limit`
-/// rows, and as many more as there are keys in work the select cannot leave out. The select leaves
+/// rows, and as many more as there are keys in work the select cannot leave out and `beside`
+/// claims in flight. The select leaves
 /// out the keys in work only where it probes the locks that hold them, so past the keys it cannot
 /// see, it reads further, and a key in work at the head of the claim order does not hold back the
 /// rows behind it.
@@ -169,13 +172,14 @@ async fn select_candidates<DB, Row>(
     session: &mut Session<DB>,
     book: &LockBook<DB>,
     cx: &Claiming,
+    beside: usize,
     candidates: &mut Candidates<Row::Id>,
 ) -> Result<(), sqlx::Error>
 where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    let unseen = i64::try_from(book.unseen_in_work()).unwrap_or(i64::MAX);
+    let unseen = i64::try_from(book.unseen_in_work().saturating_add(beside)).unwrap_or(i64::MAX);
     let reach = Claiming {
         limit: cx.limit.saturating_add(unseen),
         ..*cx

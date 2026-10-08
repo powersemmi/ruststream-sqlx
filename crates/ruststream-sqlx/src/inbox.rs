@@ -2,6 +2,7 @@
 
 pub(crate) mod batch;
 mod broker;
+mod claims;
 mod columns;
 mod database;
 mod delivery;

@@ -13,6 +13,7 @@ mod live;
 
 mod advisory;
 mod batches;
+mod claims;
 mod concurrency;
 mod fifo;
 mod lease;

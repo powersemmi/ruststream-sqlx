@@ -404,8 +404,8 @@ where
     DB: QueueDatabase + RoleColumns,
     D: ByName<DB> + 'static,
 {
-    /// Rows read by role.
-    Described(InboxSubscriber<DB, NamedRow<D>>),
+    /// Rows read by role, boxed once at startup so the enum stays small.
+    Described(Box<InboxSubscriber<DB, NamedRow<D>>>),
     /// Rows read by their own code. The stream is polled only through `&mut`, so the wrapper
     /// shares the subscriber between threads, as a mount that publishes requires, at no cost.
     Erased(SyncWrapper<ErasedStream>),
@@ -521,7 +521,7 @@ where
             )
             .await?;
             return Ok(NamedSubscriber {
-                opened: Opened::Described(subscriber),
+                opened: Opened::Described(Box::new(subscriber)),
             });
         }
         tracing::debug!(
