@@ -21,10 +21,16 @@ use std::env;
 #[path = "../live/mod.rs"]
 mod live;
 
+#[path = "../threads/pool.rs"]
+mod pool;
+#[path = "../threads/probe.rs"]
+mod probe;
+
 mod manual;
 mod records;
 mod registry;
 mod stand;
+mod threads;
 mod tracked;
 
 /// The variable that turns the outbox on in a test build.

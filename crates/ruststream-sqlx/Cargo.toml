@@ -48,6 +48,7 @@ outbox = [
     "dep:ruststream-sqlx-macros",
     "dep:ruststream",
     "dep:sqlx",
+    "dep:tokio",
     "dep:tracing",
     "dep:thiserror",
 ]
@@ -110,7 +111,9 @@ ruststream = { workspace = true, features = ["macros", "json", "memory", "testin
 # `macros`: the overview's checked structs read their statements' offline data from `.sqlx`, a
 # link to the Postgres fixture's; `sqlx-toml`: `sqlx.toml` reads time columns as `chrono` types.
 sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "json", "derive", "macros", "sqlx-toml"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+# 1.52 brings tokio-macros 2.7, whose `#[tokio::test]` no longer trips `unused_qualifications` on
+# the first statement of a test; the library's own floor stays the workspace's.
+tokio = { version = "1.52", default-features = false, features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 chrono.workspace = true
 futures = { workspace = true, features = ["executor"] }
 serde.workspace = true

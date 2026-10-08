@@ -18,6 +18,7 @@ use sqlx::Pool as DbPool;
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
 use super::engine::Events;
+use super::pools::ServicePool;
 use super::transactional::{InboxMode, Lender};
 
 /// A delivery's context: what the inbox lends a handler besides the message.
@@ -94,7 +95,7 @@ impl<M: IncomingMessage> BuildContext<M> for InboxContext {
 /// # fn main() {}
 /// ```
 pub struct PoolContext<DB: QueueDatabase> {
-    pool: &'static DbPool<DB>,
+    pool: &'static ServicePool<DB>,
     attempt: Option<u64>,
 }
 
@@ -189,7 +190,7 @@ where
 /// ```
 pub struct TxContext<DB: QueueDatabase> {
     lender: Lender<DB>,
-    pool: &'static DbPool<DB>,
+    pool: &'static ServicePool<DB>,
     attempt: Option<u64>,
 }
 
@@ -197,7 +198,7 @@ impl<DB: QueueDatabase> TxContext<DB> {
     /// The context of a delivery whose transaction `lender` lends, on `pool`, at `attempt`.
     pub(crate) const fn new(
         lender: Lender<DB>,
-        pool: &'static DbPool<DB>,
+        pool: &'static ServicePool<DB>,
         attempt: Option<u64>,
     ) -> Self {
         Self {
@@ -374,13 +375,16 @@ impl<DB: QueueDatabase> ContextField for Tx<DB> {
     }
 }
 
-/// The pool the broker runs on: writes through it commit on their own, whatever the delivery's
-/// outcome.
+/// The pool a handler queries through: writes through it commit on their own, whatever the
+/// delivery's outcome.
 ///
 /// It reads [`PoolContext`], which every delivery of an `InboxQueue` subscription lends, or
-/// [`TxContext`] after `Ctx<keys::Tx<..>>`. It yields a clone of the service's pool, one
-/// reference-count increment, only for a handler that reads it. A pool's type names its
-/// database, and so does the key: `keys::Pool<Postgres>`.
+/// [`TxContext`] after `Ctx<keys::Tx<..>>`. On the app's runtime it yields the service's pool.
+/// On a dedicated thread it yields the thread's own pool, built from the service pool's options
+/// on the first read there. Its connections open on the thread and close with it, so none
+/// outlives the thread's runtime in the service's pool. It opens one connection at most, or the
+/// number [`InboxThreads::connections`](crate::InboxThreads::connections) sets. A read costs one
+/// thread-local access and one clone of a pool handle. A pool's type names its database, and so does the key: `keys::Pool<Postgres>`.
 ///
 /// # Examples
 ///
@@ -433,7 +437,7 @@ impl<DB: QueueDatabase> ContextField for Pool<DB> {
     type Value = DbPool<DB>;
 
     fn read(self, src: &PoolContext<DB>) -> DbPool<DB> {
-        src.pool.clone()
+        src.pool.for_handler()
     }
 }
 
@@ -469,12 +473,12 @@ struct PoolOf;
 
 impl<DB: QueueDatabase> Field<TxContext<DB>> for PoolOf {
     type Value<'a>
-        = &'static DbPool<DB>
+        = DbPool<DB>
     where
         DB: 'a;
 
-    fn get(self, src: &TxContext<DB>) -> &'static DbPool<DB> {
-        src.pool
+    fn get(self, src: &TxContext<DB>) -> DbPool<DB> {
+        src.pool.for_handler()
     }
 }
 
@@ -510,7 +514,7 @@ impl<S: Sync, DB: QueueDatabase> FromContext<TxContext<DB>, S> for Ctx<Pool<DB>>
     fn from_context(
         ctx: &mut Context<'_, TxContext<DB>, S>,
     ) -> impl Future<Output = Result<Self, Infallible>> + Send {
-        let pool = ctx.context(PoolOf).clone();
+        let pool = ctx.context(PoolOf);
         async move { Ok(Self(pool)) }
     }
 }
@@ -521,19 +525,23 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::{Error, SqlitePool};
 
+    use std::num::NonZeroU32;
+
+    use tokio::runtime::Handle;
+
     use super::{Tx, TxContext};
+    use crate::inbox::pools::ServicePool;
     use crate::inbox::transactional::TxBook;
     use crate::inbox::tx::PoolTx;
 
     #[tokio::test]
     #[should_panic(expected = "lent already")]
     async fn a_second_read_of_the_transaction_panics() {
-        let pool: &'static SqlitePool = Box::leak(Box::new(
-            SqlitePoolOptions::new()
-                .connect("sqlite::memory:")
-                .await
-                .expect("an in-memory database opens"),
-        ));
+        let pool: SqlitePool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .expect("an in-memory database opens");
+        let pool = ServicePool::leak(pool, Handle::current(), NonZeroU32::MIN);
         let opened: Result<PoolTx<_>, Error> = PoolTx::begin(pool, None).await;
         let hold = TxBook::leak().enter(opened.expect("begins"));
         let cx = TxContext::new(hold.lender(), pool, Some(1));

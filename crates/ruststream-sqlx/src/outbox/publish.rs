@@ -7,17 +7,18 @@ use std::fmt::{self, Display};
 use std::io::Write;
 use std::mem;
 use std::str::{self, FromStr};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use ruststream::runtime::{Outgoing, PublishLayer, PublishNext, PublishPipeline};
 use ruststream::{Bytes, HeaderMap, OutgoingMessage, Publisher};
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use super::OUTBOX_ID_HEADER;
 use super::error::OutboxError;
 use super::events::Publish;
 use super::registry::RecordList;
 use super::switch::enabled;
+use crate::outbox::store::Store;
 
 /// The publish middleware of an [`Outbox`](super::Outbox), from
 /// [`publish_layer`](super::Outbox::publish_layer).
@@ -26,20 +27,20 @@ use super::switch::enabled;
 /// with [`OUTBOX_ID_HEADER`]; a record that fails fails the publish, and the message is not sent.
 /// A message under any other name is sent as it is.
 pub struct TrackingPublishLayer<DB: Database, Records> {
-    pool: Arc<OnceLock<Pool<DB>>>,
+    store: Arc<Store<DB>>,
     records: Records,
 }
 
 impl<DB: Database, Records> TrackingPublishLayer<DB, Records> {
-    pub(super) const fn new(pool: Arc<OnceLock<Pool<DB>>>, records: Records) -> Self {
-        Self { pool, records }
+    pub(super) const fn new(store: Arc<Store<DB>>, records: Records) -> Self {
+        Self { store, records }
     }
 }
 
 impl<DB: Database, Records: Copy> Clone for TrackingPublishLayer<DB, Records> {
     fn clone(&self) -> Self {
         Self {
-            pool: Arc::clone(&self.pool),
+            store: Arc::clone(&self.store),
             records: self.records,
         }
     }
@@ -65,7 +66,7 @@ impl<DB: Database, Records: RecordList<DB>> PublishLayer for TrackingPublishLaye
             let headers = mem::take(out.headers_mut());
             let msg =
                 OutgoingMessage::with_payload(out.name(), out.payload()).with_headers(headers);
-            let recorded = self.records.record(&self.pool, &msg).await;
+            let recorded = self.records.record(&self.store, &msg).await;
             let (_, _, headers) = msg.into_parts();
             *out.headers_mut() = headers;
             if let Some(id) = recorded {
@@ -79,16 +80,16 @@ impl<DB: Database, Records: RecordList<DB>> PublishLayer for TrackingPublishLaye
 /// Records `msg` with `Record`, and returns the id header's value.
 pub(super) async fn record<DB: Database, Record: Publish<DB>>(
     name: &'static str,
-    pool: &OnceLock<Pool<DB>>,
+    store: &Store<DB>,
     msg: &OutgoingMessage<'_>,
 ) -> Result<Bytes, OutboxError> {
-    let pool = pool.get().ok_or(OutboxError::NoPool { name })?;
+    let pool = store.get().ok_or(OutboxError::NoPool { name })?;
     let failed = |source| OutboxError::Record {
         name,
         record: type_name::<Record>(),
         source,
     };
-    let mut conn = pool.acquire().await.map_err(failed)?;
+    let mut conn = store.acquire(pool).await.map_err(failed)?;
     let id = Record::publish(&mut conn, msg).await.map_err(failed)?;
     Ok(id_value(&id))
 }

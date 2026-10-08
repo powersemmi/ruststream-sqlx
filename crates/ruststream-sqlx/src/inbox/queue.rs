@@ -22,6 +22,7 @@ use super::error::SqlxBrokerError;
 #[cfg(feature = "asyncapi")]
 use super::publish::table_of;
 use super::subscriber::InboxSubscriber;
+use super::threads::InboxThreads;
 use super::time::LeaseRow;
 use super::transactional::{InboxMode, Plain, Transactional};
 use super::{FormOn, InboxRow};
@@ -167,6 +168,8 @@ pub struct InboxQueue<Row, Mode = Plain> {
     poll_interval: Option<Duration>,
     lease: Option<Duration>,
     declaration: RetryDeclaration,
+    /// The dedicated threads `on_threads` mounted it on, with their pools' size.
+    threads: Option<InboxThreads>,
     _row: PhantomData<fn() -> (Row, Mode)>,
 }
 
@@ -223,6 +226,7 @@ impl<Row> InboxQueue<Row> {
             poll_interval: None,
             lease: None,
             declaration: RetryDeclaration::new(),
+            threads: None,
             _row: PhantomData,
         }
     }
@@ -351,8 +355,18 @@ impl<Row> InboxQueue<Row> {
             poll_interval: self.poll_interval,
             lease: self.lease,
             declaration: self.declaration,
+            threads: self.threads,
             _row: PhantomData,
         }
+    }
+}
+
+impl<Row, Mode> InboxQueue<Row, Mode> {
+    /// The same subscription on `threads`: what the mount-site step
+    /// [`on_threads`](crate::InboxSettings::on_threads) records, beside the dispatch it sets.
+    pub(crate) const fn on_threads(mut self, threads: InboxThreads) -> Self {
+        self.threads = Some(threads);
+        self
     }
 }
 
@@ -363,6 +377,7 @@ impl<Row, Mode> Clone for InboxQueue<Row, Mode> {
             poll_interval: self.poll_interval,
             lease: self.lease,
             declaration: self.declaration.clone(),
+            threads: self.threads,
             _row: PhantomData,
         }
     }
@@ -377,6 +392,7 @@ impl<Row, Mode: InboxMode> fmt::Debug for InboxQueue<Row, Mode> {
             .field("poll_interval", &self.poll_interval)
             .field("lease", &self.lease)
             .field("declaration", &self.declaration)
+            .field("threads", &self.threads)
             .finish()
     }
 }
@@ -407,6 +423,7 @@ where
             Timing {
                 poll_interval: self.poll_interval,
                 lease: self.lease,
+                threads: self.threads,
             },
             &self.declaration,
             &Description::of::<DB, Row>(),

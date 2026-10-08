@@ -2,6 +2,7 @@
 
 pub(crate) mod batch;
 mod broker;
+mod claims;
 mod columns;
 mod database;
 mod delivery;
@@ -13,12 +14,14 @@ pub(crate) mod headers;
 pub mod keys;
 pub(crate) mod manual;
 pub(crate) mod named;
+mod pools;
 mod publish;
 pub(crate) mod queue;
 pub mod spec;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
+mod threads;
 mod time;
 mod transactional;
 mod tx;
@@ -50,6 +53,7 @@ pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
 pub use spec::builder::{InboxSpec, InboxTable};
 pub use subscriber::InboxSubscriber;
+pub use threads::{InboxThreads, ThreadsStep};
 pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
 pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, TransactionalStep, Tx};
 

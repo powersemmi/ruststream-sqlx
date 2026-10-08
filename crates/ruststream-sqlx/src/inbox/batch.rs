@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::vec;
 
 use ruststream::CarriesBatch;
-use sqlx::Pool;
 
 #[cfg(feature = "testing")]
 use super::broker::Shared;
@@ -20,6 +19,7 @@ use super::headers::HeaderCell;
 use super::queue::Queue;
 use super::subscriber::{InboxSubscriber, Taken};
 use super::{Lane, PayloadLane, PayloadRow, QueueRow, RowLane};
+use crate::inbox::pools::ServicePool;
 
 /// How a table's lane hands a batch handler what one claim took. Machinery: a subscription in the
 /// plain mode builds its batches through it, so a table's mode picks its batch type.
@@ -220,7 +220,7 @@ where
     /// was read.
     gone: vec::IntoIter<InboxDelivery<DB, Row>>,
     queue: &'static Queue,
-    pool: &'static Pool<DB>,
+    pool: &'static ServicePool<DB>,
     /// The connection the batch was claimed on: a delivery claimed in process keeps the harness's
     /// books.
     #[cfg(feature = "testing")]

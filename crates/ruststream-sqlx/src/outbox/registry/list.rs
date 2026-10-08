@@ -5,11 +5,10 @@ use std::any::type_name;
 use std::fmt;
 use std::future::{Future, ready};
 use std::marker::PhantomData;
-use std::sync::OnceLock;
 
 use ruststream::runtime::{Context, Handler, HandlerOutcome};
 use ruststream::{Bytes, OutgoingMessage, Publisher};
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use crate::outbox::database::{Defaults, OutboxDatabase};
 use crate::outbox::error::OutboxError;
@@ -18,6 +17,7 @@ use crate::outbox::layer::deliver;
 use crate::outbox::publish::record;
 use crate::outbox::republish::recover_and_publish;
 use crate::outbox::spec::{Described, OutboxTable};
+use crate::outbox::store::Store;
 
 /// The end of the registrations.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -84,14 +84,14 @@ pub trait RecordList<DB: Database>: RecordNames {
     /// value.
     fn record<'a>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         msg: &'a OutgoingMessage<'_>,
     ) -> impl Future<Output = Option<Result<Bytes, OutboxError>>> + Send + 'a;
 
     /// Runs `handler` on a delivery under a registered name, taking and settling its record.
     fn deliver<'a, M, C, S, H>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         handler: &'a H,
         msg: &'a M,
         ctx: &'a mut Context<'_, C, S>,
@@ -106,7 +106,7 @@ pub trait RecordList<DB: Database>: RecordNames {
     /// through `publisher`.
     fn republish<'a, Live: Publisher>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         publisher: &'a Live,
         only: Option<&'a [&'static str]>,
     ) -> impl Future<Output = Result<(), OutboxError>> + Send + 'a;
@@ -115,7 +115,7 @@ pub trait RecordList<DB: Database>: RecordNames {
 impl<DB: Database> RecordList<DB> for Nil {
     fn record<'a>(
         &'a self,
-        _pool: &'a OnceLock<Pool<DB>>,
+        _pool: &'a Store<DB>,
         _msg: &'a OutgoingMessage<'_>,
     ) -> impl Future<Output = Option<Result<Bytes, OutboxError>>> + Send + 'a {
         ready(None)
@@ -123,7 +123,7 @@ impl<DB: Database> RecordList<DB> for Nil {
 
     fn deliver<'a, M, C, S, H>(
         &'a self,
-        _pool: &'a OnceLock<Pool<DB>>,
+        _pool: &'a Store<DB>,
         handler: &'a H,
         msg: &'a M,
         ctx: &'a mut Context<'_, C, S>,
@@ -139,7 +139,7 @@ impl<DB: Database> RecordList<DB> for Nil {
 
     fn republish<'a, Live: Publisher>(
         &'a self,
-        _pool: &'a OnceLock<Pool<DB>>,
+        _pool: &'a Store<DB>,
         _publisher: &'a Live,
         _only: Option<&'a [&'static str]>,
     ) -> impl Future<Output = Result<(), OutboxError>> + Send + 'a {
@@ -155,7 +155,7 @@ where
 {
     async fn record<'a>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         msg: &'a OutgoingMessage<'_>,
     ) -> Option<Result<Bytes, OutboxError>> {
         if msg.name() == self.name {
@@ -167,7 +167,7 @@ where
 
     async fn deliver<'a, M, C, S, H>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         handler: &'a H,
         msg: &'a M,
         ctx: &'a mut Context<'_, C, S>,
@@ -188,7 +188,7 @@ where
 
     async fn republish<'a, Live: Publisher>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         publisher: &'a Live,
         only: Option<&'a [&'static str]>,
     ) -> Result<(), OutboxError> {

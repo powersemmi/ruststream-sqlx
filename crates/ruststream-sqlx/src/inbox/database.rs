@@ -187,11 +187,10 @@ where
     for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
     DB::Arguments: IntoArguments<DB>,
     for<'q> &'q str: Encode<'q, DB> + Type<DB>,
-    for<'r> &'r str: Decode<'r, DB>,
+    for<'r> &'r str: Decode<'r, DB> + ColumnIndex<DB::Row>,
     for<'a> i64: Encode<'a, DB> + Decode<'a, DB> + Type<DB>,
     for<'r> String: Decode<'r, DB> + Type<DB>,
     usize: ColumnIndex<DB::Row>,
-    for<'a> &'a str: ColumnIndex<DB::Row>,
     DB::QueryResult: Into<AnyQueryResult>,
 {
     fn bind_str(arguments: &mut Self::Arguments, value: &str) -> Result<(), Error> {

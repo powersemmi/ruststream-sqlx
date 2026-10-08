@@ -41,7 +41,15 @@ impl<DB: Database> PoolTx<DB> {
         pool: &Pool<DB>,
         statement: Option<&'static str>,
     ) -> Result<Self, Error> {
-        let conn = pool.acquire().await?;
+        Self::open(pool.acquire().await?, statement).await
+    }
+
+    /// Begins a transaction on `conn`, a connection of the pool the caller took, with
+    /// `statement` in place of `BEGIN` where given.
+    pub(crate) async fn open(
+        conn: PoolConnection<DB>,
+        statement: Option<&'static str>,
+    ) -> Result<Self, Error> {
         // Open before the statement leaves: a begin dropped midway may have started the
         // transaction already.
         let mut tx = Self { conn, open: true };

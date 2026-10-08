@@ -358,6 +358,7 @@ mod tests {
             prepared: Prepared::default(),
             begin_claim: None,
             counted_attempt: false,
+            one_writer: false,
             poll_interval: Duration::from_secs(1),
             lease: None,
             cap: None,

@@ -1,13 +1,16 @@
 //! `InboxSubscriber`: the claim loop a subscription's stream runs.
 
 use std::fmt;
+use std::future::{Future, poll_fn};
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
+use ruststream_sqlx_dialect::Role;
 use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
 use tokio::sync::Notify;
@@ -15,6 +18,7 @@ use tokio_util::sync::DropGuard;
 
 use super::batch::{BatchClaim, BatchLane};
 use super::broker::Shared;
+use super::claims::{Claims, Flow, InWork, Settled};
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
 use super::engine::{self, Claimed, Claiming, Events, Leasing, Now};
@@ -29,6 +33,7 @@ use super::queue::{Queue, Registration};
 use super::testing::{cancelled, off_clock};
 use super::transactional::{InboxMode, Plain, TxBook};
 use super::tx::PoolTx;
+use crate::inbox::pools::ServicePool;
 
 /// How long a subscription waits after a claim failed, so a persistent failure cannot spin the
 /// loop.
@@ -37,8 +42,14 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// The subscriber an [`InboxQueue`](crate::InboxQueue) opens: a stream of deliveries claimed from
 /// the table.
 ///
-/// The stream claims when it is polled: up to one row for a single-message handler, up to the
-/// batch size for a batch handler. After a claim that filled its limit the next one runs at once;
+/// The stream claims when it is polled: up to the batch size for a batch handler, and one row for
+/// a single-message handler, with a claim in flight for each free worker of a handler mounted with
+/// `workers(n)`. The subscription holds at most the pool's size less one connection, and a claim
+/// beside another one starts only while the pool has a connection to spare, so the pool keeps one
+/// for the handlers. It keeps one claim in flight on SQLite, which takes one writer at a time, and
+/// on a table whose groups keep their order or that has a `partition_key` column, whose order claims
+/// that run at once could break, and where a lease claim stamps its rows in a transaction, as on
+/// MySQL and MariaDB. After a claim that filled its limit the next one runs at once;
 /// after one that found fewer rows it waits the poll interval, or until a publisher of the same
 /// broker writes a row of its table and group (a row the service writes through its own SQL or a
 /// handler's transaction waits for the interval). A write that lands while the subscription
@@ -131,7 +142,7 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     queue: &'static Queue,
     holding: Holding<DB, Row>,
     /// The subscription's handle on the pool, which its deliveries lend their handlers.
-    pool: &'static Pool<DB>,
+    pool: &'static ServicePool<DB>,
     /// Where a transactional delivery's transaction waits while its handler does not hold it, in
     /// the row lock and lease forms; `None` in the plain mode, and in the advisory lock form, whose
     /// book keeps the session that holds the transaction.
@@ -140,6 +151,12 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     claimed: ClaimBuffers<DB, Row>,
     /// What the next claim waits for first.
     wait: Option<Wait>,
+    /// How many claims of single deliveries the subscription keeps in flight.
+    flow: Flow,
+    /// The deliveries of single claims made so far; less those `settled` counts, the ones in work.
+    made: usize,
+    /// The deliveries of single claims settled or dropped so far.
+    settled: &'static Settled,
     /// What the connection's publishers wake the subscription with after they write a row of its
     /// table and group.
     wake: &'static Notify,
@@ -165,7 +182,7 @@ pub(crate) struct Opened<DB: QueueDatabase, Row: Events<DB>> {
     pub(crate) holding: Holding<DB, Row>,
     pub(crate) registration: Registration<DB>,
     pub(crate) keeper: Option<DropGuard>,
-    pub(crate) pool: &'static Pool<DB>,
+    pub(crate) pool: &'static ServicePool<DB>,
     pub(crate) lending: Option<&'static TxBook<DB>>,
     pub(crate) wake: &'static Notify,
 }
@@ -265,6 +282,16 @@ where
             lending: opened.lending,
             claimed: ClaimBuffers::default(),
             wait: None,
+            flow: Flow::new(
+                opened.pool.options().get_max_connections(),
+                !matches!(opened.holding, Holding::Leases(_))
+                    || opened.queue.prepared.transactional,
+                one_claim(opened.queue),
+            ),
+            made: 0,
+            // Once per subscription, as its queue and books are: deliveries outlive the borrow of
+            // the subscriber.
+            settled: Box::leak(Box::default()),
             wake: opened.wake,
             _registration: opened.registration,
             _keeper: opened.keeper,
@@ -335,6 +362,7 @@ where
             self.queue,
             self.holding,
             limit,
+            0,
             Now::default(),
             &mut self.claimed,
         )
@@ -356,7 +384,7 @@ where
         let now = self.shared.harness.now();
         let mut buffers = std::mem::take(&mut self.claimed);
         let (claimed, buffers) = off_clock(async move {
-            let claimed = claim_rows(&pool, queue, holding, limit, now, &mut buffers).await;
+            let claimed = claim_rows(&pool, queue, holding, limit, 0, now, &mut buffers).await;
             (claimed, buffers)
         })
         .await
@@ -390,19 +418,144 @@ where
     }
 
     /// The subscription's handle on the pool, which its deliveries lend their handlers.
-    pub(crate) const fn pool(&self) -> &'static Pool<DB> {
+    pub(crate) const fn pool(&self) -> &'static ServicePool<DB> {
         self.pool
     }
 
-    async fn next_one(&mut self) -> Option<Result<InboxDelivery<DB, Row, Mode>, SqlxBrokerError>> {
-        let (taken, _) = match self.claim(1).await? {
-            Ok(claimed) => claimed,
-            Err(error) => return Some(Err(error)),
-        };
+    /// The deliveries of single claims in work.
+    fn in_work(&self) -> usize {
+        self.made.wrapping_sub(self.settled.count())
+    }
+
+    /// What a single claim of the subscription runs with, beside `running` claims in flight.
+    fn one(&self, running: usize) -> ClaimOne<DB, Row> {
+        ClaimOne {
+            pool: self.pool,
+            queue: self.queue,
+            holding: self.holding,
+            beside: running,
+            #[cfg(feature = "testing")]
+            in_process: self
+                .shared
+                .harness
+                .in_process()
+                .then(|| Arc::clone(&self.shared)),
+        }
+    }
+
+    /// The next single delivery: a claim in flight for each free worker, within the connections
+    /// the subscription may hold, and the first one that took a row. `None` once the broker is
+    /// shut down.
+    async fn next_one<Make, Fut>(
+        &mut self,
+        claims: &mut Claims<ClaimOne<DB, Row>, ClaimBuffers<DB, Row>, Make, Fut>,
+    ) -> Option<Result<InboxDelivery<DB, Row, Mode>, SqlxBrokerError>>
+    where
+        Make: Fn(ClaimOne<DB, Row>, ClaimBuffers<DB, Row>) -> Fut,
+        Fut: Future<Output = OneClaimed<DB, Row>>,
+    {
+        self.flow.polled(self.in_work());
+        loop {
+            if claims.running() == 0 {
+                match self.wait.take() {
+                    Some(Wait::Interval) => tokio::select! {
+                        () = tokio::time::sleep(self.queue.poll_interval) => {}
+                        () = self.wake.notified() => {}
+                        () = self.shared.stopping.cancelled() => return None,
+                    },
+                    Some(Wait::Failed) => tokio::select! {
+                        () = tokio::time::sleep(CLAIM_RETRY) => {}
+                        () = self.shared.stopping.cancelled() => return None,
+                    },
+                    None => {}
+                }
+                if self.shared.is_closed() {
+                    return None;
+                }
+                let in_work = self.in_work();
+                if self.flow.waits_for_a_settlement(0, in_work) {
+                    let seen = self.settled.count();
+                    tokio::select! {
+                        () = self.settled.change(seen) => {}
+                        () = self.shared.stopping.cancelled() => return None,
+                    }
+                    continue;
+                }
+            }
+            let in_work = self.in_work();
+            let (claimed, mut buffers) = if claims.running() == 0 && self.flow.wanted(in_work) == 1
+            {
+                // One claim and nothing beside it, as a plain mount always claims: awaited in place,
+                // so it costs no slot.
+                claim_one(self.one(0), claims.buffers()).await
+            } else {
+                let Some(done) = poll_fn(|cx| self.turn(claims, cx)).await else {
+                    continue;
+                };
+                done
+            };
+            match claimed {
+                Ok(taken) if buffers.rows.is_empty() => {
+                    self.end_empty(taken).await;
+                    claims.put_back(buffers);
+                    self.flow.found_nothing();
+                    if claims.running() == 0 {
+                        self.wait = Some(Wait::Interval);
+                    }
+                }
+                Ok(taken) => {
+                    self.flow.took();
+                    let delivery = self.deliver(taken, &mut buffers);
+                    claims.put_back(buffers);
+                    return delivery.map(Ok);
+                }
+                Err((statement, source)) => {
+                    claims.put_back(buffers);
+                    self.flow.found_nothing();
+                    self.wait = Some(Wait::Failed);
+                    return Some(Err(self.failed(statement, source)));
+                }
+            }
+        }
+    }
+
+    /// Starts the claims the flow allows, then polls every claim in flight. `None` when none runs.
+    fn turn<Make, Fut>(
+        &self,
+        claims: &mut Claims<ClaimOne<DB, Row>, ClaimBuffers<DB, Row>, Make, Fut>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<OneClaimed<DB, Row>>>
+    where
+        Make: Fn(ClaimOne<DB, Row>, ClaimBuffers<DB, Row>) -> Fut,
+        Fut: Future<Output = OneClaimed<DB, Row>>,
+    {
+        if self.wait.is_none() && !self.shared.is_closed() {
+            let in_work = self.in_work();
+            while self
+                .flow
+                .may_start(claims.running(), in_work, || spare(self.pool))
+            {
+                // Each claim is polled once as it starts, so it takes its connection before the
+                // pool is read for the next one.
+                let started = claims.start(self.one(claims.running()));
+                if let Poll::Ready(done) = claims.poll_slot(started, cx) {
+                    return Poll::Ready(Some(done));
+                }
+            }
+        }
+        claims.poll_any(cx)
+    }
+
+    /// The delivery of the row a single claim took into `buffers`.
+    fn deliver(
+        &mut self,
+        taken: Taken<DB, Row>,
+        buffers: &mut ClaimBuffers<DB, Row>,
+    ) -> Option<InboxDelivery<DB, Row, Mode>> {
         let (queue, pool) = (self.queue, self.pool);
         let delivery = match taken {
             Taken::Locked(tx) => {
-                let claimed = self.claimed.rows.pop()?;
+                let claimed = buffers.rows.pop()?;
                 match self.lending {
                     // The claim's transaction waits in the book for the handler to borrow it.
                     Some(book) => InboxDelivery::lent(claimed, book.enter(tx), queue, pool),
@@ -410,23 +563,26 @@ where
                 }
             }
             Taken::Leased(book, lease) => {
-                let claimed = self.claimed.rows.pop()?;
+                let claimed = buffers.rows.pop()?;
                 // In transactional mode the delivery's own transaction waits in the book for the
                 // handler to borrow it.
                 let lent = self
                     .lending
-                    .zip(self.claimed.transactions.get_mut().pop())
+                    .zip(buffers.transactions.get_mut().pop())
                     .map(|(lending, tx)| lending.enter(tx));
                 InboxDelivery::leased(claimed, book, lease, lent, queue, pool)
             }
             Taken::Advised => {
-                let (claimed, hold) = self.take_advised().next()?;
+                let claimed = buffers.rows.pop()?;
+                let hold = buffers.advised.as_deref_mut()?.holds.pop()?;
                 InboxDelivery::advised(claimed, hold, queue, pool)
             }
         };
+        self.made = self.made.wrapping_add(1);
+        let delivery = delivery.counted(InWork::new(self.settled));
         #[cfg(feature = "testing")]
         let delivery = delivery.on(&self.shared);
-        Some(Ok(delivery))
+        Some(delivery)
     }
 
     /// The subscription's deliveries, as a stream that owns it.
@@ -434,11 +590,93 @@ where
         self,
     ) -> impl Stream<Item = Result<InboxDelivery<DB, Row, Mode>, SqlxBrokerError>> + Send + 'static
     {
-        futures::stream::unfold(self, |mut subscriber| async move {
-            let next = subscriber.next_one().await?;
-            Some((next, subscriber))
+        let claims = Claims::new(claim_one::<DB, Row>);
+        futures::stream::unfold((self, claims), |(mut subscriber, mut claims)| async move {
+            let next = subscriber.next_one(&mut claims).await?;
+            Some((next, (subscriber, claims)))
         })
     }
+}
+
+/// What a single claim runs with.
+pub(crate) struct ClaimOne<DB: QueueDatabase, Row: Events<DB>> {
+    pool: &'static ServicePool<DB>,
+    queue: &'static Queue,
+    holding: Holding<DB, Row>,
+    /// The other claims of the subscription in flight.
+    beside: usize,
+    /// The connection, where it runs in process.
+    #[cfg(feature = "testing")]
+    in_process: Option<Arc<Shared<DB>>>,
+}
+
+/// What a single claim ends with: its outcome, and the buffers it hands back.
+pub(crate) type OneClaimed<DB, Row> = (Result<Taken<DB, Row>, Failed>, ClaimBuffers<DB, Row>);
+
+/// Claims one row with `one`, into `buffers` it owns while it runs, so several run at once.
+async fn claim_one<DB, Row>(
+    one: ClaimOne<DB, Row>,
+    mut buffers: ClaimBuffers<DB, Row>,
+) -> OneClaimed<DB, Row>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let ClaimOne {
+        pool,
+        queue,
+        holding,
+        beside,
+        ..
+    } = one;
+    // In process the claim runs on the test's clock, off a paused one, and in the harness's books.
+    #[cfg(feature = "testing")]
+    if let Some(shared) = one.in_process {
+        let now = shared.harness.now();
+        let (claimed, buffers) = off_clock(async move {
+            let claimed = claim_rows(pool, queue, holding, 1, beside, now, &mut buffers).await;
+            (claimed, buffers)
+        })
+        .await
+        .unwrap_or_else(|| (Err(("BEGIN", cancelled())), ClaimBuffers::default()));
+        if claimed.is_ok() {
+            shared.harness.claimed(queue.name, buffers.rows.len());
+        }
+        return (claimed, buffers);
+    }
+    let claimed = claim_rows(
+        pool,
+        queue,
+        holding,
+        1,
+        beside,
+        Now::default(),
+        &mut buffers,
+    )
+    .await;
+    (claimed, buffers)
+}
+
+/// Whether a subscription to `queue` keeps one claim in flight: claims that run at once may
+/// finish out of their claim order, which a table whose groups keep their order and a keyed table
+/// read their order from; on a database of one writer they only collide; and a lease claim that
+/// stamps its rows in a transaction of several statements locks the rows it reads, leases in work
+/// included, until it commits, so a claim nobody polls would hold up their settlements.
+fn one_claim(queue: &Queue) -> bool {
+    queue.prepared.fifo_guard.is_some()
+        || queue.spec.column(Role::PartitionKey).is_some()
+        || queue.one_writer
+        || queue.prepared.stamps
+}
+
+/// The connections `pool` can lend at once: its idle ones, and room for new ones.
+fn spare<DB: sqlx::Database>(pool: &Pool<DB>) -> usize {
+    let room = pool
+        .options()
+        .get_max_connections()
+        .saturating_sub(pool.size());
+    pool.num_idle()
+        .saturating_add(usize::try_from(room).unwrap_or(usize::MAX))
 }
 
 /// A statement that failed, and why.
@@ -446,7 +684,8 @@ pub(crate) type Failed = (&'static str, sqlx::Error);
 
 /// Claims up to `limit` rows of `queue` into `claimed`, holding them as `holding` says: in a
 /// transaction of `pool` it returns open, by a lease it commits, or by the lock on each row's key,
-/// held by a session of its own.
+/// held by a session of its own. An advisory claim reads a candidate more for each of `beside`
+/// claims of the subscription in flight.
 ///
 /// The claim of a table whose groups keep their order takes the group first, in the claim's
 /// transaction, and takes nothing while another transaction holds it.
@@ -455,6 +694,7 @@ async fn claim_rows<DB, Row>(
     queue: &'static Queue,
     holding: Holding<DB, Row>,
     limit: usize,
+    beside: usize,
     now: Now,
     claimed: &mut ClaimBuffers<DB, Row>,
 ) -> Result<Taken<DB, Row>, Failed>
@@ -483,7 +723,7 @@ where
         Holding::Leases(book) => book,
         Holding::Advisory(book) => {
             let advised = advised.get_or_insert_with(Box::default);
-            claim_advised::<DB, Row>(pool, book, &cx, limit, rows, advised).await?;
+            claim_advised::<DB, Row>(pool, book, &cx, limit, beside, rows, advised).await?;
             return Ok(Taken::Advised);
         }
     };
@@ -541,9 +781,10 @@ where
     type Error = SqlxBrokerError;
 
     fn stream(&mut self) -> impl Stream<Item = Result<Self::Message, Self::Error>> + Send + '_ {
-        futures::stream::unfold(self, |subscriber| async move {
-            let next = subscriber.next_one().await?;
-            Some((next, subscriber))
+        let claims = Claims::new(claim_one::<DB, Row>);
+        futures::stream::unfold((self, claims), |(subscriber, mut claims)| async move {
+            let next = subscriber.next_one(&mut claims).await?;
+            Some((next, (subscriber, claims)))
         })
     }
 }
@@ -572,5 +813,60 @@ where
                 <Row::Lane as BatchLane<DB, Row>>::batch(BatchClaim::new(subscriber, taken, count));
             Some((Ok(batch), subscriber))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+
+    use super::one_claim;
+    use crate::inbox::engine::{IdAt, Prepared};
+    use crate::inbox::queue::Queue;
+
+    fn queue(spec: &TableSpec<'static>, one_writer: bool) -> Queue {
+        Queue {
+            name: "jobs",
+            table: "jobs",
+            row: "app::Job",
+            spec: *spec,
+            id_at: IdAt::First,
+            native_retry_after: false,
+            kinds: None,
+            prepared: Prepared::default(),
+            begin_claim: None,
+            counted_attempt: false,
+            one_writer,
+            poll_interval: Duration::from_secs(1),
+            lease: None,
+            cap: None,
+        }
+    }
+
+    const PLAIN: TableSpec<'static> = TableSpec::new("jobs", Column::new("id"), Form::RowLock);
+
+    #[test]
+    fn a_plain_table_on_a_server_claims_for_every_free_worker() {
+        assert!(!one_claim(&queue(&PLAIN, false)));
+    }
+
+    #[test]
+    fn a_keyed_table_keeps_its_claim_order() {
+        let keyed = PLAIN.partition_key(Column::new("customer"));
+        assert!(one_claim(&queue(&keyed, false)));
+    }
+
+    #[test]
+    fn a_lease_claim_that_stamps_in_a_transaction_keeps_one_claim() {
+        let mut stamping = queue(&PLAIN, false);
+        stamping.prepared.stamps = true;
+        assert!(one_claim(&stamping));
+    }
+
+    #[test]
+    fn a_database_of_one_writer_keeps_one_claim() {
+        assert!(one_claim(&queue(&PLAIN, true)));
     }
 }

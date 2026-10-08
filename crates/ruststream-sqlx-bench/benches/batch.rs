@@ -8,7 +8,7 @@
     clippy::must_use_candidate,
     clippy::needless_pass_by_value
 )]
-//! Batches of 16 in the row lock form on Postgres: one claim locks up to 16 rows in a
+//! Batches of 64 in the row lock form on Postgres: one claim locks up to 64 rows in a
 //! transaction, the handler is handed a slice it decodes, and every row is deleted in the same
 //! transaction before it commits. Beside it, the raw sqlx loop that runs the same statements.
 
@@ -17,8 +17,8 @@ mod common;
 use std::num::NonZeroUsize;
 
 use common::code::{Pending, start_and_drain};
+use common::framework::{self, Mount};
 use common::raw::{Statements, read_payload, row_lock};
-use common::services::{self, Mount};
 use common::stand::Table;
 use common::tables::RowLockJob;
 use common::{BATCH, MESSAGES};
@@ -35,7 +35,7 @@ fn service_run(messages: usize) -> Pending {
             workers: NonZeroUsize::MIN,
             batch: Some(BATCH),
         };
-        services::postgres_row_lock(pool, latch, how)
+        framework::postgres_row_lock(pool, latch, how)
     })
 }
 
@@ -59,11 +59,9 @@ fn raw_run(messages: usize) -> Pending {
     )
 }
 
-// At most 14.40 allocations per delivery and 356 once per run, over two smoke runs of 32
-// deliveries, a whole number of batches. The limit is that with two percent of headroom on the
-// steady rate and five on the once-per-run part; one allocation more per delivery breaches it at
-// the default count.
-#[library_benchmark(config = common::config_every(14_695, 1_000, 374))]
+// Twice MESSAGES deliveries allocated 24,981 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 25 blocks.
+#[library_benchmark(config = common::config_every(12_491, 1_000, 25))]
 #[bench::first(service_run(1))]
 #[bench::base(service_run(MESSAGES))]
 #[bench::twice(service_run(2 * MESSAGES))]
@@ -71,11 +69,9 @@ fn service(run: Pending) {
     start_and_drain(run);
 }
 
-// At most 14.31 allocations per delivery and 267 once per run, over two smoke runs of 32
-// deliveries, a whole number of batches. The limit is that with two percent of headroom on the
-// steady rate and five on the once-per-run part; one allocation more per delivery breaches it at
-// the default count.
-#[library_benchmark(config = common::config_every(14_599, 1_000, 281))]
+// Twice MESSAGES deliveries allocated 25,005 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 26 blocks.
+#[library_benchmark(config = common::config_every(12_503, 1_000, 26))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]

@@ -2,14 +2,14 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::OnceLock;
 
 use ruststream::runtime::{Context, Handler, HandlerOutcome};
 use ruststream::{Bytes, OutgoingMessage, Publisher};
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use super::list::{Nil, RecordList, RecordNames, Registered};
 use crate::outbox::error::OutboxError;
+use crate::outbox::store::Store;
 
 /// A name the outbox tracks, as a type: [`Outbox::track`](super::Outbox::track) refuses a name tracked twice while the
 /// service compiles.
@@ -135,7 +135,7 @@ impl<Name: 'static, Rest: RecordNames> RecordNames for Checked<Name, Rest> {
 impl<DB: Database, Name: 'static, Rest: RecordList<DB>> RecordList<DB> for Checked<Name, Rest> {
     fn record<'a>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         msg: &'a OutgoingMessage<'_>,
     ) -> impl Future<Output = Option<Result<Bytes, OutboxError>>> + Send + 'a {
         self.0.record(pool, msg)
@@ -143,7 +143,7 @@ impl<DB: Database, Name: 'static, Rest: RecordList<DB>> RecordList<DB> for Check
 
     fn deliver<'a, M, C, S, H>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         handler: &'a H,
         msg: &'a M,
         ctx: &'a mut Context<'_, C, S>,
@@ -159,7 +159,7 @@ impl<DB: Database, Name: 'static, Rest: RecordList<DB>> RecordList<DB> for Check
 
     fn republish<'a, Live: Publisher>(
         &'a self,
-        pool: &'a OnceLock<Pool<DB>>,
+        pool: &'a Store<DB>,
         publisher: &'a Live,
         only: Option<&'a [&'static str]>,
     ) -> impl Future<Output = Result<(), OutboxError>> + Send + 'a {

@@ -21,6 +21,7 @@ mod registry;
 mod republish;
 mod row;
 pub mod spec;
+mod store;
 mod switch;
 mod wrap;
 
@@ -39,6 +40,8 @@ pub use registry::{Lacks, RecordList, RecordNames};
 pub use republish::Republishing;
 pub use row::OutboxRow;
 pub use spec::{OutboxSpec, OutboxTable};
+#[doc(hidden)]
+pub use store::Store;
 pub use wrap::TrackedPublisher;
 
 /// The header a tracked message carries its record's id in: written with the id's `Display`,

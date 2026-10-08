@@ -13,6 +13,7 @@ use crate::inbox::engine::{Events, IdAt, Shape};
 use crate::inbox::error::SqlxBrokerError;
 use crate::inbox::named::kinds::Kinds;
 use crate::inbox::publish::table_of;
+use crate::inbox::threads::InboxThreads;
 
 /// What a subscription names of its timing; the broker's where it names nothing.
 #[derive(Debug, Clone, Copy, Default)]
@@ -21,6 +22,8 @@ pub(crate) struct Timing {
     pub(crate) poll_interval: Option<Duration>,
     /// How long a claim leases a row, in the lease form.
     pub(crate) lease: Option<Duration>,
+    /// The dedicated threads the subscription runs its handlers on, with their pools' size.
+    pub(crate) threads: Option<InboxThreads>,
 }
 
 /// `lease` in whole seconds, rounded up, and at least one.

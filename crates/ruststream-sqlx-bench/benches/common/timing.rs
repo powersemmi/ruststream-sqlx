@@ -1,5 +1,5 @@
 //! What the wall-clock benchmarks share: the rounds' statistics, the verdict on a difference,
-//! the settings a run reads from the environment, and the runtime both halves run on.
+//! the settings a run reads from the environment, and the runtime every loop runs on.
 
 use std::env;
 use std::num::NonZeroUsize;
@@ -9,7 +9,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tokio::runtime::{Builder, Runtime};
 
-/// Worker threads both halves are driven on.
+/// Worker threads every loop is driven on.
 pub const WORKERS: usize = 4;
 
 /// A multi-threaded runtime: the one a service runs on, where atomics and cache effects that an
@@ -81,7 +81,7 @@ pub fn rate(messages: usize, window: Duration) -> f64 {
 /// noise.
 ///
 /// The honesty rule of the procedure, applied to every percentage the document carries: a
-/// difference smaller than the run-to-run spread of either half is a verdict, never a figure.
+/// difference smaller than the run-to-run spread of either loop is a verdict, never a figure.
 pub fn against(raw: Stats, service: Stats) -> (f64, &'static str) {
     let difference = raw.best - service.best;
     let verdict = if difference.abs() < raw.spread().max(service.spread()) {
@@ -96,10 +96,11 @@ pub fn against(raw: Stats, service: Stats) -> (f64, &'static str) {
 const ROUND_TRIPS: usize = 2_000;
 
 /// How long one statement round trip to the database takes on this machine: the floor under
-/// every claim and every settlement, which the page reports with the numbers.
+/// every claim and every settlement, which the page reports with the numbers and which decides
+/// whether a scenario was paced by the database.
 ///
 /// The median over many samples on one connection, so a scheduler hiccup does not move it.
-pub async fn round_trip(pool: &PgPool) -> String {
+pub async fn round_trip(pool: &PgPool) -> Duration {
     let mut conn = pool.acquire().await.expect("the pool lends a connection");
     let mut samples = Vec::with_capacity(ROUND_TRIPS);
     for _ in 0..ROUND_TRIPS {
@@ -111,8 +112,21 @@ pub async fn round_trip(pool: &PgPool) -> String {
         samples.push(start.elapsed());
     }
     samples.sort_unstable();
+    samples[samples.len() / 2]
+}
+
+/// The round trip as the environment of the document states it.
+pub fn describe_round_trip(round_trip: Duration) -> String {
     format!(
         "{:.1} us (median of {ROUND_TRIPS} `SELECT 1` round trips on one Postgres connection)",
-        samples[samples.len() / 2].as_secs_f64() * 1e6
+        round_trip.as_secs_f64() * 1e6
     )
+}
+
+/// Whether the raw loop spent at least half of each message waiting on the database: the round
+/// trips a delivery costs it, at the latency [`round_trip`] measured, against the time a message
+/// took at its best round. Such a row says more about the database than about this crate, and
+/// everything above the socket does its work inside that wait.
+pub fn broker_bound(round_trips: f64, round_trip: Duration, raw: Stats) -> bool {
+    round_trips * round_trip.as_secs_f64() >= 0.5 / raw.best
 }

@@ -42,7 +42,9 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio"]
 # sqlx fixes that, `sqlx::Transaction` serves the inbox and this dependency goes.
 sqlx-core = { version = "0.9", default-features = false }
 futures = { version = "0.3.31", default-features = false, features = ["std", "async-await"] }
-tokio = { version = "1.44", default-features = false }
+# 1.49: `runtime::Handle::id`, by which a handler tells a dedicated thread from the runtime
+# the broker connected on, is stable from that release.
+tokio = { version = "1.49", default-features = false }
 tokio-util = { version = "0.7.10", default-features = false }
 tracing = { version = "0.1.41", default-features = false, features = ["std"] }
 sync_wrapper = "1"

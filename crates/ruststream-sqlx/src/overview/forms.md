@@ -135,14 +135,51 @@ pool per message in work, as in the row lock form.
 
 SQLite has no row locks, so a SQLite table takes the lease or the advisory lock form.
 
-A publish takes a connection of its own for its insert. In the row lock form a subscription with
-`workers(n)` holds up to n + 1 connections, and handlers that publish need room for their inserts
-on top: a pool without that room makes them wait for its `acquire_timeout`. In the lease form a
-claim and a settlement each take a connection only for their statements, and each subscription
-takes one each half lease to extend the leases in work. In the advisory lock form each delivery
-in work holds a connection of its own until it settles, in a batch too. In
+A subscription mounted with `workers(n)` keeps a claim in flight for each free worker, so its
+workers take rows at once instead of one after another. It never holds more than the pool's size
+less one connection, so the pool always keeps a connection for the handlers' own queries, their
+publishes and the settlements that take one. A claim beside another one starts only while the
+pool has a connection to spare, so subscriptions that share a pool, and handlers that hold its
+connections, leave each other room. A pool short of room runs fewer deliveries at once.
+
+A subscription keeps one claim in flight where claims that run at once would cost more than they
+give. On SQLite, which takes one writer at a time, they only collide. On a table whose groups keep
+their order, or with a `partition_key` column for `workers_by_key(n)`, they could finish out of
+claim order. On MySQL and MariaDB a lease claim stamps its rows in a transaction of several
+statements, which locks the rows it reads, leases in work included, until it commits.
+
+What a subscription holds depends on the form. In the row lock form each delivery in work and
+each claim in flight holds a connection: with `workers(n)` up to n. In the lease form a claim and
+a settlement each take a connection only for their statements, and each subscription takes one
+each half lease to extend the leases in work. In the advisory lock form each delivery in work
+holds a connection of its own until it settles, in a batch too. In
 [transactional mode](#transactional-mode) each delivery in work holds a connection for the
 transaction its handler writes through, in every form.
+
+Size the pool for every subscription that holds connections: n for each `workers(n)`, one more for
+the pool, and the connections the handlers take for their own queries and inserts. A publish takes
+a connection of its own for its insert. In the lease form a pool of n + 1 lets every free worker
+claim at once.
+
+A handler that computes runs on dedicated threads with
+[`on_threads`](crate::InboxSettings::on_threads), the inbox's spelling of `threads(n)`:
+
+```text
+b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))));
+```
+
+The subscription claims on the app's runtime and runs each handler on one of its threads.
+Claims, settlements, transactions and publishes take the service's pool, and their connections
+open on the app's runtime. A handler's `Ctx<keys::Pool<DB>>` is the thread's own pool, with the
+service pool's options. It opens one connection at most, or the number
+[`connections`](crate::InboxThreads::connections) sets, on the thread, and they close when the
+thread ends. The service then opens the pool's connections and threads times connections for each
+such subscription. [`connection_limit`](crate::SqlxBroker::connection_limit) holds that sum to
+what the database allows: a subscription that would pass it does not start. The framework's own
+`threads(n)` gives the threads pools of one connection too, and the limit does not count them.
+A subscription's threads hold deliveries in their rings beside the handlers, and in the row lock
+form each one holds a connection of the service's pool, so the pool's bound applies as with
+`workers(n)`.
 
 ## The lease form
 
@@ -322,9 +359,9 @@ to close.
 
 A delivery holds a connection of its own because its lock lives in that connection's session: a
 delivery dropped unsettled closes its own connection and leaves the other rows alone. A
-subscription with `workers(n)` holds up to n connections for its deliveries, and a batch of n
-rows holds n. A batch takes the connections the pool gives at once: idle ones first, then new
-ones while the pool has room. It ends where the pool is full, so a batch larger than the pool
+subscription with `workers(n)` holds up to n connections for its deliveries and its claims, and a
+batch of n rows holds n. A batch takes the connections the pool gives at once: idle ones first, then
+new ones while the pool has room. It ends where the pool is full, so a batch larger than the pool
 shrinks instead of waiting. Handlers that publish need room for their inserts on top.
 
 Each database keeps the locks in its own way, and keeps the locks of two databases apart:

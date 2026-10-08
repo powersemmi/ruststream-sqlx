@@ -146,7 +146,8 @@ where
     if acknowledged.is_err() {
         // The release matches the lease the delivery holds, so it changes nothing where the
         // acknowledgement took effect after all.
-        let _ = run_leased::<DB, Row>(book.pool(), cx, id, &held, Step::Retry).await;
+        let _ =
+            run_leased::<DB, Row>(book.pool(), book.runtime(), cx, id, &held, Step::Retry).await;
     }
     acknowledged
 }

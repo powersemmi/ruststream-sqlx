@@ -7,8 +7,8 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::RetryDeclaration;
-use ruststream_sqlx_dialect::{Isolation, Opening, Role, TableSpec};
-use sqlx::{Database, Pool};
+use ruststream_sqlx_dialect::{Dialect, Isolation, Opening, Role, TableSpec};
+use sqlx::Database;
 
 use super::build::{build, counted_attempt};
 use super::check::check;
@@ -23,8 +23,10 @@ use crate::inbox::form::advisory::LockBook;
 use crate::inbox::form::lease::{self, LeaseBook};
 use crate::inbox::form::row_lock::savepoint_of;
 use crate::inbox::named::kinds::Kinds;
+use crate::inbox::pools::ServicePool;
 use crate::inbox::publish::table_of;
 use crate::inbox::subscriber::{Holding, InboxSubscriber, Opened};
+use crate::inbox::threads::InboxThreads;
 use crate::inbox::transactional::{InboxMode, TxBook};
 
 /// One open subscription, interned for the life of the process: what its deliveries read to settle
@@ -54,6 +56,9 @@ pub struct Queue {
     /// Whether the rows a claim hands out carry the attempt it counted, so a delivery reports one
     /// less.
     pub counted_attempt: bool,
+    /// Whether the database takes one writer at a time, so the subscription keeps one claim in
+    /// flight: a second one would only wait for the first and for the settlements.
+    pub one_writer: bool,
     /// How long the claim loop waits after a claim that found the queue short.
     pub poll_interval: Duration,
     /// How long a claim leases a row, in whole seconds; `None` outside the lease form.
@@ -87,6 +92,25 @@ impl Queue {
         queues.push(queue);
         queue
     }
+}
+
+/// The subscription's handle on the service's pool, sizing its dedicated threads' pools. A
+/// subscription mounted on threads of the crate's own counts their connections first: one that
+/// would pass the connection limit refuses to start.
+fn service_pool<DB: Database>(
+    shared: &Shared<DB>,
+    name: &str,
+    threads: Option<&InboxThreads>,
+) -> Result<&'static ServicePool<DB>, SqlxBrokerError> {
+    if let Some(threads) = threads {
+        shared.count_threads(name, threads)?;
+    }
+    let per_thread = threads.map_or(NonZeroU32::MIN, InboxThreads::connections_each);
+    Ok(ServicePool::leak(
+        shared.pool.clone(),
+        shared.runtime.clone(),
+        per_thread,
+    ))
 }
 
 /// Opens a subscription to the queue `name` of the table `description` reads, its rows read as
@@ -166,17 +190,12 @@ where
         prepared,
         begin_claim,
         counted_attempt: counted_attempt(form, description, &prepared),
+        one_writer: one_writer::<DB>(form.dialect()),
         poll_interval: timing.poll_interval.unwrap_or(shared.poll_interval),
         lease: description
             .leased()
             .then(|| whole_seconds(timing.lease.unwrap_or(shared.lease))),
-        cap: declaration
-            .max_attempts()
-            .zip(declaration.dead_letter())
-            .map(|(attempts, destination)| Cap {
-                attempts,
-                dead_letter: intern_name(destination),
-            }),
+        cap: cap_of(declaration),
     }
     .intern();
     // A book per subscription, not per queue: a queue's description is shared by every
@@ -199,7 +218,7 @@ where
     };
     // The subscription's own handle on the pool, which each delivery copies for the handler's
     // context instead of counting a reference.
-    let pool: &'static Pool<DB> = Box::leak(Box::new(shared.pool.clone()));
+    let pool = service_pool(shared, name, timing.threads.as_ref())?;
     // A transactional delivery's transaction waits in the book while its handler does not hold it;
     // in the advisory lock form the lock book keeps the session that holds it.
     let lending = (Mode::TRANSACTIONAL && !description.advisory()).then(TxBook::leak);
@@ -231,6 +250,24 @@ where
 // Why a startup refusal: the dialect is known by its name, and the backend behind an `AnyPool` only
 // once the broker connected. MySQL and MariaDB read the latest row in an update at every level, so
 // they keep the acknowledgement at theirs.
+/// The retry cap `declaration` declares: both its attempts and its dead letter, or none.
+fn cap_of(declaration: &RetryDeclaration) -> Option<Cap> {
+    declaration
+        .max_attempts()
+        .zip(declaration.dead_letter())
+        .map(|(attempts, destination)| Cap {
+            attempts,
+            dead_letter: intern_name(destination),
+        })
+}
+
+/// Whether the database behind `DB` and `dialect` takes one writer at a time: SQLite, through a
+/// pool of its own or an `AnyPool`. Its busy handler sleeps instead of queueing a writer, so claims
+/// that run at once collide and wait out the sleeps.
+fn one_writer<DB: Database>(dialect: &dyn Dialect) -> bool {
+    DB::NAME == "SQLite" || dialect.name() == "sqlite"
+}
+
 fn lease_unseen_at<Mode: InboxMode>(
     form: &FormDialect,
     description: &Description,
@@ -315,5 +352,31 @@ impl<DB: Database> fmt::Debug for Registration<DB> {
             .field("table", &self.table)
             .field("name", &self.name)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruststream_sqlx_dialect as dialect;
+
+    use super::one_writer;
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn sqlite_takes_one_writer_at_a_time() {
+        assert!(one_writer::<sqlx::Sqlite>(&dialect::Sqlite));
+    }
+
+    #[cfg(all(feature = "any", feature = "sqlite"))]
+    #[test]
+    fn an_any_pool_on_sqlite_takes_one_writer_at_a_time() {
+        assert!(one_writer::<sqlx::Any>(&dialect::Sqlite));
+    }
+
+    #[cfg(all(feature = "any", feature = "postgres"))]
+    #[test]
+    fn a_server_takes_writers_at_once() {
+        assert!(!one_writer::<sqlx::Postgres>(&dialect::Postgres));
+        assert!(!one_writer::<sqlx::Any>(&dialect::Postgres));
     }
 }

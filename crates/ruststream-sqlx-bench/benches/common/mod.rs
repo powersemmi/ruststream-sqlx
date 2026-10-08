@@ -1,29 +1,38 @@
-//! Shared parts of the crate's benchmarks: the tables, the services and the raw sqlx loops they
-//! are measured against, the stand they run on, and how a run knows it is over.
+//! Shared parts of the crate's benchmarks: the three loops every scenario runs, the tables, the
+//! stand they run on, and how a run knows it is over.
 //!
 //! # What a scenario is
 //!
-//! Every scenario is written twice. The service is what a user writes: a `#[derive(Inbox)]`
-//! table, a `#[subscriber(..)]` handler, and
-//! `RustStream::new(..).with_broker(SqlxBroker::new(pool), ..)` started like any app
-//! ([`services`]). The raw half is a hand-written sqlx loop that runs the
-//! statements the broker runs for that table, in the order it runs them, with the same pool and
-//! the same decode ([`raw`]). The statements are rendered once, at setup, by the dialect the
-//! broker renders them with, so the two halves cannot drift apart ([`raw::Statements`]).
+//! Every inbox scenario is written three times, as every broker crate of the family writes its
+//! scenarios:
+//!
+//! - [`raw`]: a hand-written sqlx loop that runs the statements the broker runs for that table,
+//!   in the order it runs them, with the same pool and the same decode. The statements are
+//!   rendered once, at setup, by the dialect the broker renders them with, so the loops cannot
+//!   drift apart ([`raw::Statements`]).
+//! - [`adapter`]: this crate driven by hand, with no app: `SqlxBroker` connected, the table's
+//!   `InboxQueue` read as a stream and each delivery acknowledged, or a publisher paired.
+//! - [`framework`]: what a user writes: a `#[derive(Inbox)]` table, a `#[subscriber(..)]`
+//!   handler, and `RustStream::new(..).with_broker(SqlxBroker::new(pool), ..)` started like any
+//!   app.
+//!
+//! The outbox is a plugin, and its scenarios are one app in three variants instead: no outbox,
+//! the outbox written by hand, this crate's outbox ([`outbox`]).
 //!
 //! The three kinds of benchmark take the same scenarios:
 //!
 //! - `just bench-code` counts instructions (callgrind) and allocations (DHAT) on a
-//!   single-threaded runtime ([`code`]);
-//! - `just bench` times them on a multi-threaded runtime, in interleaved rounds (`paired.rs`),
-//!   and drains a filled table with n workers on Postgres, MySQL and SQLite (`throughput.rs`).
+//!   single-threaded runtime, for the framework loop and the raw loop beside it ([`code`]);
+//! - `just bench` times all three on a multi-threaded runtime, in interleaved rounds
+//!   (`paired.rs`), and drains a filled table with n workers on Postgres, MySQL and SQLite
+//!   (`throughput.rs`).
 //!
 //! # How a run knows it is over
 //!
 //! A run fills its table with a known number of rows first, so the count of deliveries a drain
 //! takes is known before it starts. Every handled delivery counts down a [`Latch`] the handler
-//! reaches as the application state, and the raw loop counts down the same latch at the same
-//! point: after the decode, before the settlement. The last count wakes the waiter through a
+//! reaches as the application state, and the raw and the adapter loops count down the same latch
+//! at the same point: after the decode, before the settlement. The last count wakes the waiter through a
 //! `Notify`, so a run waits on no timer and polls nothing. The latch also notes when the first
 //! and the last delivery were handled, which is the window the wall clock reads: what starting
 //! the service costs stays outside it.
@@ -32,9 +41,11 @@
 // target uses looks unused here.
 #![allow(dead_code)]
 
+pub mod adapter;
 pub mod code;
+pub mod framework;
+pub mod outbox;
 pub mod raw;
-pub mod services;
 pub mod stand;
 pub mod tables;
 pub mod timing;
@@ -49,6 +60,15 @@ use gungraun::{Callgrind, Dhat, DhatMetric, EntryPoint, LibraryBenchmarkConfig};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use tokio::time::timeout;
+
+// A benchmark measures what ships. The `testing` feature adds the in-process mode to the broker
+// and switches the outbox off, so a number taken with it on is not what a service runs. Every
+// benchmark target compiles this module, so the error covers all of them.
+#[cfg(feature = "testing")]
+compile_error!(
+    "benchmarks must be built without the `testing` feature; run them through `just bench` or \
+     `just bench-code`"
+);
 
 /// Deliveries per measured run of the code-cost benchmarks.
 ///
@@ -122,6 +142,7 @@ fn callgrind() -> Callgrind {
     let mut callgrind = Callgrind::with_args([
         "--collect-atstart=no",
         &format!("--toggle-collect={REGION}"),
+        &format!("--toggle-collect={PARK}"),
     ]);
     callgrind.entry_point(EntryPoint::None);
     callgrind
@@ -146,11 +167,20 @@ fn dhat() -> Dhat {
 /// The frame both tools are pointed at.
 const REGION: &str = "*common::measure*";
 
+/// Where the runtime waits for the database: the current-thread scheduler parking on its driver,
+/// which polls the socket, dispatches readiness and advances the timer wheel. Collection is
+/// switched off inside it, because what it runs follows the server's timing, not the code: how
+/// often a reply is still in flight when a task polls for it, and how far the clock moved
+/// meanwhile. Counted, it swung a raw loop's figure by tens of percent between two runs of the
+/// same tree; excluded, the same runs agree within a few percent. The tasks the driver wakes run
+/// outside it and are counted.
+const PARK: &str = "*current_thread*Context*park*";
+
 /// The lease the lease form's scenarios take: the broker's default, which the raw loop writes too.
 pub const LEASE: Duration = Duration::from_secs(30);
 
 /// The size of a batch in the batch scenarios.
-pub const BATCH: NonZeroUsize = NonZeroUsize::new(16).expect("a batch holds a row");
+pub const BATCH: NonZeroUsize = NonZeroUsize::new(64).expect("a batch holds a row");
 
 /// The values every payload carries. Fixed, so every delivery of a run costs the same.
 pub const ID: u64 = 1_000_000;
@@ -190,6 +220,17 @@ impl OrderPlaced {
             quantity: QUANTITY,
         }
     }
+}
+
+/// The name the reply scenario answers under, which a route leads into the replies table.
+pub const REPLIES: &str = "confirmations";
+
+/// What the reply scenario answers with: a destination of its own, so the mount site adds
+/// nothing to it.
+#[derive(Debug, Serialize, ruststream::Outgoing)]
+#[outgoing(name = "confirmations")]
+pub struct Confirmation {
+    pub id: u64,
 }
 
 /// Counts deliveries down, wakes the waiter on the last one, and notes when the first and the

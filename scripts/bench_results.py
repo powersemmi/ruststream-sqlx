@@ -10,23 +10,30 @@ scenario, raw sqlx loop against service, and the one field of the environment on
 know, the statement round trip it measured against the database. This script adds the machine,
 the build and the versions the run was taken against. The schema is the core's, declared at
 https://powersemmi.github.io/ruststream/latest/benchmarks/#publishing-results: schema 3, each
-loop as its best, median and worst round. The scenarios carry the raw loop and the service; a
-broker crate's adapter column has no counterpart here, because the raw loop runs the broker's
-own statements.
+loop as its best, median and worst round. A scenario carries the raw loop, the crate's own
+subscription or publisher driven by hand (`adapter`), and the service, and `broker_bound` where
+the raw loop spent most of its time waiting on the database. An outbox row (`plugin`) carries one
+app in three variants in the same places: no outbox, the outbox written by hand, this crate's
+outbox, with `plugin_overhead_percent` for the last against the second.
 
 `--throughput` reads the summary `benches/throughput.rs` writes and keeps it as the
 `throughput` section: messages per second for a filled table drained on Postgres, MySQL and
-SQLite, single deliveries and batches, at each worker count, for the service and for the raw loop
-with the same concurrency.
+SQLite, single deliveries and batches, at each worker count, for the raw loop, the crate driven by
+hand and the service with the same concurrency; and the outbox's tracked round trips over Redis
+Pub/Sub in its three variants.
 
 `--code` reads the summary `cargo bench -- --output-format=json` writes for the code-cost benches
 under `crates/ruststream-sqlx-bench/benches`, one JSON object per benchmark, in the summary layout
 gungraun 0.20 writes (its version 7). It writes the `code` section: one entry per scenario with
-the service's instructions and allocations per message, the raw loop's beside them, and what
-starting the service cost once, by the core's method: every scenario is measured over one
-delivery, over MESSAGES and over twice MESSAGES, the slope between the last two is the steady
+the service's instructions and allocations per message (`framework`), the raw loop's beside them
+(`raw`), and what starting the service cost once (`cold`); an outbox row (`plugin`) counts its
+app with no outbox as `raw`, with the outbox written by hand as `adapter`, and with this crate's
+outbox as `framework`. The method is the core's: every scenario is measured over one delivery,
+over MESSAGES and over twice MESSAGES, the slope between the last two is the steady
 state, and the one-delivery run is the cold start. MESSAGES is 1000 unless `--messages` names the
-count the benches were built with.
+count the benches were built with. The section carries its own provenance in `code_measured`,
+because the wall-clock sections beside it may come from another run, on another version, on
+another day; every run keeps what the others wrote.
 
 A code run that breaches one of its limits fails, and in this output format the runner says
 nothing more about it: what went over is recorded in the summary alone. So every breach is printed
@@ -59,12 +66,14 @@ LOCK = REPO / "Cargo.lock"
 # facts, so they are stated here next to the recipe rather than sniffed.
 PROFILE = "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)"
 FEATURES = (
-    "ruststream-sqlx inbox,outbox,postgres,mysql,sqlite,chrono; ruststream macros,json,memory"
+    "ruststream-sqlx inbox,outbox,postgres,mysql,sqlite,chrono; ruststream macros,json,memory; "
+    "ruststream-fred default"
 )
 RUSTFLAGS = "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
 
-# The servers the compose stand runs and the benchmarks measure against, by their service names.
-STAND = ("postgres", "mysql")
+# The servers the compose stand runs and the benchmarks measure against, by their service names:
+# the databases, and the Redis the outbox's wall clock publishes through.
+STAND = ("postgres", "mysql", "redis")
 
 
 def run(*args: str) -> str:
@@ -121,8 +130,16 @@ def databases() -> str:
         match = re.search(rf"^  {service}:\n(?:    .*\n)*?    image:\s*(\S+)", compose, re.M)
         if match:
             images.append(match.group(1))
-    servers = f"{', '.join(images)} in Docker on localhost" if images else "unknown"
-    return f"{servers}; SQLite bundled with sqlx, on a local file in WAL mode"
+    servers = f"{', '.join(images)} in Docker on the host network" if images else "unknown"
+    return (
+        f"{servers}, without durability; SQLite bundled with sqlx, on a local file in WAL mode; "
+        "the outbox over MemoryBroker in the code table and over Redis Pub/Sub in the wall clock"
+    )
+
+
+def round_trip_text(micros: float) -> str:
+    """The probe's figure, as the environment states it next to the rows it marks."""
+    return f"{micros:.1f} us (median of 2000 `SELECT 1` round trips on one Postgres connection)"
 
 
 def crate_version() -> str:
@@ -176,21 +193,73 @@ CODE_MESSAGES = 1000
 CODE_FLOOR = 1_000_000
 CODE_COLD_FLOOR = 1_000
 
-# The code table, in reading order: the published name, the service's benchmark and the raw
-# loop's, each as `file/function`, and whether the benchmarks' hard limits hold their allocation
-# floors.
+# The code table, in reading order: the published name and the benchmarks of its loops, each as
+# `file/function`. An inbox row counts the service (`framework`) and the raw sqlx loop beside it
+# (`raw`). An outbox row counts one app in its variants: no outbox (`raw`), the outbox written by
+# hand (`adapter`, absent where writing it by hand adds nothing) and this crate's outbox
+# (`framework`). Every benchmark is gated: its hard limits hold its allocation floor.
 CODE_SCENARIOS = [
-    ("Row lock claim and delete, JSON payload", "row_lock/service", "row_lock/raw", True),
-    ("Lease claim and delete, JSON payload", "lease/service", "lease/raw", True),
-    ("Advisory lock claim and delete, JSON payload", "advisory/service", "advisory/raw", True),
-    ("By-name subscription, row lock claim and delete", "by_name/service", "by_name/raw", True),
-    ("Row lock batches of 16, delete each", "batch/service", "batch/raw", True),
-    ("Row mode, row lock claim and delete", "row_mode/service", "row_mode/raw", True),
-    ("Repository publish, one insert each", "publish/repository", "publish/raw", True),
-    ("Routed publish, one insert each", "publish/routed", "publish/raw", True),
-    ("Outbox: a reply recorded, fetched and marked", "outbox/tracked", "outbox/raw", True),
-    ("Outbox: both middlewares, nothing tracked", "outbox/untracked", "outbox/bare", True),
+    (
+        "row lock claim, JSON decode into a small struct, delete each",
+        {"framework": "consume/service", "raw": "consume/raw"},
+    ),
+    (
+        "row lock claim, reply inserted through this crate's default publisher, delete each",
+        {"framework": "reply/service", "raw": "reply/raw"},
+    ),
+    (
+        "row lock claim in batches of 64, delete each",
+        {"framework": "batch/service", "raw": "batch/raw"},
+    ),
+    (
+        "lease claim, JSON decode into a small struct, delete each",
+        {"framework": "lease/service", "raw": "lease/raw"},
+    ),
+    (
+        "advisory lock claim, JSON decode into a small struct, delete each",
+        {"framework": "advisory/service", "raw": "advisory/raw"},
+    ),
+    (
+        "by-name subscription, row lock claim, delete each",
+        {"framework": "by_name/service", "raw": "by_name/raw"},
+    ),
+    (
+        "row mode, the row decoded by the driver, delete each",
+        {"framework": "row_mode/service", "raw": "row_mode/raw"},
+    ),
+    (
+        "repository publish, one insert each",
+        {"framework": "publish/repository", "raw": "publish/raw"},
+    ),
+    ("routed publish, one insert each", {"framework": "publish/routed", "raw": "publish/raw"}),
+    (
+        "outbox plugin, an untracked message through both layers",
+        {"framework": "outbox_untracked/outbox", "raw": "outbox_untracked/none"},
+    ),
+    (
+        "outbox plugin, a tracked publish from outside a handler",
+        {
+            "framework": "outbox_publish/outbox",
+            "adapter": "outbox_publish/by_hand",
+            "raw": "outbox_publish/none",
+        },
+    ),
+    (
+        "outbox plugin, a tracked delivery fetched and marked",
+        {
+            "framework": "outbox_delivery/outbox",
+            "adapter": "outbox_delivery/by_hand",
+            "raw": "outbox_delivery/none",
+        },
+    ),
+    (
+        "outbox plugin, a tracked round trip: recorded, delivered, fetched and marked",
+        {"framework": "outbox/outbox", "adapter": "outbox/by_hand", "raw": "outbox/none"},
+    ),
 ]
+
+# What each loop of an outbox row is, for the breach report.
+PLUGIN_LOOPS = {"raw": "no outbox", "adapter": "outbox by hand", "framework": "this outbox"}
 
 # The two metrics the table reads, by the names it gives them. A limit on any other metric is
 # reported under the runner's own name for it.
@@ -279,9 +348,13 @@ def breach(regression: dict, metrics: dict) -> str:
 def code_breaches(summaries: list[dict], messages: int) -> list[str]:
     """Every limit the run breached, one line each, named by its scenario and its run."""
     names = {}
-    for name, service, raw, _ in CODE_SCENARIOS:
-        names.setdefault(service, name)
-        names.setdefault(raw, f"{name} (raw)")
+    for name, loops in CODE_SCENARIOS:
+        plugin = name.startswith("outbox plugin")
+        for loop, key in loops.items():
+            if loop == "framework":
+                names.setdefault(key, name)
+            else:
+                names.setdefault(key, f"{name} ({PLUGIN_LOOPS[loop] if plugin else loop})")
     found = []
     for summary in summaries:
         scenario = names.get(benchmark(summary), benchmark(summary))
@@ -331,19 +404,17 @@ def slope(found: dict, key: str, messages: int) -> tuple[dict, dict]:
 
 def code_section(found: dict, messages: int) -> list[dict]:
     rows = []
-    for name, service, raw, gated in CODE_SCENARIOS:
-        framework, cold = slope(found, service, messages)
-        loop, _ = slope(found, raw, messages)
-        rows.append(
-            {
-                "name": name,
-                "messages": messages,
-                "framework": framework,
-                "raw": loop,
-                "cold": cold,
-                "gated": gated,
-            }
-        )
+    for name, loops in CODE_SCENARIOS:
+        row = {"name": name, "messages": messages}
+        if name.startswith("outbox plugin"):
+            row["plugin"] = "outbox"
+        for loop, key in loops.items():
+            steady, cold = slope(found, key, messages)
+            row[loop] = steady
+            if loop == "framework":
+                row["cold"] = cold
+        row["gated"] = True
+        rows.append(row)
     return rows
 
 
@@ -375,12 +446,17 @@ def main() -> int:
     parser.add_argument(
         "--messages",
         type=int,
-        default=CODE_MESSAGES,
         help="deliveries per measured run of the code-cost benches, the count they were built with",
     )
     parser.add_argument("summary", type=Path, help="the JSON the benchmark run wrote")
     parser.add_argument("output", type=Path, help="where to write the results document")
     args = parser.parse_args()
+    # The count belongs to the code run alone: a wall-clock summary states its own, and a count
+    # given to it would be dropped without a word.
+    if args.messages is not None and not args.code:
+        parser.error("--messages applies to --code only")
+    if args.messages is None:
+        args.messages = CODE_MESSAGES
     if args.messages <= 0:
         parser.error("--messages must be a positive number of deliveries")
     source, out = args.summary, args.output
@@ -400,6 +476,11 @@ def main() -> int:
         document = previous
         document["schema"] = 3
         document["code"] = code
+        document["code_measured"] = {
+            "crate_version": crate_version(),
+            "core_version": locked_version("ruststream"),
+            "measured_at": date.today().isoformat(),
+        }
         document.setdefault("environment", {})["valgrind"] = valgrind()
     elif args.throughput:
         summary = json.loads(source.read_text(encoding="utf-8"))
@@ -414,10 +495,12 @@ def main() -> int:
             "crate_version": crate_version(),
             "core_version": locked_version("ruststream"),
             "measured_at": date.today().isoformat(),
-            "environment": environment(summary["round_trip"]),
+            "environment": environment(round_trip_text(summary["round_trip_us"])),
             "scenarios": summary["scenarios"],
         }
-        for section in ("code", "throughput"):
+        # The code section and its provenance travel together: a paired run leaves both as the
+        # code run wrote them.
+        for section in ("code", "code_measured", "throughput"):
             if section in previous:
                 document[section] = previous[section]
         if "valgrind" in previous.get("environment", {}):
@@ -427,10 +510,14 @@ def main() -> int:
     print(f"wrote {out}")
     if args.code:
         for row in document["code"]:
+            beside = ", ".join(
+                f"{loop} {row[loop]['instructions']}, {row[loop]['allocations']}"
+                for loop in ("adapter", "raw")
+                if loop in row
+            )
             print(
                 f"  {row['name']}: {row['framework']['instructions']} instructions, "
-                f"{row['framework']['allocations']} allocations per message (raw "
-                f"{row['raw']['instructions']}, {row['raw']['allocations']}); cold "
+                f"{row['framework']['allocations']} allocations per message ({beside}); cold "
                 f"{row['cold']['instructions']} instructions, {row['cold']['allocations']} "
                 "allocations"
             )

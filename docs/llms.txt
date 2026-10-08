@@ -7,7 +7,7 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 ## Site
 
 - [Home](https://powersemmi.github.io/ruststream-sqlx/latest/): the two components and where the rest of the documentation is
-- [Benchmarks](https://powersemmi.github.io/ruststream-sqlx/latest/benchmarks/): instructions, allocations and wall clock per message, and messages per second with several workers, each beside a raw sqlx loop doing the same claim and settlement
+- [Benchmarks](https://powersemmi.github.io/ruststream-sqlx/latest/benchmarks/): instructions, allocations and wall clock per message, and messages per second with several workers, for a raw sqlx loop, the crate driven by hand and a RustStream service doing the same claim and settlement; and the outbox's cost to an app, against the same app with no outbox and with an outbox written by hand
 
 ## Guides
 
@@ -20,7 +20,7 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 - [Row mode](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-mode): a table without a payload column, whose handler takes the row itself, `&Row` or `&[Row]`, with no codec; what settles a row the driver cannot read, and how a row-mode task is written
 - [The headers layout](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-headers-layout): a queue table described by `#[derive(InboxHeaders)]` and a message struct that flattens it beside data of its own; where the attributes go, the default fetch and its startup check, and the header values `HeaderField` gives
 - [A fetch over a join](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#a-fetch-over-a-join): `custom(fetch)` with a `Fetch` that reads the message from other tables, and a claimed id the join finds no row for
-- [Row locks, leases or advisory locks](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-locks-leases-or-advisory-locks): the three forms a queue table takes its rows in, what each holds while a handler runs, and when to declare `#[field(locked_until)]` or `advisory_lock`
+- [Row locks, leases or advisory locks](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-locks-leases-or-advisory-locks): the three forms a queue table takes its rows in, what each holds while a handler runs, the claims `workers(n)` keeps in flight and the pool size they need, and when to declare `#[field(locked_until)]` or `advisory_lock`
 - [The lease form](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-lease-form): the claim that commits, the lease as the ownership token, its extension every half lease, `LeaseLost`, and attempts counted at the claim
 - [The advisory lock form](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-advisory-lock-form): `advisory_lock = ".."` and its key, the claim of candidates, the lock released at settlement, on an unsettled drop and at `shutdown` with its counts, a pool connection per delivery in work, and how Postgres, MySQL/MariaDB and SQLite keep the locks
 - [A lock of the service's own](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#a-lock-of-the-services-own): `custom(lock, unlock)` with `Lock` and `Unlock`, and a dialect of the service's own that implements `Advisory`

@@ -26,8 +26,9 @@ pub(crate) const fn attempts_after(delivered: i16) -> i16 {
 /// Whether a lease holds the form's rows: no, the lock on each row's key does.
 pub(crate) const LEASED: bool = false;
 
-/// The ledger: the entries of an account share one lock key, the form's way to keep a group in
-/// order, so they go into work one at a time, by priority, then by `retry_after`.
+/// The ledger: the entries of an account share one lock key, so they go into work one at a time.
+/// A claim takes them by priority, then by `retry_after`, but a key released while a claim reads
+/// its candidates can let a later entry in before an earlier one.
 #[derive(Debug, Inbox, FromRow)]
 #[inbox(table = "ledger", advisory_lock = "ledger-{account}")]
 pub(crate) struct Entry {

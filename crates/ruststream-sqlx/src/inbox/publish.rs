@@ -18,6 +18,7 @@ use super::error::SqlxBrokerError;
 use super::events::Publish;
 #[cfg(feature = "testing")]
 use super::testing::{cancelled, off_clock};
+use crate::home;
 
 mod repository;
 mod routed;
@@ -96,7 +97,9 @@ where
             .await
             .map_err(failed);
     }
-    let mut conn = shared.pool.acquire().await.map_err(failed)?;
+    let mut conn = home::acquire(&shared.pool, &shared.runtime)
+        .await
+        .map_err(failed)?;
     Row::publish(&mut conn, message).await.map_err(failed)?;
     if let Some(listening) = &shared.listening {
         announce::<DB>(listening.notify(), &mut conn, wake, message.name()).await;
@@ -140,10 +143,12 @@ pub(crate) async fn insert_routed<DB: QueueDatabase>(
         wake.wake(message.name());
         return Ok(());
     }
-    let mut conn = shared.pool.acquire().await.map_err(|source| {
-        let description = route.description();
-        failed(message, &description.spec, description.row, source)
-    })?;
+    let mut conn = home::acquire(&shared.pool, &shared.runtime)
+        .await
+        .map_err(|source| {
+            let description = route.description();
+            failed(message, &description.spec, description.row, source)
+        })?;
     route.insert(&mut conn, message).await?;
     if let Some(listening) = &shared.listening {
         announce::<DB>(listening.notify(), &mut conn, wake, message.name()).await;

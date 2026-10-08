@@ -9,13 +9,13 @@ use std::time::Duration;
 
 use ruststream::codec::CodecError;
 use ruststream::{AckError, Carries, HeaderMap, IncomingMessage};
-use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
 use thiserror::Error;
 use tokio::runtime::Handle;
 
 #[cfg(feature = "testing")]
 use super::broker::Shared;
+use super::claims::InWork;
 use super::database::QueueDatabase;
 use super::engine::{Claimed, Events, Now};
 use super::form::advisory::LockHold;
@@ -31,6 +31,7 @@ use super::testing::off_clock;
 use super::transactional::{InboxMode, Plain, TxHold};
 use super::tx::PoolTx;
 use super::{Lane, QueueRow, RowLane};
+use crate::inbox::pools::ServicePool;
 
 pub(crate) mod settle;
 
@@ -188,12 +189,15 @@ pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     pub(super) hold: Option<Hold<DB, Row>>,
     queue: &'static Queue,
     /// The subscription's handle on the pool, which the delivery lends its handler.
-    pub(super) pool: &'static Pool<DB>,
+    pub(super) pool: &'static ServicePool<DB>,
     /// In row mode, whether the handler borrowed the row; nothing in payload mode.
     row_lent: <Row::Lane as Lane<Row>>::Lent,
     /// The connection of a delivery claimed in process: its settlement keeps the harness's books.
     #[cfg(feature = "testing")]
     in_process: Option<Arc<Shared<DB>>>,
+    /// Counts the delivery settled in its subscription's books when it drops; a delivery of a
+    /// batch counts nothing.
+    in_work: Option<InWork>,
     _mode: PhantomData<fn() -> Mode>,
 }
 
@@ -275,7 +279,7 @@ where
         claimed: Claimed<Row>,
         tx: PoolTx<DB>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         Self::held(claimed, Hold::Own(SyncWrapper::new(tx)), queue, pool)
     }
@@ -286,7 +290,7 @@ where
         claimed: Claimed<Row>,
         hold: TxHold<DB>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         Self::held(claimed, Hold::Lent(hold), queue, pool)
     }
@@ -296,7 +300,7 @@ where
         claimed: Claimed<Row>,
         batch: Arc<BatchTx<DB>>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         Self::held(claimed, Hold::Batch(batch), queue, pool)
     }
@@ -309,7 +313,7 @@ where
         lease: Row::Token,
         tx: Option<TxHold<DB>>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         let slot = book.enter(claimed.id::<DB>(), lease);
         Self::held(claimed, Hold::Lease { book, slot, tx }, queue, pool)
@@ -321,13 +325,13 @@ where
         claimed: Claimed<Row>,
         hold: LockHold<DB>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         Self::held(claimed, Hold::Advisory(hold), queue, pool)
     }
 
     /// The subscription's handle on the pool, which the delivery lends its handler.
-    pub(crate) const fn pool(&self) -> &'static Pool<DB> {
+    pub(crate) const fn pool(&self) -> &'static ServicePool<DB> {
         self.pool
     }
 
@@ -335,7 +339,7 @@ where
         mut claimed: Claimed<Row>,
         hold: Hold<DB, Row>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         // A row's headers column moves into the delivery in both modes: in row mode the row a
         // handler borrows holds that column empty, and middleware reads the headers off the
@@ -370,8 +374,15 @@ where
             row_lent: Default::default(),
             #[cfg(feature = "testing")]
             in_process: None,
+            in_work: None,
             _mode: PhantomData,
         }
+    }
+
+    /// The delivery counted in work until it drops.
+    pub(crate) fn counted(mut self, in_work: InWork) -> Self {
+        self.in_work = Some(in_work);
+        self
     }
 
     /// The delivery of `connection`, which keeps it when the connection runs in process.
@@ -397,7 +408,7 @@ where
         headers: Row::Headers,
         hold: Hold<DB, Row>,
         queue: &'static Queue,
-        pool: &'static Pool<DB>,
+        pool: &'static ServicePool<DB>,
     ) -> Self {
         Self {
             claimed: Claimed::Row(row),
@@ -408,6 +419,7 @@ where
             row_lent: AtomicBool::new(true),
             #[cfg(feature = "testing")]
             in_process: None,
+            in_work: None,
             _mode: PhantomData,
         }
     }
@@ -658,6 +670,7 @@ mod tests {
             prepared: Prepared::default(),
             begin_claim: None,
             counted_attempt: false,
+            one_writer: false,
             poll_interval: Duration::from_secs(1),
             lease: None,
             cap: None,

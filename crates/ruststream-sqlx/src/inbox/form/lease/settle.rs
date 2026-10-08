@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use ruststream::AckError;
 use sqlx::Pool;
+use tokio::runtime::Handle;
 
 use super::{LeaseBook, Slot};
+use crate::home;
 #[cfg(feature = "testing")]
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
@@ -42,13 +44,15 @@ where
         // The keeper found the row under another lease: nothing this settlement runs takes effect.
         return Ok(Settled::Lost);
     };
-    run_leased::<DB, Row>(book.pool(), cx, id, &held, step).await
+    run_leased::<DB, Row>(book.pool(), book.runtime(), cx, id, &held, step).await
 }
 
 /// Runs the statement of `step` for the row `id` on a connection of `pool`, committed at once,
-/// by the lease `held` the delivery held when it left its book.
+/// by the lease `held` the delivery held when it left its book. The connection is taken as if on
+/// `home`, the runtime the broker connected on, wherever the settlement runs.
 pub(crate) async fn run_leased<DB, Row>(
     pool: &Pool<DB>,
+    home: &Handle,
     cx: &Settling,
     id: &Row::Id,
     held: &Row::Token,
@@ -61,13 +65,13 @@ where
     let overridden = step.overridden(Row::SHAPE);
     let split = matches!(step, Step::DeadLetter(_)) && cx.queue.prepared.dead_letter_then.is_some();
     if !overridden && !split {
-        let mut conn = pool.acquire().await?;
+        let mut conn = home::acquire(pool, home).await?;
         return run_step::<DB, Row>(&mut conn, cx, id, Some(held), step).await;
     }
     // The service's own SQL names no lease, so its transaction first confirms the delivery still
     // holds one: the lease written over itself. A move the dialect splits in two runs in one
     // transaction too, so a half-moved row never shows.
-    let mut tx = PoolTx::begin(pool, None).await?;
+    let mut tx = PoolTx::open(home::acquire(pool, home).await?, None).await?;
     let settled = async {
         if overridden && Row::extend(&mut tx, cx, id, held, held).await? == Settled::Lost {
             return Ok(Settled::Lost);

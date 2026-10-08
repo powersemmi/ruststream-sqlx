@@ -5,11 +5,10 @@ use std::any::type_name;
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::task::{Context, Poll};
 
 use ruststream::{OutgoingMessage, PayloadForm, Publisher};
-use sqlx::{Database, Pool};
+use sqlx::Database;
 
 use super::OUTBOX_ID_HEADER;
 use super::database::Defaults;
@@ -17,6 +16,7 @@ use super::error::OutboxError;
 use super::events::Tracked;
 use super::publish::id_value;
 use super::switch::enabled;
+use crate::outbox::store::Store;
 
 /// The body of the startup republish, which [`republish`](super::Outbox::republish) hands to
 /// `after_startup`: it resolves once every unprocessed record went out again, and fails startup
@@ -56,7 +56,7 @@ impl fmt::Debug for Republishing {
 pub(super) async fn recover_and_publish<DB, Record, Live>(
     name: &'static str,
     defaults: &Defaults,
-    pool: &OnceLock<Pool<DB>>,
+    pool: &Store<DB>,
     publisher: &Live,
 ) -> Result<(), OutboxError>
 where

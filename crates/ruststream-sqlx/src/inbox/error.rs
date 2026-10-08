@@ -153,6 +153,25 @@ pub enum SqlxBrokerError {
         /// What to change.
         reason: String,
     },
+    /// A subscription on dedicated threads whose connections would take the service past the
+    /// broker's [`connection_limit`](crate::SqlxBroker::connection_limit): the subscription does
+    /// not open, and the service does not start.
+    #[error(
+        "subscription `{subscription}`: the pool's {pool} connections and the dedicated threads' \
+         {threads} pass the connection limit of {limit}; lower the threads' connections or raise \
+         the limit"
+    )]
+    ConnectionLimit {
+        /// The subscription that would pass the limit.
+        subscription: String,
+        /// The limit the broker sets.
+        limit: u32,
+        /// The size of the service's pool.
+        pool: u64,
+        /// The connections of the dedicated threads of every subscription so far, this one's
+        /// included.
+        threads: u64,
+    },
     /// The connection already reads this queue: two subscriptions would compete for its rows.
     #[error(
         "subscription `{subscription}` on table `{table}` ({row}) is open already on this \
