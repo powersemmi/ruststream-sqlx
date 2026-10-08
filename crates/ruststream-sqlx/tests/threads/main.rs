@@ -17,6 +17,7 @@
 mod live;
 
 mod locks;
+mod order;
 mod pool;
 mod probe;
 mod runtimes;

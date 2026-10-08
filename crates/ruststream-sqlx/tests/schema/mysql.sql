@@ -21,6 +21,10 @@ CREATE TABLE email_jobs (
 -- Where spent emails go when a registration dead-letters them into a table.
 CREATE TABLE email_jobs_dead LIKE email_jobs;
 
+-- The claim order the documentation asks for: without it a claim held for a handler locks the
+-- later rows of its group it read, and the next claim passes over them.
+CREATE INDEX email_jobs_order ON email_jobs (name, retry_after, job_id);
+
 -- A ledger whose accounts keep their order: a FIFO group per account, claimed by priority, then
 -- by `retry_after`.
 CREATE TABLE ledger (

@@ -94,9 +94,10 @@ without one stops at startup.
 
 Index a table's claim order: `(group, priority, retry_after, id)`, for the columns the table has.
 A row lock or lease claim locks every row of its group that it reads before sorting them, so
-without that index a claim held for a handler keeps the rest of its group from other claims. In a
-table with FIFO groups a claim first locks the unfinished rows of its group until its transaction
-ends, which in the row lock form is when the delivery settles. The same index keeps that read to
+without that index a claim held for a handler keeps the rest of its group from other claims. In the
+row lock form the next claim passes over those rows to later ones, and the rows of a partition key
+go into work out of order. In a table with FIFO groups a claim first locks the unfinished rows of
+its group until its transaction ends, which in the row lock form is when the delivery settles. The same index keeps that read to
 the group's own rows. A row lock table with FIFO groups that declares `serializable` stops its
 subscription when it opens, with [`SqlxBrokerError::Dialect`]: at that level `InnoDB` locks every
 row a read touches, and a claim would wait for the group's row in work.

@@ -49,6 +49,15 @@ impl Probe {
         self.0.wake.notify_waiters();
     }
 
+    /// The deliveries the handlers took, as `(key, id)` in the order they took them.
+    pub(crate) fn order(&self) -> Vec<(String, i64)> {
+        self.0
+            .order
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Keeps `value`, a connection a handler holds on to, until [`Probe::release`].
     pub(crate) fn keep(&self, value: impl Any + Send) {
         self.0
