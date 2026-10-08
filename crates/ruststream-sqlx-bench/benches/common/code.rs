@@ -5,10 +5,11 @@
 //! Every scenario is measured over one delivery, over [`MESSAGES`](super::MESSAGES) deliveries
 //! and over twice as many. The slope between the last two is the steady-state cost of a message:
 //! everything that happens once is in both totals and cancels in the subtraction. The
-//! one-delivery run is the cold start, reported on its own: the pool's first connection, the
+//! one-delivery run is the cold start, reported on its own: opening the pool's connections, the
 //! broker's startup checks and the first delivery.
 //!
-//! The first region is the start: the service's `start()`, or the raw loop's first connection.
+//! The first region is the start: the pool's connections opened ([`warm`]), then the service's
+//! `start()`.
 //! Between the two regions a producer on a thread and a runtime of its own fills the table and
 //! waits for its insert to commit. The service's runtime is current-thread, so it does not run
 //! while the producer works: nothing is claimed before the drain region opens, and the fill is in

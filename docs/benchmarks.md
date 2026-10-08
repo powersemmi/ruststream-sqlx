@@ -68,21 +68,22 @@ batch takes up to its size in rows per claim, so one claim serves that many deli
 The third table is counted rather than timed: instructions under callgrind and allocations under
 DHAT, for the service and for the raw loop beside it. Each scenario runs against the stand's
 Postgres on a single-threaded runtime. A producer on another thread fills the table between the
-start and the drain, so the fill is in neither.
+start and the drain, so the fill is in neither. The outbox scenarios send one command at a time and
+wait for its reply, so the relay and the sink never wait for each other's connection.
 
 What is counted is everything the service's thread runs: the framework, this crate, and sqlx's
 driver encoding, sending, receiving and decoding on that thread. The database server is another
 process and is not counted, and neither is the kernel's side of a system call.
 
 Instructions and allocations are per message in the steady state: the slope between a run of 1000
-deliveries and a run of 2000. The last column is what starting the service cost once: the pool's
-first connection, the broker's startup checks and the first delivery. The numbers are absolute,
+deliveries and a run of 2000. The last column is what starting the service cost once: opening the
+pool's connections, the broker's startup checks and the first delivery. The numbers are absolute,
 the framework's own cost included; the core publishes that cost alone on its
 [benchmarks page](https://powersemmi.github.io/ruststream/latest/benchmarks/).
 
 A count depends a little on how the socket hands the driver its bytes. `just bench-code` fails when
 a scenario allocates more than its limit: the steady rate it was seen at with a percent of
-headroom, and its start with five. Against a baseline it also fails on two percent more
+headroom, and what a run allocates once with five. Against a baseline it also fails on two percent more
 instructions in a scenario: `just bench-code --save-baseline=main` records the baseline on `main`,
 and `just bench-code --baseline=main` measures a change against it. A failed run prints every
 limit it breached, the old value beside the new one. A pull request that changes the cost cites
