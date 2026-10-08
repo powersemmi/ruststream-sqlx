@@ -104,6 +104,8 @@ impl Isolation {
     }
 
     /// The level as a table names it: `read_committed`.
+    // The derives and the crate read it to parse and check a table; a service never names it.
+    #[doc(hidden)]
     #[must_use]
     pub const fn attribute(self) -> &'static str {
         match self {
@@ -214,6 +216,8 @@ impl Mode {
     }
 
     /// The mode as a table names it: `immediate`.
+    // The derives and the crate read it to parse and check a table; a service never names it.
+    #[doc(hidden)]
     #[must_use]
     pub const fn attribute(self) -> &'static str {
         match self {
