@@ -174,13 +174,7 @@ where
         lease: description
             .leased()
             .then(|| whole_seconds(timing.lease.unwrap_or(shared.lease))),
-        cap: declaration
-            .max_attempts()
-            .zip(declaration.dead_letter())
-            .map(|(attempts, destination)| Cap {
-                attempts,
-                dead_letter: intern_name(destination),
-            }),
+        cap: cap_of(declaration),
     }
     .intern();
     // A book per subscription, not per queue: a queue's description is shared by every
@@ -235,6 +229,17 @@ where
 // Why a startup refusal: the dialect is known by its name, and the backend behind an `AnyPool` only
 // once the broker connected. MySQL and MariaDB read the latest row in an update at every level, so
 // they keep the acknowledgement at theirs.
+/// The retry cap `declaration` declares: both its attempts and its dead letter, or none.
+fn cap_of(declaration: &RetryDeclaration) -> Option<Cap> {
+    declaration
+        .max_attempts()
+        .zip(declaration.dead_letter())
+        .map(|(attempts, destination)| Cap {
+            attempts,
+            dead_letter: intern_name(destination),
+        })
+}
+
 /// Whether the database behind `DB` and `dialect` takes one writer at a time: SQLite, through a
 /// pool of its own or an `AnyPool`. Its busy handler sleeps instead of queueing a writer, so claims
 /// that run at once collide and wait out the sleeps.

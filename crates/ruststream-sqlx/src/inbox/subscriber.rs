@@ -480,8 +480,17 @@ where
                     continue;
                 }
             }
-            let Some((claimed, mut buffers)) = poll_fn(|cx| self.turn(claims, cx)).await else {
-                continue;
+            let in_work = self.in_work();
+            let (claimed, mut buffers) = if claims.running() == 0 && self.flow.wanted(in_work) == 1
+            {
+                // One claim and nothing beside it, as a plain mount always claims: awaited in place,
+                // so it costs no slot.
+                claim_one(self.one(0), claims.buffers()).await
+            } else {
+                let Some(done) = poll_fn(|cx| self.turn(claims, cx)).await else {
+                    continue;
+                };
+                done
             };
             match claimed {
                 Ok(taken) if buffers.rows.is_empty() => {
@@ -812,12 +821,12 @@ mod tests {
     use crate::inbox::engine::{IdAt, Prepared};
     use crate::inbox::queue::Queue;
 
-    fn queue(spec: TableSpec<'static>, one_writer: bool) -> Queue {
+    fn queue(spec: &TableSpec<'static>, one_writer: bool) -> Queue {
         Queue {
             name: "jobs",
             table: "jobs",
             row: "app::Job",
-            spec,
+            spec: *spec,
             id_at: IdAt::First,
             native_retry_after: false,
             kinds: None,
@@ -835,17 +844,17 @@ mod tests {
 
     #[test]
     fn a_plain_table_on_a_server_claims_for_every_free_worker() {
-        assert!(!one_claim(&queue(PLAIN, false)));
+        assert!(!one_claim(&queue(&PLAIN, false)));
     }
 
     #[test]
     fn a_keyed_table_keeps_its_claim_order() {
         let keyed = PLAIN.partition_key(Column::new("customer"));
-        assert!(one_claim(&queue(keyed, false)));
+        assert!(one_claim(&queue(&keyed, false)));
     }
 
     #[test]
     fn a_database_of_one_writer_keeps_one_claim() {
-        assert!(one_claim(&queue(PLAIN, true)));
+        assert!(one_claim(&queue(&PLAIN, true)));
     }
 }

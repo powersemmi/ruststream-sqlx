@@ -65,16 +65,20 @@ impl Flow {
         in_work: usize,
         spare: impl FnOnce() -> usize,
     ) -> bool {
-        let wanted = if self.probing {
-            1
-        } else {
-            self.workers
-                .saturating_sub(in_work)
-                .clamp(1, if self.one_claim { 1 } else { self.budget })
-        };
-        running < wanted
+        running < self.wanted(in_work)
             && self.held(running, in_work) < self.budget
             && (running == 0 || spare() >= 2)
+    }
+
+    /// The claims the subscription wants in flight beside `in_work` deliveries: one for each free
+    /// worker, or one alone.
+    pub(crate) fn wanted(&self, in_work: usize) -> usize {
+        if self.probing {
+            return 1;
+        }
+        self.workers
+            .saturating_sub(in_work)
+            .clamp(1, if self.one_claim { 1 } else { self.budget })
     }
 
     /// Whether the subscription, with `running` claims and `in_work` deliveries, holds all it may
@@ -201,6 +205,14 @@ impl<Args, Buffers, Make, Fut> Claims<Args, Buffers, Make, Fut> {
     /// The claims in flight.
     pub(crate) const fn running(&self) -> usize {
         self.running
+    }
+
+    /// Buffers for a claim run outside the slots: idle ones, or new ones.
+    pub(crate) fn buffers(&mut self) -> Buffers
+    where
+        Buffers: Default,
+    {
+        self.idle.pop().unwrap_or_default()
     }
 
     /// Buffers a claim handed back, for the next one.
