@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT `id`, CAST('webhook-' || ifnull(`endpoint`, '') AS TEXT) AS `__lock` FROM `checked_webhooks` ORDER BY `id` LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "checked_webhooks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "__lock",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ee75da0c59a63260cbef5cc959ff4c6df960421a1e65cb0db306094ce75d7d80"
+}

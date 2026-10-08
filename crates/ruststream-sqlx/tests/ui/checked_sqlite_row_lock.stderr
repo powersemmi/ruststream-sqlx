@@ -1,0 +1,5 @@
+error: the sqlite dialect claims no rows in the row lock form, which this table takes: claim them by lease, with a `#[field(locked_until)]` field, or by advisory lock, with `advisory_lock = ".."`
+ --> tests/ui/checked_sqlite_row_lock.rs:4:17
+  |
+4 | #[inbox(table = "email_jobs", checked, db = sqlite)]
+  |                 ^^^^^^^^^^^^

@@ -3,14 +3,17 @@
 //! the message's `InboxTable` extends that description with its own columns and its own events,
 //! reads its roles through the headers struct, and builds its header map from it.
 
-use proc_macro2::{Span, TokenStream as TokenStream2};
+use proc_macro2::{Ident, Span, TokenStream as TokenStream2, TokenTree};
 use quote::{quote, quote_spanned};
 use ruststream_sqlx_dialect::Role;
 use syn::spanned::Spanned;
-use syn::{DeriveInput, Generics, Type, WherePredicate, parse_quote, parse_quote_spanned};
+use syn::{
+    DeriveInput, GenericParam, Generics, Type, WherePredicate, parse_quote, parse_quote_spanned,
+};
 
 use super::{carried, own_events};
 use crate::check::Errors;
+use crate::checked;
 use crate::parse::{self, Custom, Field, Storage};
 
 /// The impls of a message whose field at `headers` flattens its headers struct.
@@ -84,12 +87,31 @@ pub(crate) fn expand(
     let (impl_generics, _, where_clause) = generics.split_for_impl();
     let carried = carried(input, &generics);
     let roles = roles(input, &generics, holder, ident);
+    // A message that reads its rows with the crate's fetch holds its headers struct to that: a
+    // `checked` headers struct claims ids alone. A holder named by the message's own parameters
+    // is judged where `TABLE` is evaluated, once per instantiation; any other at once.
+    let default_fetch = (!custom.fetch).then(|| checked::default_fetch(holder));
+    let (at_once, per_instance) = if names_parameter(holder, &input.generics) {
+        (None, default_fetch)
+    } else {
+        (
+            default_fetch.map(|check| quote!(const _: () = { #check };)),
+            None,
+        )
+    };
+    let table_value = quote!(#headers_of::TABLE #fetching #(.own::<#events>())*);
+    let table_value = match per_instance {
+        Some(check) => quote!({ #check #table_value }),
+        None => table_value,
+    };
     Ok(quote! {
+        #at_once
+
         #[automatically_derived]
         impl #table_impl #r::InboxTable for #name #ty_generics #table_where {
             type Id = #headers_of::Id;
             type Table = #table;
-            const TABLE: Self::Table = #headers_of::TABLE #fetching #(.own::<#events>())*;
+            const TABLE: Self::Table = #table_value;
 
             fn id(&self) -> &Self::Id {
                 #headers_of::id(&self.#ident)
@@ -109,6 +131,27 @@ pub(crate) fn expand(
 
         #carried
     })
+}
+
+/// Whether `ty` names one of `generics`' parameters.
+fn names_parameter(ty: &Type, generics: &Generics) -> bool {
+    fn names(tokens: TokenStream2, params: &[&Ident]) -> bool {
+        tokens.into_iter().any(|token| match token {
+            TokenTree::Ident(ident) => params.contains(&&ident),
+            TokenTree::Group(group) => names(group.stream(), params),
+            TokenTree::Punct(_) | TokenTree::Literal(_) => false,
+        })
+    }
+    let params: Vec<&Ident> = generics
+        .params
+        .iter()
+        .filter_map(|param| match param {
+            GenericParam::Type(ty) => Some(&ty.ident),
+            GenericParam::Const(constant) => Some(&constant.ident),
+            GenericParam::Lifetime(_) => None,
+        })
+        .collect();
+    names(quote!(#ty), &params)
 }
 
 /// The rules of a message assembled from a headers struct: one headers struct, no role beside it
@@ -205,12 +248,7 @@ fn rule_span(custom: Custom) -> Option<Span> {
 
 /// The roles the message reads through its headers struct: the partition key and the attempt,
 /// where the headers struct has the field.
-fn roles(
-    input: &DeriveInput,
-    generics: &Generics,
-    holder: &Type,
-    ident: &syn::Ident,
-) -> TokenStream2 {
+fn roles(input: &DeriveInput, generics: &Generics, holder: &Type, ident: &Ident) -> TokenStream2 {
     let r = quote!(::ruststream_sqlx);
     let name = &input.ident;
     let span = holder.span();

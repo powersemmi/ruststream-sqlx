@@ -300,6 +300,14 @@ it in place of the default. The example service in `examples/outbox` takes its r
 fetch of its own that also stamps `taken_at`. A record type that names an event and lacks its
 trait does not register, and the error names the missing trait.
 
+## Beside the inbox
+
+The outbox's middlewares wrap the handlers of an inbox subscription as they wrap any other. A
+tracked publish takes a connection of its own for the record's insert, so a record written while a
+[transactional](#transactional-mode) handler runs commits on its own, whatever the delivery's
+outcome. A message tracked into an inbox table carries its record id where the table keeps
+headers: a `headers` column that the service's `Publish` impl writes.
+
 ## Testing
 
 A test build of the service (the `testing` feature) leaves the outbox off: the middlewares pass

@@ -44,6 +44,12 @@ A subscription caps the deliveries of a message with `max_attempts(n)` and names
 `dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are
 declared together. With `max_attempts(1)`, every failure moves the row at once.
 
+The columns that run a queue each play a role, and each role turns on one behaviour: the group a
+subscription reads, the order rows are taken in, a key that keeps related rows in order, the delay
+before a retry, the attempt count, and a mark that keeps a processed row instead of deleting it. A
+table reads "now" from the host's clock by default. It can read the database's clock instead, so
+that every host reads the same time.
+
 The service describes a queue table with a derive on its struct, or by hand. By hand, the struct
 implements a trait, and a typed builder holds every setting of the table. The compiler checks that
 description as strictly as the derive's. Both forms give the same statements and cost the same per
@@ -59,9 +65,17 @@ The service owns its queue tables. At startup a subscription checks that its tab
 columns its struct names. The column types are the service's to get right, and a row that does
 not decode is settled by the subscription's decode-failure policy.
 
+A team that checks its SQL at compile time adds `checked` and the database to the derive. The
+derive then hands the statements it generates to sqlx's compile-time macros, so `cargo sqlx
+prepare` checks them against the database with the service's own queries. The startup check runs
+as well.
+
 ## Where the rest is
 
 The crate's reference is on docs.rs: [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx).
+
+What the crate costs per message and how many messages it moves per second, beside a raw sqlx loop
+doing the same work, is on the [benchmarks page](benchmarks.md).
 
 Handlers, routers, codecs and middleware come from the framework, whose own entry pages start at
 [the RustStream site](https://powersemmi.github.io/ruststream/).

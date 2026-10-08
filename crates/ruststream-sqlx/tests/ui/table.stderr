@@ -4,7 +4,7 @@ error: #[derive(Inbox)] needs the table: add `#[inbox(table = "..")]`
 5 | struct NoTable {
   |        ^^^^^^^
 
-error: unknown `#[inbox(..)]` option: expected `table`, `schema`, `advisory_lock`, `isolation`, `mode`, `custom` or `clock`
+error: unknown `#[inbox(..)]` option: expected `table`, `schema`, `advisory_lock`, `isolation`, `mode`, `custom`, `clock`, `checked` or `db`
   --> tests/ui/table.rs:11:25
    |
 11 | #[inbox(table = "jobs", queue = "emails")]

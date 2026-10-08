@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH __claimed AS (SELECT \"id\" AS \"id\", \"attempt\" AS \"attempt\", \"payload\" AS \"payload\" FROM \"checked_ledger\" WHERE \"id\" = (SELECT \"id\" FROM \"checked_ledger\" WHERE \"account\" = $1 ORDER BY \"id\" LIMIT 1) AND (\"locked_until\" IS NULL OR \"locked_until\" <= $2) AND NOT EXISTS (SELECT 1 FROM \"checked_ledger\" AS __work WHERE __work.\"account\" = $3 AND __work.\"locked_until\" > $4) FOR UPDATE SKIP LOCKED), __stamped AS (UPDATE \"checked_ledger\" AS __row SET \"locked_until\" = $5, \"attempt\" = __row.\"attempt\" + 1 FROM __claimed WHERE __row.\"id\" = __claimed.\"id\") SELECT \"id\", \"attempt\", \"payload\" FROM __claimed ORDER BY \"id\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "attempt",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "attempt"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "checked_ledger",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e183f6d0920c849b528e80411841de37dffaa2b912fbab99d44abba0482bffbd"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE `checked_webhooks` SET `attempt` = `attempt` + 1 WHERE `id` = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d9c98f99951e7afd0ca97b5113930c6110dbd8370eba0eb1ed266d5334f2f651"
+}

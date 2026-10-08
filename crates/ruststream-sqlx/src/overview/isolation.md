@@ -1,7 +1,7 @@
 # Isolation and mode
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::prelude::*;
 use serde::Deserialize;
@@ -44,7 +44,7 @@ By hand, `.opens::<Level>()` takes a marker of [`dialect::level`], and `Opens<Le
 the type:
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream_sqlx::dialect::{Column, level};
 use ruststream_sqlx::spec::{Opens, Payload};

@@ -1,0 +1,65 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT `id` AS `id`, `attempt` AS `attempt`, `payload` AS `payload` FROM `checked_emails` WHERE `name` = ? AND `retry_after` <= ? AND `processed_at` IS NULL ORDER BY `retry_after`, `id` LIMIT ? FOR UPDATE SKIP LOCKED",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | PRIMARY_KEY | AUTO_INCREMENT",
+          "collation": 63,
+          "max_size": 20
+        },
+        "origin": {
+          "Table": {
+            "table": "ruststream_checked.checked_emails",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "attempt",
+        "type_info": {
+          "type": "Short",
+          "flags": "NOT_NULL",
+          "collation": 63,
+          "max_size": 6
+        },
+        "origin": {
+          "Table": {
+            "table": "ruststream_checked.checked_emails",
+            "name": "attempt"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "payload",
+        "type_info": {
+          "type": "Blob",
+          "flags": "NOT_NULL | BLOB | BINARY | NO_DEFAULT_VALUE",
+          "collation": 63,
+          "max_size": 4294967295
+        },
+        "origin": {
+          "Table": {
+            "table": "ruststream_checked.checked_emails",
+            "name": "payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8c16b2cf7652d74317042c24eb43fee5038f71df4faee2c61df77692e393f148"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "INSERT INTO `checked_emails` (`name`, `retry_after`, `processed_at`, `payload`, `note`) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "4b1cfb9d1435b220de5797e34b390647bcbb273d8097d0887d9168be8a64b948"
+}

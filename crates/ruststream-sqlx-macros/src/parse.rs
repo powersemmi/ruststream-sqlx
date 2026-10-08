@@ -201,7 +201,7 @@ mod tests {
             (
                 parse_quote! { #[inbox(table = "jobs", queue = "emails")] struct Job { #[field(id)] id: i64 } },
                 "unknown `#[inbox(..)]` option: expected `table`, `schema`, `advisory_lock`, \
-                 `isolation`, `mode`, `custom` or `clock`",
+                 `isolation`, `mode`, `custom`, `clock`, `checked` or `db`",
             ),
             (
                 parse_quote! { #[inbox(table = "")] struct Job { #[field(id)] id: i64 } },

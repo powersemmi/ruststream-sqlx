@@ -74,6 +74,30 @@ impl<'a> TableName<'a> {
     ///
     /// [`ParseTableNameError::EmptySegment`] when the name or one of its segments is empty;
     /// [`ParseTableNameError::TooManySegments`] when the name has more than one dot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use ruststream_sqlx_dialect::{Column, Dialect, Form, Postgres, TableName, TableSpec};
+    ///
+    /// const EMAILS: TableSpec<'static> =
+    ///     TableSpec::new("email_jobs", Column::new("job_id"), Form::RowLock)
+    ///         .payload(Column::new("payload"));
+    ///
+    /// // A dead email moves to the table the configuration names, in the `archive` schema.
+    /// let target = TableName::parse("archive.email_jobs_dead")?;
+    /// let moves = Postgres.dead_letter_table(&EMAILS, target)?;
+    /// assert_eq!(
+    ///     moves[0].sql(),
+    ///     r#"WITH moved AS (DELETE FROM "email_jobs" WHERE "job_id" = $1 RETURNING "job_id", "payload") INSERT INTO "archive"."email_jobs_dead" ("job_id", "payload") SELECT "job_id", "payload" FROM moved"#
+    /// );
+    /// # Ok(())
+    /// # }
+    /// # #[cfg(not(feature = "postgres"))]
+    /// # fn main() {}
+    /// ```
     pub fn parse(name: &'a str) -> Result<Self, ParseTableNameError> {
         let parsed = match name.split_once('.') {
             None => Self {
@@ -254,6 +278,16 @@ impl<'a> TableName<'a> {
 }
 
 /// Why a string does not name a table.
+///
+/// # Examples
+///
+/// ```
+/// use ruststream_sqlx_dialect::{ParseTableNameError, TableName};
+///
+/// // A dead-letter table read from configuration that also names a database is refused.
+/// let refused = TableName::parse("db.archive.email_jobs_dead");
+/// assert!(matches!(refused, Err(ParseTableNameError::TooManySegments { .. })));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ParseTableNameError {

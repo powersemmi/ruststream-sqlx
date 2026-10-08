@@ -56,14 +56,24 @@ is served by a dialect of the service's own ([`SqlxBroker::with_dialect`]): a ty
 [`Dialect`](dialect::Dialect), [`RowLock`](dialect::RowLock), [`Lease`](dialect::Lease) and
 [`Advisory`](dialect::Advisory) for the forms it serves, and [`ByName`] for subscriptions by name.
 
+The connections a subscription holds depend on its form and on transactional mode, alike on every
+database ([Row locks, leases or advisory locks](#row-locks-leases-or-advisory-locks)).
+
 ## Postgres
 
-`postgres` serves every form. A lease claim is one statement: it locks the claimable rows with
-`SKIP LOCKED`, writes their lease and returns them. A claim of the service's own may leave the
+`postgres` serves every form. The row lock and lease claims skip locked rows with `SKIP LOCKED`,
+which Postgres 9.5 added. A lease claim is one statement: it locks the claimable rows, writes their
+lease and returns them. A claim of the service's own may leave the
 rows to the crate's fetch, which reads them by a list of ids. A table on the database's clock
 reads `statement_timestamp()`. The advisory lock form and the claims of FIFO groups lock 64-bit
 hashes made by `hashtextextended`, which Postgres 11 added. An older server refuses their
 statements, so their subscriptions stop when they open.
+
+A subscription on Postgres wakes on rows other processes write when the broker listens for
+`pg_notify` ([`LISTEN/NOTIFY` on Postgres](#listennotify-on-postgres)). The advisory lock form
+needs a direct connection or `PgBouncer` in session pooling
+([The advisory lock form](#the-advisory-lock-form)). A row lock table works at `read_committed`;
+the stricter levels fail claims with serialization errors ([Isolation and mode](#isolation-and-mode)).
 
 ## MySQL and MariaDB
 

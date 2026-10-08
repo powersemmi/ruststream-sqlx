@@ -1,0 +1,57 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE `checked_webhooks` SET `attempt` = `attempt` + 1 WHERE `id` = ? RETURNING `id`, `attempt` - 1 AS `attempt`, `payload`, `endpoint`",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "checked_webhooks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "attempt",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "payload",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "checked_webhooks",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "name": "endpoint",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "checked_webhooks",
+            "name": "endpoint"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3f0a86962e1b81b56efcc42132d7aa91c3044e87b99c0a6434452bcc23cb4834"
+}

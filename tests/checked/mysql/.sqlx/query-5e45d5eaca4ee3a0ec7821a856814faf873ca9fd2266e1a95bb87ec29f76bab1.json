@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE `checked_ledger` SET `locked_until` = ?, `attempt` = `attempt` + 1 WHERE `id` = ? AND (`locked_until` IS NULL OR `locked_until` <= ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "5e45d5eaca4ee3a0ec7821a856814faf873ca9fd2266e1a95bb87ec29f76bab1"
+}

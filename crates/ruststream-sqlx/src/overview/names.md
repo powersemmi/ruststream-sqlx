@@ -1,7 +1,7 @@
 # Routes and by-name subscriptions
 
 ```no_run
-# #[cfg(feature = "postgres")]
+# #[cfg(all(feature = "inbox", feature = "postgres"))]
 # mod demo {
 use ruststream::OutgoingMessage;
 use ruststream_sqlx::prelude::*;

@@ -1,0 +1,5 @@
+error: `clock = Source` is chosen where `SendEmail` is used, and `checked` builds the statements now: name the clock's type, or drop `checked`
+ --> tests/ui/checked_clock_parameter.rs:6:39
+  |
+6 | #[inbox(table = "email_jobs", clock = Source, checked, db = postgres)]
+  |                                       ^^^^^^

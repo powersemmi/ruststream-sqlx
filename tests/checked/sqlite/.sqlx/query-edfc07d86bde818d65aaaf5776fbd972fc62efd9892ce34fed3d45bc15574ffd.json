@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM `checked_ledger` WHERE `id` = ? AND `locked_until` = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "edfc07d86bde818d65aaaf5776fbd972fc62efd9892ce34fed3d45bc15574ffd"
+}

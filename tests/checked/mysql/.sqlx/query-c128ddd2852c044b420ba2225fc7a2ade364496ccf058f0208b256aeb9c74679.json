@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "UPDATE `checked_emails` SET `attempt` = `attempt` + 1 WHERE `id` = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c128ddd2852c044b420ba2225fc7a2ade364496ccf058f0208b256aeb9c74679"
+}

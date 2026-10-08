@@ -1,0 +1,26 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(COALESCE(GET_LOCK(?, 0), 0) AS SIGNED)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "CAST(COALESCE(GET_LOCK(?, 0), 0) AS SIGNED)",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 21
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d820eda75b45ff19cbed920af044cc906eae51c837b94b354b37ef1fb2e150a1"
+}
