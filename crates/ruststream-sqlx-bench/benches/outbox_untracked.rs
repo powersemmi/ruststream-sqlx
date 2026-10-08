@@ -66,8 +66,9 @@ fn outbox_run(messages: usize) -> Pending {
     ))
 }
 
-// A placeholder floor, replaced by the measured one.
-#[library_benchmark(config = common::config_every(60_000, 1_000, 1_000))]
+// Twice MESSAGES deliveries allocated 12,207 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 13 blocks.
+#[library_benchmark(config = common::config_every(6_104, 1_000, 13))]
 #[bench::first(none_run(1))]
 #[bench::base(none_run(MESSAGES))]
 #[bench::twice(none_run(2 * MESSAGES))]
@@ -75,8 +76,9 @@ fn none(run: Pending) {
     start_and_drain(run);
 }
 
-// A placeholder floor, replaced by the measured one.
-#[library_benchmark(config = common::config_every(60_000, 1_000, 1_000))]
+// Twice MESSAGES deliveries allocated 12,244 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 13 blocks.
+#[library_benchmark(config = common::config_every(6_122, 1_000, 13))]
 #[bench::first(outbox_run(1))]
 #[bench::base(outbox_run(MESSAGES))]
 #[bench::twice(outbox_run(2 * MESSAGES))]

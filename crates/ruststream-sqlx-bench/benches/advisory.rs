@@ -48,10 +48,9 @@ fn raw_run(messages: usize) -> Pending {
     )
 }
 
-// At most 47.95 allocations per delivery and 599 once per run, over four smoke runs of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// once-per-run part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(48_430, 1_000, 629))]
+// Twice MESSAGES deliveries allocated 94,778 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 95 blocks.
+#[library_benchmark(config = common::config_every(47_389, 1_000, 95))]
 #[bench::first(service_run(1))]
 #[bench::base(service_run(MESSAGES))]
 #[bench::twice(service_run(2 * MESSAGES))]
@@ -59,10 +58,9 @@ fn service(run: Pending) {
     start_and_drain(run);
 }
 
-// At most 47 allocations per delivery and 443 once per run, over four smoke runs of 20 deliveries.
-// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
-// part; one allocation more per delivery breaches it at the default count.
-#[library_benchmark(config = common::config_every(47_470, 1_000, 466))]
+// Twice MESSAGES deliveries allocated 94,678 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 95 blocks.
+#[library_benchmark(config = common::config_every(47_339, 1_000, 95))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]

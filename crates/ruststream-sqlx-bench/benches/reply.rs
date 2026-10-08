@@ -46,8 +46,9 @@ fn raw_run(messages: usize) -> Pending {
     .also(Table::Replies)
 }
 
-// A placeholder floor, replaced by the measured one.
-#[library_benchmark(config = common::config_every(60_000, 1_000, 1_000))]
+// Twice MESSAGES deliveries allocated 88,486 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 89 blocks.
+#[library_benchmark(config = common::config_every(44_243, 1_000, 89))]
 #[bench::first(service_run(1))]
 #[bench::base(service_run(MESSAGES))]
 #[bench::twice(service_run(2 * MESSAGES))]
@@ -55,8 +56,9 @@ fn service(run: Pending) {
     start_and_drain(run);
 }
 
-// A placeholder floor, replaced by the measured one.
-#[library_benchmark(config = common::config_every(60_000, 1_000, 1_000))]
+// Twice MESSAGES deliveries allocated 90,414 blocks over 5 runs. The floor is the
+// highest, stated over a thousand deliveries, plus a 0.1% margin of 91 blocks.
+#[library_benchmark(config = common::config_every(45_207, 1_000, 91))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]
