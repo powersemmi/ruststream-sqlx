@@ -29,6 +29,8 @@ pub use ruststream_sqlx_dialect as dialect;
 
 #[cfg(any(feature = "inbox", feature = "outbox"))]
 mod header_column;
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+mod home;
 #[cfg(feature = "outbox")]
 pub mod outbox;
 #[cfg(any(feature = "inbox", feature = "outbox"))]
