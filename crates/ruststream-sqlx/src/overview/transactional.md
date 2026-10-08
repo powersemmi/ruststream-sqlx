@@ -129,7 +129,8 @@ out meanwhile, claims included.
 
 Each delivery in work holds one connection of the pool for its transaction, in every form. A
 handler that takes a second connection, through `keys::Pool` or a publish, needs a pool larger
-than its `workers(n)`: a pool without that room makes it wait for the pool's `acquire_timeout`.
+than its `workers(n)`. The subscription leaves the pool's last connection free, so such a handler
+still gets one when the pool is short, and the subscription runs fewer deliveries at once.
 Transactional mode serves single deliveries: a batch handler mounted with `.transactional()` does
 not compile.
 

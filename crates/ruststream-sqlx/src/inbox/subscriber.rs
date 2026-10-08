@@ -40,8 +40,11 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// The subscriber an [`InboxQueue`](crate::InboxQueue) opens: a stream of deliveries claimed from
 /// the table.
 ///
-/// The stream claims when it is polled: up to one row for a single-message handler, up to the
-/// batch size for a batch handler. After a claim that filled its limit the next one runs at once;
+/// The stream claims when it is polled: up to the batch size for a batch handler, and one row for
+/// a single-message handler, with a claim in flight for each free worker of a handler mounted with
+/// `workers(n)`. The subscription holds at most the pool's size less one connection, and a claim
+/// beside another one starts only while the pool has a connection to spare, so the pool keeps one
+/// for the handlers. After a claim that filled its limit the next one runs at once;
 /// after one that found fewer rows it waits the poll interval, or until a publisher of the same
 /// broker writes a row of its table and group (a row the service writes through its own SQL or a
 /// handler's transaction waits for the interval). A write that lands while the subscription

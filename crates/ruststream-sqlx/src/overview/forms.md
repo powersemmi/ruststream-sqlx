@@ -135,14 +135,25 @@ pool per message in work, as in the row lock form.
 
 SQLite has no row locks, so a SQLite table takes the lease or the advisory lock form.
 
-A publish takes a connection of its own for its insert. In the row lock form a subscription with
-`workers(n)` holds up to n + 1 connections, and handlers that publish need room for their inserts
-on top: a pool without that room makes them wait for its `acquire_timeout`. In the lease form a
-claim and a settlement each take a connection only for their statements, and each subscription
-takes one each half lease to extend the leases in work. In the advisory lock form each delivery
-in work holds a connection of its own until it settles, in a batch too. In
+A subscription mounted with `workers(n)` keeps a claim in flight for each free worker, so its
+workers take rows at once instead of one after another. It never holds more than the pool's size
+less one connection, so the pool always keeps a connection for the handlers' own queries, their
+publishes and the settlements that take one. A claim beside another one starts only while the
+pool has a connection to spare, so subscriptions that share a pool, and handlers that hold its
+connections, leave each other room. A pool short of room runs fewer deliveries at once.
+
+What a subscription holds depends on the form. In the row lock form each delivery in work and
+each claim in flight holds a connection: with `workers(n)` up to n. In the lease form a claim and
+a settlement each take a connection only for their statements, and each subscription takes one
+each half lease to extend the leases in work. In the advisory lock form each delivery in work
+holds a connection of its own until it settles, in a batch too. In
 [transactional mode](#transactional-mode) each delivery in work holds a connection for the
 transaction its handler writes through, in every form.
+
+Size the pool for every subscription that holds connections: n for each `workers(n)`, one more for
+the pool, and the connections the handlers take for their own queries and inserts. A publish takes
+a connection of its own for its insert. In the lease form a pool of n + 1 lets every free worker
+claim at once.
 
 ## The lease form
 
@@ -322,9 +333,9 @@ to close.
 
 A delivery holds a connection of its own because its lock lives in that connection's session: a
 delivery dropped unsettled closes its own connection and leaves the other rows alone. A
-subscription with `workers(n)` holds up to n connections for its deliveries, and a batch of n
-rows holds n. A batch takes the connections the pool gives at once: idle ones first, then new
-ones while the pool has room. It ends where the pool is full, so a batch larger than the pool
+subscription with `workers(n)` holds up to n connections for its deliveries and its claims, and a
+batch of n rows holds n. A batch takes the connections the pool gives at once: idle ones first, then
+new ones while the pool has room. It ends where the pool is full, so a batch larger than the pool
 shrinks instead of waiting. Handlers that publish need room for their inserts on top.
 
 Each database keeps the locks in its own way, and keeps the locks of two databases apart:
