@@ -117,3 +117,12 @@ serde.workspace = true
 serde_json.workspace = true
 trybuild.workspace = true
 dhat.workspace = true
+
+# The two services the documentation site shows, one per component.
+[[example]]
+name = "inbox"
+required-features = ["inbox", "postgres"]
+
+[[example]]
+name = "outbox"
+required-features = ["outbox", "postgres"]
