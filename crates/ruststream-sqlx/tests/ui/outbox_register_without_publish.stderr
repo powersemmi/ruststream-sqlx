@@ -1,20 +1,32 @@
-error[E0277]: `Unrecorded` misses an event of an outbox record on `sqlx::Postgres`, so it cannot be registered
-  --> tests/ui/outbox_register_without_publish.rs:16:55
+error[E0277]: `Unrecorded` does not implement `outbox::Publish<sqlx::Postgres>`, so nothing records what is published under its names
+  --> tests/ui/outbox_register_without_publish.rs:16:44
    |
 16 |     let _ = Outbox::<Postgres>::deferred().register::<Unrecorded>("orders");
-   |                                            --------   ^^^^^^^^^^ a record without every outbox event
-   |                                            |
-   |                                            required by a bound introduced by this call
+   |                                            ^^^^^^^^ no `outbox::Publish` for this record
    |
 help: the trait `ruststream_sqlx::outbox::Publish<sqlx::Postgres>` is not implemented for `Unrecorded`
   --> tests/ui/outbox_register_without_publish.rs:6:1
    |
  6 | struct Unrecorded {
    | ^^^^^^^^^^^^^^^^^
-   = note: a record implements `outbox::Publish<sqlx::Postgres>` itself, and every event its `#[outbox(custom(..))]` lists; the `help` names the missing one
+   = note: implement `outbox::Publish<sqlx::Postgres>` for `Unrecorded`: its statement inserts the record and returns the id
+help: the trait `ruststream_sqlx::outbox::RecordList<DB>` is conditionally implemented for `Registered<Record, Rest>`
+  --> src/outbox/registry/list.rs
+   |
+   | / impl<DB, Record, Rest> RecordList<DB> for Registered<Record, Rest>
+   | | where
+   | |     DB: Database,
+   | |     Record: Tracked<DB>,
+   | |             ----------- unsatisfied requirement introduced here: `Unrecorded: ruststream_sqlx::outbox::Tracked<sqlx::Postgres>`
+   | |     Rest: RecordList<DB>,
+   | |_________________________^
    = note: required for `Unrecorded` to implement `ruststream_sqlx::outbox::Tracked<sqlx::Postgres>`
+   = note: required for `Registered<Unrecorded, Nil>` to implement `ruststream_sqlx::outbox::RecordList<sqlx::Postgres>`
 note: required by a bound in `ruststream_sqlx::Outbox::<DB, Records>::register`
   --> src/outbox/registry.rs
    |
-   |     pub fn register<Record: Tracked<DB>>(
-   |                             ^^^^^^^^^^^ required by this bound in `Outbox::<DB, Records>::register`
+   |     pub fn register<Record: OutboxTable>(
+   |            -------- required by a bound in this associated function
+...
+   |         Registered<Record, Records>: RecordList<DB>,
+   |                                      ^^^^^^^^^^^^^^ required by this bound in `Outbox::<DB, Records>::register`

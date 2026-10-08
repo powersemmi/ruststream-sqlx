@@ -156,7 +156,8 @@ fn the_advisory_statements_refuse_other_forms_and_fifo_groups() {
         Sqlite.take(&LOCKED, ClaimShape::Rows),
         Err(other("take", "row lock"))
     );
-    let fifo = ADVISED.fifo_group(Column::new("name"));
+    let fifo = TableSpec::new("jobs", Column::new("job_id"), Form::Advisory(PREFIXED_KEY))
+        .fifo_group(Column::new("name"));
     let refused = StatementError::AdvisoryFifo { dialect: "sqlite" };
     assert_eq!(Sqlite.advisory_claim(&fifo), Err(refused.clone()));
     assert_eq!(Sqlite.take(&fifo, ClaimShape::Rows), Err(refused));

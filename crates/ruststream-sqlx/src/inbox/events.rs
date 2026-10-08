@@ -1,5 +1,6 @@
-//! One trait per event of the queue: what a service implements when it lists the event in
-//! `#[inbox(custom(..))]`, and `Publish`, which has no default.
+//! One trait per event of the queue: what a service implements when its table names the event as
+//! its own, in `#[inbox(custom(..))]` or with `InboxSpec::own`, and `Publish`, which has no
+//! default.
 
 use std::future::Future;
 use std::time::Duration;
@@ -13,8 +14,9 @@ use super::time::LeaseRow;
 /// Claims up to `limit` rows of the queue `queue` and returns their ids, inside the claim's
 /// transaction.
 ///
-/// The derive builds it from the roles; a service lists `claim` in `custom(..)` to take it over,
-/// for a database without a built-in dialect or a claim of its own. The crate then reads the
+/// The dialect builds it from the table's description; a table names `claim` as its own to take it
+/// over (`custom(claim)`, or [`own::Claim`](crate::spec::own::Claim) by hand), for a database
+/// without a built-in dialect or a claim of its own. The crate then reads the
 /// rows with the service's [`Fetch`], or with its own fetch by a list of ids, which Postgres
 /// alone runs: on MySQL and SQLite a claim of the service's own comes with a `Fetch` of its own,
 /// and a subscription without one stops at startup. In the lease form the crate also leases each
@@ -55,9 +57,9 @@ use super::time::LeaseRow;
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `claim` in `#[inbox(custom(..))]` and does not implement `Claim<{DB}>`",
+    message = "`{Self}` runs its own `claim` (`custom(claim)` in `#[inbox(..)]`, or `own::Claim` in its `InboxSpec`) and does not implement `Claim<{DB}>`",
     label = "the service's own claim is missing",
-    note = "implement `Claim<{DB}>` for `{Self}`, or drop `claim` from `custom(..)`"
+    note = "implement `Claim<{DB}>` for `{Self}`, or drop `claim` from `custom(..)` (by hand: `.own::<own::Claim>()` and `own::Claim` in `type Table`)"
 )]
 pub trait Claim<DB: Database>: InboxRow {
     /// Claims up to `limit` rows and returns their ids.
@@ -74,8 +76,9 @@ pub trait Claim<DB: Database>: InboxRow {
 
 /// Reads the rows of claimed ids, on the claim's connection.
 ///
-/// The derive builds it, for a flat table and for a message assembled from a headers struct; a
-/// service lists `fetch` in `custom(..)` to assemble messages itself, from other tables
+/// The dialect builds it, for a flat table and for a message assembled from header fields; a table
+/// names `fetch` as its own (`custom(fetch)`, or [`own::Fetch`](crate::spec::own::Fetch) by hand)
+/// to assemble messages itself, from other tables
 /// ([a fetch over a join](crate#a-fetch-over-a-join)). Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row settles by the decode-failure policy before its handler runs, and the
 /// log names the id. It runs inside the claim's transaction, or right after a lease claim that
@@ -117,9 +120,9 @@ pub trait Claim<DB: Database>: InboxRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `fetch` in `#[inbox(custom(..))]` and does not implement `Fetch<{DB}>`",
+    message = "`{Self}` runs its own `fetch` (`custom(fetch)` in `#[inbox(..)]`, or `own::Fetch` in its `InboxSpec`) and does not implement `Fetch<{DB}>`",
     label = "the service's own fetch is missing",
-    note = "implement `Fetch<{DB}>` for `{Self}`, or drop `fetch` from `custom(..)`"
+    note = "implement `Fetch<{DB}>` for `{Self}`, or drop `fetch` from `custom(..)` (by hand: `.own::<own::Fetch>()` and `own::Fetch` in `type Table`)"
 )]
 pub trait Fetch<DB: Database>: InboxRow {
     /// The rows of `ids`, in any order.
@@ -198,7 +201,7 @@ macro_rules! settle_event {
 }
 
 settle_event!(
-    /// Acknowledges a row: the derive deletes it, or sets `processed_at`.
+    /// Acknowledges a row: by default it deletes the row, or sets `processed_at`.
     ///
     /// The service's own acknowledgement takes the row out of what the claim selects: it deletes
     /// the row, moves it, or marks it in a column the claim passes over. A row left claimable is
@@ -213,12 +216,12 @@ settle_event!(
         .bind(id)
         .execute(conn)
         .await?;",
-    message = "`{Self}` lists `ack` in `#[inbox(custom(..))]` and does not implement `Ack<{DB}>`",
-    note = "implement `Ack<{DB}>` for `{Self}`, or drop `ack` from `custom(..)`"
+    message = "`{Self}` runs its own `ack` (`custom(ack)` in `#[inbox(..)]`, or `own::Ack` in its `InboxSpec`) and does not implement `Ack<{DB}>`",
+    note = "implement `Ack<{DB}>` for `{Self}`, or drop `ack` from `custom(..)` (by hand: `.own::<own::Ack>()` and `own::Ack` in `type Table`)"
 );
 
 settle_event!(
-    /// Releases a row for another attempt at once: the derive counts the attempt, or leaves the
+    /// Releases a row for another attempt at once: by default it counts the attempt, or leaves the
     /// row for the rollback to release; in the lease form it clears the lease.
     ///
     /// In the lease form the row comes back once `locked_until` no longer holds it: the service's
@@ -230,12 +233,12 @@ settle_event!(
             .bind(id)
             .execute(conn)
             .await?;",
-    message = "`{Self}` lists `retry` in `#[inbox(custom(..))]` and does not implement `Retry<{DB}>`",
-    note = "implement `Retry<{DB}>` for `{Self}`, or drop `retry` from `custom(..)`"
+    message = "`{Self}` runs its own `retry` (`custom(retry)` in `#[inbox(..)]`, or `own::Retry` in its `InboxSpec`) and does not implement `Retry<{DB}>`",
+    note = "implement `Retry<{DB}>` for `{Self}`, or drop `retry` from `custom(..)` (by hand: `.own::<own::Retry>()` and `own::Retry` in `type Table`)"
 );
 
 settle_event!(
-    /// Releases a row for another attempt after `delay`: the derive sets `retry_after`.
+    /// Releases a row for another attempt after `delay`: by default it sets `retry_after`.
     ///
     /// A row with this event, or a `retry_after` field, is redelivered by the database's own
     /// clock. The service's own event delays a row only where the claim passes over it until
@@ -253,13 +256,13 @@ settle_event!(
         .bind(delay.as_secs_f64())
         .execute(conn)
         .await?;",
-    message = "`{Self}` lists `retry_after` in `#[inbox(custom(..))]` and does not implement `RetryAfter<{DB}>`",
-    note = "implement `RetryAfter<{DB}>` for `{Self}`, or drop `retry_after` from `custom(..)`",
+    message = "`{Self}` runs its own `retry_after` (`custom(retry_after)` in `#[inbox(..)]`, or `own::RetryAfter` in its `InboxSpec`) and does not implement `RetryAfter<{DB}>`",
+    note = "implement `RetryAfter<{DB}>` for `{Self}`, or drop `retry_after` from `custom(..)` (by hand: `.own::<own::RetryAfter>()` and `own::RetryAfter` in `type Table`)",
     delay: Duration = "Duration::from_secs(30)"
 );
 
 settle_event!(
-    /// Drops a row: the derive deletes it, or sets `processed_at`.
+    /// Drops a row: by default it deletes the row, or sets `processed_at`.
     ///
     /// The service's own drop takes the row out of what the claim selects, as an acknowledgement
     /// does.
@@ -269,13 +272,13 @@ settle_event!(
             .bind(id)
             .execute(conn)
             .await?;",
-    message = "`{Self}` lists `discard` in `#[inbox(custom(..))]` and does not implement `Discard<{DB}>`",
-    note = "implement `Discard<{DB}>` for `{Self}`, or drop `discard` from `custom(..)`"
+    message = "`{Self}` runs its own `discard` (`custom(discard)` in `#[inbox(..)]`, or `own::Discard` in its `InboxSpec`) and does not implement `Discard<{DB}>`",
+    note = "implement `Discard<{DB}>` for `{Self}`, or drop `discard` from `custom(..)` (by hand: `.own::<own::Discard>()` and `own::Discard` in `type Table`)"
 );
 
 settle_event!(
-    /// Moves a row whose attempts are spent to `destination`: the derive moves it to that group
-    /// (with a `group` field) or into that table.
+    /// Moves a row whose attempts are spent to `destination`: by default it moves the row to that
+    /// group (on a table with a `group` column) or into that table.
     ///
     /// The service's own move takes the row out of what the claim selects; a row copied and left
     /// behind is moved again at every delivery.
@@ -290,16 +293,17 @@ settle_event!(
         .execute(conn)
         .await?;
         tracing::warn!(id, destination, \"a job's attempts are spent\");",
-    message = "`{Self}` lists `dead_letter` in `#[inbox(custom(..))]` and does not implement `DeadLetter<{DB}>`",
-    note = "implement `DeadLetter<{DB}>` for `{Self}`, or drop `dead_letter` from `custom(..)`",
+    message = "`{Self}` runs its own `dead_letter` (`custom(dead_letter)` in `#[inbox(..)]`, or `own::DeadLetter` in its `InboxSpec`) and does not implement `DeadLetter<{DB}>`",
+    note = "implement `DeadLetter<{DB}>` for `{Self}`, or drop `dead_letter` from `custom(..)` (by hand: `.own::<own::DeadLetter>()` and `own::DeadLetter` in `type Table`)",
     destination: &str = "\"jobs.dead\""
 );
 
 /// Extends the lease on a row: writes `until` into `locked_until` while the row still holds
 /// `held`, and says whether it did.
 ///
-/// The derive builds it for every table with a `#[field(locked_until)]` field; a service lists
-/// `extend` in `custom(..)` to take it over, for a database without a built-in dialect. A
+/// The dialect builds it for every table in the lease form; a table names `extend` as its own
+/// (`custom(extend)`, or [`own::Extend`](crate::spec::own::Extend) by hand) to take it over, for a
+/// database without a built-in dialect. A
 /// subscription runs it each half lease for every delivery in work, on one connection. The crate
 /// also runs it with `until` equal to `held` to confirm a delivery's lease, inside the transaction
 /// where an event of the service's own then runs.
@@ -346,9 +350,9 @@ settle_event!(
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `extend` in `#[inbox(custom(..))]` and does not implement `Extend<{DB}>`",
+    message = "`{Self}` runs its own `extend` (`custom(extend)` in `#[inbox(..)]`, or `own::Extend` in its `InboxSpec`) and does not implement `Extend<{DB}>`",
     label = "the service's own extension is missing",
-    note = "implement `Extend<{DB}>` for `{Self}`, or drop `extend` from `custom(..)`"
+    note = "implement `Extend<{DB}>` for `{Self}`, or drop `extend` from `custom(..)` (by hand: `.own::<own::Extend>()` and `own::Extend` in `type Table`)"
 )]
 pub trait Extend<DB: Database>: LeaseRow {
     /// Writes `until` into the lease of the row `id` while it still holds `held`; `true` when it
@@ -369,8 +373,9 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// waiting: the `lock` event of the advisory lock form.
 ///
 /// The dialect takes the lock itself on Postgres and MySQL, and the process keeps the keys in work
-/// on SQLite. A table lists `lock` and `unlock` in `custom(..)` together to run the service's own
-/// SQL for them instead, as a database without a built-in dialect does, MSSQL with
+/// on SQLite. A table names `lock` and `unlock` as its own together (`custom(lock, unlock)`, or
+/// [`own::Lock`](crate::spec::own::Lock) and [`own::Unlock`](crate::spec::own::Unlock) by hand) to
+/// run the service's own SQL for them instead, as a database without a built-in dialect does, MSSQL with
 /// `sp_getapplock` and `sp_releaseapplock`; the dialect still selects the candidates and takes
 /// each row. A claim calls it once per candidate with the key the template renders, on the
 /// connection that holds the delivery; [`Unlock`] releases the lock when the delivery settles,
@@ -423,9 +428,9 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `lock` in `#[inbox(custom(..))]` and does not implement `Lock<{DB}>`",
+    message = "`{Self}` runs its own `lock` (`custom(lock)` in `#[inbox(..)]`, or `own::Lock` in its `InboxSpec`) and does not implement `Lock<{DB}>`",
     label = "the service's own lock is missing",
-    note = "implement `Lock<{DB}>` for `{Self}`, or drop `lock` from `custom(..)`"
+    note = "implement `Lock<{DB}>` for `{Self}`, or drop `lock` from `custom(..)` (by hand: `.own::<own::Lock>()` and `own::Lock` in `type Table`)"
 )]
 pub trait Lock<DB: Database>: InboxRow {
     /// Tries the advisory lock on `key` for the session of `conn`, without waiting: `true` when it
@@ -442,7 +447,7 @@ pub trait Lock<DB: Database>: InboxRow {
 }
 
 /// Releases the advisory lock on a delivery's key: the `unlock` event of the advisory lock form,
-/// which a table lists in `custom(..)` beside [`Lock`].
+/// which a table names as its own beside [`Lock`].
 ///
 /// A settlement calls it after its statement, on the connection that holds the delivery, and the
 /// connection goes back to the pool once it answered `true`. An unlock that answers `false` or
@@ -489,9 +494,9 @@ pub trait Lock<DB: Database>: InboxRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `unlock` in `#[inbox(custom(..))]` and does not implement `Unlock<{DB}>`",
+    message = "`{Self}` runs its own `unlock` (`custom(unlock)` in `#[inbox(..)]`, or `own::Unlock` in its `InboxSpec`) and does not implement `Unlock<{DB}>`",
     label = "the service's own unlock is missing",
-    note = "implement `Unlock<{DB}>` for `{Self}`, or drop `unlock` from `custom(..)`"
+    note = "implement `Unlock<{DB}>` for `{Self}`, or drop `unlock` from `custom(..)` (by hand: `.own::<own::Unlock>()` and `own::Unlock` in `type Table`)"
 )]
 pub trait Unlock<DB: Database>: InboxRow {
     /// Releases the advisory lock on `key` the session of `conn` holds: `true` when the session
@@ -577,6 +582,9 @@ pub trait Publish<DB: Database>: InboxRow {
 /// [`InboxHeaders`](derive@crate::InboxHeaders): the queue table's columns.
 /// A struct with a `#[sqlx(flatten)]` field gets none: the derive cannot see the nested struct's
 /// columns, so the service writes that insert itself.
+/// A table described by hand implements it over the text
+/// [`dialect::insert`](crate::dialect::insert) renders from its description, binding the columns
+/// in the description's order; [row mode](crate#row-mode) shows one.
 ///
 /// # Examples
 ///

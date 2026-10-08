@@ -4,7 +4,8 @@ through [`sqlx`](https://docs.rs/sqlx).
 The crate serves task queues kept in the service's own tables, on Postgres, MySQL, MariaDB and
 SQLite. A struct of the service's own describes a queue table: [`Inbox`] reads the table from
 `#[inbox(..)]`, the column names from sqlx's attributes and the role of each column from
-`#[field(..)]`. [`SqlxBroker`] serves the queues of the service's sqlx pool as a RustStream
+`#[field(..)]`. The same description may be written by hand, through [`InboxTable`] and its typed
+builder [`InboxSpec`] ([macro or manual](#macro-or-manual)). [`SqlxBroker`] serves the queues of the service's sqlx pool as a RustStream
 broker: a subscription claims rows, a handler's outcome settles them, and a publish writes a row
 through the service's own SQL.
 
@@ -24,6 +25,8 @@ its database and its tables need:
 Where things are:
 
 - [`Inbox`]: what a struct declares, the roles a column plays, the compile errors it meets.
+- [`InboxTable`] and [`InboxSpec`]: a queue table described by hand, its settings in
+  [`spec`].
 - [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
 - [`Repository`] and [`Routed`]: publishing into tables.
 - [`keys`]: what a handler reads off a delivery.
@@ -31,8 +34,9 @@ Where things are:
   its delivery's transaction.
 - [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
   implements.
-- [The transactional outbox](#the-transactional-outbox): `#[derive(Outbox)]`, `outbox!` and the
-  registry's middlewares, under the `outbox` feature.
+- [The transactional outbox](#the-transactional-outbox): `#[derive(Outbox)]` or a record
+  described by hand, `outbox!` or `track`, and the registry's middlewares, under the `outbox`
+  feature.
 
 # The inbox broker
 
@@ -112,7 +116,8 @@ service's. An [`InboxQueue`] subscription reads one queue: its name selects a gr
 table has a `group` column, and addresses the whole table where it has none. A subscription
 claims rows when its stream is polled; after a claim that found fewer rows than it asked for, it
 waits the poll interval, one second unless set. The bytes reach the codec lent from the row. A
-table without a payload column hands its handler the row itself (see [Row mode](#row-mode)).
+table without a payload column hands its handler the row itself (see [Row mode](#row-mode)). The
+same table described by hand opens [macro or manual](#macro-or-manual).
 
 What a handler answers decides the row's fate:
 
@@ -126,9 +131,9 @@ What a handler answers decides the row's fate:
   columns. With `max_attempts(1)` every failure moves the row at once. A mount that declares one
   without the other stops at startup.
 
-"Now" comes from [`SystemClock`] unless the struct names another source:
-`#[inbox(clock = DatabaseClock)]` reads the database's clock, and a service's own [`Clock`] fits
-there too. Hosts that bind "now" keep their clocks in step.
+"Now" comes from [`SystemClock`] unless the table names another source:
+`#[inbox(clock = DatabaseClock)]` reads the database's clock, `.clock::<DatabaseClock>()` by hand,
+and a service's own [`Clock`] fits there too. Hosts that bind "now" keep their clocks in step.
 
 
 ## An event of the service's own
@@ -185,11 +190,77 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-An event listed in `custom(..)` runs the service's own SQL in place of the statement the dialect
-builds, and every other event keeps the dialect's. The table and the broker stay as they were.
-Each event is a trait the struct implements for its database: [`Claim`], [`Fetch`], [`Ack`],
-[`Retry`], [`RetryAfter`], [`Discard`], [`DeadLetter`], [`Extend`], and [`Lock`] and [`Unlock`]
-in the advisory lock form. A listed event without its impl does not compile, and the error names
-the trait. A settlement of the service's own runs in the transaction the crate commits, so it
+By hand, the table names the event in its chain and in its type:
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream_sqlx::dialect::Column;
+use ruststream_sqlx::prelude::*;
+use ruststream_sqlx::spec::{Payload, own};
+use ruststream_sqlx::{Ack, InboxSpec, InboxTable, PayloadRow};
+use sqlx::{PgConnection, Postgres};
+# use serde::Deserialize;
+# use sqlx::PgPool;
+
+#[derive(sqlx::FromRow)]
+pub struct SendEmail {
+    job_id: i64,
+    payload: Vec<u8>,
+}
+
+impl InboxTable for SendEmail {
+    type Id = i64;
+    type Table = InboxSpec<(Payload, own::Ack)>;
+    const TABLE: Self::Table = InboxSpec::new("email_jobs", Column::new("job_id").generated())
+        .group(Column::new("name"))
+        .payload(Column::new("payload"))
+        .own::<own::Ack>();
+
+    fn id(&self) -> &i64 {
+        &self.job_id
+    }
+}
+
+impl PayloadRow for SendEmail {
+    type Column = Vec<u8>;
+
+    fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+impl Ack<Postgres> for SendEmail {
+    async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE email_jobs SET name = 'sent' WHERE job_id = $1")
+            .bind(id)
+            .execute(conn)
+            .await?;
+        Ok(())
+    }
+}
+# #[derive(Deserialize)]
+# pub struct Email { to: String }
+# #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+# async fn send(email: &Email) -> HandlerOutcome {
+#     tracing::info!(to = %email.to, "sending");
+#     HandlerOutcome::ack()
+# }
+# pub fn app(pool: PgPool) -> RustStream {
+#     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+#         b.include(send);
+#     })
+# }
+# }
+# fn main() {}
+```
+
+An event the table names, in `custom(..)` on the derive or with `.own::<..>()` by hand, runs the
+service's own SQL in place of the statement the dialect builds, and every other event keeps the
+dialect's. The table and the broker stay as they were. Each event is a trait the struct implements
+for its database: [`Claim`], [`Fetch`], [`Ack`], [`Retry`], [`RetryAfter`], [`Discard`],
+[`DeadLetter`], [`Extend`], and [`Lock`] and [`Unlock`] in the advisory lock form; the markers of
+[`spec::own`] name them by hand. A named event without its impl does not compile, and the error
+names the trait. A settlement of the service's own runs in the transaction the crate commits, so it
 settles the row as the built-in one does. An acknowledgement takes the row out of what the claim
 selects: a row it leaves claimable is delivered again.

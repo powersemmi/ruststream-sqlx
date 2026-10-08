@@ -11,9 +11,11 @@ mod events;
 pub(crate) mod form;
 pub(crate) mod headers;
 pub mod keys;
+pub(crate) mod manual;
 pub(crate) mod named;
 mod publish;
 pub(crate) mod queue;
+pub mod spec;
 mod subscriber;
 #[cfg(feature = "testing")]
 mod testing;
@@ -42,9 +44,11 @@ pub use events::{
 };
 pub use form::{AdvisoryForm, FormDialect, FormOn, LeaseForm, RowLockForm};
 pub use headers::{HeaderField, InboxHeaders};
+pub use manual::{AttemptRow, HeaderFields, KeyRow, put_header};
 pub use named::{ByName, NamedDelivery, NamedSubscriber, NamedTime};
 pub use publish::{Repository, RepositoryPublisher, Routed, RoutedPublisher};
 pub use queue::InboxQueue;
+pub use spec::builder::{InboxSpec, InboxTable};
 pub use subscriber::InboxSubscriber;
 pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
 pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, TransactionalStep, Tx};
@@ -98,7 +102,8 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not describe a queue table",
     label = "not an inbox row",
-    note = "derive it: `#[derive(Inbox)]` with `#[inbox(table = \"..\")]` and a `#[field(id)]` field"
+    note = "derive it: `#[derive(Inbox)]` with `#[inbox(table = \"..\")]` and a `#[field(id)]` field, \
+            or describe the table by hand: `impl InboxTable`"
 )]
 pub trait InboxRow: QueueRow {
     /// The table the struct describes: its name, its columns and their roles, and the form its
@@ -106,14 +111,15 @@ pub trait InboxRow: QueueRow {
     const SPEC: TableSpec<'static>;
 
     /// The form the table's rows are claimed in, as a type: a subscription requires its dialect
-    /// to serve it ([`FormOn`]). Machinery; the derive sets it.
+    /// to serve it ([`FormOn`]). Machinery; the crate reads it off the table's description.
     #[doc(hidden)]
     type Form;
 
     /// What the table's transactions open at, as a type: a [`level`](crate::dialect::level)
     /// marker for the isolation level or SQLite mode the struct declares, `()` where it declares
     /// neither. A subscription requires its dialect to open it
-    /// ([`Opens`](crate::dialect::Opens)). Machinery; the derive sets it.
+    /// ([`Opens`](crate::dialect::Opens)). Machinery; the crate reads it off the table's
+    /// description.
     #[doc(hidden)]
     type Opening;
 }
@@ -180,7 +186,7 @@ impl<Row: PayloadRow> Lane<Row> for PayloadLane {
 
 // No `Clone` here: the carried lane asks it of the row where the derive writes `Input`, and one
 // check gives one error.
-impl<Row: QueueRow> Lane<Row> for RowLane {
+impl<Row> Lane<Row> for RowLane {
     const ROWS: bool = true;
 
     type Lent = AtomicBool;
@@ -198,8 +204,9 @@ impl<Row: QueueRow> Lane<Row> for RowLane {
 
 /// A queue row that carries its message as bytes: payload mode.
 ///
-/// The derive implements it for a struct with a `#[field(payload)]` field. A subscription hands
-/// the handler the payload decoded by a codec or a `Deserialized` type, as on any broker, and the
+/// The derive implements it for a struct with a `#[field(payload)]` field; a table described by
+/// hand implements it where its description sets [`InboxSpec::payload`]. A subscription hands the
+/// handler the payload decoded by a codec or a `Deserialized` type, as on any broker, and the
 /// bytes are lent from the row without a copy. Routes and by-name subscriptions read tables in
 /// this mode.
 ///
@@ -266,16 +273,86 @@ impl<Row: QueueRow> Lane<Row> for RowLane {
 /// # }
 /// # fn main() {}
 /// ```
+///
+/// A table described by hand names the payload column's type, which a by-name subscription
+/// reads it in:
+///
+/// ```
+/// # #[cfg(all(feature = "sqlite", feature = "chrono"))]
+/// # mod demo {
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::dialect::Column;
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::spec::{Lease, Payload};
+/// use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
+/// use serde::Deserialize;
+/// use sqlx::{Sqlite, SqlitePool};
+///
+/// #[derive(sqlx::FromRow)]
+/// pub struct Job {
+///     id: i64,
+///     body: Vec<u8>,
+/// }
+///
+/// impl InboxTable for Job {
+///     type Id = i64;
+///     type Table = InboxSpec<(Lease<DateTime<Utc>>, Payload)>;
+///     const TABLE: Self::Table = InboxSpec::new("jobs", Column::new("id").generated())
+///         .lease(Column::new("locked_until"))
+///         .group(Column::new("name"))
+///         .payload(Column::new("body"));
+///
+///     fn id(&self) -> &i64 {
+///         &self.id
+///     }
+/// }
+///
+/// impl PayloadRow for Job {
+///     type Column = Vec<u8>;
+///
+///     fn payload(&self) -> &[u8] {
+///         &self.body
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// // The codec decodes `Email` from the bytes lent from `body`.
+/// #[subscriber(InboxQueue::<Job>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: SqlitePool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
+///         SqlxBroker::<Sqlite>::new(pool),
+///         |b| {
+///             b.include(send);
+///         },
+///     )
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` has no payload field, so a route has no column to write a message's bytes \
-               into",
-    label = "a table in row mode",
-    note = "write a row of a row-mode table with the derive's `insert`, or with `Repository` over \
-            a `Publish` of the service's own",
+    message = "`{Self}` lends no payload, so no column holds a message's bytes",
+    label = "no `PayloadRow` for this row",
+    note = "a table in row mode: write its rows with the derive's `insert`, or with `Repository` \
+            over a `Publish` of the service's own",
     note = "a route and a by-name subscription read a table whose `#[field(payload)]` field holds \
-            the message"
+            the message",
+    note = "a table described by hand that sets `.payload(..)` implements `PayloadRow` for the \
+            field the column decodes into"
 )]
 pub trait PayloadRow: QueueRow {
+    /// The payload column's type, as the row decodes it: `Vec<u8>` or `String`, which a by-name
+    /// subscription reads and writes the column as.
+    type Column: 'static;
+
     /// The message bytes, lent from the row.
     fn payload(&self) -> &[u8];
 }

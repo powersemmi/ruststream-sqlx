@@ -11,7 +11,8 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 ## Guides
 
 - [The inbox broker](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-inbox-broker): task queues in the service's Postgres, MySQL/MariaDB and SQLite tables, taken by row lock, by lease or by advisory lock; what each handler outcome does to a row, and where "now" comes from
-- [An event of the service's own](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#an-event-of-the-services-own): `custom(..)` and the event's trait, which run the service's own SQL for one statement of a built-in dialect
+- [An event of the service's own](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#an-event-of-the-services-own): `custom(..)` on the derive or `.own::<..>()` by hand, and the event's trait, which run the service's own SQL for one statement of a built-in dialect
+- [Macro or manual](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#macro-or-manual): a queue table described by hand, `InboxTable` with the typed builder `InboxSpec`, the one `type Table` line, the role traits, row mode's `Input`, the insert from `dialect::insert`, and where each rule is checked in each form
 - [Row mode](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-mode): a table without a payload column, whose handler takes the row itself, `&Row` or `&[Row]`, with no codec; what settles a row the driver cannot read, and how a row-mode task is written
 - [The headers layout](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-headers-layout): a queue table described by `#[derive(InboxHeaders)]` and a message struct that flattens it beside data of its own; where the attributes go, the default fetch and its startup check, and the header values `HeaderField` gives
 - [A fetch over a join](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#a-fetch-over-a-join): `custom(fetch)` with a `Fetch` that reads the message from other tables, and a claimed id the join finds no row for
@@ -30,7 +31,7 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 - [Waking a subscription](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#waking-a-subscription): the poll interval, and a publish from the same process that wakes the subscriptions of its table and group
 - [`LISTEN/NOTIFY` on Postgres](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#listennotify-on-postgres): `listen_notify()`, the channel and payload another writer or a trigger sends, and its cost: a pool connection, a statement per publish, commits that notify one at a time
 - [Testing a service on the inbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#testing-a-service-on-the-inbox): `TestApp::start_live` against a real database or an in-memory SQLite, and the real clock
-- [The transactional outbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-transactional-outbox): `#[derive(Outbox)]`, `outbox!`, the publish and subscription middlewares, the startup republish, `wrap` for publishes outside handlers, the pool set in `on_startup`, the at-least-once guarantee and the test switch `RUSTSTREAM_SQLX_OUTBOX=on`
+- [The transactional outbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-transactional-outbox): `#[derive(Outbox)]` or a record described by hand, `outbox!` or `track`, the publish and subscription middlewares, the startup republish, `wrap` for publishes outside handlers, the pool set in `on_startup`, the at-least-once guarantee and the test switch `RUSTSTREAM_SQLX_OUTBOX=on`
 
 ## Optional
 

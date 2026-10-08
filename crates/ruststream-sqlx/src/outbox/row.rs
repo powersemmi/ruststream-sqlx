@@ -1,40 +1,29 @@
-//! The contract `#[derive(Outbox)]` implements: what the registry reads off a record.
+//! What the registry reads off a record, for every [`OutboxTable`].
 
-use std::fmt::Display;
-use std::str::FromStr;
+use super::dispatch::{Declared, Slot};
+use super::spec::{Declaration, OutboxTable};
 
-use ruststream::HeaderMap;
-
-/// A record of an outbox table: a struct deriving [`Outbox`](derive@crate::Outbox).
+/// A record of an outbox table: a struct deriving [`Outbox`](derive@crate::Outbox) or
+/// implementing [`OutboxTable`].
 ///
-/// The derive implements it from the fields' roles; a service names it only as a bound.
+/// The crate implements it for every [`OutboxTable`]; a service names it only as a bound.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not an outbox record",
-    label = "this type does not derive `Outbox`",
-    note = "derive `Outbox` for `{Self}` and mark its `id`, `name` and `payload` fields"
+    label = "this type does not describe an outbox table",
+    note = "derive `Outbox` for `{Self}` and mark its `id`, `name` and `payload` fields, or \
+            implement `OutboxTable` for it"
 )]
-pub trait OutboxRow: Sized + Send + Sync + Unpin + 'static {
-    /// The type of the `id` field: the value the id header carries.
-    type Id: Display + FromStr + Send + Sync + 'static;
-
+pub trait OutboxRow: OutboxTable {
     /// Whether the record's `Retry` writes anything: `false` for the default, which leaves the
     /// record as it is, so the subscription layer takes no connection for it.
     #[doc(hidden)]
     const RETRY_WRITES: bool;
+}
 
-    /// The record's id.
-    #[doc(hidden)]
-    fn id(&self) -> &Self::Id;
-
-    /// The name the record was published under.
-    #[doc(hidden)]
-    fn name(&self) -> &str;
-
-    /// The published payload.
-    #[doc(hidden)]
-    fn payload(&self) -> &[u8];
-
-    /// The published headers, moved out of the `headers` field; empty without one.
-    #[doc(hidden)]
-    fn take_headers(&mut self) -> HeaderMap;
+impl<Record> OutboxRow for Record
+where
+    Record: OutboxTable,
+    <Declared<Record> as Declaration>::OwnRetry: Slot,
+{
+    const RETRY_WRITES: bool = <<Declared<Record> as Declaration>::OwnRetry as Slot>::SET;
 }

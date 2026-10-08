@@ -1,0 +1,13 @@
+error[E0308]: mismatched types
+  --> tests/ui/manual_mismatch.rs:14:32
+   |
+14 |       const TABLE: Self::Table = InboxSpec::new("jobs", Column::new("id"))
+   |  __________________-----------___^
+   | |                  |
+   | |                  expected because of the type of the associated constant
+15 | |         .payload(Column::new("payload"))
+16 | |         .lease(Column::new("locked_until"));
+   | |___________________________________________^ expected `InboxSpec<(Lease<DateTime<Utc>>, _)>`, found `InboxSpec<(Payload, Lease<_>)>`
+   |
+   = note: expected struct `InboxSpec<(ruststream_sqlx::spec::Lease<DateTime<Utc>>, ruststream_sqlx::spec::Payload)>`
+              found struct `InboxSpec<(ruststream_sqlx::spec::Payload, ruststream_sqlx::spec::Lease<_>)>`

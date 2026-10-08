@@ -1,11 +1,36 @@
-error[E0080]: evaluation panicked: the lease form computes its expiry from the crate's clock: drop `clock = DatabaseClock` or the `locked_until` field
-  --> tests/ui/lease_clock.rs:10:33
-   |
-10 | #[inbox(table = "jobs", clock = Source)]
-   |                                 ^^^^^^ evaluation of `<OnAnyClock<ruststream_sqlx::DatabaseClock> as ruststream_sqlx::InboxRow>::SPEC` failed here
-
-note: erroneous constant encountered
-  --> tests/ui/lease_clock.rs:23:45
+error[E0277]: the lease form computes its expiry from the crate's clock, and this table reads the database's
+  --> tests/ui/lease_clock.rs:23:46
    |
 23 | const ON_THE_DATABASE: TableSpec<'static> = <OnAnyClock<DatabaseClock> as InboxRow>::SPEC;
-   |                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |                                              ^^^^^^^^^^^^^^^^^^^^^^^^^ the lease form on `DatabaseClock`
+   |
+   = help: the trait `LeaseOnServiceClock` is not implemented for `(Set<ruststream_sqlx::spec::Lease<DateTime<Utc>>>, DatabaseClock)`
+   = note: drop `.clock::<DatabaseClock>()` and `Clock<DatabaseClock>`, or `.lease(..)` and `Lease<..>` (with the derive: `clock = DatabaseClock`, or the `locked_until` field)
+help: the following other types implement trait `LeaseOnServiceClock`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Reads> LeaseOnServiceClock for (Unset, Reads) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, Reads)`
+   | impl<Reads> LeaseOnServiceClock for (Set<Advisory>, Reads) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Reads)`
+   | impl<Time> LeaseOnServiceClock for (Set<Lease<Time>>, SystemClock) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, SystemClock)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Lease<DateTime<Utc>>, ruststream_sqlx::spec::Payload, ruststream_sqlx::spec::Clock<DatabaseClock>)>` to implement `Valid`
+note: required for `OnAnyClock<DatabaseClock>` to implement `InboxTable`
+  --> tests/ui/lease_clock.rs:11:8
+   |
+10 | #[inbox(table = "jobs", clock = Source)]
+   |                                 ------ unsatisfied trait bound
+11 | struct OnAnyClock<Source: TimeSource> {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: consider manually implementing `InboxTable` to avoid undesired bounds caused by "imperfect derives"
+   = note: to learn more, visit <https://github.com/rust-lang/rust/issues/26925>
+   = note: required for `OnAnyClock<DatabaseClock>` to implement `ruststream_sqlx::__private::QueueRow`
+note: required by a bound in `SPEC`
+  --> src/inbox.rs
+   |
+   | pub trait InboxRow: QueueRow {
+   |                     ^^^^^^^^ required by this bound in `InboxRow::SPEC`
+...
+   |     const SPEC: TableSpec<'static>;
+   |           ---- required by a bound in this associated constant

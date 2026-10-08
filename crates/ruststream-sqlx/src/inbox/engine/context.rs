@@ -103,8 +103,8 @@ impl<Marker, T: ?Sized> Via<Marker> for T {
 
 /// The time a time column binds in `DB`.
 ///
-/// Machinery: the derive bounds a time field's type by it, which names the database, so a field
-/// the database cannot bind rules the impl out instead of failing the build.
+/// Machinery: a time role's type is bounded by it, which names the database, so a type the
+/// database cannot bind rules the table out where it is mounted instead of failing the build.
 pub trait TimeFor<DB: Database> {
     /// The time the column holds.
     type Time: QueueTime + for<'q> Encode<'q, DB> + Type<DB>;

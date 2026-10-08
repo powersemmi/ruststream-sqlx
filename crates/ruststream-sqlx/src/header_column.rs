@@ -152,6 +152,174 @@ pub trait HeaderColumn {
     fn unfit(headers: &HeaderMap) -> Option<&str>;
 }
 
+/// A record or a row whose headers live in one column: the field holding the column, which the
+/// table's description names with its `headers` setter.
+///
+/// `#[derive(Inbox)]` and `#[derive(Outbox)]` implement it for the field playing `headers`. A queue
+/// table described by hand implements it where its `InboxSpec` sets `spec::Headers`: a delivery
+/// takes the header map out of the field when its row is claimed, so the row a handler reads holds
+/// the column empty. A record described by hand implements it where its `OutboxSpec` sets
+/// `outbox::spec::Headers`, and a republished record carries the headers it took out of the field.
+///
+/// # Examples
+///
+/// A queue table whose headers live in a `jsonb` column:
+///
+/// ```
+/// # #[cfg(all(feature = "inbox", feature = "json", feature = "postgres"))]
+/// # mod demo {
+/// use std::collections::BTreeMap;
+///
+/// use ruststream_sqlx::dialect::Column;
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::spec::{Headers, Payload};
+/// use ruststream_sqlx::{HeaderRow, InboxSpec, InboxTable, PayloadRow};
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+/// use sqlx::types::Json;
+///
+/// #[derive(sqlx::FromRow)]
+/// pub struct Job {
+///     id: i64,
+///     headers: Json<BTreeMap<String, String>>,
+///     payload: Vec<u8>,
+/// }
+///
+/// impl InboxTable for Job {
+///     type Id = i64;
+///     type Table = InboxSpec<(Headers, Payload)>;
+///     const TABLE: Self::Table = InboxSpec::new("jobs", Column::new("id").generated())
+///         .headers(Column::new("headers"))
+///         .payload(Column::new("payload"));
+///
+///     fn id(&self) -> &i64 {
+///         &self.id
+///     }
+/// }
+///
+/// impl HeaderRow for Job {
+///     type Column = Json<BTreeMap<String, String>>;
+///
+///     fn headers_mut(&mut self) -> &mut Self::Column {
+///         &mut self.headers
+///     }
+/// }
+///
+/// impl PayloadRow for Job {
+///     type Column = Vec<u8>;
+///
+///     fn payload(&self) -> &[u8] {
+///         &self.payload
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Task {
+///     n: u32,
+/// }
+///
+/// // The delivery's headers come from the `headers` column, as on any broker.
+/// #[subscriber(InboxQueue::<Job>::new("tasks"))]
+/// async fn run(task: &Task, ctx: &mut Context<'_>) -> HandlerOutcome {
+///     let tenant = ctx.headers().get_str("x-tenant").unwrap_or_default();
+///     tracing::info!(task.n, tenant, "running");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(run);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// An outbox record that keeps the headers a message carried:
+///
+/// ```
+/// # #[cfg(all(feature = "outbox", feature = "json", feature = "postgres"))]
+/// # mod demo {
+/// # use ruststream::OutgoingMessage;
+/// use std::collections::BTreeMap;
+///
+/// use ruststream_sqlx::dialect::Column;
+/// use ruststream_sqlx::outbox::spec::Headers;
+/// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
+/// use ruststream_sqlx::{HeaderColumn, HeaderRow};
+/// use sqlx::types::Json;
+/// use sqlx::{PgConnection, Postgres};
+///
+/// #[derive(sqlx::FromRow)]
+/// pub struct OrderEvent {
+///     id: i64,
+///     name: String,
+///     payload: Vec<u8>,
+///     headers: Option<Json<BTreeMap<String, String>>>,
+/// }
+///
+/// impl HeaderRow for OrderEvent {
+///     type Column = Option<Json<BTreeMap<String, String>>>;
+///
+///     fn headers_mut(&mut self) -> &mut Self::Column {
+///         &mut self.headers
+///     }
+/// }
+///
+/// impl OutboxTable for OrderEvent {
+///     type Id = i64;
+///     type Table = OutboxSpec<(Headers,)>;
+///     const TABLE: Self::Table = OutboxSpec::new(
+///         "outbox",
+///         Column::new("id"),
+///         Column::new("name"),
+///         Column::new("payload"),
+///     )
+///     .headers(Column::new("headers"));
+///
+///     fn id(&self) -> &i64 {
+///         &self.id
+///     }
+///
+///     fn name(&self) -> &str {
+///         &self.name
+///     }
+///
+///     fn payload(&self) -> &[u8] {
+///         &self.payload
+///     }
+/// }
+///
+/// // The record keeps what the message carried, so a republish sends the headers again.
+/// impl outbox::Publish<Postgres> for OrderEvent {
+///     async fn publish(conn: &mut PgConnection, msg: &OutgoingMessage<'_>) -> sqlx::Result<i64> {
+///         sqlx::query_scalar(
+///             "INSERT INTO outbox (name, payload, headers) VALUES ($1, $2, $3) RETURNING id",
+///         )
+///         .bind(msg.name())
+///         .bind(msg.payload())
+///         .bind(Option::<Json<BTreeMap<String, String>>>::from_headers(msg.headers()))
+///         .fetch_one(conn)
+///         .await
+///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` sets a `headers` column and does not hand its header map over",
+    label = "no `HeaderRow` for this type",
+    note = "implement `HeaderRow` for `{Self}`, handing out the field that holds the headers \
+            column, or drop `.headers(..)` and `Headers` from its description"
+)]
+pub trait HeaderRow {
+    /// The column's type.
+    type Column: HeaderColumn + 'static;
+
+    /// The field holding the column, which the headers are taken out of.
+    fn headers_mut(&mut self) -> &mut Self::Column;
+}
+
 impl<T: HeaderColumn> HeaderColumn for Option<T> {
     fn take_headers(&mut self) -> HeaderMap {
         self.as_mut()

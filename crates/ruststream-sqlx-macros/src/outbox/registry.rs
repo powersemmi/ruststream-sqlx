@@ -73,3 +73,52 @@ pub(crate) fn expand(input: TokenStream2) -> syn::Result<TokenStream2> {
         .map(|Registration { name, record }| quote!(.register::<#record>(#name)));
     Ok(quote!(#registry #(#registrations)*))
 }
+
+#[cfg(test)]
+mod tests {
+    use proc_macro2::TokenStream as TokenStream2;
+    use quote::quote;
+
+    use super::expand;
+
+    fn expanded(input: TokenStream2) -> String {
+        expand(input).map_or_else(|error| error.to_string(), |tokens| tokens.to_string())
+    }
+
+    #[test]
+    fn outbox_registers_each_name_on_a_registry_with_its_pool() {
+        assert_eq!(
+            expanded(quote!(pool: pool.clone(), "orders" => Order, "refunds" => app::Refund,)),
+            quote!(
+                ::ruststream_sqlx::Outbox::new(pool.clone())
+                    .register::<Order>("orders")
+                    .register::<app::Refund>("refunds")
+            )
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn outbox_without_a_pool_defers_it() {
+        assert_eq!(
+            expanded(quote!("orders" => Order)),
+            quote!(::ruststream_sqlx::Outbox::deferred().register::<Order>("orders")).to_string()
+        );
+    }
+
+    #[test]
+    fn outbox_refuses_a_name_registered_twice() {
+        assert_eq!(
+            expanded(quote!("orders" => Order, "refunds" => Refund, "orders" => Refund)),
+            "`orders` is registered twice: a name has one record type"
+        );
+    }
+
+    #[test]
+    fn outbox_refuses_a_key_other_than_pool() {
+        assert_eq!(
+            expanded(quote!(connection: pool, "orders" => Order)),
+            "unknown key `connection`: `outbox!` takes `pool: <expr>` before the names"
+        );
+    }
+}

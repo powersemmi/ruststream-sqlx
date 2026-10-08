@@ -1,0 +1,91 @@
+error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::outbox::spec::ProcessedAt>` and `Set<ruststream_sqlx::outbox::spec::ProcessedAt>`
+  --> tests/ui/manual_outbox_twice.rs:13:18
+   |
+13 |     type Table = OutboxSpec<(ProcessedAt, ProcessedAt)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ set twice
+   |
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
+help: the trait `Merge<Set<ruststream_sqlx::outbox::spec::ProcessedAt>>` is not implemented for `Set<ruststream_sqlx::outbox::spec::ProcessedAt>`
+      but trait `Merge<Unset>` is implemented for it
+  --> src/settings.rs
+   |
+   | impl<Value> Merge<Unset> for Set<Value> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Unset`, found `Set<ruststream_sqlx::outbox::spec::ProcessedAt>`
+   = note: required for `(ruststream_sqlx::outbox::spec::ProcessedAt, ruststream_sqlx::outbox::spec::ProcessedAt)` to implement `ruststream_sqlx::outbox::spec::Declaration`
+   = note: required for `OutboxSpec<(ruststream_sqlx::outbox::spec::ProcessedAt, ruststream_sqlx::outbox::spec::ProcessedAt)>` to implement `Described`
+note: required by a bound in `ruststream_sqlx::OutboxTable::Table`
+  --> src/outbox/spec/builder.rs
+   |
+   |     type Table: Described;
+   |                 ^^^^^^^^^ required by this bound in `OutboxTable::Table`
+
+error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::outbox::spec::own::Ack>` and `Set<ruststream_sqlx::outbox::spec::own::Ack>`
+  --> tests/ui/manual_outbox_twice.rs:44:18
+   |
+44 |     type Table = OutboxSpec<(own::Ack, own::Ack)>;
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ set twice
+   |
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
+help: the trait `Merge<Set<ruststream_sqlx::outbox::spec::own::Ack>>` is not implemented for `Set<ruststream_sqlx::outbox::spec::own::Ack>`
+      but trait `Merge<Unset>` is implemented for it
+  --> src/settings.rs
+   |
+   | impl<Value> Merge<Unset> for Set<Value> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Unset`, found `Set<ruststream_sqlx::outbox::spec::own::Ack>`
+   = note: required for `(ruststream_sqlx::outbox::spec::own::Ack, ruststream_sqlx::outbox::spec::own::Ack)` to implement `ruststream_sqlx::outbox::spec::Declaration`
+   = note: required for `OutboxSpec<(ruststream_sqlx::outbox::spec::own::Ack, ruststream_sqlx::outbox::spec::own::Ack)>` to implement `Described`
+note: required by a bound in `ruststream_sqlx::OutboxTable::Table`
+  --> src/outbox/spec/builder.rs
+   |
+   |     type Table: Described;
+   |                 ^^^^^^^^^ required by this bound in `OutboxTable::Table`
+
+error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::outbox::spec::ProcessedAt>` and `Set<ruststream_sqlx::outbox::spec::ProcessedAt>`
+  --> tests/ui/manual_outbox_twice.rs:21:6
+   |
+21 |     .processed_at(Column::new("done_at"));
+   |      ^^^^^^^^^^^^ set twice
+   |
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
+help: the trait `Merge<Set<ruststream_sqlx::outbox::spec::ProcessedAt>>` is not implemented for `Set<ruststream_sqlx::outbox::spec::ProcessedAt>`
+      but trait `Merge<Unset>` is implemented for it
+  --> src/settings.rs
+   |
+   | impl<Value> Merge<Unset> for Set<Value> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Unset`, found `Set<ruststream_sqlx::outbox::spec::ProcessedAt>`
+   = note: required for `(ruststream_sqlx::outbox::spec::ProcessedAt, ruststream_sqlx::outbox::spec::ProcessedAt)` to implement `ruststream_sqlx::outbox::spec::Declaration`
+note: required by a bound in `OutboxSpec::<Settings>::processed_at`
+  --> src/outbox/spec/builder.rs
+   |
+   |     pub const fn processed_at(
+   |                  ------------ required by a bound in this associated function
+...
+   |         <Settings as Push<ProcessedAt>>::Out: Declaration,
+   |                                               ^^^^^^^^^^^ required by this bound in `OutboxSpec::<Settings>::processed_at`
+
+error[E0277]: a table sets this setting twice: `Set<ruststream_sqlx::outbox::spec::own::Ack>` and `Set<ruststream_sqlx::outbox::spec::own::Ack>`
+  --> tests/ui/manual_outbox_twice.rs:52:6
+   |
+52 |     .own::<own::Ack>();
+   |      ^^^ set twice
+   |
+   = note: a table sets each setting once: drop one of the two setter calls on its `InboxSpec` or `OutboxSpec`, and the marker from `type Table`
+help: the trait `Merge<Set<ruststream_sqlx::outbox::spec::own::Ack>>` is not implemented for `Set<ruststream_sqlx::outbox::spec::own::Ack>`
+      but trait `Merge<Unset>` is implemented for it
+  --> src/settings.rs
+   |
+   | impl<Value> Merge<Unset> for Set<Value> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = help: for that trait implementation, expected `Unset`, found `Set<ruststream_sqlx::outbox::spec::own::Ack>`
+   = note: required for `(ruststream_sqlx::outbox::spec::own::Ack, ruststream_sqlx::outbox::spec::own::Ack)` to implement `ruststream_sqlx::outbox::spec::Declaration`
+note: required by a bound in `OutboxSpec::<Settings>::own`
+  --> src/outbox/spec/builder.rs
+   |
+   |     pub const fn own<Event: OwnEvent>(self) -> OutboxSpec<<Settings as Push<Event>>::Out>
+   |                  --- required by a bound in this associated function
+...
+   |         <Settings as Push<Event>>::Out: Declaration,
+   |                                         ^^^^^^^^^^^ required by this bound in `OutboxSpec::<Settings>::own`

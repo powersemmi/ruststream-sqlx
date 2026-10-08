@@ -145,3 +145,99 @@ fn role_list() -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
+
+#[cfg(test)]
+mod tests {
+    use ruststream_sqlx_dialect::Role;
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::parse::tests::error;
+    use crate::parse::{Storage, fields, inbox};
+
+    fn errors(input: &DeriveInput) -> Vec<String> {
+        inbox(input).map_or_else(
+            |error| error.into_iter().map(|error| error.to_string()).collect(),
+            |_| Vec::new(),
+        )
+    }
+
+    #[test]
+    fn roles_and_modifiers_land_on_their_fields() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "email_jobs")]
+            struct SendEmail {
+                #[field(id, generated)]
+                job_id: i64,
+                #[field(group, fifo = true)]
+                name: String,
+                #[field(generated)]
+                created_at: i64,
+                subject: String,
+            }
+        };
+        let inbox = inbox(&input)?;
+        let roles: Vec<_> = inbox.columns().map(|(_, column)| column.role).collect();
+        assert_eq!(roles, [Some(Role::Id), Some(Role::Group), None, None]);
+        let generated: Vec<_> = inbox
+            .columns()
+            .map(|(_, column)| column.generated)
+            .collect();
+        assert_eq!(generated, [true, false, true, false]);
+        let fifo: Vec<_> = inbox
+            .columns()
+            .map(|(_, column)| column.fifo.is_some())
+            .collect();
+        assert_eq!(fifo, [false, true, false, false]);
+        Ok(())
+    }
+
+    #[test]
+    fn every_field_reports_its_own_problem() {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job {
+                #[field(identity)]
+                id: i64,
+                #[field(priority, fifo = true)]
+                priority: i16,
+            }
+        };
+        assert_eq!(
+            errors(&input),
+            [
+                "unknown `#[field(..)]` option: expected a role (`id`, `group`, `partition_key`, \
+                 `priority`, `retry_after`, `attempt`, `locked_until`, `processed_at`, \
+                 `headers`, `payload`), `generated` or `fifo`",
+                "`fifo` belongs to the `group` role: `#[field(group, fifo = true)]`",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_flattened_headers_field_holds_a_headers_struct() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            struct OrderJob {
+                #[field(headers)]
+                #[sqlx(flatten)]
+                headers: OrderHeaders,
+                note: Option<String>,
+            }
+        };
+        let fields = fields(&input)?;
+        assert!(matches!(fields[0].storage, Storage::Headers));
+        assert_eq!(
+            fields[1].column().map(|column| column.name.as_str()),
+            Some("note")
+        );
+        let generated: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(headers, generated)] #[sqlx(flatten)] headers: Headers }
+        };
+        assert_eq!(
+            error(&generated),
+            "`headers` holds a headers struct, which describes the queue table: mark its generated \
+             columns there"
+        );
+        Ok(())
+    }
+}

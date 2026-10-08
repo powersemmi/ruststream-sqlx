@@ -73,11 +73,98 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-A table whose struct has no `#[field(payload)]` field is in row mode. Its handler takes the
-struct itself, `&SendEmail`, as the driver read it. The struct derives `Clone`, because the test
-harness keeps a copy of each value. It does not derive `Deserialize`: a type that deserializes
-rides the codec, and [`Inbox`] shows the error. Serde appears only where sqlx needs it, such as
-the `#[sqlx(json)]` column above.
+By hand, the table leaves `.payload(..)` out, names its own columns with `.data(..)`, and writes the
+core's carried lane for its row. Its [`Insert`] writes a task with the text [`dialect::insert`]
+renders from the description, as the derive's does:
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream::runtime::{Input, SoloCarried};
+use ruststream_sqlx::dialect::Column;
+use ruststream_sqlx::dialect::insert::{self, Sql};
+use ruststream_sqlx::prelude::*;
+use ruststream_sqlx::spec::Attempt;
+use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable};
+use serde::{Deserialize, Serialize};
+use sqlx::{PgConnection, PgPool};
+
+#[derive(sqlx::FromRow, Clone)]
+pub struct SendEmail {
+    job_id: i64,
+    name: String,
+    attempt: i16,
+    to: String,
+    subject: Option<String>,
+    #[sqlx(json)]
+    attachments: Vec<Attachment>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    file: String,
+}
+
+impl InboxTable for SendEmail {
+    type Id = i64;
+    type Table = InboxSpec<(Attempt,)>;
+    const TABLE: Self::Table = InboxSpec::new("email_jobs", Column::new("job_id").generated())
+        .group(Column::new("name"))
+        .attempt(Column::new("attempt").generated())
+        .data(&[Column::new("to"), Column::new("subject"), Column::new("attachments")]);
+
+    fn id(&self) -> &i64 {
+        &self.job_id
+    }
+}
+
+// Row mode: a handler takes the row itself.
+impl Input for SendEmail {
+    type Axis = SoloCarried<Self>;
+}
+
+impl AttemptRow for SendEmail {
+    type Attempt = i16;
+
+    fn attempt(&self) -> &i16 {
+        &self.attempt
+    }
+}
+
+// INSERT INTO "email_jobs" ("name", "to", "subject", "attachments") VALUES ($1, $2, $3, $4)
+const INSERT: Sql<128> = insert::postgres(&SendEmail::TABLE.spec());
+
+impl Insert<PgConnection> for SendEmail {
+    async fn insert(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+        sqlx::query(INSERT.as_str())
+            .bind(&self.name)
+            .bind(&self.to)
+            .bind(&self.subject)
+            .bind(sqlx::types::Json(&self.attachments))
+            .execute(conn)
+            .await?;
+        Ok(())
+    }
+}
+# async fn deliver(_: &SendEmail) -> bool { true }
+# #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+# async fn send(email: &SendEmail) -> HandlerOutcome {
+#     if deliver(email).await { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
+# }
+# pub fn app(pool: PgPool) -> RustStream {
+#     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+#         b.include(send);
+#     })
+# }
+# }
+# fn main() {}
+```
+
+A table whose struct has no `#[field(payload)]` field, or whose description sets no `.payload(..)`,
+is in row mode. Its handler takes the struct itself, `&SendEmail`, as the driver read it. The struct
+derives `Clone`, because the test harness keeps a copy of each value. It does not derive
+`Deserialize`: a type that deserializes rides the codec, and [`Inbox`] shows the error. Serde
+appears only where sqlx needs it, such as the `#[sqlx(json)]` column above.
 
 A delivery lends its handler the row the driver read, with no codec and no copy. A batch handler
 takes `&[SendEmail]`: the rows of one claim, lent as one slice in claim order ([`RowBatch`]). A
@@ -96,10 +183,12 @@ The `headers` column becomes the delivery's headers, which middleware reads. The
 reads holds that column empty. A message assembled from a headers struct builds its delivery's
 headers from that struct instead ([the headers layout](#the-headers-layout)).
 
-A task is written by the derive's [`insert`](Insert::insert), in the service's own transaction or
-in the handler's. [`Repository`] writes a row-mode table through a [`Publish`] of the service's
-own. Routes and by-name subscriptions read payload-mode tables: they choose a table by a name at
-run time, and a row type is chosen at compile time.
+A task is written by [`insert`](Insert::insert), in the service's own transaction or in the
+handler's: the derive generates it, and a table described by hand writes it over the text
+[`dialect::insert`] renders from its description. The columns bind in the description's order: the
+roles, then the data columns. [`Repository`] writes a row-mode table through a [`Publish`] of the
+service's own. Routes and by-name subscriptions read payload-mode tables: they choose a table by a
+name at run time, and a row type is chosen at compile time.
 
 A handler that decodes a payload, mounted on a row-mode table, fails each delivery by the decode
 policy. The subscription logs one warning that names the table, row mode and the row type the

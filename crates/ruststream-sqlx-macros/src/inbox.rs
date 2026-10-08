@@ -1,21 +1,20 @@
-//! The derive's expansion: the `QueueRow` and `InboxRow` impls this module generates, followed by
-//! the message mode, the events and the insert of their own modules.
+//! The derive's expansion: the manual form a service would write by hand. `impl InboxTable` with
+//! the `InboxSpec` chain and its type, the accessor impls of the roles the fields play, the row
+//! mode's `Input`, and the insert. The crate's blanket impls over `InboxTable` write the rest.
 
-use heck::ToUpperCamelCase;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
-use ruststream_sqlx_dialect::{Opening, Role};
-use syn::{DeriveInput, Generics, parse_quote};
+use quote::quote;
+use syn::{DeriveInput, Generics, parse_quote, parse_quote_spanned};
 
-use crate::mode::Mode;
-use crate::parse::{self, ColumnField, Field, Inbox};
-use crate::template::{self, KeyItem};
-use crate::{check, events, insert};
+use crate::parse;
+use crate::{check, insert, template};
 
 mod assembled;
-mod lease;
+mod rows;
+mod table;
 
-pub(crate) use lease::{LeaseParts, lease_parts};
+pub(crate) use rows::{accessors, carried};
+pub(crate) use table::{Description, describe, own_events};
 
 pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // A struct that flattens a headers struct is a message assembled from it; any other is flat.
@@ -27,211 +26,61 @@ pub(crate) fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         return assembled::expand(input, &fields, headers);
     }
     let inbox = parse::inbox(input)?;
-    let id = check::check(input, &inbox)?;
+    let (id_field, id_column) = check::check(input, &inbox)?;
     let key = template::advisory_key(&inbox)?;
-    let generics = bounded_generics(input, id.0.ty);
-    let mode = Mode::of(&inbox);
-    let row = generate(input, &generics, &inbox, id, key.as_deref(), &mode);
-    let lane = mode.impls(input, &generics);
-    let contract = events::events(input, &generics, &inbox, id.0);
+    let description = describe(&inbox, id_column, key.as_deref(), &[]);
+    let generics = valid_generics(input, bounded_generics(input, id_field.ty), &description);
+    let table = inbox_table(input, &generics, &description, id_field);
+    let rows = accessors(input, &generics, &inbox);
     let insert = insert::insert(input, &generics, &inbox)?;
-    Ok(quote!(#row #lane #contract #insert))
+    Ok(quote!(#table #rows #insert))
 }
 
-fn generate(
+/// `impl InboxTable` for a flat struct: its id, and its description as the chain and its type.
+fn inbox_table(
     input: &DeriveInput,
     generics: &Generics,
-    inbox: &Inbox<'_>,
-    (id_field, id_column): (&Field<'_>, &ColumnField),
-    key: Option<&[KeyItem]>,
-    mode: &Mode<'_, '_>,
+    description: &Description,
+    id: &parse::Field<'_>,
 ) -> TokenStream2 {
-    let Description {
-        spec,
-        form_type,
-        opening_type,
-        lease:
-            LeaseParts {
-                row: lease_row,
-                item_check,
-                ..
-            },
-    } = description(
-        input,
-        generics,
-        inbox,
-        id_column,
-        key,
-        &quote!(::ruststream_sqlx::LeaseRow),
-    );
-    let dialect = quote!(::ruststream_sqlx::dialect);
     let name = &input.ident;
-    let id_type = id_field.ty;
-    let lane = mode.lane();
+    let table = description.table_type();
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    let chain = &description.chain;
+    let id_type = id.ty;
+    let id_ident = id.ident;
     quote! {
         #[automatically_derived]
-        impl #impl_generics ::ruststream_sqlx::__private::QueueRow for #name #ty_generics #where_clause {
+        impl #impl_generics ::ruststream_sqlx::InboxTable for #name #ty_generics #where_clause {
             type Id = #id_type;
-            type Lane = #lane;
+            type Table = #table;
+            const TABLE: Self::Table = #chain;
+
+            fn id(&self) -> &#id_type {
+                &self.#id_ident
+            }
         }
-
-        #[automatically_derived]
-        impl #impl_generics ::ruststream_sqlx::InboxRow for #name #ty_generics #where_clause {
-            const SPEC: #dialect::TableSpec<'static> = #spec;
-            type Form = #form_type;
-            type Opening = #opening_type;
-        }
-
-        #lease_row
-
-        #item_check
     }
 }
 
-/// A table's description, as the struct that describes it gives it.
-pub(crate) struct Description {
-    /// The `TableSpec` constant's value.
-    pub(crate) spec: TokenStream2,
-    /// The form, as the type a subscription checks against its database.
-    pub(crate) form_type: TokenStream2,
-    /// What the table's transactions open at, as a type.
-    pub(crate) opening_type: TokenStream2,
-    /// What the lease form adds, its lease trait `lease_trait`.
-    pub(crate) lease: LeaseParts,
-}
-
-/// The description of the table `inbox` reads: its `TableSpec`, its form and opening as types,
-/// and, in the lease form, the impl of `lease_trait` that names the lease's time.
-pub(crate) fn description(
+/// `generics` with the rules across the table's settings, for a generic struct: a setting may name
+/// a parameter (`clock = Source`), and the table and every impl of the row hold where the
+/// parameter keeps the rules.
+pub(crate) fn valid_generics(
     input: &DeriveInput,
-    generics: &Generics,
-    inbox: &Inbox<'_>,
-    id_column: &ColumnField,
-    key: Option<&[KeyItem]>,
-    lease_trait: &TokenStream2,
-) -> Description {
-    let dialect = quote!(::ruststream_sqlx::dialect);
-    let column = |column: &ColumnField| {
-        let name = &column.name;
-        let generated = column.generated.then(|| quote!(.generated()));
-        quote!(#dialect::Column::new(#name) #generated)
-    };
-    let id = column(id_column);
-    let lease = inbox
-        .columns()
-        .find(|(_, column)| column.role == Some(Role::LockedUntil));
-    let private = quote!(::ruststream_sqlx::__private);
-    // The form twice: as the description's value, and as the type a subscription checks against
-    // its database.
-    let (form, form_type) = match (key, lease) {
-        (Some(key), _) => {
-            let parts = key.iter().map(|item| match item {
-                KeyItem::Literal(text) => quote!(#dialect::KeyPart::Literal(#text)),
-                KeyItem::Column(column) => quote!(#dialect::KeyPart::Column(#column)),
-            });
-            (
-                quote!(#dialect::Form::Advisory(&[#(#parts),*])),
-                quote!(#private::AdvisoryForm),
-            )
-        }
-        (None, Some((_, expiry))) => {
-            let expiry = column(expiry);
-            (
-                quote!(#dialect::Form::Lease(#expiry)),
-                quote!(#private::LeaseForm),
-            )
-        }
-        (None, None) => (
-            quote!(#dialect::Form::RowLock),
-            quote!(#private::RowLockForm),
-        ),
-    };
-    let slots = inbox.columns().filter_map(|(_, slot)| {
-        let role = slot.role?;
-        if matches!(role, Role::Id | Role::LockedUntil) {
-            return None;
-        }
-        // Each role's builder on `TableSpec` is named as `#[field(..)]` spells the role.
-        let builder = if slot.fifo.is_some() {
-            format_ident!("fifo_group")
-        } else {
-            format_ident!("{}", role.attribute())
-        };
-        let slot = column(slot);
-        Some(quote!(.#builder(#slot)))
-    });
-    let data: Vec<_> = inbox
-        .columns()
-        .filter(|(_, column)| column.role.is_none())
-        .map(|(_, data)| column(data))
-        .collect();
-    let data = (!data.is_empty()).then(|| quote!(.data(&[#(#data),*])));
-    let table = &inbox.table.name;
-    let within = inbox
-        .table
-        .schema
-        .as_ref()
-        .map(|schema| quote!(.within(#schema)));
-    let selecting_all = inbox.flattens().then(|| quote!(.selecting_all()));
-    let (opening, opening_type) = opening(inbox.table.opening);
-
-    let spec = quote!(#dialect::TableSpec::new(#table, #id, #form) #within #(#slots)* #data #selecting_all #opening);
-    let lease = lease_parts(
-        input,
-        generics,
-        inbox,
-        lease.map(|(field, _)| field),
-        lease_trait,
-    );
-    let spec = match &inbox.table.clock {
-        Some(clock) => {
-            let spec_check = &lease.spec_check;
-            quote!({
-                #spec_check
-                let spec = #spec;
-                if <#clock as ::ruststream_sqlx::TimeSource>::DATABASE {
-                    spec.database_clock()
-                } else {
-                    spec
-                }
-            })
-        }
-        None => spec,
-    };
-    Description {
-        spec,
-        form_type,
-        opening_type,
-        lease,
+    mut generics: Generics,
+    description: &Description,
+) -> Generics {
+    if !input.generics.params.is_empty() {
+        let table = description.table_type();
+        generics
+            .make_where_clause()
+            .predicates
+            .push(parse_quote_spanned!(description.span=>
+                #table: ::ruststream_sqlx::spec::Valid
+            ));
     }
-}
-
-/// What the table's transactions open at, twice: as the description's builder step, and as the
-/// type a subscription requires its dialect to open (`Opens`). A table that names neither a level
-/// nor a mode opens at its database's default, which every dialect opens, as `()`.
-fn opening(opening: Opening) -> (Option<TokenStream2>, TokenStream2) {
-    let dialect = quote!(::ruststream_sqlx::dialect);
-    // A variant of `Isolation` or `Mode` and its type in `level` share one name: the word the
-    // attribute takes, in upper camel case.
-    let named = |word: &str| format_ident!("{}", word.to_upper_camel_case());
-    match opening {
-        Opening::Isolation(level) => {
-            let name = named(level.attribute());
-            (
-                Some(quote!(.isolation(#dialect::Isolation::#name))),
-                quote!(#dialect::level::#name),
-            )
-        }
-        Opening::Mode(mode) => {
-            let name = named(mode.attribute());
-            (
-                Some(quote!(.mode(#dialect::Mode::#name))),
-                quote!(#dialect::level::#name),
-            )
-        }
-        _ => (None, quote!(())),
-    }
+    generics
 }
 
 /// The struct's generics with what every impl of the row needs of them: `Send + Sync + 'static`
@@ -257,4 +106,93 @@ pub(crate) fn bounded_generics(input: &DeriveInput, id_type: &syn::Type) -> Gene
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use syn::{DeriveInput, parse_quote};
+
+    use super::expand;
+
+    pub(super) fn errors(input: &DeriveInput) -> Vec<String> {
+        expand(input).map_or_else(
+            |error| error.into_iter().map(|error| error.to_string()).collect(),
+            |_| Vec::new(),
+        )
+    }
+
+    /// The expansion without whitespace, so a test reads it as the source would be written.
+    pub(super) fn expanded(input: &DeriveInput) -> syn::Result<String> {
+        Ok(expand(input)?.to_string().replace(' ', ""))
+    }
+
+    #[test]
+    fn a_flat_struct_expands_to_the_manual_form() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", schema = "app", custom(ack, retry))]
+            struct Job {
+                #[field(id, generated)] id: i64,
+                #[field(payload)] payload: Vec<u8>,
+                #[field(group, fifo = true)] name: String,
+                #[field(partition_key)] tenant: String,
+                #[field(attempt, generated)] attempt: i16,
+                #[field(locked_until)] locked_until: Option<DateTime<Utc>>,
+                #[field(retry_after)] retry_after: Option<DateTime<Utc>>,
+                note: String,
+            }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "impl::ruststream_sqlx::InboxTableforJob{typeId=i64;",
+            // The markers in the canonical order: the form, the roles, the clock and opening, the
+            // service's own events.
+            "typeTable=::ruststream_sqlx::InboxSpec<(\
+             ::ruststream_sqlx::spec::Lease<<Option<DateTime<Utc>>as::ruststream_sqlx::TimeColumn>::Time>,\
+             ::ruststream_sqlx::spec::Fifo,\
+             ::ruststream_sqlx::spec::Key,\
+             ::ruststream_sqlx::spec::RetryAfter<Option<DateTime<Utc>>>,\
+             ::ruststream_sqlx::spec::Attempt,\
+             ::ruststream_sqlx::spec::Payload,\
+             ::ruststream_sqlx::spec::own::Ack,\
+             ::ruststream_sqlx::spec::own::Retry,)>;",
+            "constTABLE:Self::Table=::ruststream_sqlx::InboxSpec::new(\"jobs\",\
+             ::ruststream_sqlx::dialect::Column::new(\"id\").generated()).within(\"app\")\
+             .lease(::ruststream_sqlx::dialect::Column::new(\"locked_until\"))\
+             .fifo_group(::ruststream_sqlx::dialect::Column::new(\"name\"))\
+             .partition_key(::ruststream_sqlx::dialect::Column::new(\"tenant\"))\
+             .retry_after(::ruststream_sqlx::dialect::Column::new(\"retry_after\"))\
+             .attempt(::ruststream_sqlx::dialect::Column::new(\"attempt\").generated())\
+             .payload(::ruststream_sqlx::dialect::Column::new(\"payload\"))\
+             .data(&[::ruststream_sqlx::dialect::Column::new(\"note\")])\
+             .own::<::ruststream_sqlx::spec::own::Ack>()\
+             .own::<::ruststream_sqlx::spec::own::Retry>();",
+            "fnid(&self)->&i64{&self.id}",
+            "impl::ruststream_sqlx::PayloadRowforJob{typeColumn=Vec<u8>;",
+            "impl::ruststream_sqlx::KeyRowforJobwherefor<'__c>String:::ruststream_sqlx::KeyColumn{typeKey=String;fnpartition_key(&self)->&String{&self.tenant}}",
+            "impl::ruststream_sqlx::AttemptRowforJobwherefor<'__c>i16:::ruststream_sqlx::AttemptColumn{typeAttempt=i16;fnattempt(&self)->&i16{&self.attempt}}",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        // The crate's blanket impls write the rest of the contract.
+        for machinery in ["Events", "QueueRow", "InboxRow", "LeaseRow", "Input"] {
+            assert!(!impls.contains(machinery), "{machinery}: {impls}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_generic_struct_holds_its_impls_where_its_settings_keep_the_rules() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", clock = Source)]
+            struct Job<Source> { #[field(id)] id: i64, #[sqlx(skip)] source: PhantomData<Source> }
+        };
+        let impls = expanded(&input)?;
+        let valid = "::ruststream_sqlx::InboxSpec<(::ruststream_sqlx::spec::Clock<Source>,)>:\
+                     ::ruststream_sqlx::spec::Valid";
+        for header in ["InboxTableforJob<Source>", "__private::InputforJob<Source>"] {
+            let at = impls
+                .find(header)
+                .ok_or_else(|| syn::Error::new(input.ident.span(), header))?;
+            let clause = &impls[at..at + impls[at..].find('{').unwrap_or_default()];
+            assert!(clause.contains(valid), "{header}: {clause}");
+        }
+        Ok(())
+    }
+}

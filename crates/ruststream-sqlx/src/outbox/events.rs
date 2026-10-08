@@ -1,5 +1,6 @@
-//! One trait per event of an outbox record: what a service implements when it lists the event in
-//! `#[outbox(custom(..))]`, and `Publish`, which has no default.
+//! One trait per event of an outbox record: what a service implements when it names the event as
+//! its own (`#[outbox(custom(..))]`, or `own` on its `OutboxSpec`), and `Publish`, which has no
+//! default.
 
 use std::future::Future;
 
@@ -7,6 +8,9 @@ use ruststream::OutgoingMessage;
 use sqlx::{Database, Error};
 
 use super::OutboxRow;
+use super::database::Defaults;
+use super::dispatch::{AckBy, Declared, DiscardBy, FetchBy, HeadersOf, RecoverBy, RetryBy};
+use super::spec::{Declaration, OutboxTable};
 
 /// Creates the record of a message a handler publishes under a registered name, and returns its
 /// id, which the message then carries in [`OUTBOX_ID_HEADER`](super::OUTBOX_ID_HEADER).
@@ -152,9 +156,9 @@ pub trait Publish<DB: Database>: OutboxRow {
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `fetch` in `#[outbox(custom(..))]` and does not implement `outbox::Fetch<{DB}>`",
+    message = "`{Self}` names its own fetch and does not implement `outbox::Fetch<{DB}>`",
     label = "the service's own fetch is missing",
-    note = "implement `outbox::Fetch<{DB}>` for `{Self}`, or drop `fetch` from `custom(..)`"
+    note = "implement `outbox::Fetch<{DB}>` for `{Self}`, or drop `fetch` from `#[outbox(custom(..))]` (or `.own::<own::Fetch>()` from its `OutboxSpec`)"
 )]
 pub trait Fetch<DB: Database>: OutboxRow {
     /// Takes the record `id` into work, or `None` when it is taken or processed already.
@@ -263,8 +267,8 @@ outcome_event!(
     /// # fn main() {}
     /// ```
     Ack, ack, "ack",
-    message = "`{Self}` lists `ack` in `#[outbox(custom(..))]` and does not implement `outbox::Ack<{DB}>`",
-    note = "implement `outbox::Ack<{DB}>` for `{Self}`, or drop `ack` from `custom(..)`"
+    message = "`{Self}` names its own ack and does not implement `outbox::Ack<{DB}>`",
+    note = "implement `outbox::Ack<{DB}>` for `{Self}`, or drop `ack` from `#[outbox(custom(..))]` (or `.own::<own::Ack>()` from its `OutboxSpec`)"
 );
 
 outcome_event!(
@@ -334,8 +338,8 @@ outcome_event!(
     /// # fn main() {}
     /// ```
     Retry, retry, "retry",
-    message = "`{Self}` lists `retry` in `#[outbox(custom(..))]` and does not implement `outbox::Retry<{DB}>`",
-    note = "implement `outbox::Retry<{DB}>` for `{Self}`, or drop `retry` from `custom(..)`"
+    message = "`{Self}` names its own retry and does not implement `outbox::Retry<{DB}>`",
+    note = "implement `outbox::Retry<{DB}>` for `{Self}`, or drop `retry` from `#[outbox(custom(..))]` (or `.own::<own::Retry>()` from its `OutboxSpec`)"
 );
 
 outcome_event!(
@@ -405,8 +409,8 @@ outcome_event!(
     /// # fn main() {}
     /// ```
     Discard, discard, "discard",
-    message = "`{Self}` lists `discard` in `#[outbox(custom(..))]` and does not implement `outbox::Discard<{DB}>`",
-    note = "implement `outbox::Discard<{DB}>` for `{Self}`, or drop `discard` from `custom(..)`"
+    message = "`{Self}` names its own discard and does not implement `outbox::Discard<{DB}>`",
+    note = "implement `outbox::Discard<{DB}>` for `{Self}`, or drop `discard` from `#[outbox(custom(..))]` (or `.own::<own::Discard>()` from its `OutboxSpec`)"
 );
 
 /// Selects the unprocessed records of one name, for the republish at startup.
@@ -477,9 +481,9 @@ outcome_event!(
 /// # fn main() {}
 /// ```
 #[diagnostic::on_unimplemented(
-    message = "`{Self}` lists `recover` in `#[outbox(custom(..))]` and does not implement `outbox::Recover<{DB}>`",
+    message = "`{Self}` names its own recovery and does not implement `outbox::Recover<{DB}>`",
     label = "the service's own recovery is missing",
-    note = "implement `outbox::Recover<{DB}>` for `{Self}`, or drop `recover` from `custom(..)`"
+    note = "implement `outbox::Recover<{DB}>` for `{Self}`, or drop `recover` from `#[outbox(custom(..))]` (or `.own::<own::Recover>()` from its `OutboxSpec`)"
 )]
 pub trait Recover<DB: Database>: OutboxRow {
     /// The unprocessed records published under `name`.
@@ -493,24 +497,113 @@ pub trait Recover<DB: Database>: OutboxRow {
     ) -> impl Future<Output = Result<Vec<Self>, Error>> + Send;
 }
 
-/// Every event of a record type, which registering it requires; implemented for any type that
-/// has them all.
-// Registering names this bound, so a missing event surfaces here; rustc then names the missing
-// event's trait in a `help` line below, without that trait's own message.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` misses an event of an outbox record on `{DB}`, so it cannot be registered",
-    label = "a record without every outbox event",
-    note = "a record implements `outbox::Publish<{DB}>` itself, and every event its `#[outbox(custom(..))]` lists; the `help` names the missing one"
-)]
+/// Every event of a record type on `DB`, each dispatched by its slot in the record's settings:
+/// what registering a record requires. Implemented for every [`OutboxTable`] that implements
+/// [`Publish`] and every event its settings name as its own. Machinery.
+// No message of its own: rustc then reports the unmet bound underneath (the missing `Publish`, the
+// missing event of the record's own), with that trait's message.
 #[doc(hidden)]
-pub trait Tracked<DB: Database>:
-    Publish<DB> + Fetch<DB> + Ack<DB> + Retry<DB> + Discard<DB> + Recover<DB>
-{
+pub trait Tracked<DB: Database>: Publish<DB> {
+    /// The record's headers, moved out of it; empty without a headers column.
+    fn take_headers(&mut self) -> ruststream::HeaderMap;
+
+    /// Takes the record `id` into work.
+    fn fetch_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c Self::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<Option<Self>, Error>> + Send + 'c;
+
+    /// Marks the record `id` acknowledged.
+    fn ack_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c Self::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
+
+    /// Runs the retry of the record `id`.
+    fn retry_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c Self::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
+
+    /// Marks the record `id` dropped.
+    fn discard_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c Self::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c;
+
+    /// The unprocessed records published under `name`.
+    fn recover_records<'c>(
+        conn: &'c mut DB::Connection,
+        name: &'c str,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<Vec<Self>, Error>> + Send + 'c;
 }
 
 impl<DB, Record> Tracked<DB> for Record
 where
     DB: Database,
-    Record: Publish<DB> + Fetch<DB> + Ack<DB> + Retry<DB> + Discard<DB> + Recover<DB>,
+    Record: OutboxTable + Publish<DB>,
+    <Declared<Record> as Declaration>::Headers: HeadersOf<Record>,
+    <Declared<Record> as Declaration>::OwnFetch: FetchBy<DB, Record>,
+    <Declared<Record> as Declaration>::OwnAck: AckBy<DB, Record>,
+    <Declared<Record> as Declaration>::OwnRetry: RetryBy<DB, Record>,
+    <Declared<Record> as Declaration>::OwnDiscard: DiscardBy<DB, Record>,
+    <Declared<Record> as Declaration>::OwnRecover: RecoverBy<DB, Record>,
 {
+    #[inline]
+    fn take_headers(&mut self) -> ruststream::HeaderMap {
+        <<Declared<Record> as Declaration>::Headers as HeadersOf<Record>>::take(self)
+    }
+
+    fn fetch_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c <Record as OutboxTable>::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<Option<Self>, Error>> + Send + 'c {
+        <<Declared<Record> as Declaration>::OwnFetch as FetchBy<DB, Record>>::fetch(
+            conn, id, defaults,
+        )
+    }
+
+    fn ack_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c <Record as OutboxTable>::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c {
+        <<Declared<Record> as Declaration>::OwnAck as AckBy<DB, Record>>::ack(conn, id, defaults)
+    }
+
+    fn retry_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c <Record as OutboxTable>::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c {
+        <<Declared<Record> as Declaration>::OwnRetry as RetryBy<DB, Record>>::retry(
+            conn, id, defaults,
+        )
+    }
+
+    fn discard_record<'c>(
+        conn: &'c mut DB::Connection,
+        id: &'c <Record as OutboxTable>::Id,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<(), Error>> + Send + 'c {
+        <<Declared<Record> as Declaration>::OwnDiscard as DiscardBy<DB, Record>>::discard(
+            conn, id, defaults,
+        )
+    }
+
+    fn recover_records<'c>(
+        conn: &'c mut DB::Connection,
+        name: &'c str,
+        defaults: &'c Defaults,
+    ) -> impl Future<Output = Result<Vec<Self>, Error>> + Send + 'c {
+        <<Declared<Record> as Declaration>::OwnRecover as RecoverBy<DB, Record>>::recover(
+            conn, name, defaults,
+        )
+    }
 }

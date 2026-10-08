@@ -4,7 +4,11 @@
     "A lease setting needs the field: `InboxQueue::lease` compiles only for a struct with `#[field(locked_until)]`, and `SqlxBroker::lease` sets the lease of those tables alone.",
     "MySQL 8.0.1 and MariaDB 10.6 are the oldest servers the inbox runs on; an older one stops the subscription at startup with `SqlxBrokerError::ServerTooOld`.",
     "The lease form reads the host's clock: `#[field(locked_until)]` beside `#[inbox(clock = DatabaseClock)]` does not compile.",
-    "Write one statement of a built-in dialect the service's own way as an event: list it in `#[inbox(custom(..))]` and implement its trait (`Ack<DB>`, `Retry<DB>`, `Claim<DB>` ..) for the struct.",
+    "Write one statement of a built-in dialect the service's own way as an event: name it as the table's own, in `#[inbox(custom(..))]` on the derive or with `.own::<spec::own::Ack>()` and its marker in `type Table` by hand, and implement its trait (`Ack<DB>`, `Retry<DB>`, `Claim<DB>` ..) for the struct.",
+    "Describe a queue table by hand by implementing `InboxTable` with `TABLE` built by `InboxSpec::new(table, id)`: the typed builder is the single source of the table's settings, and `#[derive(Inbox)]` writes the same impl.",
+    "In `type Table = InboxSpec<(..)>` list the typed settings (the form, `Payload`, the roles a delivery reads, the time roles, `Fifo`, `Clock`, `Opens`, the `spec::own` events) in the order the chain sets them; the column-only setters (`within`, `group`, `priority`, `data`, `fetching`, `selecting_all`) leave the type as it is.",
+    "Implement the trait of each role a hand-described table's type names: `PayloadRow`, `KeyRow`, `AttemptRow`, `HeaderRow`, or `HeaderFields` with `put_header`; a row-mode table by hand derives `Clone`, names its own columns with `.data(..)` and writes `impl Input for Row { type Axis = SoloCarried<Self>; }`.",
+    "Render the insert of a table described by hand in a constant, `const INSERT: Sql<N> = dialect::insert::postgres(&Row::TABLE.spec())` (or `mysql`, `sqlite`), and bind its columns in the description's order: the roles, then the data columns.",
     "A database without a built-in dialect takes a dialect of the service's own, written from scratch: it implements `Dialect`, the trait of each form its tables take (`RowLock`, `Lease`, `Advisory`) and `ByName<DB>` for subscriptions by name, and goes to the broker through `SqlxBroker::with_dialect`.",
     "Declare `max_attempts(..)` and `dead_letter(..)` together on an inbox mount: `max_attempts(1)` sends every failure to the dead letter at once, and one without the other stops the service at startup.",
     "In the advisory lock form (`#[inbox(advisory_lock = \"..\")]`) each delivery in work holds a pool connection of its own until it settles, batches included: size the pool for `workers(n)` or the batch size, plus the inserts the handlers publish.",
@@ -13,7 +17,7 @@
     "Mount an inbox handler with `.transactional()` (`b.include(handler.transactional())`) before it takes its delivery's transaction as its first `Ctx`, `Ctx(mut tx): Ctx<keys::Tx<DB>>`, and writes through `&mut *tx`: acknowledgement commits those writes, and every other outcome rolls them back.",
     "Take an inbox handler's `Ctx` keys in the order `keys::Tx`, `keys::Pool`, `keys::Attempt`, leaving out the ones it does not need: the first `Ctx` decides which keys compile after it.",
     "Leave `#[field(payload)]` out of an inbox struct to deliver the row itself: the struct derives `Clone` and not `Deserialize`, and the handler takes `&Row`, or `&[Row]` in a batch mounted with no reply and no `Out` slots.",
-    "Write a row-mode task with the derive's `insert` or through `Repository` with a `Publish` of the service's own; routes and by-name subscriptions read payload-mode tables.",
+    "Write a row-mode task with `Insert::insert`, the derive's or one written over `dialect::insert`, or through `Repository` with a `Publish` of the service's own; routes and by-name subscriptions read payload-mode tables.",
     "In transactional mode each delivery in work holds a pool connection for its transaction, in the lease form too: a handler that takes another one, through `Ctx<keys::Pool<DB>>` or a publish, needs a pool larger than its `workers(n)`.",
     "Describe a queue table whose message is assembled from it with two structs: the headers struct derives `InboxHeaders` and carries the table's attributes and every role, and the message struct derives `Inbox`, holds it in a `#[field(headers)] #[sqlx(flatten)]` field beside its own data, and takes `#[inbox(custom(..))]` alone; every field of the headers struct without a role is a header, its type implementing `HeaderField`.",
     "Read a message whose data lives in other tables with `#[inbox(custom(fetch))]` and a `Fetch<DB>` impl whose `SELECT` joins them and returns the headers struct's columns under their names; a claimed id the fetch finds no row for settles by `on_failure(decode = ..)` before the handler runs.",
@@ -23,6 +27,8 @@
     "Inside `#[ruststream::app]` write `outbox!` without `pool:` and hand the pool built in `on_startup` to `tracking.set_pool(pool)`, because sqlx builds a pool only inside a Tokio runtime; close the pool in `after_shutdown`.",
     "Publish through `tracking.wrap(publisher)` from an HTTP endpoint or an `after_startup` hook: a publisher from `RunningApp::publisher` runs outside the publish pipeline, so the publish middleware does not reach it.",
     "The outbox delivers at least once: a consumer that must not process a message twice checks the record id it receives in the `x-ruststream-outbox-id` header itself.",
-    "A test build of a service on the outbox (the `testing` feature) leaves the outbox off unless the test process runs with `RUSTSTREAM_SQLX_OUTBOX=on`."
+    "A test build of a service on the outbox (the `testing` feature) leaves the outbox off unless the test process runs with `RUSTSTREAM_SQLX_OUTBOX=on`.",
+    "Describe an outbox record by hand by implementing `OutboxTable` with `TABLE` built by `OutboxSpec::new(table, id, name, payload)`, and `HeaderRow` where its type names `outbox::spec::Headers`.",
+    "Teach `outbox!` first; register a record under a name known at build time with `Outbox::track::<Record, Name>()` and a `TrackedName`, and under a name read from configuration with `Outbox::register::<Record>(name)`."
   ]
 }

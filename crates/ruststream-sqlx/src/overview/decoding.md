@@ -46,12 +46,13 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-A mistake stops the service as early as it can be seen. A struct that cannot drive a queue does
-not compile, and [`Inbox`] lists the errors. A subscription builds its statements when it opens
-and prepares each one on the server: a table or a column the struct names and the database lacks
+A mistake stops the service as early as it can be seen. A struct that cannot drive a queue does not
+compile, and [`Inbox`] lists the errors; [macro or manual](#macro-or-manual) shows where each rule
+of a table described by hand is checked. A subscription builds its statements when it opens and
+prepares each one on the server: a table or a column the description names and the database lacks
 stops it, and [`SqlxBrokerError::Schema`] names the table and the statement. Preparing checks the
-names, not the column types: the types are the service's to get right. A retry declaration the
-table cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempts(..)` and
+names, not the column types: the types are the service's to get right. A retry declaration the table
+cannot carry stops it too ([`SqlxBrokerError::Declaration`]): `max_attempts(..)` and
 `dead_letter(..)` come together, and the cap needs an `attempt` column. On MySQL and MariaDB the
 subscription also reads the server's version.
 

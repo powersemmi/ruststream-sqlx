@@ -1,7 +1,7 @@
 //! The expansion of a message assembled from a headers struct: a struct whose `#[field(headers)]`
-//! field flattens a struct deriving `InboxHeaders`. The headers struct describes the queue table
-//! and the per-row half of the contract; the message delegates to it, adds its own columns to the
-//! description, and runs its own events on the carried lane, as row mode does.
+//! field flattens a struct deriving `InboxHeaders`. The headers struct describes the queue table;
+//! the message's `InboxTable` extends that description with its own columns and its own events,
+//! reads its roles through the headers struct, and builds its header map from it.
 
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{quote, quote_spanned};
@@ -9,9 +9,8 @@ use ruststream_sqlx_dialect::Role;
 use syn::spanned::Spanned;
 use syn::{DeriveInput, Generics, Type, WherePredicate, parse_quote, parse_quote_spanned};
 
+use super::{carried, own_events};
 use crate::check::Errors;
-use crate::events::{EventParts, base_predicates, event_parts};
-use crate::mode::carried;
 use crate::parse::{self, Custom, Field, Storage};
 
 /// The impls of a message whose field at `headers` flattens its headers struct.
@@ -34,18 +33,15 @@ pub(crate) fn expand(
     check(fields, headers, &holder_name, custom, &mut errors);
     errors.finish()?;
 
-    let p = quote!(::ruststream_sqlx::__private);
     let r = quote!(::ruststream_sqlx);
-    let dialect = quote!(::ruststream_sqlx::dialect);
+    let spec = quote!(::ruststream_sqlx::spec);
     let name = &input.ident;
     let ident = field.ident;
     let generics = bounded_generics(input, holder);
-    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     // The uses of the headers struct's traits are spanned at its type, so a type that does not
     // derive `InboxHeaders` is reported at the field.
     let span = holder.span();
-    let headers_of = quote_spanned!(span=> <#holder as ::ruststream_sqlx::InboxHeaders>);
-    let lease_of = quote_spanned!(span=> <#holder as ::ruststream_sqlx::__private::HeadersLease>);
+    let headers_of = quote_spanned!(span=> <#holder as #r::InboxHeaders>);
 
     // The message's own columns join the description, so the default fetch names them; a fetch
     // of the service's own reads them wherever they live, so the description stays the table's.
@@ -54,66 +50,64 @@ pub(crate) fn expand(
         .filter_map(Field::column)
         .map(|column| {
             let name = &column.name;
-            quote!(#dialect::Column::new(#name))
+            quote!(::ruststream_sqlx::dialect::Column::new(#name))
         })
         .collect();
-    let spec = if custom.fetch || own.is_empty() {
-        quote!(#headers_of::SPEC)
-    } else {
-        quote!(#headers_of::SPEC.fetching(&[#(#own),*]))
-    };
-    // Why the bound is higher-ranked: it names no parameter of the impl, and rustc refuses a
-    // bound that names none and fails where it is written. Higher-ranked, it is checked where a
-    // lease is asked of the message instead, and names the headers struct to add the field to.
-    let mut lease_generics = generics.clone();
-    lease_generics
-        .make_where_clause()
-        .predicates
-        .push(parse_quote_spanned!(span=> for<'__l> #holder: #p::HeadersLease));
-    let (lease_impl, _, lease_where) = lease_generics.split_for_impl();
+    let fetching = (!custom.fetch && !own.is_empty()).then(|| quote!(.fetching(&[#(#own),*])));
+    // The message's own events join the headers struct's settings, one `Push` each.
+    let events = own_events(custom);
+    let mut settings = quote!(#headers_of::Settings);
+    let mut pushes: Vec<WherePredicate> = Vec::new();
+    for event in &events {
+        pushes.push(parse_quote!(#settings: #spec::Push<#event>));
+        settings = quote!(<#settings as #spec::Push<#event>>::Out);
+        pushes.push(parse_quote!(#settings: #spec::Declaration));
+    }
+    // The rules across the settings hold the message's own events to the headers struct's form,
+    // which the derive cannot see: a broken one is reported where `custom(..)` lists the event.
+    let rule_span = rule_span(custom);
+    let table = quote_spanned!(rule_span.unwrap_or(span)=> ::ruststream_sqlx::InboxSpec<#settings>);
+    let mut table_generics = generics.clone();
+    let predicates = &mut table_generics.make_where_clause().predicates;
+    if !input.generics.params.is_empty() {
+        predicates.extend(pushes);
+    }
+    if rule_span.is_none() {
+        // Why the bound is higher-ranked: without an event that only some forms take, the
+        // message's settings keep the rules exactly where its headers struct's do, which the
+        // headers struct's derive reports. Higher-ranked, the bound states that instead of
+        // checking it a second time here, where a struct that does not derive `InboxHeaders`
+        // would fail each rule on its own.
+        predicates.push(parse_quote!(for<'__v> #table: #spec::Valid));
+    }
+    let (table_impl, ty_generics, table_where) = table_generics.split_for_impl();
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
     let carried = carried(input, &generics);
-    let forms = form_checks(&generics, holder, custom);
-    let events = events(input, &generics, holder, ident, custom);
-    let queue = quote! {
+    let roles = roles(input, &generics, holder, ident);
+    Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics #p::QueueRow for #name #ty_generics #where_clause {
+        impl #table_impl #r::InboxTable for #name #ty_generics #table_where {
             type Id = #headers_of::Id;
-            type Lane = #p::RowLane;
+            type Table = #table;
+            const TABLE: Self::Table = #headers_of::TABLE #fetching #(.own::<#events>())*;
+
+            fn id(&self) -> &Self::Id {
+                #headers_of::id(&self.#ident)
+            }
         }
-    };
-    let inbox_row = quote! {
+
         #[automatically_derived]
-        impl #impl_generics #r::InboxRow for #name #ty_generics #where_clause {
-            const SPEC: #dialect::TableSpec<'static> = #spec;
-            type Form = #headers_of::Form;
-            type Opening = #headers_of::Opening;
-        }
-    };
-    let lease_row = quote! {
-        #[automatically_derived]
-        impl #lease_impl #r::LeaseRow for #name #ty_generics #lease_where {
-            type Lease = #lease_of::Lease;
-        }
-    };
-    let assembled = quote! {
-        #[automatically_derived]
-        impl #impl_generics #p::Assembled for #name #ty_generics #where_clause {
-            fn header_map(&self) -> #p::HeaderMap {
+        impl #impl_generics #r::HeaderFields for #name #ty_generics #where_clause {
+            const NAMES: &'static [&'static str] = #headers_of::NAMES;
+
+            fn header_map(&self) -> #r::__private::HeaderMap {
                 #headers_of::header_map(&self.#ident)
             }
         }
-    };
-    Ok(quote! {
-        #queue
-        #inbox_row
-        #lease_row
-        #assembled
+
+        #roles
 
         #carried
-
-        #forms
-
-        #events
     })
 }
 
@@ -177,170 +171,193 @@ fn check(fields: &[Field<'_>], headers: usize, holder: &str, custom: Custom, err
 }
 
 /// The message's generics with what every impl of it needs: `Send + Sync + 'static` of the
-/// message, and `InboxHeaders` of the struct it flattens.
+/// message, and `InboxHeaders` of the struct it flattens. The second holds even of a message
+/// without parameters: spanned at the field, it reports a struct that does not derive
+/// `InboxHeaders` there, instead of in each item that reads it.
 fn bounded_generics(input: &DeriveInput, holder: &Type) -> Generics {
     let name = &input.ident;
     let mut generics = input.generics.clone();
-    if !generics.params.is_empty() {
+    let predicates = &mut generics.make_where_clause().predicates;
+    if !input.generics.params.is_empty() {
         let (_, ty_generics, _) = input.generics.split_for_impl();
-        let predicates = &mut generics.make_where_clause().predicates;
         predicates.push(parse_quote!(
             #name #ty_generics: ::core::marker::Send + ::core::marker::Sync + 'static
         ));
-        predicates
-            .push(parse_quote_spanned!(holder.span()=> #holder: ::ruststream_sqlx::InboxHeaders));
     }
+    predicates.push(parse_quote_spanned!(holder.span()=> #holder: ::ruststream_sqlx::InboxHeaders));
     generics
 }
 
-/// The events the message lists in `custom(..)` that only some forms take, each held to the form
-/// of its headers struct: `claim` outside the advisory lock form, `extend` in the lease form, and
-/// `lock` and `unlock` in the advisory lock form. The derive cannot see the headers struct's form,
-/// so the bound on it is what refuses the event, where `custom(..)` lists it.
-fn form_checks(generics: &Generics, holder: &Type, custom: Custom) -> Option<TokenStream2> {
-    let p = quote!(::ruststream_sqlx::__private);
-    let r = quote!(::ruststream_sqlx);
-    let listed = [
-        (custom.claim, quote!(OwnClaim)),
-        (custom.extend, quote!(OwnExtend)),
-        (custom.lock, quote!(OwnLock)),
-        (custom.unlock, quote!(OwnLock)),
-    ];
-    let checks: Vec<_> = listed
+/// Where a rule across the settings is reported: the one event the message lists that only some
+/// forms take (`claim`, `extend`, or `lock` with `unlock`), or `custom(..)` itself where it lists
+/// more than one of them.
+fn rule_span(custom: Custom) -> Option<Span> {
+    let mut listed = [custom.claim, custom.extend, custom.lock.or(custom.unlock)]
         .into_iter()
-        .filter_map(|(span, takes)| {
-            span.map(|span: Span| {
-                let form = quote_spanned!(span=> <#holder as #r::InboxHeaders>::Form);
-                quote_spanned! {span=>
-                    #[allow(dead_code)]
-                    fn __takes<__Form: #p::#takes + ?::core::marker::Sized>() {}
-                    __takes::<#form>();
-                }
-            })
-        })
-        .collect();
-    if checks.is_empty() {
-        return None;
+        .flatten();
+    let first = listed.next()?;
+    if listed.next().is_some() {
+        custom.listed
+    } else {
+        Some(first)
     }
-    let (impl_generics, _, where_clause) = generics.split_for_impl();
-    let checks = checks.iter().map(|check| quote!({ #check }));
-    Some(quote! {
-        const _: () = {
-            #[allow(dead_code)]
-            fn __forms #impl_generics () #where_clause {
-                #(#checks)*
-            }
-        };
-    })
 }
 
-/// The message's `Events<DB>`: the per-row methods delegated to its headers struct's
-/// `HeadersRow<DB>`, its own events, and a header map built on the first read.
-fn events(
+/// The roles the message reads through its headers struct: the partition key and the attempt,
+/// where the headers struct has the field.
+fn roles(
     input: &DeriveInput,
     generics: &Generics,
     holder: &Type,
     ident: &syn::Ident,
-    custom: Custom,
 ) -> TokenStream2 {
-    let p = quote!(::ruststream_sqlx::__private);
     let r = quote!(::ruststream_sqlx);
     let name = &input.ident;
     let span = holder.span();
-    let id_ty: Type = parse_quote_spanned!(span=> <#holder as #r::InboxHeaders>::Id);
-    let mut predicates: Vec<WherePredicate> = base_predicates(&id_ty);
-    predicates.push(parse_quote_spanned!(span=> #holder: #p::HeadersRow<__DB>));
-    let events = event_parts(custom, &id_ty, &mut predicates);
-    let shape = events.shape();
-    let EventParts {
-        ids_arm, methods, ..
-    } = &events;
-    let row = quote_spanned!(span=> <#holder as #p::HeadersRow<__DB>>);
-    let headers_of = quote_spanned!(span=> <#holder as #r::InboxHeaders>);
-    // The ids a claim of the service's own returned bind into the crate's fetch, which the
-    // headers struct knows nothing of; every other parameter is the headers struct's.
-    let bind = ids_arm.as_ref().map_or_else(
-        || quote!(#row::bind::<Self>(param, arguments, values)),
-        |arm| {
-            quote! {
-                let bound = match (param, values.event) {
-                    #arm
-                    _ => false,
-                };
-                if bound {
-                    ::core::result::Result::Ok(true)
-                } else {
-                    #row::bind::<Self>(param, arguments, values)
-                }
+    let role = |accessor: TokenStream2, items: TokenStream2| {
+        let mut generics = generics.clone();
+        // Why the bound is higher-ranked: it names no parameter of the impl, and rustc refuses a
+        // bound that names none and fails where it is written. Higher-ranked, it rules the impl
+        // out where the headers struct has no such field, and the table sets no such role.
+        generics
+            .make_where_clause()
+            .predicates
+            .push(parse_quote_spanned!(span=> for<'__r> #holder: #r::#accessor));
+        let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+        quote! {
+            #[automatically_derived]
+            impl #impl_generics #r::#accessor for #name #ty_generics #where_clause {
+                #items
+            }
+        }
+    };
+    let key = role(
+        quote!(KeyRow),
+        quote! {
+            type Key = <#holder as #r::KeyRow>::Key;
+
+            fn partition_key(&self) -> &Self::Key {
+                #r::KeyRow::partition_key(&self.#ident)
             }
         },
     );
+    let attempt = role(
+        quote!(AttemptRow),
+        quote! {
+            type Attempt = <#holder as #r::AttemptRow>::Attempt;
 
-    let mut generics = generics.clone();
-    generics.params.push(parse_quote!(__DB));
-    generics.make_where_clause().predicates.extend(predicates);
-    let (impl_generics, _, where_clause) = generics.split_for_impl();
-    let (_, ty_generics, _) = input.generics.split_for_impl();
-    quote! {
-        impl #impl_generics #p::Events<__DB> for #name #ty_generics #where_clause {
-            #shape
-
-            type Token = #row::Token;
-
-            type Headers = #p::LazyHeaders;
-
-            fn kinds() -> ::core::option::Option<#p::Kinds> {
-                // A by-name subscription reads tables in payload mode; this one is in row mode.
-                ::core::option::Option::None
+            fn attempt(&self) -> &Self::Attempt {
+                #r::AttemptRow::attempt(&self.#ident)
             }
+        },
+    );
+    quote!(#key #attempt)
+}
 
-            fn id(&self) -> &<Self as #p::QueueRow>::Id {
-                #row::id(&self.#ident)
-            }
+#[cfg(test)]
+mod tests {
+    use syn::{DeriveInput, parse_quote};
 
-            fn take_headers(&mut self) -> #p::HeaderMap {
-                // The header map is built from the headers struct on the first read instead.
-                #p::HeaderMap::new()
-            }
+    use crate::inbox::tests::{errors, expanded};
 
-            fn unfit_header(headers: &#p::HeaderMap) -> ::core::option::Option<&str> {
-                #headers_of::unfit_header(headers)
-            }
-
-            fn partition_key(&self) -> ::core::option::Option<&[u8]> {
-                #row::partition_key(&self.#ident)
-            }
-
-            fn attempt(&self) -> ::core::option::Option<u64> {
-                #row::attempt(&self.#ident)
-            }
-
-            fn read_attempt(
-                row: &<__DB as #p::sqlx::Database>::Row,
-                queue: &'static #p::Queue,
-            ) -> ::core::option::Option<u64> {
-                #row::read_attempt(row, queue)
-            }
-
-            fn bind(
-                param: #p::Param,
-                arguments: &mut <__DB as #p::sqlx::Database>::Arguments,
-                values: &#p::Values<'_, __DB, Self>,
-            ) -> ::core::result::Result<bool, #p::sqlx::Error> {
-                #bind
-            }
-
-            fn lease(
-                queue: &'static #p::Queue,
-                now: #p::Now,
-            ) -> ::core::result::Result<
-                #p::Leasing<<Self as #p::Events<__DB>>::Token>,
-                #p::sqlx::Error,
-            > {
-                #row::lease(queue, now)
-            }
-
-            #methods
+    #[test]
+    fn a_message_assembled_from_a_headers_struct_keeps_the_tables_parts_on_it() {
+        let cases: [(DeriveInput, &[&str]); 5] = [
+            (
+                parse_quote! { struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, #[field(id)] id: i64 } },
+                &[
+                    "`id` plays `id` beside the headers struct `Head`, which describes the queue table: \
+                   mark the field that plays `id` in `Head`",
+                ],
+            ),
+            (
+                parse_quote! { struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, #[field(payload)] body: Vec<u8> } },
+                &[
+                    "`body` plays `payload` beside the headers struct `Head`: a message assembled from a \
+                   headers struct is handed to its handler itself, as in row mode, so it holds no \
+                   payload; drop the role",
+                ],
+            ),
+            (
+                parse_quote! {
+                    #[inbox(table = "jobs", custom(fetch), advisory_lock = "jobs-{id}")]
+                    struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head }
+                },
+                &[
+                    "`table` describes the queue table, which the headers struct `Head` describes: \
+                     put it on `Head`'s `#[inbox(..)]`",
+                    "`advisory_lock` describes the queue table, which the headers struct `Head` \
+                     describes: put it on `Head`'s `#[inbox(..)]`",
+                ],
+            ),
+            (
+                parse_quote! {
+                    struct Job {
+                        #[field(headers)] #[sqlx(flatten)] headers: Head,
+                        #[field(headers)] #[sqlx(flatten)] more: Head,
+                        #[sqlx(flatten)] order: Order,
+                    }
+                },
+                &[
+                    "`more` flattens a second headers struct: a message is assembled from one, `Head`",
+                    "`order` flattens a struct whose columns the default fetch cannot name: list \
+                     `fetch` in `#[inbox(custom(..))]` and read the message in the service's own \
+                     `Fetch`",
+                ],
+            ),
+            (
+                parse_quote! {
+                    #[inbox(custom(lock))]
+                    struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head }
+                },
+                &[
+                    "`lock` is listed without `unlock`: the service's own lock is released by its own \
+                   unlock, so list both in `custom(..)`",
+                ],
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(errors(&input), expected, "{}", input.ident);
         }
+    }
+
+    #[test]
+    fn a_message_assembled_from_a_headers_struct_extends_its_description() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, note: String, #[sqlx(skip)] cache: u8 }
+        };
+        let impls = expanded(&input)?;
+        for expected in [
+            "impl::ruststream_sqlx::InboxTableforJob",
+            "typeId=<Headas::ruststream_sqlx::InboxHeaders>::Id;",
+            "typeTable=::ruststream_sqlx::InboxSpec<<Headas::ruststream_sqlx::InboxHeaders>::Settings>;",
+            "constTABLE:Self::Table=<Headas::ruststream_sqlx::InboxHeaders>::TABLE\
+             .fetching(&[::ruststream_sqlx::dialect::Column::new(\"note\")]);",
+            "fnid(&self)->&Self::Id{<Headas::ruststream_sqlx::InboxHeaders>::id(&self.headers)}",
+            "impl::ruststream_sqlx::HeaderFieldsforJob",
+            "impl::ruststream_sqlx::__private::InputforJob",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        for machinery in ["Events", "QueueRow", "InboxRow", "LeaseRow"] {
+            assert!(!impls.contains(machinery), "{machinery}: {impls}");
+        }
+        // The service's own fetch reads the message wherever its columns live: the description
+        // stays the table's, and the message's own events join its settings.
+        let fetched: DeriveInput = parse_quote! {
+            #[inbox(custom(fetch, claim))]
+            struct Job { #[field(headers)] #[sqlx(flatten)] headers: Head, customer: String }
+        };
+        let impls = expanded(&fetched)?;
+        for expected in [
+            "typeTable=::ruststream_sqlx::InboxSpec<<<<Headas::ruststream_sqlx::InboxHeaders>::Settings\
+             as::ruststream_sqlx::spec::Push<::ruststream_sqlx::spec::own::Claim>>::Out\
+             as::ruststream_sqlx::spec::Push<::ruststream_sqlx::spec::own::Fetch>>::Out>;",
+            "constTABLE:Self::Table=<Headas::ruststream_sqlx::InboxHeaders>::TABLE\
+             .own::<::ruststream_sqlx::spec::own::Claim>().own::<::ruststream_sqlx::spec::own::Fetch>();",
+        ] {
+            assert!(impls.contains(expected), "{expected}\n{impls}");
+        }
+        Ok(())
     }
 }

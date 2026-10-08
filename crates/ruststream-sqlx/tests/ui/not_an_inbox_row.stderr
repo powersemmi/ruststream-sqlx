@@ -4,12 +4,13 @@ error[E0277]: `Job` does not describe a queue table
 14 |     queue_table::<Job>();
    |                   ^^^ not an inbox row
    |
-help: the trait `InboxRow` is not implemented for `Job`
+help: the trait `InboxTable` is not implemented for `Job`
   --> tests/ui/not_an_inbox_row.rs:4:1
    |
  4 | struct Job {
    | ^^^^^^^^^^
-   = note: derive it: `#[derive(Inbox)]` with `#[inbox(table = "..")]` and a `#[field(id)]` field
+   = note: derive it: `#[derive(Inbox)]` with `#[inbox(table = "..")]` and a `#[field(id)]` field, or describe the table by hand: `impl InboxTable`
+   = note: required for `Job` to implement `InboxRow`
 note: required by a bound in `queue_table`
   --> tests/ui/not_an_inbox_row.rs:8:21
    |

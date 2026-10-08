@@ -160,4 +160,136 @@ fn named_fields<'a>(
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use syn::{DeriveInput, parse_quote};
+
+    use super::inbox;
+
+    pub(super) fn error(input: &DeriveInput) -> String {
+        inbox(input).map_or_else(|error| error.to_string(), |_| String::new())
+    }
+
+    #[test]
+    fn a_placeholder_finds_a_raw_field_by_its_plain_name() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", advisory_lock = "jobs-{type}")]
+            struct Job {
+                #[field(id)]
+                id: i64,
+                r#type: String,
+            }
+        };
+        let inbox = inbox(&input)?;
+        assert_eq!(
+            inbox
+                .field_named("type")
+                .and_then(|field| field.column())
+                .map(|column| column.name.as_str()),
+            Some("type")
+        );
+        assert!(inbox.field_named("kind").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn misuse_of_the_attributes_is_reported() {
+        let cases: [(DeriveInput, &str); 22] = [
+            (
+                parse_quote! { struct Job { #[field(id)] id: i64 } },
+                "#[derive(Inbox)] needs the table: add `#[inbox(table = \"..\")]`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", queue = "emails")] struct Job { #[field(id)] id: i64 } },
+                "unknown `#[inbox(..)]` option: expected `table`, `schema`, `advisory_lock`, \
+                 `isolation`, `mode`, `custom` or `clock`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "")] struct Job { #[field(id)] id: i64 } },
+                "`table` is empty",
+            ),
+            (
+                parse_quote! { #[inbox(table = "app.jobs")] struct Job { #[field(id)] id: i64 } },
+                "`table` holds a dot: name the table alone, and its schema with `schema = \"..\"`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", schema = "db.app")] struct Job { #[field(id)] id: i64 } },
+                "`schema` holds a dot: name the schema alone, without its database or table",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(identity)] id: i64 } },
+                "unknown `#[field(..)]` option: expected a role (`id`, `group`, `partition_key`, \
+                 `priority`, `retry_after`, `attempt`, `locked_until`, `processed_at`, \
+                 `headers`, `payload`), `generated` or `fifo`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id, group)] id: i64 } },
+                "this field already plays `id`: a field plays one role",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id, fifo = true)] id: i64 } },
+                "`fifo` belongs to the `group` role: `#[field(group, fifo = true)]`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] #[sqlx(skip)] id: i64 } },
+                "`#[sqlx(skip)]` leaves `id` without a column, so it cannot play `id`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job(i64); },
+                "#[derive(Inbox)] describes a table: it takes a struct with named fields",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] #[inbox(table = "jobs_v2")] struct Job { #[field(id)] id: i64 } },
+                "`table` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] #[sqlx(rename = "")] id: i64 } },
+                "the column name is empty",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field(payload)] #[sqlx(flatten)] body: Body } },
+                "`#[sqlx(flatten)]` leaves `body` without a column, so it cannot play `payload`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field(generated)] #[sqlx(skip)] created_at: i64 } },
+                "`#[sqlx(skip)]` leaves `created_at` without a column for the database to fill in",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id, generated)] #[field(generated)] id: i64 } },
+                "`generated` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field(group, fifo = true, fifo = true)] name: String } },
+                "`fifo` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs")] struct Job { #[field(id)] id: i64, #[field()] payload: Vec<u8> } },
+                "`#[field(..)]` names nothing: give it a role, `generated`, or both",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(lease))] struct Job { #[field(id)] id: i64 } },
+                "unknown event in `custom(..)`: expected `claim`, `fetch`, `ack`, `retry`, \
+                 `retry_after`, `discard`, `dead_letter`, `extend`, `lock` or `unlock`",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(publish))] struct Job { #[field(id)] id: i64 } },
+                "`publish` has no default to hand over: implement `Publish` for the struct \
+                 without listing it",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(ack, ack))] struct Job { #[field(id)] id: i64 } },
+                "`ack` is listed twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", custom(ack), custom(fetch))] struct Job { #[field(id)] id: i64 } },
+                "`custom` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", clock = A, clock = B)] struct Job { #[field(id)] id: i64 } },
+                "`clock` is given twice",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(error(&input), expected);
+        }
+    }
+}

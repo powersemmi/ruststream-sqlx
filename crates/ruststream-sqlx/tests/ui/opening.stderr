@@ -4,20 +4,20 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect opens no transaction at `rusts
 42 |     let _ = InboxQueue::<Serializable>::new("jobs").subscribe(&connected).await;
    |                                                     ^^^^^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Sqlite>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Sqlite>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::Deferred> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
 ...
    | impl Opens<level::Immediate> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
 ...
    | impl Opens<level::Exclusive> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
    = note: required for `InboxQueue<Serializable>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Sqlite>>`
 
 error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect opens no transaction at `ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable`
@@ -26,20 +26,20 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect opens no transaction at `rusts
 42 |     let _ = InboxQueue::<Serializable>::new("jobs").subscribe(&connected).await;
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Sqlite>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Sqlite>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::Deferred> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
 ...
    | impl Opens<level::Immediate> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
 ...
    | impl Opens<level::Exclusive> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
 note: required by a bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
   --> src/inbox/queue.rs
    |
@@ -52,20 +52,20 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect opens no transaction at `rusts
 42 |     let _ = InboxQueue::<Serializable>::new("jobs").subscribe(&connected).await;
    |                                                                           ^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Sqlite>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Sqlite>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::Deferred> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
 ...
    | impl Opens<level::Immediate> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
 ...
    | impl Opens<level::Exclusive> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
 note: required by a bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
   --> src/inbox/queue.rs
    |
@@ -78,20 +78,20 @@ error[E0277]: the `BuiltIn<sqlx::Postgres>` dialect opens no transaction at `rus
 49 |     let _ = InboxQueue::<Immediate>::new("jobs").subscribe(&connected).await;
    |                                                  ^^^^^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>` is not implemented for `BuiltIn<sqlx::Postgres>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>` is not implemented for `BuiltIn<sqlx::Postgres>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Postgres>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Postgres>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::ReadCommitted> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::ReadCommitted>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::ReadCommitted>`
 ...
    | impl Opens<level::RepeatableRead> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::RepeatableRead>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::RepeatableRead>`
 ...
    | impl Opens<level::Serializable> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>`
    = note: required for `InboxQueue<Immediate>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Postgres>>`
 
 error[E0277]: the `BuiltIn<sqlx::Postgres>` dialect opens no transaction at `ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate`
@@ -100,20 +100,20 @@ error[E0277]: the `BuiltIn<sqlx::Postgres>` dialect opens no transaction at `rus
 49 |     let _ = InboxQueue::<Immediate>::new("jobs").subscribe(&connected).await;
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>` is not implemented for `BuiltIn<sqlx::Postgres>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>` is not implemented for `BuiltIn<sqlx::Postgres>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Postgres>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Postgres>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::ReadCommitted> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::ReadCommitted>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::ReadCommitted>`
 ...
    | impl Opens<level::RepeatableRead> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::RepeatableRead>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::RepeatableRead>`
 ...
    | impl Opens<level::Serializable> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>`
 note: required by a bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
   --> src/inbox/queue.rs
    |
@@ -126,20 +126,20 @@ error[E0277]: the `BuiltIn<sqlx::Postgres>` dialect opens no transaction at `rus
 49 |     let _ = InboxQueue::<Immediate>::new("jobs").subscribe(&connected).await;
    |                                                                        ^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>` is not implemented for `BuiltIn<sqlx::Postgres>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>` is not implemented for `BuiltIn<sqlx::Postgres>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Postgres>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Postgres>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::ReadCommitted> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::ReadCommitted>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::ReadCommitted>`
 ...
    | impl Opens<level::RepeatableRead> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::RepeatableRead>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::RepeatableRead>`
 ...
    | impl Opens<level::Serializable> for BuiltIn<Postgres> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>`
 note: required by a bound in `<InboxQueue<Row, Mode> as SubscriptionSource<ConnectedSqlxBroker<DB, D>>>`
   --> src/inbox/queue.rs
    |
@@ -152,20 +152,20 @@ error[E0277]: the `BuiltIn<sqlx::Sqlite>` dialect opens no transaction at `rusts
 54 |     SqlxBroker::new(pool).route::<Serializable>("jobs")
    |                           ^^^^^ the table's `isolation` or `mode` names it
    |
-   = help: the trait `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
+   = help: the trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Serializable>` is not implemented for `BuiltIn<sqlx::Sqlite>`
    = note: Postgres opens `read_committed`, `repeatable_read` and `serializable`; MySQL and MariaDB those and `read_uncommitted`; SQLite takes the modes `deferred`, `immediate` and `exclusive`
    = note: a dialect of the service's own opens a level by implementing `Opens<Level>` and `Dialect::begin`
-help: `BuiltIn<sqlx::Sqlite>` implements trait `Opens<Level>`
+help: `BuiltIn<sqlx::Sqlite>` implements trait `ruststream_sqlx::ruststream_sqlx_dialect::Opens<Level>`
   --> src/inbox/database/built_in.rs
    |
    | impl Opens<level::Deferred> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Deferred>`
 ...
    | impl Opens<level::Immediate> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Immediate>`
 ...
    | impl Opens<level::Exclusive> for BuiltIn<Sqlite> {}
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `ruststream_sqlx::ruststream_sqlx_dialect::Opens<ruststream_sqlx::ruststream_sqlx_dialect::level::Exclusive>`
 note: required by a bound in `SqlxBroker::<DB, D>::route`
   --> src/inbox/broker.rs
    |

@@ -1,4 +1,6 @@
 [toolchain]
 channel = "stable"
-components = ["rustfmt", "clippy"]
+# rust-src: a compile-fail snapshot of a const check quotes core's source, which rustc shows only
+# where the toolchain carries it, so local and CI runs render the same.
+components = ["rustfmt", "clippy", "rust-src"]
 profile = "minimal"

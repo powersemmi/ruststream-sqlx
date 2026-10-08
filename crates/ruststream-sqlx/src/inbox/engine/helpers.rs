@@ -14,7 +14,7 @@ use crate::inbox::time::{QueueTime, TimeSource};
 
 /// The first of `headers`: what a row without a `headers` field cannot hold.
 #[must_use]
-pub fn first_header(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn first_header(headers: &HeaderMap) -> Option<&str> {
     headers.iter().next().map(|(name, _)| name)
 }
 
@@ -23,7 +23,7 @@ pub fn first_header(headers: &HeaderMap) -> Option<&str> {
 /// It is read as the struct reads it: decoded as `Decoded`, then converted into the field's
 /// `Attempt`, the same type where the field names no `try_from`. `None` where that column does not
 /// decode either.
-pub fn attempt_in<DB, Decoded, Attempt>(row: &DB::Row, name: &str) -> Option<u64>
+pub(crate) fn attempt_in<DB, Decoded, Attempt>(row: &DB::Row, name: &str) -> Option<u64>
 where
     DB: QueueDatabase,
     Decoded: for<'r> Decode<'r, DB> + Type<DB>,
@@ -55,7 +55,7 @@ where
 ///
 /// [`Error::Configuration`] where the table reads the database's clock and the statement still
 /// binds a time.
-pub fn now<Source, T, DB, Row>(values: &Values<'_, DB, Row>) -> Result<T, Error>
+pub(crate) fn now<Source, T, DB, Row>(values: &Values<'_, DB, Row>) -> Result<T, Error>
 where
     Source: TimeSource,
     T: QueueTime,
@@ -76,7 +76,7 @@ where
 /// # Errors
 ///
 /// As [`now`].
-pub fn later<Source, T, DB, Row>(values: &Values<'_, DB, Row>) -> Result<T, Error>
+pub(crate) fn later<Source, T, DB, Row>(values: &Values<'_, DB, Row>) -> Result<T, Error>
 where
     Source: TimeSource,
     T: QueueTime,
@@ -93,7 +93,7 @@ where
 ///
 /// [`Error::Configuration`] where the queue holds no lease or the table reads the database's
 /// clock.
-pub fn lease<Source: TimeSource, T: QueueTime>(
+pub(crate) fn lease<Source: TimeSource, T: QueueTime>(
     queue: &Queue,
     now: Now,
 ) -> Result<Leasing<T>, Error> {
@@ -116,13 +116,13 @@ pub fn lease<Source: TimeSource, T: QueueTime>(
 /// # Errors
 ///
 /// Always [`Error::Configuration`].
-pub fn no_lease<Token>() -> Result<Leasing<Token>, Error> {
+pub(crate) fn no_lease<Token>() -> Result<Leasing<Token>, Error> {
     Err(unbound(Param::Lease, Event::Claim))
 }
 
 /// A delay in whole microseconds, saturating.
 #[must_use]
-pub fn micros(delay: Duration) -> i64 {
+pub(crate) fn micros(delay: Duration) -> i64 {
     i64::try_from(delay.as_micros()).unwrap_or(i64::MAX)
 }
 

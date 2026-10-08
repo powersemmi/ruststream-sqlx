@@ -4,30 +4,18 @@
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem;
-use std::time::Duration;
 
 #[cfg(feature = "chrono")]
 use chrono::{DateTime, Utc};
 use ruststream::HeaderMap;
-use ruststream_sqlx_dialect::Param;
 use sqlx::{Column, Database, Error, FromRow, Row, ValueRef};
 #[cfg(feature = "time")]
 use time::OffsetDateTime;
 
 use super::by_name::ByName;
 use super::database::RoleColumns;
-#[cfg(any(feature = "chrono", feature = "time"))]
-use super::kinds::{ClockKind, TimeKind};
 use super::kinds::{IntKind, Kinds};
-use crate::inbox::database::QueueDatabase;
-use crate::inbox::engine::{
-    self, Claimed, Claiming, Event, Events, Leasing, Now, Settled, Settling, Shape, Values,
-    undecodable,
-};
-use crate::inbox::form::advisory::events::{self as advisory, Candidates};
-use crate::inbox::queue::Queue;
-#[cfg(any(feature = "chrono", feature = "time"))]
-use crate::inbox::time::{QueueTime, SystemClock};
+use crate::inbox::engine::{Claimed, undecodable};
 use crate::inbox::{PayloadLane, PayloadRow, QueueRow};
 
 /// A claimed row of a by-name subscription, read by the role aliases of `ClaimShape::Roles`, its
@@ -395,340 +383,205 @@ impl<D: 'static> QueueRow for NamedRow<D> {
 }
 
 impl<D: 'static> PayloadRow for NamedRow<D> {
+    type Column = NamedBytes;
+
     fn payload(&self) -> &[u8] {
         self.payload.as_bytes()
     }
 }
 
-/// Binds now on the host's clock, or `delay` later, in the time `column` holds; `false` where
-/// the table has no such column or reads the database's clock.
-#[cfg(any(feature = "chrono", feature = "time"))]
-fn bind_now<DB, D>(
-    arguments: &mut DB::Arguments,
-    values: &Values<'_, DB, NamedRow<D>>,
-    column: fn(Kinds) -> Option<TimeKind>,
-    delay: Option<Duration>,
-) -> Result<bool, Error>
-where
-    DB: QueueDatabase + RoleColumns,
-    D: ByName<DB> + 'static,
-{
-    let Some(kinds) = values.queue.kinds else {
-        return Ok(false);
+mod events;
+
+#[cfg(test)]
+mod tests {
+    //! How a by-name row holds its columns to the struct's types.
+
+    use std::marker::PhantomData;
+
+    use ruststream::HeaderMap;
+    use ruststream::codec::CodecError;
+    use sqlx::Error;
+
+    use super::{Fits, NamedBytes, NamedId, NamedRow, hold_to};
+    use crate::inbox::engine::{Claimed, undecodable};
+    use crate::inbox::named::kinds::{BytesKind, ClockKind, IdKind, IntKind, Kinds};
+
+    /// A struct of an `i64` id, a byte payload, a text key and an `i16` attempt.
+    pub(super) const KINDS: Kinds = Kinds {
+        clock: ClockKind::System,
+        id: IdKind::I64,
+        payload: BytesKind::Bytes,
+        key: Some(BytesKind::Text),
+        attempt: Some(IntKind::I16),
+        retry_after: None,
+        processed_at: None,
+        locked_until: None,
     };
-    let (Some(kind), ClockKind::System) = (column(kinds), kinds.clock) else {
-        return Ok(false);
-    };
-    match kind {
-        #[cfg(feature = "chrono")]
-        TimeKind::Chrono => {
-            bind_at::<DB, D, DateTime<Utc>>(arguments, values, delay, NamedTime::Chrono)
+
+    /// A row whose columns hold the types `KINDS` reads, and only those, for the dialect `D`.
+    pub(super) fn row<D>(fits: Fits) -> NamedRow<D> {
+        NamedRow {
+            id: NamedId::I64(7),
+            payload: NamedBytes::Bytes(b"{}".to_vec()),
+            headers: HeaderMap::new(),
+            key: Some(NamedBytes::Text("acme".to_owned())),
+            attempt: Some(2),
+            fits,
+            dialect: PhantomData,
         }
-        #[cfg(feature = "time")]
-        TimeKind::Time => {
-            bind_at::<DB, D, OffsetDateTime>(arguments, values, delay, NamedTime::Time)
-        }
     }
-}
 
-/// Binds `lease`; `false` where the statement has no lease to bind.
-#[cfg(any(feature = "chrono", feature = "time"))]
-fn bind_lease<DB, D>(arguments: &mut DB::Arguments, lease: Option<NamedTime>) -> Result<bool, Error>
-where
-    DB: Database,
-    D: ByName<DB>,
-{
-    let Some(lease) = lease else {
-        return Ok(false);
-    };
-    D::bind_time(arguments, lease)?;
-    Ok(true)
-}
-
-/// Binds now, or `delay` later, as a `Time`.
-#[cfg(any(feature = "chrono", feature = "time"))]
-fn bind_at<DB, D, Time>(
-    arguments: &mut DB::Arguments,
-    values: &Values<'_, DB, NamedRow<D>>,
-    delay: Option<Duration>,
-    named: fn(Time) -> NamedTime,
-) -> Result<bool, Error>
-where
-    DB: QueueDatabase + RoleColumns,
-    D: ByName<DB> + 'static,
-    Time: QueueTime,
-{
-    let now = engine::now::<SystemClock, Time, DB, NamedRow<D>>(values)?;
-    let at = delay.map_or(now, |delay| now.after(delay));
-    D::bind_time(arguments, named(at))?;
-    Ok(true)
-}
-
-impl<DB, D> Events<DB> for NamedRow<D>
-where
-    DB: QueueDatabase + RoleColumns,
-    D: ByName<DB> + 'static,
-{
-    const SHAPE: Shape = Shape {
-        custom_claim: false,
-        custom_fetch: false,
-        custom_ack: false,
-        custom_retry: false,
-        custom_retry_after: false,
-        custom_discard: false,
-        custom_dead_letter: false,
-        custom_extend: false,
-        custom_lock: false,
-        custom_unlock: false,
+    pub(super) const FITTING: Fits = Fits {
+        id: IdKind::I64.bit(),
+        payload: BytesKind::Bytes.bit(),
+        key: BytesKind::Text.bit(),
+        attempt: IntKind::I16.bit(),
     };
 
-    // The lease in the type of the route's `locked_until` column, which the queue's kinds name.
-    type Token = NamedTime;
-
-    type Ids = ();
-
-    type Headers = HeaderMap;
-
-    fn kinds() -> Option<Kinds> {
-        // The route's own row answers when the subscription opens.
-        None
-    }
-
-    fn id(&self) -> &NamedId {
-        &self.id
-    }
-
-    fn take_headers(&mut self) -> HeaderMap {
-        mem::take(&mut self.headers)
-    }
-
-    fn unfit_header(headers: &HeaderMap) -> Option<&str> {
-        // Nothing publishes through a by-name row: the route's own row writes the table.
-        engine::first_header(headers)
-    }
-
-    fn partition_key(&self) -> Option<&[u8]> {
-        self.key.as_ref().map(NamedBytes::as_bytes)
-    }
-
-    fn attempt(&self) -> Option<u64> {
-        self.attempt
-    }
-
-    fn read_attempt(row: &DB::Row, queue: &'static Queue) -> Option<u64> {
-        // The alias `ClaimShape::Roles` gives the column, held to the type the struct reads it as.
-        let kind = queue.kinds?.attempt?;
-        let column = row
-            .columns()
-            .iter()
-            .find(|column| column.name() == "attempt")?;
-        let (attempt, held) = DB::attempt(DB::value(row, column.ordinal()).ok()?).ok()?;
-        attempt_fits(kind, held).then_some(attempt)
-    }
-
-    fn bind(
-        param: Param,
-        arguments: &mut DB::Arguments,
-        values: &Values<'_, DB, Self>,
-    ) -> Result<bool, Error> {
-        Ok(match (param, values.event) {
-            (Param::Id, _) => match values.id {
-                Some(id) => {
-                    DB::bind_id(arguments, id)?;
-                    true
-                }
-                None => false,
-            },
-            (Param::Group, _) => {
-                DB::bind_str(arguments, values.queue.name)?;
-                true
-            }
-            (Param::Limit, _) => {
-                DB::bind_i64(arguments, values.limit)?;
-                true
-            }
-            (Param::Destination, Event::DeadLetter) => {
-                DB::bind_str(arguments, values.destination)?;
-                true
-            }
-            (Param::Delay, Event::RetryAfter) => {
-                DB::bind_i64(arguments, engine::micros(values.delay))?;
-                true
-            }
-            (Param::Key, _) => match values.key {
-                Some(key) => {
-                    DB::bind_str(arguments, key)?;
-                    true
-                }
-                None => false,
-            },
-            // A time binds only where a time type is enabled: without one no table has a time
-            // column, and these fall through to `false`.
-            #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::Now, Event::Claim | Event::Take) => {
-                bind_now::<DB, D>(arguments, values, |kinds| kinds.retry_after, None)?
-            }
-            #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::Now, Event::Ack | Event::Discard) => {
-                bind_now::<DB, D>(arguments, values, |kinds| kinds.processed_at, None)?
-            }
-            #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::RetryAfter, Event::RetryAfter) => bind_now::<DB, D>(
-                arguments,
-                values,
-                |kinds| kinds.retry_after,
-                Some(values.delay),
-            )?,
-            #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::LeaseNow, _) => {
-                bind_lease::<DB, D>(arguments, values.leasing.map(|leasing| leasing.now))?
-            }
-            #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::Lease, _) => bind_lease::<DB, D>(arguments, values.lease)?,
-            #[cfg(any(feature = "chrono", feature = "time"))]
-            (Param::Held, _) => bind_lease::<DB, D>(arguments, values.held)?,
-            _ => false,
-        })
-    }
-
-    fn lease(queue: &'static Queue, now: Now) -> Result<Leasing<NamedTime>, Error> {
-        #[cfg(any(feature = "chrono", feature = "time"))]
-        if let Some(Kinds {
-            locked_until: Some(kind),
-            clock: ClockKind::System,
-            ..
-        }) = queue.kinds
-        {
-            return Ok(match kind {
-                #[cfg(feature = "chrono")]
-                TimeKind::Chrono => {
-                    engine::lease::<SystemClock, DateTime<Utc>>(queue, now)?.map(NamedTime::Chrono)
-                }
-                #[cfg(feature = "time")]
-                TimeKind::Time => {
-                    engine::lease::<SystemClock, OffsetDateTime>(queue, now)?.map(NamedTime::Time)
-                }
-            });
+    /// The driver's error a delivery of an undecodable row reports.
+    fn driver_error(error: &CodecError) -> Option<&Error> {
+        match error {
+            CodecError::Decode(source) => source.downcast_ref::<Error>(),
+            _ => None,
         }
-        let _ = (queue, now);
-        // A table whose kinds name no lease has none for the role columns to bind.
-        Err(engine::unbound(Param::Lease, Event::Claim))
     }
 
-    async fn claim<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Claiming,
-        lease: Option<&'a Leasing<NamedTime>>,
-        _ids: &'a mut (),
-        out: &'a mut Vec<Claimed<Self>>,
-    ) -> Result<(), Error> {
-        let claimed = out.len();
-        engine::claim_rows::<DB, Self>(conn, cx, lease, out).await?;
-        if let Some(kinds) = cx.queue.kinds {
-            for row in &mut out[claimed..] {
-                hold_to(kinds, row)?;
+    /// The column a held row names as not holding its struct's type, and the attempt it keeps.
+    fn unfit_column(claimed: &Claimed<NamedRow<()>>) -> Option<(String, Option<u64>)> {
+        match claimed {
+            Claimed::Undecodable { id, attempt, error } => {
+                assert_eq!(id, &NamedId::I64(7), "the row keeps its id for the policy");
+                match driver_error(error) {
+                    Some(Error::ColumnDecode { index, .. }) => Some((index.clone(), *attempt)),
+                    other => panic!("not a column's error: {other:?}"),
+                }
             }
+            Claimed::Row(_) | Claimed::Missing(_) => None,
+        }
+    }
+
+    #[test]
+    fn logs_name_a_row_by_its_id_as_the_table_holds_it() {
+        let ids = [
+            NamedId::I16(1),
+            NamedId::I32(2),
+            NamedId::I64(3),
+            NamedId::Text("job-4".to_owned()),
+            NamedId::Bytes(vec![5]),
+        ];
+        let logged: Vec<String> = ids.iter().map(|id| format!("{id:?}")).collect();
+        assert_eq!(logged, ["1", "2", "3", "\"job-4\"", "[5]"]);
+    }
+
+    #[test]
+    fn an_id_is_copied_into_the_storage_of_the_one_it_replaces() {
+        let mut kept = NamedId::Text("job-0001".to_owned());
+        let storage = match &kept {
+            NamedId::Text(text) => text.as_ptr(),
+            other => panic!("not a text id: {other:?}"),
+        };
+        kept.clone_from(&NamedId::Text("job-0002".to_owned()));
+        assert!(
+            matches!(&kept, NamedId::Text(text) if text == "job-0002" && text.as_ptr() == storage),
+            "{kept:?}"
+        );
+        let mut bytes = NamedId::Bytes(vec![1, 2]);
+        bytes.clone_from(&NamedId::Bytes(vec![3, 4]));
+        assert_eq!(bytes, NamedId::Bytes(vec![3, 4]));
+        // An id of another type takes the new one's type.
+        kept.clone_from(&NamedId::I64(7));
+        assert_eq!(kept, NamedId::I64(7));
+        assert_eq!(kept.clone(), NamedId::I64(7));
+        let ids = [
+            NamedId::I16(1),
+            NamedId::I32(2),
+            NamedId::Text("job-3".to_owned()),
+            NamedId::Bytes(vec![4]),
+        ];
+        for id in ids {
+            assert_eq!(id.clone(), id);
+        }
+    }
+
+    #[test]
+    fn a_row_whose_columns_hold_its_structs_types_stays_a_row() -> Result<(), Error> {
+        let mut claimed = Claimed::Row(row::<()>(FITTING));
+        hold_to(KINDS, &mut claimed)?;
+        assert!(matches!(claimed, Claimed::Row(_)));
+        // A null key fits whatever its column's type.
+        let mut keyless = Claimed::Row(row::<()>(Fits {
+            key: u8::MAX,
+            ..FITTING
+        }));
+        hold_to(KINDS, &mut keyless)?;
+        assert!(matches!(keyless, Claimed::Row(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn a_column_that_does_not_hold_its_structs_type_sends_the_row_to_the_policy()
+    -> Result<(), Error> {
+        let text_payload = Fits {
+            payload: BytesKind::Text.bit(),
+            ..FITTING
+        };
+        let byte_key = Fits {
+            key: BytesKind::Bytes.bit(),
+            ..FITTING
+        };
+        let wide_attempt = Fits {
+            attempt: IntKind::I64.bit(),
+            ..FITTING
+        };
+        let text_payload_wide_attempt = Fits {
+            attempt: IntKind::I64.bit(),
+            ..text_payload
+        };
+        // The attempt goes along, so the cap spends the row, unless its own column is one the
+        // struct does not read: the struct's `FromRow` reads no attempt from it either.
+        for (fits, column, attempt) in [
+            (text_payload, "\"payload\"", Some(2)),
+            (byte_key, "\"partition_key\"", Some(2)),
+            (wide_attempt, "\"attempt\"", None),
+            (text_payload_wide_attempt, "\"payload\"", None),
+        ] {
+            let mut claimed = Claimed::Row(row::<()>(fits));
+            hold_to(KINDS, &mut claimed)?;
+            assert_eq!(
+                unfit_column(&claimed),
+                Some((column.to_owned(), attempt)),
+                "{fits:?}"
+            );
         }
         Ok(())
     }
 
-    fn ack<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        id: &'a NamedId,
-        held: Option<&'a NamedTime>,
-    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
-        engine::ack::<DB, Self>(conn, cx, id, held)
+    #[test]
+    fn an_id_that_does_not_hold_its_structs_type_fails_the_claim() {
+        let mut claimed = Claimed::Row(row::<()>(Fits {
+            id: IdKind::I32.bit(),
+            ..FITTING
+        }));
+        let failed = hold_to(KINDS, &mut claimed);
+        assert!(
+            matches!(&failed, Err(Error::ColumnDecode { index, .. }) if index == "\"id\""),
+            "{failed:?}"
+        );
     }
 
-    fn retry<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        id: &'a NamedId,
-        held: Option<&'a NamedTime>,
-    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
-        engine::retry::<DB, Self>(conn, cx, id, held)
-    }
-
-    fn retry_after<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        id: &'a NamedId,
-        held: Option<&'a NamedTime>,
-        delay: Duration,
-    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
-        engine::retry_after::<DB, Self>(conn, cx, id, held, delay)
-    }
-
-    fn discard<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        id: &'a NamedId,
-        held: Option<&'a NamedTime>,
-    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
-        engine::discard::<DB, Self>(conn, cx, id, held)
-    }
-
-    fn dead_letter<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        id: &'a NamedId,
-        held: Option<&'a NamedTime>,
-        destination: &'a str,
-    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
-        engine::dead_letter::<DB, Self>(conn, cx, id, held, destination)
-    }
-
-    fn extend<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        id: &'a NamedId,
-        held: &'a NamedTime,
-        until: &'a NamedTime,
-    ) -> impl Future<Output = Result<Settled, Error>> + Send + 'a {
-        engine::extend::<DB, Self>(conn, cx, id, held, until)
-    }
-
-    fn lock<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Claiming,
-        key: &'a str,
-    ) -> impl Future<Output = Result<bool, Error>> + Send + 'a {
-        advisory::lock::<DB, Self>(conn, cx, key)
-    }
-
-    fn unlock<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Settling,
-        key: &'a str,
-    ) -> impl Future<Output = Result<bool, Error>> + Send + 'a {
-        advisory::unlock::<DB, Self>(conn, cx, key)
-    }
-
-    fn candidates<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Claiming,
-        out: &'a mut Candidates<NamedId>,
-    ) -> impl Future<Output = Result<(), Error>> + Send + 'a {
-        advisory::candidates::<DB, Self>(conn, cx, out)
-    }
-
-    async fn take<'a>(
-        conn: &'a mut DB::Connection,
-        cx: &'a Claiming,
-        id: &'a NamedId,
-        out: &'a mut Vec<Claimed<Self>>,
-    ) -> Result<bool, Error> {
-        let taken = out.len();
-        let found = advisory::take::<DB, Self>(conn, cx, id, out).await?;
-        if let Some(kinds) = cx.queue.kinds {
-            for row in &mut out[taken..] {
-                hold_to(kinds, row)?;
-            }
-        }
-        Ok(found)
+    #[test]
+    fn a_row_already_undecodable_is_left_to_the_policy() -> Result<(), Error> {
+        let mut claimed = Claimed::<NamedRow<()>>::Undecodable {
+            id: NamedId::I64(7),
+            attempt: Some(3),
+            error: Box::new(undecodable(Error::ColumnNotFound("payload".to_owned()))),
+        };
+        hold_to(KINDS, &mut claimed)?;
+        assert!(matches!(
+            &claimed,
+            Claimed::Undecodable { attempt: Some(3), error, .. }
+                if matches!(driver_error(error), Some(Error::ColumnNotFound(_)))
+        ));
+        Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests;

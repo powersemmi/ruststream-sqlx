@@ -15,7 +15,7 @@ use crate::inbox::database::QueueDatabase;
 /// # Errors
 ///
 /// The database's error.
-pub async fn claim_rows<DB, Row>(
+pub(crate) async fn claim_rows<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     lease: Option<&Leasing<Row::Token>>,
@@ -40,7 +40,7 @@ where
 /// # Errors
 ///
 /// The database's error.
-pub async fn claim_ids<DB, Row>(
+pub(crate) async fn claim_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     lease: Option<&Leasing<Row::Token>>,
@@ -67,7 +67,7 @@ where
 /// # Errors
 ///
 /// The database's error, or the decode error of a row whose id does not decode either.
-pub async fn fetch_by_ids<DB, Row>(
+pub(crate) async fn fetch_by_ids<DB, Row>(
     conn: &mut DB::Connection,
     cx: &Claiming,
     lease: Option<&Leasing<Row::Token>>,
@@ -97,7 +97,7 @@ where
 ///
 /// A row or an [`Claimed::Undecodable`] entry goes with its id, an id with neither is
 /// [`Claimed::Missing`], and an entry no id claimed is left alone.
-pub fn match_claimed<DB, Row>(
+pub(crate) fn match_claimed<DB, Row>(
     ids: &mut Vec<Row::Id>,
     fetched: Vec<Claimed<Row>>,
     out: &mut Vec<Claimed<Row>>,
@@ -111,8 +111,11 @@ pub fn match_claimed<DB, Row>(
 
 /// Pairs claimed ids with the rows a fetch of the service's own returned, as [`match_claimed`]
 /// does.
-pub fn match_rows<DB, Row>(ids: &mut Vec<Row::Id>, rows: Vec<Row>, out: &mut Vec<Claimed<Row>>)
-where
+pub(crate) fn match_rows<DB, Row>(
+    ids: &mut Vec<Row::Id>,
+    rows: Vec<Row>,
+    out: &mut Vec<Claimed<Row>>,
+) where
     DB: QueueDatabase,
     Row: Events<DB>,
     Row::Id: PartialEq,

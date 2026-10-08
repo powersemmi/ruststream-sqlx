@@ -44,11 +44,16 @@ A subscription caps the deliveries of a message with `max_attempts(n)` and names
 `dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are
 declared together. With `max_attempts(1)`, every failure moves the row at once.
 
+The service describes a queue table with a derive on its struct, or by hand. By hand, the struct
+implements a trait, and a typed builder holds every setting of the table. The compiler checks that
+description as strictly as the derive's. Both forms give the same statements and cost the same per
+message.
+
 Postgres, MySQL/MariaDB and SQLite come with dialects built into the crate. A statement the service
-writes its own way is an event: the struct lists it in `custom(..)` and implements its trait. A
-database without a built-in dialect takes a dialect of the service's own. Such a dialect implements
-a trait for each form its tables take, and one for subscriptions by name; a table in a form its
-dialect lacks does not compile.
+writes its own way is an event: the table names it, in `custom(..)` on the derive or in its builder
+by hand, and the struct implements its trait. A database without a built-in dialect takes a dialect
+of the service's own. Such a dialect implements a trait for each form its tables take, and one for
+subscriptions by name; a table in a form its dialect lacks does not compile.
 
 The service owns its queue tables. At startup a subscription checks that its table has the
 columns its struct names. The column types are the service's to get right, and a row that does

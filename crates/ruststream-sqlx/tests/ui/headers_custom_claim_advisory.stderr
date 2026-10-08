@@ -1,16 +1,23 @@
-error[E0277]: the headers struct's table is in the advisory lock form, which selects its candidates with their keys itself
+error[E0277]: the advisory lock form selects its candidates with their keys itself, so it takes no claim of the service's own
   --> tests/ui/headers_custom_claim_advisory.rs:13:16
    |
 13 | #[inbox(custom(claim))]
-   |                ^^^^^ the form of the message's headers struct
+   |                ^^^^^ `own::Claim` in the advisory lock form
    |
-   = help: the trait `ruststream_sqlx::__private::OwnClaim` is not implemented for `ruststream_sqlx::__private::AdvisoryForm`
-   = note: drop `claim` from the message struct's `custom(..)`
-note: required by a bound in `__takes`
-  --> tests/ui/headers_custom_claim_advisory.rs:12:24
+   = help: the trait `ClaimOutsideAdvisory` is not implemented for `(Set<ruststream_sqlx::spec::Advisory>, Set<ruststream_sqlx::spec::own::Claim>)`
+   = note: drop `.own::<own::Claim>()` and `own::Claim` (with the derive: `claim` from `custom(..)`; a message's form is its headers struct's)
+help: the following other types implement trait `ClaimOutsideAdvisory`
+  --> src/inbox/spec/rules.rs
    |
-12 | #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
-   |                        ^^^^^ required by this bound in `__takes`
-13 | #[inbox(custom(claim))]
-   |                ----- required by a bound in this function
-   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)
+   | impl<ClaimSlot> ClaimOutsideAdvisory for (Unset, ClaimSlot) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, ClaimSlot)`
+   | impl<Time, ClaimSlot> ClaimOutsideAdvisory for (Set<Lease<Time>>, ClaimSlot) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, ClaimSlot)`
+   | impl ClaimOutsideAdvisory for (Set<Advisory>, Unset) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Unset)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Advisory, ruststream_sqlx::spec::HeaderFields, ruststream_sqlx::spec::own::Claim)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`

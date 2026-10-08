@@ -7,18 +7,17 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::RetryDeclaration;
-use ruststream_sqlx_dialect::{
-    ClaimShape, Dialect, Isolation, Opening, Role, Statement, StatementError, TableName, TableSpec,
-};
+use ruststream_sqlx_dialect::{Isolation, Opening, Role, TableSpec};
 use sqlx::{Database, Pool};
 
+use super::build::{build, counted_attempt};
 use super::check::check;
 use super::description::{Description, Timing, refused_declaration, whole_seconds};
 use crate::inbox::FormDialect;
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::database::notify::listen;
-use crate::inbox::engine::{Events, IdAt, Prepared, intern, intern_name};
+use crate::inbox::engine::{Events, IdAt, Prepared, intern_name};
 use crate::inbox::error::SqlxBrokerError;
 use crate::inbox::form::advisory::LockBook;
 use crate::inbox::form::lease::{self, LeaseBook};
@@ -87,149 +86,6 @@ impl Queue {
         let queue: &'static Self = Box::leak(Box::new(self));
         queues.push(queue);
         queue
-    }
-}
-
-/// The statements a subscription to the table `description` reads runs, built by the dialect
-/// `form` shows: the claim and the statements of the lease and advisory lock forms by the trait of
-/// the table's form, the guard of a FIFO group and the settlements by the dialect itself.
-pub(super) fn build(
-    form: &FormDialect,
-    declaration: &RetryDeclaration,
-    description: &Description,
-    fail: &impl Fn(String) -> SqlxBrokerError,
-) -> Result<Prepared, SqlxBrokerError> {
-    let dialect = form.dialect();
-    let spec = description.spec;
-    let shape = description.shape;
-    let refused = |source| SqlxBrokerError::Dialect {
-        subscription: String::new(),
-        table: String::new(),
-        row: "",
-        source,
-    };
-    let claim = (!shape.custom_claim)
-        .then(|| form.claim(&spec, description.claim))
-        .transpose()
-        .map_err(refused)?;
-    // Whoever writes the claim: a claim of the service's own takes its rows in the transaction the
-    // guard took the group in, as the crate's does.
-    let fifo_guard = dialect.fifo_guard(&spec).map_err(refused)?;
-    let fetch = (shape.custom_claim && !shape.custom_fetch)
-        .then(|| dialect.fetch(&spec))
-        .transpose()
-        .map_err(refused)?;
-    let ack = (!shape.custom_ack)
-        .then(|| dialect.ack(&spec))
-        .transpose()
-        .map_err(refused)?;
-    let retry = if shape.custom_retry {
-        None
-    } else {
-        dialect.retry(&spec).map_err(refused)?
-    };
-    let retry_after = (!shape.custom_retry_after && spec.column(Role::RetryAfter).is_some())
-        .then(|| dialect.retry_after(&spec))
-        .transpose()
-        .map_err(refused)?;
-    let discard = (!shape.custom_discard)
-        .then(|| dialect.discard(&spec))
-        .transpose()
-        .map_err(refused)?;
-    let (dead_letter, dead_letter_then) = match declaration.dead_letter() {
-        Some(_) if shape.custom_dead_letter => (None, None),
-        Some(_) if spec.column(Role::Group).is_some() => (
-            Some(dialect.dead_letter_group(&spec).map_err(refused)?),
-            None,
-        ),
-        Some(target) => {
-            let target = TableName::parse(target)
-                .map_err(|err| fail(format!("the dead-letter table {err}")))?;
-            let moves = dialect.dead_letter_table(&spec, target).map_err(refused)?;
-            let (first, then) = one_or_two(dialect, "moves a dead letter", moves, fail)?;
-            (Some(first), then)
-        }
-        None => (None, None),
-    };
-    // The advisory lock form's own statements: the lock and the unlock where the database keeps
-    // the locks and the service runs none of its own, and the take of a candidate whose lock the
-    // delivery's session holds.
-    let (lock, unlock, take, take_then) = match form.advisory() {
-        Some(advisory) => {
-            let takes = advisory.take(&spec, description.claim).map_err(refused)?;
-            let (take, then) = one_or_two(dialect, "takes a candidate", takes, fail)?;
-            let lock = advisory.lock().filter(|_| !shape.custom_lock);
-            let unlock = advisory.unlock().filter(|_| !shape.custom_unlock);
-            (lock, unlock, Some(take), then)
-        }
-        None => (None, None, None, None),
-    };
-    // Why a startup refusal: the derive gives a table that declares a lease the lease form's
-    // type, so only a description written by hand pairs one with another form's dialect.
-    let lease = match (description.leased(), form.lease()) {
-        (false, _) => None,
-        (true, Some(lease)) => Some(lease),
-        (true, None) => {
-            return Err(refused(StatementError::UnsupportedForm {
-                dialect: dialect.name(),
-                form: spec.form().name(),
-            }));
-        }
-    };
-    // A claim of the service's own, or one the dialect only selects with, leaves each row to a
-    // stamp of the crate's inside the claim's transaction.
-    let stamps = lease.is_some_and(|lease| shape.custom_claim || !lease.claim_writes_lease());
-    let extend = lease
-        .filter(|_| !shape.custom_extend)
-        .map(|lease| lease.extend(&spec))
-        .transpose()
-        .map_err(refused)?;
-    let stamp = lease
-        .filter(|_| stamps)
-        .map(|lease| lease.stamp(&spec))
-        .transpose()
-        .map_err(refused)?;
-    Ok(Prepared {
-        fifo_guard: fifo_guard.as_ref().map(intern),
-        claim: claim.as_ref().map(intern),
-        fetch: fetch.as_ref().map(intern),
-        ack: ack.as_ref().map(intern),
-        retry: retry.as_ref().map(intern),
-        retry_after: retry_after.as_ref().map(intern),
-        discard: discard.as_ref().map(intern),
-        dead_letter: dead_letter.as_ref().map(intern),
-        dead_letter_then: dead_letter_then.as_ref().map(intern),
-        extend: extend.as_ref().map(intern),
-        stamp: stamp.as_ref().map(intern),
-        lock: lock.as_ref().map(intern),
-        unlock: unlock.as_ref().map(intern),
-        take: take.as_ref().map(intern),
-        take_then: take_then.as_ref().map(intern),
-        stamps,
-        // The mode's own texts, which `open` sets for the subscription's mode.
-        ..Prepared::default()
-    })
-}
-
-/// The one or two statements `dialect` builds to do `what`, the second run after the first.
-///
-/// # Errors
-///
-/// `fail`'s error where the dialect builds none or more than two.
-fn one_or_two(
-    dialect: &dyn Dialect,
-    what: &str,
-    statements: Vec<Statement>,
-    fail: &impl Fn(String) -> SqlxBrokerError,
-) -> Result<(Statement, Option<Statement>), SqlxBrokerError> {
-    let count = statements.len();
-    let mut statements = statements.into_iter();
-    match (statements.next(), statements.next(), statements.next()) {
-        (Some(first), then, None) => Ok((first, then)),
-        _ => Err(fail(format!(
-            "the {} dialect {what} in {count} statements, and the inbox runs one or two",
-            dialect.name(),
-        ))),
     }
 }
 
@@ -395,41 +251,6 @@ fn lease_unseen_at<Mode: InboxMode>(
          `.transactional()`",
         level.attribute(),
     ))
-}
-
-/// Whether the rows a subscription to `description` hands out carry the attempt its claim or its
-/// take counted, so that a delivery reports one less.
-///
-/// A lease claim that stamps its rows reads them before the stamps count them. A lease claim that
-/// writes the lease itself counts and commits first: the service's own fetch after the crate's
-/// claim of ids then reads counted rows, and whole rows come back counted where the dialect says
-/// so. A claim by role reads the attempt as it was before the count. The take of the advisory lock
-/// form reads the columns it names as they were before its count; `*` names none, and the
-/// service's own fetch reads the row after the take committed its count.
-pub(super) fn counted_attempt(
-    form: &FormDialect,
-    description: &Description,
-    prepared: &Prepared,
-) -> bool {
-    if description.advisory() {
-        let counted = match description.claim {
-            ClaimShape::Rows => description.spec.selects_all(),
-            ClaimShape::Ids => true,
-            ClaimShape::Roles => false,
-        };
-        return counted && description.spec.column(Role::Attempt).is_some();
-    }
-    let Some(lease) = form.lease().filter(|_| description.leased()) else {
-        return false;
-    };
-    if prepared.stamps {
-        return false;
-    }
-    match description.claim {
-        ClaimShape::Rows => lease.claim_counts_attempt(&description.spec),
-        ClaimShape::Ids => true,
-        ClaimShape::Roles => false,
-    }
 }
 
 /// A queue's place in its connection's register of open subscriptions; dropping it frees the

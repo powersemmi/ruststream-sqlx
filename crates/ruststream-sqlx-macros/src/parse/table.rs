@@ -221,3 +221,140 @@ pub(crate) fn message_custom(input: &DeriveInput, headers: &str) -> syn::Result<
     }
     errors.map_or(Ok(custom), Err)
 }
+
+#[cfg(test)]
+mod tests {
+    use quote::format_ident;
+    use ruststream_sqlx_dialect::{Isolation, Mode, Opening};
+    use syn::{DeriveInput, parse_quote};
+
+    use crate::parse::inbox;
+    use crate::parse::tests::error;
+
+    #[test]
+    fn the_table_attribute_names_table_schema_and_key() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "email_jobs", schema = "app", advisory_lock = "jobs-{job_id}")]
+            struct SendEmail {
+                #[field(id)]
+                job_id: i64,
+            }
+        };
+        let inbox = inbox(&input)?;
+        assert_eq!(inbox.table.name.value(), "email_jobs");
+        assert_eq!(
+            inbox.table.schema.map(|schema| schema.value()),
+            Some("app".to_owned())
+        );
+        assert_eq!(
+            inbox.table.advisory_lock.map(|key| key.value()),
+            Some("jobs-{job_id}".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_table_opens_at_its_isolation_or_its_mode() -> syn::Result<()> {
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs", isolation = serializable)]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(
+            inbox(&input)?.table.opening,
+            Opening::Isolation(Isolation::Serializable)
+        );
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            #[inbox(mode = immediate)]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(inbox(&input)?.table.opening, Opening::Mode(Mode::Immediate));
+        let input: DeriveInput = parse_quote! {
+            #[inbox(table = "jobs")]
+            struct Job { #[field(id)] id: i64 }
+        };
+        assert_eq!(inbox(&input)?.table.opening, Opening::Default);
+        Ok(())
+    }
+
+    #[test]
+    fn every_level_and_every_mode_reads_as_the_dialect_names_it() -> syn::Result<()> {
+        for level in [
+            Isolation::ReadUncommitted,
+            Isolation::ReadCommitted,
+            Isolation::RepeatableRead,
+            Isolation::Serializable,
+        ] {
+            let word = format_ident!("{}", level.attribute());
+            let input: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", isolation = #word)]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(inbox(&input)?.table.opening, Opening::Isolation(level));
+        }
+        for mode in [Mode::Deferred, Mode::Immediate, Mode::Exclusive] {
+            let word = format_ident!("{}", mode.attribute());
+            let input: DeriveInput = parse_quote! {
+                #[inbox(table = "jobs", mode = #word)]
+                struct Job { #[field(id)] id: i64 }
+            };
+            assert_eq!(inbox(&input)?.table.opening, Opening::Mode(mode));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn misuse_of_the_opening_is_reported() {
+        const LEVELS: &str = "unknown isolation level: expected `read_uncommitted`, \
+                              `read_committed`, `repeatable_read` or `serializable`";
+        const MODES: &str =
+            "unknown mode: expected `deferred`, `immediate` or `exclusive` (SQLite)";
+        const BOTH: &str =
+            "a table declares `isolation` (Postgres, MySQL, MariaDB) or `mode` (SQLite), not both";
+        let cases: [(DeriveInput, &str); 10] = [
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = snapshot)] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = Serializable)] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = "serializable")] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = read-committed)] struct Job { #[field(id)] id: i64 } },
+                LEVELS,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = wal)] struct Job { #[field(id)] id: i64 } },
+                MODES,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = serializable)] struct Job { #[field(id)] id: i64 } },
+                MODES,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = serializable, mode = immediate)] struct Job { #[field(id)] id: i64 } },
+                BOTH,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = immediate)] #[inbox(isolation = serializable)] struct Job { #[field(id)] id: i64 } },
+                BOTH,
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", isolation = serializable, isolation = serializable)] struct Job { #[field(id)] id: i64 } },
+                "`isolation` is given twice",
+            ),
+            (
+                parse_quote! { #[inbox(table = "jobs", mode = immediate, mode = exclusive)] struct Job { #[field(id)] id: i64 } },
+                "`mode` is given twice",
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(error(&input), expected);
+        }
+    }
+}

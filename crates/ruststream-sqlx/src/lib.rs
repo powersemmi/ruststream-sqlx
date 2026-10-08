@@ -1,4 +1,5 @@
 #![doc = include_str!("README.md")]
+#![doc = include_str!("overview/manual.md")]
 #![doc = include_str!("overview/row_mode.md")]
 // The compile errors of row mode need the inbox and a driver: without them each example would fail
 // for that reason alone. They render where both are on, as on docs.rs.
@@ -27,11 +28,13 @@ pub use ruststream_sqlx_dialect as dialect;
 mod header_column;
 #[cfg(feature = "outbox")]
 pub mod outbox;
+#[cfg(any(feature = "inbox", feature = "outbox"))]
+mod settings;
 
 #[cfg(any(feature = "inbox", feature = "outbox"))]
-pub use header_column::HeaderColumn;
+pub use header_column::{HeaderColumn, HeaderRow};
 #[cfg(feature = "outbox")]
-pub use outbox::{Outbox, OutboxDatabase, OutboxRow};
+pub use outbox::{Outbox, OutboxDatabase, OutboxRow, OutboxSpec, OutboxTable};
 
 #[cfg(feature = "inbox")]
 mod inbox;
@@ -48,27 +51,27 @@ pub use inbox::RowDeliveries;
 pub use inbox::TransactionalStep;
 #[cfg(feature = "inbox")]
 pub use inbox::{
-    Ack, AttemptColumn, BuiltIn, BuiltInDialect, ByName, Claim, Clock, ClosedSqlxBroker,
-    ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch, HeaderField,
-    InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings, InboxSubscriber, Insert,
-    KeyColumn, LeaseRow, Lock, NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow,
-    Plain, Publish, QueueDatabase, QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter,
-    Routed, RoutedPublisher, RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn,
-    TimeSource, Transactional, Tx, Unlock,
+    Ack, AttemptColumn, AttemptRow, BuiltIn, BuiltInDialect, ByName, Claim, Clock,
+    ClosedSqlxBroker, ConnectedSqlxBroker, DatabaseClock, DeadLetter, Discard, Extend, Fetch,
+    HeaderField, HeaderFields, InboxDelivery, InboxHeaders, InboxQueue, InboxRow, InboxSettings,
+    InboxSpec, InboxSubscriber, InboxTable, Insert, KeyColumn, KeyRow, LeaseRow, Lock,
+    NamedDelivery, NamedSubscriber, NamedTime, Notifies, PayloadRow, Plain, Publish, QueueDatabase,
+    QueueTime, Repository, RepositoryPublisher, Retry, RetryAfter, Routed, RoutedPublisher,
+    RowBatch, SqlxBroker, SqlxBrokerError, SystemClock, TimeColumn, TimeSource, Transactional, Tx,
+    Unlock, put_header,
 };
 
 /// What a handler reads off the delivery it handles, through `Ctx<Key>`.
 #[cfg(feature = "inbox")]
 pub use inbox::keys;
+#[cfg(feature = "inbox")]
+pub use inbox::spec;
 
 #[cfg(any(feature = "inbox", feature = "outbox"))]
 #[doc(hidden)]
 pub mod __private {
     pub use ruststream::HeaderMap;
     pub use sqlx;
-
-    #[cfg(feature = "outbox")]
-    pub use crate::outbox::{OutboxSql, no_outbox_statement};
 
     #[cfg(feature = "inbox")]
     pub use inbox::*;
@@ -84,16 +87,15 @@ pub mod __private {
         pub use crate::inbox::batch::{BatchClaim, BatchLane};
         pub use crate::inbox::engine::{
             Claimed, Claiming, Event, Events, IdAt, Leasing, Now, Prepared, Savepoint, Settled,
-            Settling, Shape, Stmt, TimeFor, Values, Via, ack, attempt_in, claim_ids, claim_rows,
-            dead_letter, discard, extend, fetch_by_ids, first_header, later, lease, match_claimed,
-            match_rows, micros, no_lease, now, put, retry, retry_after,
+            Settling, Shape, Stmt, TimeFor, Values, Via, put,
         };
-        pub use crate::inbox::form::advisory::events::{
-            Candidates, candidates, lock, match_taken, take, take_id, unlock,
-        };
-        pub use crate::inbox::headers::{
-            Assembled, HeaderCell, HeadersLease, HeadersRow, LazyHeaders, OwnClaim, OwnExtend,
-            OwnLock, put_header, unnamed_header,
+        pub use crate::inbox::form::advisory::events::Candidates;
+        pub use crate::inbox::headers::HeaderCell;
+        pub use crate::inbox::manual::{
+            AckAxis, AttemptAxis, Axes, ClaimAxes, ClockAxis, DeadLetterAxis, DiscardAxis,
+            ExtendAxis, FormAxis, FormBind, HeadersAxis, KeyAxis, LeaseAxis, LockAxis,
+            ManualHeaders, MessageAxis, Named, OpeningAxis, RetryAfterAxis, RetryAxis, TimeAxis,
+            UnlockAxis,
         };
         pub use crate::inbox::named::kinds::{Kinds, KindsOf};
         pub use crate::inbox::named::{NamedBytes, NamedId, NamedRow, RoleColumns};
@@ -105,10 +107,12 @@ pub mod __private {
     }
 }
 
-/// Describes a queue table with a struct and implements [`InboxRow`] for it.
+/// Describes a queue table with a struct: writes its [`InboxTable`] impl, the description a table
+/// described by hand writes, and the traits its roles need.
 ///
 /// The struct is an ordinary sqlx struct: `#[inbox(..)]` names the table, sqlx's own
-/// attributes name the columns, and `#[field(..)]` marks the columns that run the queue.
+/// attributes name the columns, and `#[field(..)]` marks the columns that run the queue. The
+/// [macro or manual](crate#macro-or-manual) section shows the same table written by hand.
 ///
 /// # Examples
 ///
@@ -429,13 +433,15 @@ pub use ruststream_sqlx_macros::Inbox;
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::InboxHeaders;
 
-/// Describes a service's outbox table with a struct and implements its record contract
-/// ([`OutboxRow`]) and the default events.
+/// Describes a service's outbox table with a struct: implements [`OutboxTable`], the description
+/// a record by hand writes, and [`HeaderRow`] for a `headers` field.
 ///
 /// The struct is an ordinary sqlx struct: `#[outbox(..)]` names the table, sqlx's own attributes
 /// name the columns, and `#[field(..)]` marks the columns the outbox reads. The service writes the
-/// record of a published message itself, in [`outbox::Publish`]; the derive writes the other
-/// events, each for every [`OutboxDatabase`], with its statement built at compile time.
+/// record of a published message itself, in [`outbox::Publish`]; the registry runs the other
+/// events on every [`OutboxDatabase`], from statements it builds from the description when the
+/// record type is registered. The derive checks the description against each built-in dialect
+/// while the service compiles.
 ///
 /// # Examples
 ///
@@ -499,7 +505,8 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 /// `#[field(..)]` gives a field one role:
 ///
 /// - `id`, required: the record's identity, which a tracked message carries in
-///   [`OUTBOX_ID_HEADER`](outbox::OUTBOX_ID_HEADER) through its `Display` and `FromStr`.
+///   [`OUTBOX_ID_HEADER`](outbox::OUTBOX_ID_HEADER) through its `Display` and `FromStr`, and which
+///   the default events bind as its own type.
 /// - `name`, required: the name the record was published under, read through `AsRef<str>`.
 /// - `payload`, required: the published bytes, read through `AsRef<[u8]>`.
 /// - `headers`: the published headers, a [`HeaderColumn`] type.
@@ -523,7 +530,7 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 /// A struct the outbox cannot read does not compile, and the error points at the struct, the
 /// field or the word that causes it: no `id`, `name` or `payload`, a role played twice, a column
 /// named twice, a role on a field without a column, an unknown role or event, a dot in `table` or
-/// `schema`.
+/// `schema`, an `id` read through `#[sqlx(json)]`.
 #[cfg(feature = "outbox")]
 pub use ruststream_sqlx_macros::Outbox;
 /// Registers outbox records under the names they track, and returns the registry.

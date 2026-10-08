@@ -97,11 +97,97 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-In the headers layout, two structs describe one queue. The headers struct derives
+By hand, one description on the message holds the whole table. The headers struct is a plain sqlx
+struct, `.data(..)` names the header columns, `.fetching(..)` the message's own, and
+`.header_fields()` builds the header map from the fields through [`HeaderFields`]:
+
+```no_run
+# #[cfg(feature = "postgres")]
+# mod demo {
+use ruststream::HeaderMap;
+use ruststream::runtime::{Input, SoloCarried};
+use ruststream_sqlx::dialect::Column;
+use ruststream_sqlx::prelude::*;
+use ruststream_sqlx::spec::{self, Attempt};
+use ruststream_sqlx::{AttemptRow, HeaderFields, InboxSpec, InboxTable, put_header};
+# use sqlx::PgPool;
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OrderHeaders {
+    job_id: i64,
+    attempt: i16,
+    tenant: String,
+    trace: Option<String>,
+    order_id: i64,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OrderJob {
+    #[sqlx(flatten)]
+    headers: OrderHeaders,
+    note: Option<String>,
+}
+
+impl InboxTable for OrderJob {
+    type Id = i64;
+    type Table = InboxSpec<(Attempt, spec::HeaderFields)>;
+    const TABLE: Self::Table = InboxSpec::new("order_jobs", Column::new("job_id").generated())
+        .group(Column::new("name"))
+        .attempt(Column::new("attempt").generated())
+        .data(&[Column::new("tenant"), Column::new("trace"), Column::new("order_id")])
+        .fetching(&[Column::new("note")])
+        .header_fields();
+
+    fn id(&self) -> &i64 {
+        &self.headers.job_id
+    }
+}
+
+impl Input for OrderJob {
+    type Axis = SoloCarried<Self>;
+}
+
+impl AttemptRow for OrderJob {
+    type Attempt = i16;
+
+    fn attempt(&self) -> &i16 {
+        &self.headers.attempt
+    }
+}
+
+impl HeaderFields for OrderJob {
+    const NAMES: &'static [&'static str] = &["tenant", "trace", "order_id"];
+
+    fn header_map(&self) -> HeaderMap {
+        let mut headers = HeaderMap::with_capacity(Self::NAMES.len());
+        put_header(&mut headers, "tenant", &self.headers.tenant);
+        put_header(&mut headers, "trace", &self.headers.trace);
+        put_header(&mut headers, "order_id", &self.headers.order_id);
+        headers
+    }
+}
+# #[subscriber(InboxQueue::<OrderJob>::new("packing"))]
+# async fn pack(job: &OrderJob) -> HandlerOutcome {
+#     tracing::info!(attempt = job.headers.attempt, note = ?job.note, "packing");
+#     HandlerOutcome::ack()
+# }
+# pub fn app(pool: PgPool) -> RustStream {
+#     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+#         b.include(pack);
+#     })
+# }
+# }
+# fn main() {}
+```
+
+A message read by a fetch of its own adds `.own::<spec::own::Fetch>()` to the chain, with
+`spec::own::Fetch` in the type, and implements [`Fetch`] as `OrderMail` does above.
+
+In the headers layout of the derives, two structs describe one queue. The headers struct derives
 [`InboxHeaders`](derive@InboxHeaders) and describes the queue table. The message struct derives
-[`Inbox`](derive@Inbox) and is what a handler takes. It holds the headers struct in a field
-marked `#[field(headers)]` and `#[sqlx(flatten)]`, beside data of its own. Without
-`#[sqlx(flatten)]`, a `headers` field is a header column, as in a flat struct.
+[`Inbox`](derive@Inbox) and is what a handler takes. It holds the headers struct in a field marked
+`#[field(headers)]` and `#[sqlx(flatten)]`, beside data of its own. Without `#[sqlx(flatten)]`, a
+`headers` field is a header column, as in a flat struct.
 
 The headers layout is row mode. A handler takes the message struct itself, `&OrderJob`, as the
 driver read it, with no codec. A batch handler takes `&[OrderJob]`, the rows of one claim. The
@@ -125,7 +211,8 @@ the advisory lock form.
 
 The headers struct gets the generated [`insert`](Insert::insert), which writes the table's columns.
 The message struct gets none: the service writes the message's own data, or writes the whole row
-through a [`Publish`] of its own.
+through a [`Publish`] of its own. A table described by hand writes its insert itself, over the text
+[`dialect::insert`] renders ([row mode](#row-mode) shows one).
 
 ## The default fetch
 

@@ -1,15 +1,18 @@
 //! The transactional outbox: what a service publishes is recorded in its own table until a
 //! consumer has processed it, and what was not processed is published again at startup.
 //!
-//! A struct deriving [`Outbox`](derive@crate::Outbox) describes the table, `outbox!` registers it under
-//! the names it tracks, and the registry hands out the two middlewares and the republish. The
-//! events below are what the struct's statements do; a service implements the ones it lists in
-//! `#[outbox(custom(..))]`, and always [`Publish`], which has no default.
+//! A struct deriving [`Outbox`](derive@crate::Outbox), or implementing [`OutboxTable`] by hand,
+//! describes the table; `outbox!`, [`Outbox::register`] or [`Outbox::track`] registers it under the
+//! names it tracks, and the registry hands out the two middlewares and the republish. The events
+//! below are what the record's statements do; a service implements the ones it names as its own
+//! (`#[outbox(custom(..))]`, or [`OutboxSpec::own`]), and always [`Publish`], which has no
+//! default.
 //!
 //! The crate overview's [transactional outbox](crate#the-transactional-outbox) section shows a
 //! whole service and states the guarantee, the test switch and the costs.
 
 mod database;
+mod dispatch;
 mod error;
 mod events;
 mod layer;
@@ -17,21 +20,25 @@ mod publish;
 mod registry;
 mod republish;
 mod row;
+pub mod spec;
 mod switch;
 mod wrap;
 
 pub use database::OutboxDatabase;
 #[doc(hidden)]
-pub use database::{OutboxSql, no_outbox_statement};
+pub use database::{Defaults, Statements};
+#[doc(hidden)]
+pub use dispatch::{AckBy, DiscardBy, FetchBy, HeadersOf, RecoverBy, RetryBy, Slot};
 pub use error::{OutboxError, PoolAlreadySet, TrackedPublishError};
 pub use events::{Ack, Discard, Fetch, Publish, Recover, Retry, Tracked};
 pub use layer::TrackingLayer;
 pub use publish::TrackingPublishLayer;
-pub use registry::{Nil, Outbox, Registered};
+pub use registry::{Checked, Nil, Outbox, Registered, TrackedName};
 #[doc(hidden)]
-pub use registry::{RecordList, RecordNames};
+pub use registry::{Lacks, RecordList, RecordNames};
 pub use republish::Republishing;
 pub use row::OutboxRow;
+pub use spec::{OutboxSpec, OutboxTable};
 pub use wrap::TrackedPublisher;
 
 /// The header a tracked message carries its record's id in: written with the id's `Display`,

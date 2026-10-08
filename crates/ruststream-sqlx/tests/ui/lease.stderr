@@ -1,8 +1,26 @@
-error[E0080]: evaluation panicked: the lease form computes its expiry from the crate's clock: drop `clock = DatabaseClock` or the `locked_until` field
+error[E0277]: the lease form computes its expiry from the crate's clock, and this table reads the database's
   --> tests/ui/lease.rs:16:33
    |
 16 | #[inbox(table = "jobs", clock = DatabaseClock)]
-   |                                 ^^^^^^^^^^^^^ evaluation of `_` failed here
+   |                                 ^^^^^^^^^^^^^ the lease form on `DatabaseClock`
+   |
+   = help: the trait `LeaseOnServiceClock` is not implemented for `(Set<ruststream_sqlx::spec::Lease<DateTime<Utc>>>, DatabaseClock)`
+   = note: drop `.clock::<DatabaseClock>()` and `Clock<DatabaseClock>`, or `.lease(..)` and `Lease<..>` (with the derive: `clock = DatabaseClock`, or the `locked_until` field)
+help: the following other types implement trait `LeaseOnServiceClock`
+  --> src/inbox/spec/rules.rs
+   |
+   | impl<Reads> LeaseOnServiceClock for (Unset, Reads) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Unset, Reads)`
+   | impl<Reads> LeaseOnServiceClock for (Set<Advisory>, Reads) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Advisory>, Reads)`
+   | impl<Time> LeaseOnServiceClock for (Set<Lease<Time>>, SystemClock) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `(Set<ruststream_sqlx::spec::Lease<Time>>, SystemClock)`
+   = note: required for `InboxSpec<(ruststream_sqlx::spec::Lease<DateTime<Utc>>, ruststream_sqlx::spec::Payload, ruststream_sqlx::spec::Clock<DatabaseClock>)>` to implement `Valid`
+note: required by a bound in `ruststream_sqlx::InboxTable::Table`
+  --> src/inbox/spec/builder.rs
+   |
+   |     type Table: Valid;
+   |                 ^^^^^ required by this bound in `InboxTable::Table`
 
 error[E0277]: `Locked` has no `locked_until` field, so its subscription holds no lease
   --> tests/ui/lease.rs:27:47
@@ -15,12 +33,7 @@ help: the trait `LeaseRow` is not implemented for `Locked`
    |
  8 | struct Locked {
    | ^^^^^^^^^^^^^
-   = note: add `#[field(locked_until)] locked_until: Option<..>` to take rows by lease
-help: the trait `LeaseRow` is implemented for `OnDatabaseTime`
-  --> tests/ui/lease.rs:15:17
-   |
-15 | #[derive(Debug, Inbox, sqlx::FromRow)]
-   |                 ^^^^^
+   = note: add `#[field(locked_until)] locked_until: Option<..>` to take rows by lease (by hand: `.lease(..)` and `Lease<..>` in `type Table`)
 note: required by a bound in `InboxQueue::<Row>::lease`
   --> src/inbox/queue.rs
    |
@@ -29,4 +42,3 @@ note: required by a bound in `InboxQueue::<Row>::lease`
    |     where
    |         Row: LeaseRow,
    |              ^^^^^^^^ required by this bound in `InboxQueue::<Row>::lease`
-   = note: this error originates in the derive macro `Inbox` (in Nightly builds, run with -Z macro-backtrace for more info)

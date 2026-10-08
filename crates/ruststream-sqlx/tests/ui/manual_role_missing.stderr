@@ -1,0 +1,64 @@
+error[E0277]: `Uncounted` sets an `attempt` column and does not read it off its row
+  --> tests/ui/manual_role_missing.rs:60:16
+   |
+60 |     subscribes(InboxQueue::<Uncounted>::new("jobs"));
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `AttemptRow` for this row
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `AttemptRow` is not implemented for `Uncounted`
+  --> tests/ui/manual_role_missing.rs:15:1
+   |
+15 | struct Uncounted {
+   | ^^^^^^^^^^^^^^^^
+   = note: implement `AttemptRow` for `Uncounted`, or drop `.attempt(..)` and `Attempt` from its description
+help: the trait `SubscriptionSource<ConnectedSqlxBroker<DB, D>>` is conditionally implemented for `InboxQueue<Row, Mode>`
+  --> src/inbox/queue.rs
+   |
+   | / impl<DB, D, Row, Mode> SubscriptionSource<ConnectedSqlxBroker<DB, D>> for InboxQueue<Row, Mode>
+   | | where
+   | |     DB: QueueDatabase,
+   | |     D: Dialect + Opens<Row::Opening> + 'static,
+   | |     Row: InboxRow + Events<DB>,
+   | |                     ---------- unsatisfied requirement introduced here: `Uncounted: ruststream_sqlx::__private::Events<sqlx::Sqlite>`
+   | |     Row::Form: FormOn<D>,
+   | |     Mode: InboxMode,
+   | |____________________^
+   = note: required for `Set<ruststream_sqlx::spec::Attempt>` to implement `ruststream_sqlx::__private::AttemptAxis<sqlx::Sqlite, Uncounted>`
+   = note: required for `Uncounted` to implement `ruststream_sqlx::__private::Events<sqlx::Sqlite>`
+   = note: required for `InboxQueue<Uncounted>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Sqlite>>`
+note: required by a bound in `subscribes`
+  --> tests/ui/manual_role_missing.rs:9:23
+   |
+ 9 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Sqlite>>>>(source: Source) {
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`
+
+error[E0277]: `Unlent` lends no payload, so no column holds a message's bytes
+  --> tests/ui/manual_role_missing.rs:61:16
+   |
+61 |     subscribes(InboxQueue::<Unlent>::new("jobs"));
+   |     ---------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no `PayloadRow` for this row
+   |     |
+   |     required by a bound introduced by this call
+   |
+help: the trait `PayloadRow` is not implemented for `Unlent`
+  --> tests/ui/manual_role_missing.rs:43:1
+   |
+43 | struct Unlent {
+   | ^^^^^^^^^^^^^
+   = note: a table in row mode: write its rows with the derive's `insert`, or with `Repository` over a `Publish` of the service's own
+   = note: a route and a by-name subscription read a table whose `#[field(payload)]` field holds the message
+   = note: a table described by hand that sets `.payload(..)` implements `PayloadRow` for the field the column decodes into
+help: the trait `PayloadRow` is implemented for `Uncounted`
+  --> tests/ui/manual_role_missing.rs:33:1
+   |
+33 | impl PayloadRow for Uncounted {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: required for `Set<ruststream_sqlx::spec::Payload>` to implement `ruststream_sqlx::__private::MessageAxis<Unlent>`
+   = note: required for `Unlent` to implement `InboxRow`
+   = note: required for `InboxQueue<Unlent>` to implement `SubscriptionSource<ConnectedSqlxBroker<sqlx::Sqlite>>`
+note: required by a bound in `subscribes`
+  --> tests/ui/manual_role_missing.rs:9:23
+   |
+ 9 | fn subscribes<Source: SubscriptionSource<Connected<SqlxBroker<Sqlite>>>>(source: Source) {
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `subscribes`

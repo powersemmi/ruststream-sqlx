@@ -5,18 +5,11 @@ use super::{Probe, SqlWriter};
 use crate::column::Column;
 use crate::dialect::Dialect;
 use crate::form::{Form, KeyPart};
+use crate::insert::{self, Spelling, fits, too_long};
 use crate::role::Role;
 use crate::spec::TableSpec;
-use crate::statement::{ClaimShape, NameLimit, Param, Statement, StatementError};
+use crate::statement::{ClaimShape, Param, Statement, StatementError};
 use crate::table_name::TableName;
-
-/// Whether `name` fits in `limit`, measured the way the database measures it.
-fn fits(name: &str, limit: NameLimit) -> bool {
-    match limit {
-        NameLimit::Bytes(most) => name.len() <= usize::from(most),
-        NameLimit::Characters(most) => name.chars().count() <= usize::from(most),
-    }
-}
 
 /// The name of the column that plays `role`, which `statement` cannot do without.
 fn required<'a>(
@@ -40,24 +33,20 @@ pub(crate) enum Built<'a> {
     Advisory,
 }
 
-/// What a built-in dialect adds to [`Dialect`]: the longest name its database keeps, whether it
-/// locks rows, how an insert of no column reads, the database's own clock, and how it renders,
-/// probes and takes an advisory lock key.
+/// What a built-in dialect adds to [`Dialect`]: how its database spells names, placeholders and an
+/// insert, whether it locks rows, the database's own clock, and how it renders, probes and takes
+/// an advisory lock key.
 ///
 /// The provided methods check a table against the dialect, and against a statement of one form
 /// for the dialect's [`RowLock`](crate::RowLock), [`Lease`](crate::Lease) and
 /// [`Advisory`](crate::Advisory) implementations, and build the statements every built-in dialect
 /// writes the same way, through its quoting, placeholders and clock.
 pub(crate) trait BuiltIn: Dialect {
-    /// The longest name the database keeps; `None` where it keeps a name of any length.
-    const NAME_LIMIT: Option<NameLimit>;
+    /// How the database spells names, placeholders and an insert, and the longest name it keeps.
+    const SPELLING: Spelling;
 
     /// Whether the database locks rows for a transaction, so the row lock form runs on it.
     const ROW_LOCKS: bool;
-
-    /// What follows the table in an insert that writes no column, so every column takes its
-    /// default.
-    const DEFAULT_ROW: &'static str;
 
     /// Whether a backslash in a string literal escapes the character after it, so a literal
     /// doubles each backslash of its text.
@@ -94,7 +83,7 @@ pub(crate) trait BuiltIn: Dialect {
         &self,
         names: impl IntoIterator<Item = &'a str>,
     ) -> Result<(), StatementError> {
-        let Some(limit) = Self::NAME_LIMIT else {
+        let Some(limit) = Self::SPELLING.name_limit else {
             return Ok(());
         };
         names
@@ -109,13 +98,13 @@ pub(crate) trait BuiltIn: Dialect {
             })
     }
 
-    /// Every name a statement of `spec` writes.
+    /// Refuses a description with a name longer than the database keeps: its schema, its table or
+    /// a column.
     fn spec_fits(&self, spec: &TableSpec<'_>) -> Result<(), StatementError> {
         self.names_fit(
-            spec.schema()
-                .into_iter()
-                .chain([spec.table()])
-                .chain(spec.columns().map(|column| column.name())),
+            Self::SPELLING
+                .name_limit
+                .and_then(|limit| too_long(spec, limit)),
         )
     }
 
@@ -435,41 +424,9 @@ pub(crate) trait BuiltIn: Dialect {
         Ok(vec![copy.finish(), delete.finish()])
     }
 
-    /// The insert of a row: every column the database does not fill.
+    /// The insert of a row: every column the database does not fill, as the `const fn` of
+    /// [`insert`](crate::insert) writes it.
     fn insert_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {
-        self.spec_fits(spec)?;
-        if spec.selects_all() {
-            return Err(StatementError::Flattened {
-                statement: "insert",
-            });
-        }
-        let mut sql = SqlWriter::new(self);
-        sql.push("INSERT INTO ").table(spec);
-        let written: Vec<(usize, &str)> = spec
-            .columns()
-            .enumerate()
-            .filter(|(_, column)| !column.is_generated())
-            .map(|(position, column)| (position, column.name()))
-            .collect();
-        if written.is_empty() {
-            sql.push(Self::DEFAULT_ROW);
-            return Ok(sql.finish());
-        }
-        sql.push(" (");
-        for (index, (_, name)) in written.iter().enumerate() {
-            if index > 0 {
-                sql.push(", ");
-            }
-            sql.ident(name);
-        }
-        sql.push(") VALUES (");
-        for (index, (position, _)) in written.iter().enumerate() {
-            if index > 0 {
-                sql.push(", ");
-            }
-            sql.param(Param::Column(*position));
-        }
-        sql.push(")");
-        Ok(sql.finish())
+        insert::statement(spec, Self::SPELLING)
     }
 }
