@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use futures::Stream;
 use ruststream::{BatchSubscriber, Subscriber};
+use ruststream_sqlx_dialect::Role;
 use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
 use tokio::sync::Notify;
@@ -44,8 +45,9 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// a single-message handler, with a claim in flight for each free worker of a handler mounted with
 /// `workers(n)`. The subscription holds at most the pool's size less one connection, and a claim
 /// beside another one starts only while the pool has a connection to spare, so the pool keeps one
-/// for the handlers. On SQLite, which takes one writer at a time, the subscription keeps one claim
-/// in flight. After a claim that filled its limit the next one runs at once;
+/// for the handlers. It keeps one claim in flight on SQLite, which takes one writer at a time, and
+/// on a table whose groups keep their order or that has a `partition_key` column, whose order claims
+/// that run at once could break. After a claim that filled its limit the next one runs at once;
 /// after one that found fewer rows it waits the poll interval, or until a publisher of the same
 /// broker writes a row of its table and group (a row the service writes through its own SQL or a
 /// handler's transaction waits for the interval). A write that lands while the subscription
@@ -282,7 +284,7 @@ where
                 opened.pool.options().get_max_connections(),
                 !matches!(opened.holding, Holding::Leases(_))
                     || opened.queue.prepared.transactional,
-                opened.queue.prepared.fifo_guard.is_some() || opened.queue.one_writer,
+                one_claim(opened.queue),
             ),
             made: 0,
             // Once per subscription, as its queue and books are: deliveries outlive the borrow of
@@ -644,6 +646,15 @@ where
     (claimed, buffers)
 }
 
+/// Whether a subscription to `queue` keeps one claim in flight: claims that run at once may
+/// finish out of their claim order, which a table whose groups keep their order and a keyed table
+/// read their order from; and on a database of one writer they only collide.
+fn one_claim(queue: &Queue) -> bool {
+    queue.prepared.fifo_guard.is_some()
+        || queue.spec.column(Role::PartitionKey).is_some()
+        || queue.one_writer
+}
+
 /// The connections `pool` can lend at once: its idle ones, and room for new ones.
 fn spare<DB: sqlx::Database>(pool: &Pool<DB>) -> usize {
     let room = pool
@@ -788,5 +799,53 @@ where
                 <Row::Lane as BatchLane<DB, Row>>::batch(BatchClaim::new(subscriber, taken, count));
             Some((Ok(batch), subscriber))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use ruststream_sqlx_dialect::{Column, Form, TableSpec};
+
+    use super::one_claim;
+    use crate::inbox::engine::{IdAt, Prepared};
+    use crate::inbox::queue::Queue;
+
+    fn queue(spec: TableSpec<'static>, one_writer: bool) -> Queue {
+        Queue {
+            name: "jobs",
+            table: "jobs",
+            row: "app::Job",
+            spec,
+            id_at: IdAt::First,
+            native_retry_after: false,
+            kinds: None,
+            prepared: Prepared::default(),
+            begin_claim: None,
+            counted_attempt: false,
+            one_writer,
+            poll_interval: Duration::from_secs(1),
+            lease: None,
+            cap: None,
+        }
+    }
+
+    const PLAIN: TableSpec<'static> = TableSpec::new("jobs", Column::new("id"), Form::RowLock);
+
+    #[test]
+    fn a_plain_table_on_a_server_claims_for_every_free_worker() {
+        assert!(!one_claim(&queue(PLAIN, false)));
+    }
+
+    #[test]
+    fn a_keyed_table_keeps_its_claim_order() {
+        let keyed = PLAIN.partition_key(Column::new("customer"));
+        assert!(one_claim(&queue(keyed, false)));
+    }
+
+    #[test]
+    fn a_database_of_one_writer_keeps_one_claim() {
+        assert!(one_claim(&queue(PLAIN, true)));
     }
 }
