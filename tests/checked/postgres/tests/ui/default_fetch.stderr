@@ -6,8 +6,8 @@ error[E0080]: evaluation panicked: `OrderHeaders` is `checked`, and its statemen
   |
  ::: src/lib.rs
   |
-  | #[inbox(table = "checked_orders", checked, db = postgres)]
-  |                                   ------- in this macro invocation
+  | #[inbox(table = "order_jobs", checked, db = postgres)]
+  |                               ------- in this macro invocation
 
 note: erroneous constant encountered
   --> tests/ui/default_fetch.rs:10:14
