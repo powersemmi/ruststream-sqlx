@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 readme = "../../README.md"
+# The offline query data and the sqlx settings serve the doctests of checked mode in this
+# repository; a service builds the crate without them.
+exclude = [".sqlx", "sqlx.toml"]
 keywords = ["sqlx", "outbox", "queue", "messaging", "ruststream"]
 categories = ["asynchronous", "database"]
 
