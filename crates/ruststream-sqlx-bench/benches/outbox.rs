@@ -17,10 +17,10 @@
 
 mod common;
 
-use common::MESSAGES;
-use common::code::{Pending, Started, start_and_drain};
+use common::code::{Pending, Started, start_and_drain, warm};
 use common::services::{self, Command, TRACKED};
 use common::stand::{Table, postgres_pool};
+use common::{Latch, MESSAGES};
 use gungraun::{library_benchmark, library_benchmark_group, main};
 use ruststream_sqlx::prelude::*;
 use tokio::runtime::Runtime;
@@ -28,15 +28,23 @@ use tokio::runtime::Runtime;
 /// Connections both halves' pools may open: the record's insert, the fetch and the mark.
 const POOL: u32 = 4;
 
-/// Starts `$build`'s service and pairs its command publisher in the start region; publishes one
-/// command per expected delivery and waits for the sink to count them all in the drain region.
+/// Starts `$build`'s service and pairs its command publisher in the start region; in the drain
+/// region publishes one command per expected delivery, each once the sink counted the one before.
 macro_rules! relaying {
-    ($messages:expr, |$latch:ident| $build:expr) => {
-        Pending::new(Table::Outbox, false, $messages, |$latch| {
+    ($messages:expr, |$latch:ident, $pool:ident| $build:expr) => {
+        Pending::new(Table::Outbox, false, Latch::stepping($messages), |$latch| {
             let latch = $latch.clone();
-            let (app, egress) = $build;
+            let pool = postgres_pool(POOL);
+            let (app, egress) = {
+                let $pool = pool.clone();
+                $build
+            };
             Box::new(move |runtime: &Runtime| {
                 let (running, publisher) = runtime.block_on(async {
+                    // Every connection the relay and the sink can hold at once is opened here, so
+                    // the drain never opens one: how many a run opens otherwise depends on how the
+                    // two handlers interleave, and every opening allocates.
+                    warm(&pool, POOL).await;
                     let running = app.start().await.expect("the service starts");
                     let publisher = running
                         .publisher(egress)
@@ -46,14 +54,16 @@ macro_rules! relaying {
                 });
                 let drive = move |runtime: &Runtime| {
                     runtime.block_on(async {
-                        for _ in 0..latch.total() {
+                        // One command in flight at a time: the relay and the sink never contend
+                        // for a connection, so a run allocates the same whatever the scheduling.
+                        for left in (0..latch.total()).rev() {
                             publisher
                                 .message(&Command { id: 1 })
                                 .publish()
                                 .await
                                 .expect("the command is published");
+                            latch.reached(left).await;
                         }
-                        latch.drained().await;
                     });
                 };
                 Started::Driving(Box::new(drive), Some(running))
@@ -63,36 +73,38 @@ macro_rules! relaying {
 }
 
 fn tracked_run(messages: usize) -> Pending {
-    relaying!(messages, |latch| services::outbox(
-        postgres_pool(POOL),
-        latch,
-        TRACKED
+    relaying!(messages, |latch, pool| services::outbox(
+        pool, latch, TRACKED
     ))
 }
 
 fn untracked_run(messages: usize) -> Pending {
-    relaying!(messages, |latch| services::outbox(
-        postgres_pool(POOL),
+    relaying!(messages, |latch, pool| services::outbox(
+        pool,
         latch,
         "elsewhere"
     ))
 }
 
+// The service with no middleware opens no connection; the pool is opened all the same, so the
+// start region of every outbox scenario does the same work.
 fn bare_run(messages: usize) -> Pending {
-    relaying!(messages, |latch| services::outbox_bare(latch))
+    relaying!(messages, |latch, pool| {
+        drop(pool);
+        services::outbox_bare(latch)
+    })
 }
 
 fn raw_run(messages: usize) -> Pending {
-    relaying!(messages, |latch| services::outbox_by_hand(
-        postgres_pool(POOL),
-        latch
+    relaying!(messages, |latch, pool| services::outbox_by_hand(
+        pool, latch
     ))
 }
 
-// 41.05 allocations per delivery and 194 for the start, seen on a smoke run of 20
+// At most 42.1 allocations per delivery and 355 once per run, over four smoke runs of 20
 // deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(41_461, 1_000, 204))]
+// once-per-run part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(42_521, 1_000, 373))]
 #[bench::first(tracked_run(1))]
 #[bench::base(tracked_run(MESSAGES))]
 #[bench::twice(tracked_run(2 * MESSAGES))]
@@ -100,10 +112,10 @@ fn tracked(run: Pending) {
     start_and_drain(run);
 }
 
-// 40.15 allocations per delivery and 191 for the start, seen on a smoke run of 20
+// At most 39.1 allocations per delivery and 375 once per run, over four smoke runs of 20
 // deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(40_552, 1_000, 201))]
+// once-per-run part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(39_491, 1_000, 394))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]
@@ -111,10 +123,10 @@ fn raw(run: Pending) {
     start_and_drain(run);
 }
 
-// 6.1 allocations per delivery and 45 for the start, seen on a smoke run of 20
+// At most 6.1 allocations per delivery and 210 once per run, over four smoke runs of 20
 // deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(6_161, 1_000, 48))]
+// once-per-run part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(6_161, 1_000, 221))]
 #[bench::first(untracked_run(1))]
 #[bench::base(untracked_run(MESSAGES))]
 #[bench::twice(untracked_run(2 * MESSAGES))]
@@ -122,10 +134,10 @@ fn untracked(run: Pending) {
     start_and_drain(run);
 }
 
-// 6.1 allocations per delivery and 45 for the start, seen on a smoke run of 20
+// At most 6.1 allocations per delivery and 210 once per run, over four smoke runs of 20
 // deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(6_161, 1_000, 48))]
+// once-per-run part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(6_161, 1_000, 221))]
 #[bench::first(bare_run(1))]
 #[bench::base(bare_run(MESSAGES))]
 #[bench::twice(bare_run(2 * MESSAGES))]

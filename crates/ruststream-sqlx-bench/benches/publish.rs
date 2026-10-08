@@ -15,11 +15,11 @@
 
 mod common;
 
-use common::code::{Pending, Started, connect, start_and_drain};
+use common::code::{Pending, Started, start_and_drain, warm};
 use common::raw::publish;
 use common::services;
 use common::stand::{Table, postgres_pool};
-use common::{MESSAGES, OrderPlaced};
+use common::{Latch, MESSAGES, OrderPlaced};
 use gungraun::{library_benchmark, library_benchmark_group, main};
 use ruststream_sqlx::prelude::*;
 use tokio::runtime::Runtime;
@@ -30,11 +30,16 @@ const POOL: u32 = 2;
 /// Starts `$app`, pairs the publisher from `$egress` in the start region, and publishes one
 /// message per expected delivery in the drain region.
 macro_rules! publishing {
-    ($messages:expr, $build:expr) => {
-        Pending::new(Table::Named, false, $messages, |latch| {
-            let (app, egress) = $build;
+    ($messages:expr, |$pool:ident| $build:expr) => {
+        Pending::new(Table::Named, false, Latch::new($messages), |latch| {
+            let pool = postgres_pool(POOL);
+            let (app, egress) = {
+                let $pool = pool.clone();
+                $build
+            };
             Box::new(move |runtime: &Runtime| {
                 let (running, publisher) = runtime.block_on(async {
+                    warm(&pool, POOL).await;
                     let running = app.start().await.expect("the service starts");
                     let publisher = running
                         .publisher(egress)
@@ -61,18 +66,18 @@ macro_rules! publishing {
 }
 
 fn repository_run(messages: usize) -> Pending {
-    publishing!(messages, services::postgres_repository(postgres_pool(POOL)))
+    publishing!(messages, |pool| services::postgres_repository(pool))
 }
 
 fn routed_run(messages: usize) -> Pending {
-    publishing!(messages, services::postgres_routed(postgres_pool(POOL)))
+    publishing!(messages, |pool| services::postgres_routed(pool))
 }
 
 fn raw_run(messages: usize) -> Pending {
-    Pending::new(Table::Named, false, messages, |latch| {
+    Pending::new(Table::Named, false, Latch::new(messages), |latch| {
         let pool = postgres_pool(POOL);
         Box::new(move |runtime: &Runtime| {
-            runtime.block_on(connect(&pool));
+            runtime.block_on(warm(&pool, POOL));
             Started::Driving(
                 Box::new(move |runtime| runtime.block_on(publish(&pool, &latch))),
                 None,
@@ -81,10 +86,10 @@ fn raw_run(messages: usize) -> Pending {
     })
 }
 
-// 15 allocations per delivery and 121 for the start, seen on a smoke run of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(15_150, 1_000, 128))]
+// At most 15 allocations per delivery and 126 once per run, over four smoke runs of 20 deliveries.
+// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
+// part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(15_150, 1_000, 133))]
 #[bench::first(repository_run(1))]
 #[bench::base(repository_run(MESSAGES))]
 #[bench::twice(repository_run(2 * MESSAGES))]
@@ -92,10 +97,10 @@ fn repository(run: Pending) {
     start_and_drain(run);
 }
 
-// 15 allocations per delivery and 122 for the start, seen on a smoke run of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(15_150, 1_000, 129))]
+// At most 15 allocations per delivery and 127 once per run, over four smoke runs of 20 deliveries.
+// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
+// part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(15_150, 1_000, 134))]
 #[bench::first(routed_run(1))]
 #[bench::base(routed_run(MESSAGES))]
 #[bench::twice(routed_run(2 * MESSAGES))]
@@ -103,10 +108,10 @@ fn routed(run: Pending) {
     start_and_drain(run);
 }
 
-// 12 allocations per delivery and 104 for the start, seen on a smoke run of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(12_120, 1_000, 110))]
+// At most 12 allocations per delivery and 107 once per run, over four smoke runs of 20 deliveries.
+// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
+// part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(12_120, 1_000, 113))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]

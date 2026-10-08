@@ -18,7 +18,7 @@ mod common;
 use common::code::{Pending, start_and_drain};
 use common::raw::{Statements, lease, read_payload};
 use common::services::{self, Mount};
-use common::stand::{Table, postgres_pool};
+use common::stand::Table;
 use common::tables::LeaseJob;
 use common::{LEASE, MESSAGES};
 use gungraun::{library_benchmark, library_benchmark_group, main};
@@ -29,8 +29,8 @@ use ruststream_sqlx::dialect::Postgres;
 const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
-    Pending::service(Table::Lease, messages, |latch| {
-        services::postgres_lease(postgres_pool(POOL), latch, Mount::SEQUENTIAL)
+    Pending::service(Table::Lease, messages, POOL, |pool, latch| {
+        services::postgres_lease(pool, latch, Mount::SEQUENTIAL)
     })
 }
 
@@ -50,10 +50,10 @@ fn raw_run(messages: usize) -> Pending {
     })
 }
 
-// 31.7 allocations per delivery and 303 for the start, seen on a smoke run of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(32_017, 1_000, 319))]
+// At most 28 allocations per delivery and 393 once per run, over four smoke runs of 20 deliveries.
+// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
+// part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(28_280, 1_000, 413))]
 #[bench::first(service_run(1))]
 #[bench::base(service_run(MESSAGES))]
 #[bench::twice(service_run(2 * MESSAGES))]
@@ -61,10 +61,10 @@ fn service(run: Pending) {
     start_and_drain(run);
 }
 
-// 32.75 allocations per delivery and 154 for the start, seen on a smoke run of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(33_078, 1_000, 162))]
+// At most 28 allocations per delivery and 262 once per run, over four smoke runs of 20 deliveries.
+// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
+// part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(28_280, 1_000, 276))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]

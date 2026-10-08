@@ -26,6 +26,8 @@
 
 use std::thread;
 
+use futures::future::join_all;
+
 use ruststream::runtime::{App, RunningApp};
 use sqlx::PgPool;
 use tokio::runtime::{Builder, Runtime};
@@ -89,8 +91,8 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// A scenario that starts with `start` against a fresh `table`, filled with `messages` rows
-    /// between the regions when `fill` is set. `build` receives the run's latch.
+    /// A scenario that starts with `start` against a fresh `table`, filled with as many rows as
+    /// `latch` expects between the regions when `fill` is set. `build` receives the latch.
     ///
     /// The start is part of the measurement rather than of the setup, because the cold number is
     /// what starting costs. It is held as a boxed call so that every scenario hands over the same
@@ -98,11 +100,10 @@ impl Pending {
     pub fn new(
         table: Table,
         fill: bool,
-        messages: usize,
+        latch: Latch,
         build: impl FnOnce(Latch) -> Box<dyn FnOnce(&Runtime) -> Started>,
     ) -> Self {
         let producer = Producer::prepare(table);
-        let latch = Latch::new(messages);
         let runtime = runtime();
         // A pool belongs to the runtime it is built in, which for the scenario is the measured
         // one.
@@ -119,43 +120,56 @@ impl Pending {
         }
     }
 
-    /// A service the subscription drains: `app` is built with the run's latch as its state.
+    /// A service the subscription drains, on a pool of up to `connections`: `app` is built with
+    /// the pool and the run's latch as its state.
     pub fn service<Service: App + 'static>(
         table: Table,
         messages: usize,
-        app: impl FnOnce(Latch) -> Service,
+        connections: u32,
+        app: impl FnOnce(PgPool, Latch) -> Service,
     ) -> Self {
-        Self::new(table, true, messages, |latch| {
-            let app = app(latch);
+        Self::new(table, true, Latch::new(messages), |latch| {
+            let pool = postgres_pool(connections);
+            let app = app(pool.clone(), latch);
             Box::new(move |runtime: &Runtime| {
-                Started::Waiting(runtime.block_on(app.start()).expect("the service starts"))
+                Started::Waiting(runtime.block_on(async {
+                    warm(&pool, connections).await;
+                    app.start().await.expect("the service starts")
+                }))
             })
         })
     }
 
-    /// A raw loop over `table` on a pool of up to `connections`: the start takes the pool's
-    /// first connection, the drain runs `drain` with the run's latch until the table is empty.
+    /// A raw loop over `table` on a pool of up to `connections`: the start opens the pool, the
+    /// drain runs `drain` with the run's latch until the table is empty.
     pub fn raw(
         table: Table,
         messages: usize,
         connections: u32,
         drain: impl FnOnce(&Runtime, &PgPool, &Latch) + 'static,
     ) -> Self {
-        Self::new(table, true, messages, |latch| {
+        Self::new(table, true, Latch::new(messages), |latch| {
             let pool = postgres_pool(connections);
             Box::new(move |runtime: &Runtime| {
-                runtime.block_on(connect(&pool));
+                runtime.block_on(warm(&pool, connections));
                 Started::Driving(Box::new(move |runtime| drain(runtime, &pool, &latch)), None)
             })
         })
     }
 }
 
-/// Takes the pool's first connection and returns it, the cold start of a raw loop.
+/// Opens `connections` connections of the pool at once and returns them, part of every start.
 ///
-/// The connection goes back inside the runtime, because returning it to the pool is a task.
-pub async fn connect(pool: &PgPool) {
-    drop(pool.acquire().await.expect("the pool opens a connection"));
+/// A drain then never opens a connection. Otherwise how many it opens depends on the scheduling:
+/// a returned connection goes back to the pool through a task, and an acquire that runs before
+/// that task opens a new one. Every opening allocates, and the allocation limits would move with
+/// the scheduler.
+pub async fn warm(pool: &PgPool, connections: u32) {
+    // All at once: a connection returned before the next acquire would be lent again.
+    let held = join_all((0..connections).map(|_| pool.acquire())).await;
+    for connection in held {
+        drop(connection.expect("the pool opens a connection"));
+    }
 }
 
 /// A single-threaded runtime: one thread means one order of execution, and the driver's I/O runs

@@ -4,8 +4,9 @@
 //! # What a scenario is
 //!
 //! Every scenario is written twice. The service is what a user writes: a `#[derive(Inbox)]`
-//! table, a `#[subscriber(..)]` handler, and `RustStream::new(..).with_broker(SqlxBroker::new(pool),
-//! ..)` started like any app ([`services`]). The raw half is a hand-written sqlx loop that runs the
+//! table, a `#[subscriber(..)]` handler, and
+//! `RustStream::new(..).with_broker(SqlxBroker::new(pool), ..)` started like any app
+//! ([`services`]). The raw half is a hand-written sqlx loop that runs the
 //! statements the broker runs for that table, in the order it runs them, with the same pool and
 //! the same decode ([`raw`]). The statements are rendered once, at setup, by the dialect the
 //! broker renders them with, so the two halves cannot drift apart ([`raw::Statements`]).
@@ -203,6 +204,8 @@ pub struct Latch(Arc<Inner>);
 #[derive(Debug)]
 struct Inner {
     total: usize,
+    /// Whether every count wakes the waiter, not only the last.
+    stepping: bool,
     remaining: AtomicUsize,
     first: OnceLock<Instant>,
     last: OnceLock<Instant>,
@@ -212,8 +215,19 @@ struct Inner {
 impl Latch {
     /// A latch for a run of `total` deliveries.
     pub fn new(total: usize) -> Self {
+        Self::with(total, false)
+    }
+
+    /// A latch whose every count wakes the waiter, for a run that feeds one delivery at a time
+    /// and waits for each ([`Latch::reached`]).
+    pub fn stepping(total: usize) -> Self {
+        Self::with(total, true)
+    }
+
+    fn with(total: usize, stepping: bool) -> Self {
         Self(Arc::new(Inner {
             total,
+            stepping,
             remaining: AtomicUsize::new(total),
             first: OnceLock::new(),
             last: OnceLock::new(),
@@ -229,6 +243,8 @@ impl Latch {
         }
         if before == 1 {
             let _ = self.0.last.set(Instant::now());
+            self.0.drained.notify_one();
+        } else if self.0.stepping {
             self.0.drained.notify_one();
         }
     }
@@ -248,6 +264,14 @@ impl Latch {
         while self.remaining() > 0 {
             // `notify_one` keeps a permit for a waiter that has not arrived yet, so the last
             // count cannot be lost between the check and the wait.
+            self.0.drained.notified().await;
+        }
+    }
+
+    /// Resolves once no more than `left` deliveries remain. Only a stepping latch wakes before the
+    /// last count.
+    pub async fn reached(&self, left: usize) {
+        while self.remaining() > left {
             self.0.drained.notified().await;
         }
     }

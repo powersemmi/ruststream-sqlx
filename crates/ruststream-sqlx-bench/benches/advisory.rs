@@ -19,7 +19,7 @@ use common::MESSAGES;
 use common::code::{Pending, start_and_drain};
 use common::raw::{Statements, advisory, read_payload};
 use common::services;
-use common::stand::{Table, postgres_pool};
+use common::stand::Table;
 use common::tables::AdvisoryJob;
 use gungraun::{library_benchmark, library_benchmark_group, main};
 use ruststream_sqlx::InboxTable;
@@ -29,8 +29,8 @@ use ruststream_sqlx::dialect::Postgres;
 const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
-    Pending::service(Table::Advisory, messages, |latch| {
-        services::postgres_advisory(postgres_pool(POOL), latch)
+    Pending::service(Table::Advisory, messages, POOL, |pool, latch| {
+        services::postgres_advisory(pool, latch)
     })
 }
 
@@ -48,10 +48,10 @@ fn raw_run(messages: usize) -> Pending {
     )
 }
 
-// 47 allocations per delivery and 404 for the start, seen on a smoke run of 20
+// At most 47.95 allocations per delivery and 599 once per run, over four smoke runs of 20
 // deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(47_470, 1_000, 425))]
+// once-per-run part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(48_430, 1_000, 629))]
 #[bench::first(service_run(1))]
 #[bench::base(service_run(MESSAGES))]
 #[bench::twice(service_run(2 * MESSAGES))]
@@ -59,10 +59,10 @@ fn service(run: Pending) {
     start_and_drain(run);
 }
 
-// 47 allocations per delivery and 223 for the start, seen on a smoke run of 20
-// deliveries. The limit is that with a percent of headroom on the steady rate and five on the
-// start; one allocation more per delivery breaches it.
-#[library_benchmark(config = common::config_every(47_470, 1_000, 235))]
+// At most 47 allocations per delivery and 443 once per run, over four smoke runs of 20 deliveries.
+// The limit is that with a percent of headroom on the steady rate and five on the once-per-run
+// part; one allocation more per delivery breaches it at the default count.
+#[library_benchmark(config = common::config_every(47_470, 1_000, 466))]
 #[bench::first(raw_run(1))]
 #[bench::base(raw_run(MESSAGES))]
 #[bench::twice(raw_run(2 * MESSAGES))]
