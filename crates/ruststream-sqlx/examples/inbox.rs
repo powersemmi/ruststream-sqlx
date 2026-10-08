@@ -22,7 +22,7 @@ use std::error::Error;
 
 use ruststream::OutgoingMessage;
 use ruststream_sqlx::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, Postgres};
 
 /// One row of `email_jobs`: the struct names the table and the role of each column.
@@ -52,7 +52,7 @@ impl Publish<Postgres> for SendEmail {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Outgoing)]
 struct Email {
     to: String,
 }
