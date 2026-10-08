@@ -521,8 +521,9 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// than its lease; the lease is how long a row stays out of the queue after its process
     /// crashed. A delivery dropped unsettled releases its row at once. A lease runs out under a
     /// running handler only when its extensions fail or stop (the database out of reach, the
-    /// subscription closed, the broker [shut down](ConnectedBroker::shutdown)): the row then goes
-    /// to the next claim, and the late settlement fails with [`SqlxBrokerError::LeaseLost`].
+    /// subscription closed, the broker [shut down](ruststream::ConnectedBroker::shutdown)): the
+    /// row then goes to the next claim, and the late settlement fails with
+    /// [`SqlxBrokerError::LeaseLost`].
     ///
     /// # Examples
     ///
@@ -626,7 +627,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// with `pg_notify` is claimed at once, not on the next poll.
     ///
     /// The broker holds one connection of the pool for its life, from
-    /// [`connect`](Broker::connect) to [`shutdown`](ConnectedBroker::shutdown), and listens there.
+    /// [`connect`](Broker::connect) to [`shutdown`](ruststream::ConnectedBroker::shutdown), and
+    /// listens there.
     /// Each subscription listens on the channel of its table, qualified with its schema, as it
     /// opens; a notification whose payload names a group wakes that group's subscription, and one
     /// with an empty payload wakes every subscription of the table. Each publish of the broker

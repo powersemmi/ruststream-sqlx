@@ -265,7 +265,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
 /// ```no_run
 /// # #[cfg(feature = "postgres")]
 /// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
-/// use ruststream::ConnectedBroker;
+/// use ruststream::{Broker, ConnectedBroker};
 /// use ruststream_sqlx::{ClosedSqlxBroker, SqlxBroker};
 ///
 /// let closed: ClosedSqlxBroker = SqlxBroker::new(pool).connect().await?.shutdown().await?;
@@ -292,7 +292,7 @@ impl ClosedSqlxBroker {
     /// ```no_run
     /// # #[cfg(feature = "postgres")]
     /// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
-    /// use ruststream::ConnectedBroker;
+    /// use ruststream::{Broker, ConnectedBroker};
     /// use ruststream_sqlx::SqlxBroker;
     ///
     /// let closed = SqlxBroker::new(pool).connect().await?.shutdown().await?;
@@ -319,7 +319,7 @@ impl ClosedSqlxBroker {
     /// ```no_run
     /// # #[cfg(feature = "postgres")]
     /// # async fn run(pool: sqlx::PgPool) -> Result<(), ruststream_sqlx::SqlxBrokerError> {
-    /// use ruststream::ConnectedBroker;
+    /// use ruststream::{Broker, ConnectedBroker};
     /// use ruststream_sqlx::SqlxBroker;
     ///
     /// let closed = SqlxBroker::new(pool).connect().await?.shutdown().await?;
