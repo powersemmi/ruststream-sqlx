@@ -13,6 +13,10 @@ use crate::probe::{GUARD, Probe, until};
 
 const POLL: Duration = Duration::from_millis(20);
 
+/// How long the subscription stays at its bound before the suite takes it to stay there: many
+/// polls of the subscription.
+const QUIET: Duration = Duration::from_millis(500);
+
 /// Rows enough to fill a pool of eight twice over.
 const ROWS: i64 = 16;
 
@@ -50,6 +54,14 @@ live::matrix! {
             pool.size() == size - 1 && pool.num_idle() == 0
         })
         .await;
+        // A subscription that would take the last connection takes it within a few polls.
+        let took_the_last = tokio::time::timeout(QUIET, async {
+            while pool.size() < size {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(took_the_last.is_err(), "the subscription took the pool's last connection");
         let last = tokio::time::timeout(Duration::from_secs(5), pool.acquire())
             .await
             .expect("the pool lends its last connection")
