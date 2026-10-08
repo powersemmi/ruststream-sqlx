@@ -13,6 +13,7 @@ use sync_wrapper::SyncWrapper;
 use thiserror::Error;
 use tokio::runtime::Handle;
 
+#[cfg(feature = "testing")]
 use super::broker::Shared;
 use super::claims::InWork;
 use super::database::QueueDatabase;
@@ -30,7 +31,6 @@ use super::testing::off_clock;
 use super::transactional::{InboxMode, Plain, TxHold};
 use super::tx::PoolTx;
 use super::{Lane, QueueRow, RowLane};
-#[cfg(feature = "testing")]
 use crate::inbox::pools::ServicePool;
 
 pub(crate) mod settle;

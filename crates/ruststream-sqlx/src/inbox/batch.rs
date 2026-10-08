@@ -7,6 +7,7 @@ use std::vec;
 
 use ruststream::CarriesBatch;
 
+#[cfg(feature = "testing")]
 use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::delivery::{Hold, InboxDelivery};
@@ -18,7 +19,6 @@ use super::headers::HeaderCell;
 use super::queue::Queue;
 use super::subscriber::{InboxSubscriber, Taken};
 use super::{Lane, PayloadLane, PayloadRow, QueueRow, RowLane};
-#[cfg(feature = "testing")]
 use crate::inbox::pools::ServicePool;
 
 /// How a table's lane hands a batch handler what one claim took. Machinery: a subscription in the
