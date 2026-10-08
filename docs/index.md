@@ -65,9 +65,17 @@ The service owns its queue tables. At startup a subscription checks that its tab
 columns its struct names. The column types are the service's to get right, and a row that does
 not decode is settled by the subscription's decode-failure policy.
 
+A team that checks its SQL at compile time adds `checked` and the database to the derive. The
+derive then hands the statements it generates to sqlx's compile-time macros, so `cargo sqlx
+prepare` checks them against the database with the service's own queries. The startup check runs
+as well.
+
 ## Where the rest is
 
 The crate's reference is on docs.rs: [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx).
+
+What the crate costs per message and how many messages it moves per second, beside a raw sqlx loop
+doing the same work, is on the [benchmarks page](benchmarks.md).
 
 Handlers, routers, codecs and middleware come from the framework, whose own entry pages start at
 [the RustStream site](https://powersemmi.github.io/ruststream/).

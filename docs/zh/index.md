@@ -54,9 +54,15 @@
 队列表归服务所有。启动时，订阅会检查它的表中有没有结构体列出的各列。
 列的类型由服务自己负责。某一行无法解码为结构体时，订阅按自己的解码失败策略处置这一行。
 
+在编译期检查 SQL 的团队，可以在 `#[derive]` 中加上 `checked` 和数据库名。
+这样 `#[derive]` 会把它生成的语句交给 sqlx 的编译期宏，`cargo sqlx prepare` 会连同服务自己的查询一起，
+按数据库检查这些语句。启动时的检查照常进行。
+
 ## 其余内容在哪里 { #where-the-rest-is }
 
 这个 crate 的参考文档在 docs.rs 上：[`ruststream-sqlx`](https://docs.rs/ruststream-sqlx)。
+
+这个 crate 每条消息的开销，以及它每秒处理的消息数，与做同样工作的原生 sqlx 循环的对比，见[基准测试页面](benchmarks.md)。
 
 处理器、路由器、编解码器和中间件都来自框架本身，它的入口页面从
 [RustStream 站点](https://powersemmi.github.io/ruststream/)开始。

@@ -32,6 +32,7 @@
     "A test build of a service on the outbox (the `testing` feature) leaves the outbox off unless the test process runs with `RUSTSTREAM_SQLX_OUTBOX=on`.",
     "In a service on both the inbox and the outbox, a record written while a `.transactional()` inbox handler runs commits on its own, and a message tracked into an inbox table carries its record id only where the table has a `headers` column that the service's `Publish` writes.",
     "Describe an outbox record by hand by implementing `OutboxTable` with `TABLE` built by `OutboxSpec::new(table, id, name, payload)`, and `HeaderRow` where its type names `outbox::spec::Headers`.",
-    "Teach `outbox!` first; register a record under a name known at build time with `Outbox::track::<Record, Name>()` and a `TrackedName`, and under a name read from configuration with `Outbox::register::<Record>(name)`."
+    "Teach `outbox!` first; register a record under a name known at build time with `Outbox::track::<Record, Name>()` and a `TrackedName`, and under a name read from configuration with `Outbox::register::<Record>(name)`.",
+    "Add `checked, db = postgres` (or `mysql`, `sqlite`) to `#[inbox(..)]` to put the derive's statements into `cargo sqlx prepare`: the service's sqlx needs its `macros` feature and `DATABASE_URL` or `.sqlx` data at build time, `flatten` is refused, and a headers layout checks on `#[derive(InboxHeaders)]` with `custom(fetch)` on the message."
   ]
 }

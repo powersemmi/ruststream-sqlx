@@ -7,12 +7,14 @@ This site holds the entry pages. The crate is documented item by item on docs.rs
 ## Site
 
 - [Home](https://powersemmi.github.io/ruststream-sqlx/latest/): the two components and where the rest of the documentation is
+- [Benchmarks](https://powersemmi.github.io/ruststream-sqlx/latest/benchmarks/): instructions, allocations and wall clock per message, and messages per second with several workers, each beside a raw sqlx loop doing the same claim and settlement
 
 ## Guides
 
 - [The inbox broker](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-inbox-broker): task queues in the service's Postgres, MySQL/MariaDB and SQLite tables, taken by row lock, by lease or by advisory lock; what each handler outcome does to a row, and when to take the inbox or the outbox
 - [An event of the service's own](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#an-event-of-the-services-own): `custom(..)` on the derive or `.own::<..>()` by hand, and the event's trait, which run the service's own SQL for one statement of a built-in dialect
 - [Macro or manual](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#macro-or-manual): a queue table described by hand, `InboxTable` with the typed builder `InboxSpec`, the one `type Table` line, the role traits, row mode's `Input`, the insert from `dialect::insert`, and where each rule is checked in each form
+- [Statements checked at compile time](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#statements-checked-at-compile-time): `#[inbox(checked, db = ..)]`, which hands the derive's statements to `sqlx::query!` so `cargo sqlx prepare` checks them; what it needs, what it covers, the headers layout with its own fetch, and what it refuses
 - [Roles](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#roles): what each `#[field(..)]` role turns on and what a table without it does, with each role's `InboxSpec` setter and trait by hand
 - [Time](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#time): "now" from the host's `SystemClock` by default, `clock = DatabaseClock` or a `Clock` of the service's own, the time types `chrono` and `time`, and the real clock in tests
 - [Row mode](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-mode): a table without a payload column, whose handler takes the row itself, `&Row` or `&[Row]`, with no codec; what settles a row the driver cannot read, and how a row-mode task is written
