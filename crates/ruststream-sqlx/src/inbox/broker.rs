@@ -111,11 +111,13 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// ```no_run
 /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
 /// # mod demo {
+/// use std::error::Error;
+///
 /// use ruststream::OutgoingMessage;
 /// use ruststream::prelude::*;
 /// use ruststream_sqlx::{Inbox, InboxQueue, Publish, SqlxBroker};
 /// use serde::Deserialize;
-/// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+/// use sqlx::postgres::{PgConnectOptions, PgPool};
 /// use sqlx::{PgConnection, Postgres};
 ///
 /// #[derive(Inbox, sqlx::FromRow)]
@@ -154,16 +156,23 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///     HandlerOutcome::ack()
 /// }
 ///
-/// #[ruststream::app]
-/// fn app() -> impl App {
-///     // A pool built without I/O; the service owns it and closes it.
-///     let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+/// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
 ///         SqlxBroker::new(pool).route::<SendEmail>("emails"),
 ///         |b| {
 ///             b.include(send);
 ///         },
 ///     )
+/// }
+///
+/// // sqlx builds a pool only inside a Tokio runtime, so the service builds it before the app.
+/// // The service owns the pool and closes it.
+/// #[tokio::main]
+/// async fn main() -> Result<(), Box<dyn Error>> {
+///     let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
+///     app(pool.clone()).run().await?;
+///     pool.close().await;
+///     Ok(())
 /// }
 /// # }
 /// # fn main() {}
@@ -200,12 +209,14 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[cfg(feature = "postgres")]
     /// # mod demo {
+    /// use std::error::Error;
+    ///
     /// use ruststream_sqlx::prelude::*;
     /// use serde::Deserialize;
-    /// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    /// use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
     ///
     /// #[derive(Inbox, sqlx::FromRow)]
     /// #[inbox(table = "email_jobs")]
@@ -229,17 +240,32 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     HandlerOutcome::ack()
     /// }
     ///
-    /// #[ruststream::app]
-    /// fn app() -> impl App {
-    ///     // Nothing connects here: the pool connects lazily, and the broker once the service
-    ///     // starts. The options read the `PG*` environment variables.
-    ///     let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+    /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
     ///         b.include(send);
     ///     })
     /// }
+    ///
+    /// #[tokio::main]
+    /// pub async fn main() -> Result<(), Box<dyn Error>> {
+    ///     // Nothing connects here: the pool connects lazily, and the broker once the service
+    ///     // starts. sqlx builds even a lazy pool only inside a Tokio runtime, so it is built
+    ///     // here rather than in the app's builder. The options read the `PG*` environment
+    ///     // variables.
+    ///     let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
+    ///     let app = app(pool);
+    /// #   // The example runs without a database: it stops before the app connects.
+    /// #   drop(app);
+    /// #   return Ok(());
+    ///     app.run().await?;
+    ///     Ok(())
+    /// }
     /// # }
-    /// # fn main() {}
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// #     #[cfg(feature = "postgres")]
+    /// #     demo::main()?;
+    /// #     Ok(())
+    /// # }
     /// ```
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
