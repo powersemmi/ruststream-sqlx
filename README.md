@@ -25,15 +25,27 @@ framework; this crate connects them to the database.
 
 ## Components
 
-- **A transactional outbox over any RustStream broker:** a publish records the message in a table
-  the service owns, and the message carries the record's id. The subscription takes the task into
-  work by that id and marks it processed on acknowledgement. Unprocessed records are published
-  again at startup.
-- **Task queues in database tables:** `SqlxBroker` serves them from the tables and structs the
-  service owns, on Postgres, MySQL 8.0.1 and later, MariaDB 10.6 and later, and SQLite. A
-  subscription takes rows by row lock, in a transaction open while the handler runs, or by lease,
-  with the claim committed at once and the lease extended while the handler works; SQLite tables
-  take the lease form.
+- **The transactional outbox, over any RustStream broker:** `#[derive(Outbox)]` describes the
+  service's outbox table, and `outbox!` registers it under the names it tracks. A publish
+  middleware records each tracked message before it is sent, with the record's id in a header. A
+  subscription middleware takes the record into work by that id and marks it processed when the
+  handler acknowledges. Unprocessed records are published again at startup, so each message is
+  delivered at least once.
+- **The inbox, task queues in database tables:** `SqlxBroker` serves them from the tables and
+  structs the service owns, on Postgres, MySQL 8.0.1 and later, MariaDB 10.6 and later, and
+  SQLite. A subscription takes rows by row lock, in a transaction open while the handler runs; by
+  lease, with the claim committed at once and the lease extended while the handler works; or by an
+  advisory lock on the row's key. SQLite tables take the lease or the advisory lock form.
+
+Each table is described by a derive on the service's struct, or by hand through a trait and a
+typed builder that the compiler checks as strictly.
+
+## When to use which
+
+The inbox fits work that belongs to the service's data: a task written in the same transaction as
+the data it serves, a queue in the database the service already runs. The outbox fits messages a
+service publishes on another broker and must not lose. A service may use both: the outbox's
+middlewares wrap inbox handlers as they wrap any other.
 
 ## Crates
 
@@ -44,6 +56,7 @@ framework; this crate connects them to the database.
 ## Documentation
 
 - This crate: <https://docs.rs/ruststream-sqlx>
+- A service on each component: [`crates/ruststream-sqlx/examples`](./crates/ruststream-sqlx/examples)
 - The framework: <https://powersemmi.github.io/ruststream/latest>
 
 ## Minimum supported Rust version

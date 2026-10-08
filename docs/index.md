@@ -3,76 +3,114 @@
 `ruststream-sqlx` brings SQL databases into a [RustStream](https://powersemmi.github.io/ruststream/)
 service through [`sqlx`](https://docs.rs/sqlx). It has two components:
 
-- A transactional outbox over any RustStream broker. A publish records the message in a table
-  the service owns, and the message carries the record's id. The subscription takes the task into
-  work by that id and marks it processed on acknowledgement. Unprocessed records are published
-  again at startup.
-- Task queues in Postgres, MySQL/MariaDB and SQLite tables that the service owns.
+- the inbox: task queues in the service's own Postgres, MySQL/MariaDB and SQLite tables, served
+  as a RustStream broker;
+- the transactional outbox: what a service publishes on any RustStream broker stays recorded in a
+  table of its own until a consumer has processed it.
 
-A subscription takes its rows in one of three forms. In the row lock form it locks a row in a
-transaction that stays open until the handler settles the row. In the lease form it writes a lease
-into the row and commits at once, so a long handler holds no transaction, and the subscription
-extends the lease while the handler works. In the advisory lock form it locks the row's key in the
-database session of the connection that serves the delivery. No transaction stays open, and rows
-that share a key go into work one at a time. SQLite tables take the lease or the advisory lock
-form.
+```toml
+ruststream = { version = "0.7", features = ["macros"] }
+ruststream-sqlx = { version = "0.7", features = ["inbox", "outbox", "postgres"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "derive", "chrono"] }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+```
 
-A handler takes a row's message, which a codec decodes from the table's payload column. A table
-without a payload column is in row mode: the handler takes the row itself, the service's own
-struct as sqlx read it, with no codec in between. A batch handler takes the rows of one claim as
-one slice.
+The `inbox` and `outbox` features turn the components on, each independently of the other. A
+driver feature picks the database: `postgres`, `mysql` (MySQL and MariaDB), `sqlite`, or `any` for
+an `AnyPool`.
 
-A queue table may be described by a headers struct of its own: the columns that run the queue and
-the service's headers. The handler then takes a message struct that holds the headers struct
-beside data of its own, and the service's own query may join that data from other tables. The
-delivery's headers come from the fields of the headers struct, built only when something reads
-them.
+## Task queues in the service's tables
 
-A subscription that found its queue empty waits its poll interval. A publish through the broker
-wakes the subscriptions of its table in the same process at once. On Postgres, `listen_notify()`
-also wakes them on notifications from other processes. The broker then holds one connection of the
-pool, and each publish runs one more statement. Postgres takes one lock, global to the server,
-when a transaction that notifies commits, so such transactions commit one at a time, which limits
-many concurrent writers.
+```rust
+--8<-- "crates/ruststream-sqlx/examples/inbox.rs:service"
+```
 
-A handler mounted with `.transactional()` writes through its delivery's transaction, in every
-form. Acknowledgement commits the handler's writes and finishes the row in one transaction. Every
-other outcome rolls the writes back. While a delivery is in work, its transaction holds a
-connection of the pool.
+`#[derive(Inbox)]` describes the queue table: its name, and the role each column plays.
+`SqlxBroker` serves the queues of the service's pool. A subscription claims rows, and the
+handler's outcome settles them: an acknowledgement deletes the row, a retry returns it to the
+queue. A publish writes a row through the service's own statement.
 
-A subscription caps the deliveries of a message with `max_attempts(n)` and names, with
-`dead_letter(..)`, the group or the table a row moves to once its attempts are spent. The two are
-declared together. With `max_attempts(1)`, every failure moves the row at once.
+A subscription claims its rows in one of three forms: by row lock, in a transaction open while the
+handler runs; by lease, with the claim committed at once; or by an advisory lock on the row's key.
+A handler mounted with `.transactional()` writes through its delivery's transaction, and the
+acknowledgement commits its writes together with the row. Each role a column plays turns on one
+behaviour: groups, the order rows are taken in, delayed retries, an attempt cap with a dead letter,
+a mark that keeps a processed row.
 
-The columns that run a queue each play a role, and each role turns on one behaviour: the group a
-subscription reads, the order rows are taken in, a key that keeps related rows in order, the delay
-before a retry, the attempt count, and a mark that keeps a processed row instead of deleting it. A
-table reads "now" from the host's clock by default. It can read the database's clock instead, so
-that every host reads the same time.
+The manual API is the other path to the same table, beside the derive: the struct implements a
+trait, and a typed builder holds every setting. The compiler checks it as strictly as the derive,
+and both give the same statements at the same cost.
 
-The service describes a queue table with a derive on its struct, or by hand. By hand, the struct
-implements a trait, and a typed builder holds every setting of the table. The compiler checks that
-description as strictly as the derive's. Both forms give the same statements and cost the same per
-message.
+A team that checks its SQL at compile time adds `checked` to the derive, and `cargo sqlx prepare`
+then checks the derive's statements together with the service's own queries. A test runs the
+service's own app in `TestApp` against a real database, since the service's SQL is part of what it
+checks; SQLite needs no server for it.
 
-Postgres, MySQL/MariaDB and SQLite come with dialects built into the crate. A statement the service
-writes its own way is an event: the table names it, in `custom(..)` on the derive or in its builder
-by hand, and the struct implements its trait. A database without a built-in dialect takes a dialect
-of the service's own. Such a dialect implements a trait for each form its tables take, and one for
-subscriptions by name; a table in a form its dialect lacks does not compile.
+## The transactional outbox
 
-The service owns its queue tables. At startup a subscription checks that its table has the
-columns its struct names. The column types are the service's to get right, and a row that does
-not decode is settled by the subscription's decode-failure policy.
+```rust
+--8<-- "crates/ruststream-sqlx/examples/outbox.rs:service"
+```
 
-A team that checks its SQL at compile time adds `checked` and the database to the derive. The
-derive then hands the statements it generates to sqlx's compile-time macros, so `cargo sqlx
-prepare` checks them against the database with the service's own queries. The startup check runs
-as well.
+`#[derive(Outbox)]` describes the service's outbox table, and `outbox!` registers it under the
+names it tracks. The publish middleware records each tracked message before it is sent, with the
+record's id in a header. The subscription middleware takes the record into work by that id and
+marks it processed when the handler acknowledges. At startup the republish sends every unprocessed
+record again.
+
+A message is delivered at least once. Two instances of a service that start together may both
+send the same record again, so a consumer that must not process a message twice checks that
+itself.
+
+Inside `#[ruststream::app]` the app is built before the Tokio runtime starts, and sqlx builds a
+pool only inside the runtime. The registry therefore starts without a pool, and `on_startup`
+builds one and hands it over with `set_pool`. A test build leaves the outbox off unless the
+environment sets `RUSTSTREAM_SQLX_OUTBOX=on`.
+
+The outbox's middlewares wrap inbox handlers as they wrap any other. A record is written on a
+connection of its own, so it commits even when the delivery's transaction rolls back. A message
+tracked into an inbox table keeps its record id where the table has a `headers` column that the
+service's publish statement writes. The rest is in
+[the transactional outbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-transactional-outbox).
+
+## Which one to use
+
+The inbox fits work that belongs to the service's data: a task written in the same transaction as
+the data it serves, a queue in the database the service already runs. The outbox fits messages a
+service publishes on another broker and must not lose. A service may use both.
 
 ## Where the rest is
 
-The crate's reference is on docs.rs: [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx).
+The reference on docs.rs opens with the crate's own textbook, one section per topic:
+
+- [The inbox broker](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-inbox-broker):
+  a queue table, its subscriptions, and what a handler's outcome does to a row.
+- [Macro or manual](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#macro-or-manual):
+  a queue table described by hand, through `InboxTable` and its typed builder.
+- [Roles](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#roles) and
+  [time](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#time): what each column
+  turns on, and where "now" comes from.
+- [Row locks, leases or advisory locks](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-locks-leases-or-advisory-locks)
+  and
+  [transactional mode](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#transactional-mode):
+  how a subscription claims rows, and a handler that writes through its delivery's transaction.
+- [Row mode](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#row-mode),
+  [the headers layout](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-headers-layout)
+  and [batches](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#batches): what a
+  handler takes from a row.
+- [Databases](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#databases) and
+  [a dialect of the service's own](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#a-dialect-of-the-services-own):
+  what each database runs, and a dialect for another database.
+- [Statements checked at compile time](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#statements-checked-at-compile-time):
+  the `checked` mode.
+- [Waking a subscription](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#waking-a-subscription):
+  the poll interval, and `LISTEN/NOTIFY` on Postgres.
+- [Testing a service on the inbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#testing-a-service-on-the-inbox):
+  the service's own app in `TestApp`.
+- [The transactional outbox](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#the-transactional-outbox):
+  the guarantee, the record and its registry, the middlewares, the republish, the pool, testing
+  and costs.
 
 What the crate costs per message and how many messages it moves per second, beside a raw sqlx loop
 doing the same work, is on the [benchmarks page](benchmarks.md).
