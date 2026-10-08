@@ -8,73 +8,64 @@
     clippy::must_use_candidate,
     clippy::needless_pass_by_value
 )]
-//! The outbox as a plugin, a full tracked round trip over `MemoryBroker` on Postgres: a relay
-//! answers each command with a reply, and a sink consumes the reply. Three variants of the same
-//! app: with no outbox, with the outbox written by hand in its handlers, and with this crate's
-//! outbox, whose publish layer records the reply and whose subscription layer takes the record
-//! into work and marks it once the sink acknowledges.
+//! The outbox as a plugin, a tracked delivery over `MemoryBroker` on Postgres: the table holds an
+//! unprocessed record per message, and each message carries its record's id in a header. With no
+//! outbox the sink handles the message and the header is read by nobody. By hand the sink takes
+//! the record into work and marks it. This crate's subscription layer does the same around the
+//! same sink.
 
 mod common;
 
-use std::num::NonZeroUsize;
-
 use common::MESSAGES;
 use common::code::{Pending, feeding, start_and_drain};
-use common::outbox::{Command, TRACKED, memory};
+use common::outbox::{Reply, memory, record_header};
 use common::stand::Table;
 use futures::FutureExt;
 use gungraun::{library_benchmark, library_benchmark_group, main};
 use ruststream_sqlx::prelude::*;
 
-/// Connections every variant's pool may open: the record's insert, the fetch and the mark.
+/// Connections every variant's pool may open: the fetch, the mark and room to spare.
 const POOL: u32 = 4;
 
-macro_rules! round_trip {
+/// Publishes the message of the record `$index + 1`, the id the fill gave it.
+macro_rules! delivering {
     ($messages:expr, |$latch:ident, $pool:ident| $build:expr) => {
         feeding!(
             $messages,
             table = Table::Outbox,
-            fill = false,
+            fill = true,
             connections = POOL,
             |$latch, $pool| {
                 let (app, egress) = $build;
                 (app, egress, ())
             },
             wrap = |live, ()| live,
-            |publisher, _index| publisher
-                .message(&Command { id: 1 })
+            |publisher, index| publisher
+                .message(&Reply { id: 1 })
+                .with_headers(record_header(i64::try_from(index).expect("an id fits") + 1))
                 .publish()
                 .map(|published| {
-                    published.expect("the command is published");
+                    published.expect("the message is published");
                 }),
         )
     };
 }
 
-// The app with no outbox opens no connection; the pool is opened all the same, so the start
-// region of every variant does the same work.
 fn none_run(messages: usize) -> Pending {
-    round_trip!(messages, |latch, pool| {
+    delivering!(messages, |latch, pool| {
         drop(pool);
-        memory::round_trip(latch, NonZeroUsize::MIN)
+        memory::delivery(latch)
     })
 }
 
 fn by_hand_run(messages: usize) -> Pending {
-    round_trip!(messages, |latch, pool| memory::round_trip_by_hand(
-        pool,
-        latch,
-        NonZeroUsize::MIN
+    delivering!(messages, |latch, pool| memory::delivery_by_hand(
+        pool, latch
     ))
 }
 
 fn outbox_run(messages: usize) -> Pending {
-    round_trip!(messages, |latch, pool| memory::round_trip_outbox(
-        pool,
-        latch,
-        TRACKED,
-        NonZeroUsize::MIN
-    ))
+    delivering!(messages, |latch, pool| memory::delivery_outbox(pool, latch))
 }
 
 // A placeholder floor, replaced by the measured one.
@@ -104,5 +95,5 @@ fn outbox(run: Pending) {
     start_and_drain(run);
 }
 
-library_benchmark_group!(name = outbox_group; benchmarks = none, by_hand, outbox);
-main!(library_benchmark_groups = outbox_group);
+library_benchmark_group!(name = outbox_delivery_group; benchmarks = none, by_hand, outbox);
+main!(library_benchmark_groups = outbox_delivery_group);

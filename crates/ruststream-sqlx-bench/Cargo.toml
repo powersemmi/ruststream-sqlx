@@ -12,10 +12,18 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+default = []
+# A benchmark measures what ships, and this crate's `testing` feature adds the in-process mode to
+# the broker and switches the outbox off. Nothing here enables it; the feature exists so that
+# asking for it is the compile error in `benches/common` rather than a number nobody can trust.
+testing = ["ruststream-sqlx/testing"]
+
 # The benchmark lives in its own package so that the measured binary links the crate the way a
 # service does. `ruststream-sqlx`'s own dev-dependencies pull `ruststream/testing`, whose harness
 # changes the dispatch path, and a benchmark inside that package would be built against it.
-# `just bench` and `just bench-code` build this package alone, so nothing turns it on.
+# `just bench` and `just bench-code` build this package alone, so nothing turns it on, and the
+# workspace's all-features checks leave it out.
 [dev-dependencies]
 # The code-cost benchmarks: callgrind and DHAT through gungraun, at the release the family pins.
 # `just bench-code` installs the runner of the same release.
@@ -29,6 +37,9 @@ ruststream-sqlx = { path = "../ruststream-sqlx", features = [
     "chrono",
 ] }
 ruststream = { workspace = true, features = ["macros", "json", "memory"] }
+# The outbox's wall clock runs over Redis Pub/Sub, as the crate's outbox example does: a networked
+# broker, so the outbox's statements are timed beside a transport a service really uses.
+ruststream-fred = "0.7"
 sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "derive"] }
 chrono.workspace = true
 futures.workspace = true
@@ -51,7 +62,15 @@ harness = false
 # runs the same statements, against the stand's Postgres. `just bench-code` runs them under
 # valgrind; `benches/common` is the shared setup.
 [[bench]]
-name = "row_lock"
+name = "consume"
+harness = false
+
+[[bench]]
+name = "reply"
+harness = false
+
+[[bench]]
+name = "batch"
 harness = false
 
 [[bench]]
@@ -67,10 +86,6 @@ name = "by_name"
 harness = false
 
 [[bench]]
-name = "batch"
-harness = false
-
-[[bench]]
 name = "row_mode"
 harness = false
 
@@ -80,4 +95,16 @@ harness = false
 
 [[bench]]
 name = "outbox"
+harness = false
+
+[[bench]]
+name = "outbox_untracked"
+harness = false
+
+[[bench]]
+name = "outbox_publish"
+harness = false
+
+[[bench]]
+name = "outbox_delivery"
 harness = false

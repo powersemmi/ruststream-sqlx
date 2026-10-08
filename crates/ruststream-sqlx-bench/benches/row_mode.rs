@@ -18,8 +18,8 @@ use std::hint::black_box;
 
 use common::MESSAGES;
 use common::code::{Pending, start_and_drain};
+use common::framework;
 use common::raw::{Statements, row_lock};
-use common::services;
 use common::stand::Table;
 use common::tables::OrderRow;
 use gungraun::{library_benchmark, library_benchmark_group, main};
@@ -31,7 +31,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::RowMode, messages, POOL, |pool, latch| {
-        services::postgres_row_mode(pool, latch)
+        framework::postgres_row_mode(pool, latch)
     })
 }
 

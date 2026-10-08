@@ -1,8 +1,8 @@
-//! The raw half of every scenario: a hand-written sqlx loop that runs the statements the broker
+//! The raw loop of every inbox scenario: a hand-written sqlx loop that runs the statements the broker
 //! runs for the same table, in the order it runs them, on a pool built the same way.
 //!
 //! The loops take their statements from [`Statements`], which renders them once, at setup, with
-//! the dialect the broker renders them with: a change in the crate's SQL changes both halves, and
+//! the dialect the broker renders them with: a change in the crate's SQL changes every loop, and
 //! a change in what a statement binds fails the setup instead of measuring something else. Each
 //! loop counts a delivery down at the point the service's handler does, after the decode and
 //! before the settlement, and runs until a claim comes back empty.
@@ -20,10 +20,12 @@ use sqlx::mysql::MySqlQueryResult;
 use sqlx::postgres::PgQueryResult;
 use sqlx::query::Query;
 use sqlx::sqlite::SqliteQueryResult;
-use sqlx::{Database, Decode, Encode, Executor, FromRow, IntoArguments, PgPool, Pool, Row, Type};
+use sqlx::{
+    Database, Decode, Encode, Executor, FromRow, IntoArguments, PgPool, Pool, Postgres, Row, Type,
+};
 
-use super::tables::NAMED_INSERT;
-use super::{Latch, Order, OrderPlaced};
+use super::tables::{NAMED_INSERT, REPLY_INSERT, RowLockJob};
+use super::{Confirmation, Latch, Order, OrderPlaced};
 
 /// A statement rendered at setup, kept for the life of the process: sqlx takes a `'static` text
 /// without copying it, and a raw loop that copied its text per message would charge itself a
@@ -268,6 +270,58 @@ pub async fn row_lock<DB, Job>(
                 .await
                 .expect("the delete runs");
         }
+        tx.commit().await.expect("the settlement commits");
+    }
+}
+
+/// The reply scenario by hand on Postgres: the row lock form one row at a time, and between the
+/// count and the delete, the answer encoded into a buffer the loop keeps and inserted into the
+/// replies table on a connection of its own, as the default publisher inserts it.
+pub async fn reply(pool: &PgPool, statements: &Statements, latch: &Latch) {
+    let values = Values::claim(1);
+    let mut buffer = Vec::new();
+    loop {
+        let mut tx = pool.begin().await.expect("the transaction begins");
+        let job = {
+            let mut claimed = bind::<Postgres>(statements.claim, values).fetch(&mut *tx);
+            let mut found = None;
+            while let Some(row) = claimed.try_next().await.expect("the claim runs") {
+                found = Some(RowLockJob::from_row(&row).expect("the row decodes"));
+            }
+            found
+        };
+        let Some(job) = job else {
+            tx.commit().await.expect("the empty claim commits");
+            return;
+        };
+        let order: Order = serde_json::from_slice(&job.payload).expect("the body decodes");
+        latch.arrived();
+        buffer.clear();
+        serde_json::to_writer(
+            &mut buffer,
+            &Confirmation {
+                id: black_box(order.id),
+            },
+        )
+        .expect("the reply encodes");
+        {
+            let mut conn = pool.acquire().await.expect("the pool lends a connection");
+            sqlx::query(REPLY_INSERT)
+                .bind(&buffer[..])
+                .execute(&mut *conn)
+                .await
+                .expect("the reply is inserted");
+        }
+        bind::<Postgres>(
+            statements.ack,
+            Values {
+                id: *job.id(),
+                ..values
+            },
+        )
+        .execute(&mut *tx)
+        .await
+        .expect("the delete runs");
         tx.commit().await.expect("the settlement commits");
     }
 }

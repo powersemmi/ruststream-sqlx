@@ -17,8 +17,8 @@ mod common;
 
 use common::MESSAGES;
 use common::code::{Pending, start_and_drain};
+use common::framework;
 use common::raw::{Statements, advisory, read_payload};
-use common::services;
 use common::stand::Table;
 use common::tables::AdvisoryJob;
 use gungraun::{library_benchmark, library_benchmark_group, main};
@@ -30,7 +30,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::Advisory, messages, POOL, |pool, latch| {
-        services::postgres_advisory(pool, latch)
+        framework::postgres_advisory(pool, latch)
     })
 }
 

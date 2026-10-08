@@ -16,8 +16,8 @@ mod common;
 
 use common::MESSAGES;
 use common::code::{Pending, start_and_drain};
+use common::framework;
 use common::raw::{Statements, read_payload, row_lock};
-use common::services;
 use common::stand::Table;
 use common::tables::NamedJob;
 use gungraun::{library_benchmark, library_benchmark_group, main};
@@ -29,7 +29,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::Named, messages, POOL, |pool, latch| {
-        services::postgres_by_name(pool, latch)
+        framework::postgres_by_name(pool, latch)
     })
 }
 

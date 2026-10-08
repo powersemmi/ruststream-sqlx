@@ -141,6 +141,16 @@ impl Pending {
         })
     }
 
+    /// Recreates `table` empty as well, for a scenario that writes into a table of its own beside
+    /// the one it drains.
+    #[must_use]
+    pub fn also(self, table: Table) -> Self {
+        self.producer
+            .runtime
+            .block_on(postgres_table(&self.producer.pool, table));
+        self
+    }
+
     /// A raw loop over `table` on a pool of up to `connections`: the start opens the pool, the
     /// drain runs `drain` with the run's latch until the table is empty.
     pub fn raw(
@@ -217,3 +227,61 @@ pub fn start_and_drain(pending: Pending) {
     }
     assert_eq!(latch.remaining(), 0, "the drain handled every delivery");
 }
+
+/// A scenario fed from its drain region: `$build` makes the app, the token it is fed through and
+/// whatever `$wrap` needs from the run's latch and a pool of up to `$connections`, the start
+/// region starts it and pairs the publisher, which `$wrap` turns into what `$step` publishes
+/// through, and the drain region runs `$step`
+/// once per expected delivery, each once the latch counted the one before. One message in flight
+/// at a time: the handlers never contend for a connection, so a run allocates the same whatever
+/// the scheduling. `$fill` names the table filled between the regions, if any.
+// Each benchmark target compiles this module on its own, and only the fed scenarios use it.
+#[allow(unused_macros)]
+macro_rules! feeding {
+    (
+        $messages:expr, table = $table:expr, fill = $fill:expr, connections = $connections:expr,
+        |$latch:ident, $pool:ident| $build:expr,
+        wrap = |$live:ident, $extra:pat_param| $wrap:expr,
+        |$publisher:ident, $index:ident| $step:expr $(,)?
+    ) => {
+        $crate::common::code::Pending::new(
+            $table,
+            $fill,
+            $crate::common::Latch::stepping($messages),
+            |$latch| {
+                let latch = $latch.clone();
+                let pool = $crate::common::stand::postgres_pool($connections);
+                let $pool = pool.clone();
+                let (app, egress, $extra) = $build;
+                Box::new(move |runtime: &tokio::runtime::Runtime| {
+                    let (running, $publisher) = runtime.block_on(async {
+                        // Every connection the handlers can hold at once is opened here, so the
+                        // drain never opens one.
+                        $crate::common::code::warm(&pool, $connections).await;
+                        let running = ruststream::runtime::App::start(app)
+                            .await
+                            .expect("the service starts");
+                        let $live = running
+                            .publisher(egress)
+                            .await
+                            .expect("the publisher pairs");
+                        (running, $wrap)
+                    });
+                    let drive = move |runtime: &tokio::runtime::Runtime| {
+                        runtime.block_on(async {
+                            let total = latch.total();
+                            for $index in 0..total {
+                                $step.await;
+                                latch.reached(total - 1 - $index).await;
+                            }
+                        });
+                    };
+                    $crate::common::code::Started::Driving(Box::new(drive), Some(running))
+                })
+            },
+        )
+    };
+}
+
+#[allow(unused_imports)]
+pub(crate) use feeding;

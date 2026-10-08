@@ -124,9 +124,15 @@ jobs:
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
         run: cargo fmt --all -- --check
 
+      # The benchmark package is left out of the all-features lints on purpose: it is built with
+      # the feature set a service ships, and the crate's `testing` feature is a compile error in
+      # it. Its own lint follows, so it stays linted and stays compiled; `just bench` runs it.
       - name: cargo clippy
         if: "!cancelled() && env.RUST_CHANGED == 'true'"
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --workspace --exclude ruststream-sqlx-bench --all-targets \
+            --all-features -- -D warnings
+          cargo clippy -p ruststream-sqlx-bench --all-targets -- -D warnings
 
       # The three published crates package together: the macros and the main crate pin the dialect
       # and the macros at the workspace version, which crates.io does not hold before a release,
@@ -166,7 +172,9 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: "1.95"
         run: |
-          cargo check --locked --workspace --all-targets --all-features
+          cargo check --locked --workspace --exclude ruststream-sqlx-bench --all-targets \
+            --all-features
+          cargo check --locked -p ruststream-sqlx-bench --all-targets
           cargo test --locked --workspace --all-features --no-fail-fast
 
   rust:
@@ -205,8 +213,14 @@ jobs:
       - name: cargo check (no default features)
         run: cargo check --workspace --no-default-features
 
+      # The benchmark package is left out of every all-features check on purpose: it is built
+      # with the feature set a service ships, and the crate's `testing` feature is a compile error
+      # in it. Its own check follows, so it stays compiled.
       - name: cargo check (all features)
-        run: cargo check --workspace --all-targets --all-features
+        run: |
+          cargo check --workspace --exclude ruststream-sqlx-bench --all-targets \
+            --all-features
+          cargo check -p ruststream-sqlx-bench --all-targets
 
       # --no-fail-fast: a failing target must not hide failures in the targets behind it;
       # the log then lists every red test, not just the first binary's.
@@ -253,7 +267,10 @@ jobs:
         continue-on-error: true
         env:
           RUSTUP_TOOLCHAIN: beta
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: |
+          cargo clippy --workspace --exclude ruststream-sqlx-bench --all-targets \
+            --all-features -- -D warnings
+          cargo clippy -p ruststream-sqlx-bench --all-targets -- -D warnings
 
       - name: cargo check (no default features, beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
@@ -265,7 +282,10 @@ jobs:
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: beta
-        run: cargo check --workspace --all-targets --all-features
+        run: |
+          cargo check --workspace --exclude ruststream-sqlx-bench --all-targets \
+            --all-features
+          cargo check -p ruststream-sqlx-bench --all-targets
 
       - name: cargo test (beta)
         if: "!cancelled() && steps.stable.outcome == 'success'"
@@ -283,7 +303,10 @@ jobs:
         if: "!cancelled() && steps.stable.outcome == 'success'"
         env:
           RUSTUP_TOOLCHAIN: "1.95"
-        run: cargo check --workspace --all-targets --all-features
+        run: |
+          cargo check --workspace --exclude ruststream-sqlx-bench --all-targets \
+            --all-features
+          cargo check -p ruststream-sqlx-bench --all-targets
 
       - name: cargo test (1.95)
         if: "!cancelled() && steps.stable.outcome == 'success'"

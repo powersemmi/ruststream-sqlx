@@ -8,7 +8,7 @@
     clippy::must_use_candidate,
     clippy::needless_pass_by_value
 )]
-//! Batches of 16 in the row lock form on Postgres: one claim locks up to 16 rows in a
+//! Batches of 64 in the row lock form on Postgres: one claim locks up to 64 rows in a
 //! transaction, the handler is handed a slice it decodes, and every row is deleted in the same
 //! transaction before it commits. Beside it, the raw sqlx loop that runs the same statements.
 
@@ -17,8 +17,8 @@ mod common;
 use std::num::NonZeroUsize;
 
 use common::code::{Pending, start_and_drain};
+use common::framework::{self, Mount};
 use common::raw::{Statements, read_payload, row_lock};
-use common::services::{self, Mount};
 use common::stand::Table;
 use common::tables::RowLockJob;
 use common::{BATCH, MESSAGES};
@@ -35,7 +35,7 @@ fn service_run(messages: usize) -> Pending {
             workers: NonZeroUsize::MIN,
             batch: Some(BATCH),
         };
-        services::postgres_row_lock(pool, latch, how)
+        framework::postgres_row_lock(pool, latch, how)
     })
 }
 

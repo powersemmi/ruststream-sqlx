@@ -16,8 +16,8 @@
 mod common;
 
 use common::code::{Pending, Started, start_and_drain, warm};
+use common::framework;
 use common::raw::publish;
-use common::services;
 use common::stand::{Table, postgres_pool};
 use common::{Latch, MESSAGES, OrderPlaced};
 use gungraun::{library_benchmark, library_benchmark_group, main};
@@ -66,11 +66,11 @@ macro_rules! publishing {
 }
 
 fn repository_run(messages: usize) -> Pending {
-    publishing!(messages, |pool| services::postgres_repository(pool))
+    publishing!(messages, |pool| framework::postgres_repository(pool))
 }
 
 fn routed_run(messages: usize) -> Pending {
-    publishing!(messages, |pool| services::postgres_routed(pool))
+    publishing!(messages, |pool| framework::postgres_routed(pool))
 }
 
 fn raw_run(messages: usize) -> Pending {
