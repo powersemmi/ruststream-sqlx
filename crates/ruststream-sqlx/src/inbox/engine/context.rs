@@ -1,6 +1,8 @@
 //! What a statement runs in: a claim or a settlement in progress, the lease a claim takes, where
 //! "now" comes from, and the bounds the derive phrases its time columns with.
 
+#[cfg(feature = "testing")]
+use std::any::TypeId;
 use std::time::SystemTime;
 
 use sqlx::{Database, Encode, Type};
@@ -8,6 +10,8 @@ use sqlx::{Database, Encode, Type};
 use crate::inbox::queue::Queue;
 #[cfg(feature = "testing")]
 use crate::inbox::testing::TestClock;
+#[cfg(feature = "testing")]
+use crate::inbox::time::SystemClock;
 use crate::inbox::time::{QueueTime, TimeColumn, TimeSource};
 
 /// A claim in progress.
@@ -60,7 +64,7 @@ pub struct Settling {
 /// Where "now" comes from for one statement: the row's [`TimeSource`].
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Now {
-    /// The clock of an in-process connection, which stands in for a host clock.
+    /// The clock of an in-process connection, which stands in for [`SystemClock`].
     #[cfg(feature = "testing")]
     test: Option<TestClock>,
     _private: (),
@@ -72,16 +76,18 @@ impl Now {
     // for both builds.
     #[cfg_attr(not(feature = "testing"), allow(clippy::unused_self))]
     pub(super) fn instant<Source: TimeSource>(self) -> Option<SystemTime> {
+        // A clock of the service's own is its logic, read in process as it is live; only the
+        // system clock follows the test's.
         #[cfg(feature = "testing")]
         if let Some(clock) = self.test
-            && !Source::DATABASE
+            && TypeId::of::<Source>() == TypeId::of::<SystemClock>()
         {
             return Some(clock.now());
         }
         Source::now()
     }
 
-    /// "Now" of an in-process connection: `clock` instead of a host clock, where it is set.
+    /// "Now" of an in-process connection: `clock` instead of [`SystemClock`], where it is set.
     #[cfg(feature = "testing")]
     pub(crate) const fn test(clock: Option<TestClock>) -> Self {
         Self {
