@@ -106,6 +106,21 @@ impl<'a> QueueAt<'a> {
         }
     }
 
+    /// Where a spent row of `queue` moves to `destination`: that group of its table, or, from a
+    /// table without groups, that table.
+    pub(crate) fn dead_letter(queue: &'a Queue, destination: &'a str) -> Self {
+        match queue.spec.column(Role::Group) {
+            Some(_) => Self {
+                table: queue.table,
+                group: destination,
+            },
+            None => Self {
+                table: destination,
+                group: "",
+            },
+        }
+    }
+
     /// The queue a subscription registers for: `group` is `None` in a table without groups.
     pub(crate) fn registered(table: &'a str, group: Option<&'a str>) -> Self {
         Self {

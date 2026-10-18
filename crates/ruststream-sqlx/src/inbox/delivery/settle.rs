@@ -135,6 +135,17 @@ where
             Step::RetryAfter(delay) => harness.holds_back(QueueAt::read(queue), delay),
             _ => None,
         };
+        // A spent row is counted where it moves before its statement, so the subscription that
+        // reads there is waited for. A move of the service's own writes where its statement says,
+        // which the harness cannot read; a claim there counts the row when it takes it.
+        let moved = match step {
+            Step::DeadLetter(destination) if !step.overridden(Row::SHAPE) => {
+                let at = QueueAt::dead_letter(queue, destination);
+                harness.expect(at);
+                Some(at)
+            }
+            _ => None,
+        };
         let settled = off_clock(self.run(step, harness.now()))
             .await
             .unwrap_or_else(|| Err(AckError::Broker(Box::new(SqlxBrokerError::Closed))));
@@ -155,6 +166,12 @@ where
                 Some(ticket) => harness.withdraw(QueueAt::read(queue), ticket),
                 None => {}
             },
+            // A move that failed left the row where it was.
+            Step::DeadLetter(_) if settled.is_err() => {
+                if let Some(at) = moved {
+                    harness.refused(at);
+                }
+            }
             _ => {}
         }
         harness.released();
