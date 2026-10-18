@@ -11,3 +11,6 @@ service through [sqlx](https://docs.rs/sqlx). It has two parts. The inbox is a t
 service's own table, served as a RustStream broker. The outbox records what a service publishes on
 any RustStream broker until a consumer has processed it. Both run on Postgres, MySQL and MariaDB,
 and SQLite.
+The guides take a service from a first queue on SQLite through retries, ordering, transactions
+and several instances to production on Postgres, and track what it publishes on other brokers.
+Start with [Getting started](getting-started.md).
