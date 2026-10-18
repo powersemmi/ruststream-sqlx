@@ -505,3 +505,13 @@ test = true
 
 
 # Outbox.
+[[example]]
+name = "sqlx_outbox"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox"
+path = "examples/manual/sqlx_outbox.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
