@@ -125,8 +125,235 @@ dhat.workspace = true
 # The two services the documentation site shows, one per component.
 [[example]]
 name = "inbox"
-required-features = ["inbox", "postgres"]
+required-features = ["inbox", "postgres", "testing"]
+test = true
 
 [[example]]
 name = "outbox"
 required-features = ["outbox", "postgres"]
+
+# --- examples: group a ---
+[[example]]
+name = "sqlx_broker"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker"
+path = "examples/manual/sqlx_broker.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_connections"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_connections"
+path = "examples/manual/sqlx_broker_connections.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_startup"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_startup"
+path = "examples/manual/sqlx_broker_startup.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_shutdown"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_shutdown"
+path = "examples/manual/sqlx_broker_shutdown.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_prelude"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_prelude"
+path = "examples/manual/sqlx_broker_prelude.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_errors"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_errors"
+path = "examples/manual/sqlx_broker_errors.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_inbox"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_tables_inbox"
+path = "examples/manual/sqlx_tables_inbox.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_roles"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_tables_roles"
+path = "examples/manual/sqlx_tables_roles.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_columns"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_tables_columns"
+path = "examples/manual/sqlx_tables_columns.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_spec"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_tables_spec"
+path = "examples/manual/sqlx_tables_spec.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_insert"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_tables_insert"
+path = "examples/manual/sqlx_tables_insert.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_events"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_tables_events"
+path = "examples/manual/sqlx_tables_events.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_tables_checked"
+required-features = ["inbox", "postgres", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_messages_payload"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_messages_payload"
+path = "examples/manual/sqlx_messages_payload.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_messages_rows"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_messages_rows"
+path = "examples/manual/sqlx_messages_rows.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_messages_decoding"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_messages_decoding"
+path = "examples/manual/sqlx_messages_decoding.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers"
+path = "examples/manual/sqlx_headers.rs"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_column"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_column"
+path = "examples/manual/sqlx_headers_column.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_layout"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_layout"
+path = "examples/manual/sqlx_headers_layout.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_field"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_field"
+path = "examples/manual/sqlx_headers_field.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_fetch"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_fetch"
+path = "examples/manual/sqlx_headers_fetch.rs"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
+test = true
