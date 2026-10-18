@@ -131,3 +131,70 @@ test = true
 [[example]]
 name = "outbox"
 required-features = ["outbox", "postgres"]
+
+# --- examples: group a ---
+[[example]]
+name = "sqlx_broker"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker"
+path = "examples/manual/sqlx_broker.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_connections"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_connections"
+path = "examples/manual/sqlx_broker_connections.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_startup"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_startup"
+path = "examples/manual/sqlx_broker_startup.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_shutdown"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_shutdown"
+path = "examples/manual/sqlx_broker_shutdown.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_prelude"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_prelude"
+path = "examples/manual/sqlx_broker_prelude.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_broker_errors"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_broker_errors"
+path = "examples/manual/sqlx_broker_errors.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
