@@ -537,3 +537,25 @@ name = "manual_sqlx_outbox_registry"
 path = "examples/manual/sqlx_outbox_registry.rs"
 required-features = ["outbox", "sqlite", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "sqlx_outbox_tracking"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_tracking"
+path = "examples/manual/sqlx_outbox_tracking.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_republish"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_republish"
+path = "examples/manual/sqlx_outbox_republish.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
