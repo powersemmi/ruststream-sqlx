@@ -1,3 +1,8 @@
+---
+title: Benchmarks
+description: "What ruststream-sqlx costs on every message: throughput against a raw sqlx loop, and instructions and allocations of its code."
+---
+
 # Benchmarks
 
 A queue in a database table costs a claim and a settlement per message, and the crate adds its
