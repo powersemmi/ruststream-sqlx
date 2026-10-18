@@ -1,13 +1,20 @@
-//! A message assembled from a headers struct, run as an application through
-//! `TestApp::start_live` against each stand and form: the handler takes the assembled row, a
-//! retried row comes back with its attempt counted, a batch handler takes the rows as one slice,
-//! and a message column the table lacks stops the app at startup.
+//! A message assembled from a headers struct, against each stand and form: a delivery lends the
+//! assembled row, a retried row comes back with its attempt counted, a batch lends the rows as one
+//! slice, and a message column the table lacks stops the app at startup. What a delivery lends is
+//! read off the subscription itself, from rows written before it opens.
 
+use std::pin::pin;
+
+use futures::StreamExt;
 use ruststream::testing::TestApp;
+use ruststream::{
+    BatchSubscriber, Carries, CarriesBatch, ConnectedBroker, IncomingMessage, Subscriber,
+    SubscriptionSource,
+};
 use ruststream_sqlx::prelude::*;
 use sqlx::{AssertSqlSafe, Pool};
 
-use super::{POLL, SETTLED};
+use super::POLL;
 use crate::live;
 
 live::matrix! {
@@ -41,40 +48,27 @@ live::matrix! {
             .expect("the jobs read")
     }
 
-    #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
-    async fn take(job: &OrderJob) -> HandlerOutcome {
-        // A job whose note asks for it goes back to the queue once.
-        if job.note.as_deref() == Some("retry") && job.headers.attempt == 1 {
-            HandlerOutcome::retry()
-        } else {
-            HandlerOutcome::ack()
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_handler_takes_the_row_its_headers_struct_and_its_own_columns_assemble() {
+    async fn a_delivery_lends_the_row_its_headers_struct_and_its_own_columns_assemble() {
         let Some(db) = database().await else { return };
         write(&db, &[OrderJob::queued("orders", "acme", Some("t-1"), 7).noted("fragile")]).await;
         let written = written(&db).await.remove(0);
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(take);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the row settles");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .received_values::<OrderJob>();
-        assert_eq!(lent.len(), 1, "{lent:?}");
-        assert_eq!(lent[0].note.as_deref(), Some("fragile"), "the default fetch read the note");
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .assert_called_once()
-            .with_value(&written.leased_as(&lent[0]))
-            .settled(HandlerOutcome::ack());
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<OrderJob>::new("orders")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let delivery = deliveries.next().await.expect("a delivery").expect("the claim");
+            let lent = delivery.carried().expect("the row").clone();
+            assert_eq!(lent.note.as_deref(), Some("fragile"), "the default fetch read the note");
+            assert_eq!(lent, written.leased_as(&lent));
+            delivery.ack().await.expect("the delivery acknowledges");
+        }
+        drop(subscriber);
         assert_eq!(db.count("headed_jobs").await, 0, "the acknowledgement deleted the row");
-        tb.shutdown().await.expect("the app stops");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
@@ -83,66 +77,67 @@ live::matrix! {
         let Some(db) = database().await else { return };
         write(&db, &[OrderJob::queued("orders", "acme", None, 7).noted("retry")]).await;
         let written = written(&db).await.remove(0);
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(take);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("both deliveries settle");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .received_values::<OrderJob>();
-        assert_eq!(lent.len(), 2, "the retry brought the row back once: {lent:?}");
-        assert_eq!(lent[1].headers.attempt, 2, "the table counted the first delivery");
-        let counted = OrderJob {
-            headers: OrderHeaders {
-                attempt: written.headers.attempt + 1,
-                ..written.headers.clone()
-            },
-            ..written
-        };
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .assert_called(2)
-            .with_value(&counted.leased_as(&lent[1]))
-            .settled(HandlerOutcome::ack());
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<OrderJob>::new("orders")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let first = deliveries.next().await.expect("a delivery").expect("the claim");
+            first.nack(true).await.expect("the retry returns the row");
+            let second = deliveries.next().await.expect("a delivery").expect("the claim");
+            let lent = second.carried().expect("the row").clone();
+            assert_eq!(lent.headers.attempt, 2, "the table counted the first delivery");
+            let counted = OrderJob {
+                headers: OrderHeaders {
+                    attempt: written.headers.attempt + 1,
+                    ..written.headers.clone()
+                },
+                ..written
+            };
+            assert_eq!(lent, counted.leased_as(&lent));
+            second.ack().await.expect("the delivery acknowledges");
+        }
+        drop(subscriber);
         assert_eq!(db.count("headed_jobs").await, 0, "the second delivery acknowledged the row");
-        tb.shutdown().await.expect("the app stops");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
-    #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
-    async fn take_all(jobs: &[OrderJob]) -> Vec<HandlerOutcome> {
-        jobs.iter().map(|_| HandlerOutcome::ack()).collect()
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_batch_handler_takes_the_rows_as_one_slice_in_claim_order() {
+    async fn a_batch_lends_the_rows_as_one_slice_in_claim_order() {
         let Some(db) = database().await else { return };
         let jobs: Vec<OrderJob> = (1..=5)
             .map(|order| OrderJob::queued("orders", "acme", None, order).noted("batched"))
             .collect();
         write(&db, &jobs).await;
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(take_all.batch(nonzero!(3)));
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the batches settle");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .received_values::<OrderJob>();
-        let orders: Vec<i64> = lent.iter().map(|job| job.headers.order_id).collect();
-        assert_eq!(orders, [1, 2, 3, 4, 5], "the rows in claim order");
-        assert!(lent.iter().all(|job| job.note.as_deref() == Some("batched")));
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .assert_batch_sizes(&[3, 2])
-            .settled(HandlerOutcome::ack());
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<OrderJob>::new("orders")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut batches = pin!(subscriber.batches(nonzero!(3_usize)));
+            let mut orders = Vec::new();
+            let mut sizes = Vec::new();
+            while orders.len() < jobs.len() {
+                let batch = batches.next().await.expect("a batch").expect("the claim");
+                sizes.push(batch.carried().len());
+                for job in batch.carried() {
+                    assert_eq!(job.note.as_deref(), Some("batched"));
+                    orders.push(job.headers.order_id);
+                }
+                for delivery in batch {
+                    delivery.ack().await.expect("the delivery acknowledges");
+                }
+            }
+            assert_eq!(orders, [1, 2, 3, 4, 5], "the rows in claim order");
+            assert_eq!(sizes, [3, 2], "a full claim, then the rest");
+        }
+        drop(subscriber);
         assert_eq!(db.count("headed_jobs").await, 0, "the acknowledgements deleted every row");
-        tb.shutdown().await.expect("the app stops");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 

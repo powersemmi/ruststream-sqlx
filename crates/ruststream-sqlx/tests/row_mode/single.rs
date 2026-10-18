@@ -1,15 +1,18 @@
-//! A row-mode delivery lends its handler the row the driver read, run as an application through
-//! `TestApp::start_live` against each stand and form: the whole row, a retried row with its attempt
-//! counted, and a headers column taken into the delivery's headers.
+//! A row-mode delivery lends the row the driver read, on every stand and in every form: the whole
+//! row, a retried row with its attempt counted, and a headers column taken into the delivery's
+//! headers. The subject is what the delivery carries, so each test reads the deliveries off the
+//! subscription itself, from rows written before it opens.
 
 use std::collections::BTreeMap;
+use std::pin::pin;
 
-use ruststream::testing::TestApp;
+use futures::StreamExt;
+use ruststream::{Carries, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
 use ruststream_sqlx::prelude::*;
 use sqlx::Pool;
 use sqlx::types::Json;
 
-use super::{POLL, SETTLED};
+use super::POLL;
 use crate::live;
 
 live::matrix! {
@@ -17,90 +20,64 @@ live::matrix! {
         SqlxBroker::new(pool.clone()).poll_interval(POLL)
     }
 
-    #[subscriber(InboxQueue::<Mail>::new("mail"))]
-    async fn send(mail: &Mail, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
-        // A mail whose subject asks for it goes back to the queue once.
-        if mail.subject.as_deref() == Some("retry") && attempt == Some(1) {
-            HandlerOutcome::retry()
-        } else {
-            HandlerOutcome::ack()
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_handler_takes_the_row_itself() {
+    async fn a_delivery_lends_the_row_itself() {
         let Some(db) = database().await else { return };
         db.mail(&[Mail::queued("mail", "ops@example.com", None)]).await;
         let written: Mail = db.mails().await.remove(0);
-        let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(send);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the row settles");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .received_values::<Mail>();
-        assert_eq!(
-            lent.iter().map(|mail| mail.recipient.as_str()).collect::<Vec<_>>(),
-            ["ops@example.com"]
-        );
-        // The row as the table holds it, with the id the database generated.
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .assert_called_once()
-            .with_value(&written.leased_as(&lent[0]))
-            .settled(HandlerOutcome::ack());
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<Mail>::new("mail")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let delivery = deliveries.next().await.expect("a delivery").expect("the claim");
+            let lent = delivery.carried().expect("the row").clone();
+            // The row as the table holds it, with the id the database generated.
+            assert_eq!(lent, written.leased_as(&lent));
+            delivery.ack().await.expect("the delivery acknowledges");
+        }
+        drop(subscriber);
         assert_eq!(db.count("mail_jobs").await, 0, "the acknowledgement deleted the row");
-        tb.shutdown().await.expect("the app stops");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_retried_row_comes_back_with_its_attempt_counted() {
         let Some(db) = database().await else { return };
-        db.mail(&[Mail::queued("mail", "ops@example.com", Some("retry"))]).await;
+        db.mail(&[Mail::queued("mail", "ops@example.com", None)]).await;
         let written: Mail = db.mails().await.remove(0);
-        let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(send);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("both deliveries settle");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .received_values::<Mail>();
-        assert_eq!(lent.len(), 2, "the retry brought the row back once: {lent:?}");
-        assert_eq!(
-            lent[0],
-            written.clone().leased_as(&lent[0]),
-            "the first delivery lent the row as it was written"
-        );
-        // The table counted the first delivery, and the row comes back with it.
-        let counted = Mail {
-            attempt: written.attempt + 1,
-            ..written
-        };
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .assert_called(2)
-            .with_value(&counted.leased_as(&lent[1]))
-            .settled(HandlerOutcome::ack());
-        assert_eq!(db.count("mail_jobs").await, 0, "the second delivery acknowledged the row");
-        tb.shutdown().await.expect("the app stops");
-        db.finish().await;
-    }
-
-    #[subscriber(InboxQueue::<Mail>::new("mail"))]
-    async fn tenanted(_mail: &Mail, ctx: &mut Context<'_>) -> HandlerOutcome {
-        // The delivery carries the headers the row's column held, as middleware reads them.
-        if ctx.headers().get_str("x-tenant") == Some("acme") {
-            HandlerOutcome::ack()
-        } else {
-            HandlerOutcome::drop()
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<Mail>::new("mail")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let first = deliveries.next().await.expect("a delivery").expect("the claim");
+            let lent = first.carried().expect("the row").clone();
+            assert_eq!(
+                lent,
+                written.clone().leased_as(&lent),
+                "the first delivery lent the row as it was written"
+            );
+            first.nack(true).await.expect("the retry returns the row");
+            let second = deliveries.next().await.expect("a delivery").expect("the claim");
+            let again = second.carried().expect("the row").clone();
+            // The table counted the first delivery, and the row comes back with it.
+            let counted = Mail {
+                attempt: written.attempt + 1,
+                ..written
+            };
+            assert_eq!(again, counted.leased_as(&again));
+            second.ack().await.expect("the delivery acknowledges");
         }
+        drop(subscriber);
+        assert_eq!(db.count("mail_jobs").await, 0, "the second delivery acknowledged the row");
+        connected.shutdown().await.expect("the broker shuts down");
+        db.finish().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -113,27 +90,27 @@ live::matrix! {
         }])
         .await;
         let written: Mail = db.mails().await.remove(0);
-        let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(tenanted);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the row settles");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .received_values::<Mail>();
-        // The claim took the headers into the delivery, and left the row's column empty.
-        let emptied = Mail {
-            meta: Some(Json(BTreeMap::new())),
-            ..written
-        };
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .assert_called_once()
-            .with_value(&emptied.leased_as(&lent[0]))
-            .settled(HandlerOutcome::ack());
-        tb.shutdown().await.expect("the app stops");
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<Mail>::new("mail")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let delivery = deliveries.next().await.expect("a delivery").expect("the claim");
+            // The delivery carries the headers the row's column held, as middleware reads them.
+            assert_eq!(delivery.headers().get_str("x-tenant"), Some("acme"));
+            // The claim took the headers into the delivery, and left the row's column empty.
+            let lent = delivery.carried().expect("the row").clone();
+            let emptied = Mail {
+                meta: Some(Json(BTreeMap::new())),
+                ..written
+            };
+            assert_eq!(lent, emptied.leased_as(&lent));
+            delivery.ack().await.expect("the delivery acknowledges");
+        }
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 }

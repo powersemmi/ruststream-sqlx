@@ -1,7 +1,9 @@
-//! A row-mode batch lends its handler the claim's rows as one slice, `&[Row]`, in claim order, on
-//! every stand and in every form: what the driver could not read and the ids without a row settle
-//! after the slice by the decode policy, and a batch dropped before the runtime takes its
-//! deliveries returns its rows at once.
+//! A row-mode batch lends the claim's rows as one slice, `&[Row]`, in claim order, on every stand
+//! and in every form: what the driver could not read and the ids without a row settle after the
+//! slice by the decode policy, and a batch dropped before the runtime takes its deliveries returns
+//! its rows at once. What a claim lends is read off the subscription itself; the decode policy is
+//! the runtime's, so its tests run the app live on rows the driver cannot read, which only SQL
+//! writes.
 
 use std::collections::BTreeMap;
 use std::pin::pin;
@@ -47,6 +49,7 @@ live::matrix! {
             .collect()
     }
 
+    // The subject is what each claim lends, so the batches are read off the subscription itself.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_claim_is_one_slice_of_rows_in_claim_order() {
         let Some(db) = database().await else { return };
@@ -56,23 +59,29 @@ live::matrix! {
             .map(|to| Mail::queued("mail", to, None))
             .collect();
         db.mail(&mails).await;
-        let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(send.batch(nonzero!(4)));
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the batches settle");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .received_values::<Mail>();
-        assert_eq!(recipients(&lent), written, "the rows in claim order");
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .assert_batch_sizes(&[4, 2])
-            .settled(HandlerOutcome::ack());
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<Mail>::new("mail")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut batches = pin!(subscriber.batches(nonzero!(4_usize)));
+            let mut lent: Vec<String> = Vec::new();
+            let mut sizes = Vec::new();
+            while lent.len() < written.len() {
+                let batch = batches.next().await.expect("a batch").expect("the claim");
+                sizes.push(batch.carried().len());
+                lent.extend(recipients(batch.carried()).into_iter().map(str::to_owned));
+                for delivery in batch {
+                    delivery.ack().await.expect("the delivery acknowledges");
+                }
+            }
+            assert_eq!(lent, written, "the rows in claim order");
+            assert_eq!(sizes, [4, 2], "a full claim, then the rest");
+        }
+        drop(subscriber);
         assert_eq!(db.count("mail_jobs").await, 0, "the acknowledgements deleted every row");
-        tb.shutdown().await.expect("the app stops");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
@@ -127,11 +136,6 @@ live::matrix! {
         db.finish().await;
     }
 
-    #[subscriber(InboxQueue::<FetchedMail>::new("mail"), on_failure(decode = drop))]
-    async fn fetched(_mails: &[FetchedMail]) -> HandlerOutcome {
-        HandlerOutcome::ack()
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_fetch_out_of_order_lends_the_slice_in_claim_order() {
         let Some(db) = database().await else { return };
@@ -143,35 +147,34 @@ live::matrix! {
             FetchedMail::queued("mail", "c@example.com", None),
         ])
         .await;
-        let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(fetched.batch(nonzero!(4)));
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the batches settle");
-        let lent: Vec<String> = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .received_values::<FetchedMail>()
-            .into_iter()
-            .map(|mail| mail.recipient)
-            .collect();
-        assert_eq!(
-            lent,
-            ["a@example.com", "b@example.com", "c@example.com"],
-            "claim order, not the fetch's"
-        );
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .assert_batch_sizes(&[3])
-            .settled(HandlerOutcome::ack());
-        assert_eq!(db.count("mail_jobs").await, 0, "the policy dropped the missing id's row");
-        tb.shutdown().await.expect("the app stops");
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<FetchedMail>::new("mail")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut batches = pin!(subscriber.batches(nonzero!(4_usize)));
+            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let lent: Vec<&str> = batch
+                .carried()
+                .iter()
+                .map(|mail| mail.recipient.as_str())
+                .collect();
+            assert_eq!(
+                lent,
+                ["a@example.com", "b@example.com", "c@example.com"],
+                "claim order, not the fetch's"
+            );
+            // Four deliveries: the slice's three, then the claimed id the fetch found no row for.
+            assert_eq!(batch.into_iter().count(), 4, "every claimed id has its delivery");
+        }
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_headers_column_reaches_a_batch_handler_empty() {
+    async fn the_headers_column_reaches_a_batch_empty() {
         let Some(db) = database().await else { return };
         let headers = BTreeMap::from([("x-tenant".to_owned(), "acme".to_owned())]);
         db.mail(&[
@@ -183,31 +186,32 @@ live::matrix! {
         ])
         .await;
         let written: Vec<Mail> = db.mails().await;
-        let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(send.batch(nonzero!(4)));
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the batch settles");
-        let lent = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .received_values::<Mail>();
-        // The claim took `b`'s headers into its delivery, and left its column empty.
-        let [plain, tenanted]: [Mail; 2] = written.try_into().expect("two mails");
-        let emptied = Mail {
-            meta: Some(Json(BTreeMap::new())),
-            ..tenanted
-        };
-        assert_eq!(
-            lent,
-            [plain.leased_as(&lent[0]), emptied.leased_as(&lent[1])],
-        );
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("mail")
-            .assert_batch_sizes(&[2])
-            .settled(HandlerOutcome::ack());
-        tb.shutdown().await.expect("the app stops");
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<Mail>::new("mail")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut batches = pin!(subscriber.batches(nonzero!(4_usize)));
+            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let lent = batch.carried().to_vec();
+            // The claim took `b`'s headers into its delivery, and left its column empty.
+            let [plain, tenanted]: [Mail; 2] = written.try_into().expect("two mails");
+            let emptied = Mail {
+                meta: Some(Json(BTreeMap::new())),
+                ..tenanted
+            };
+            assert_eq!(
+                lent,
+                [plain.leased_as(&lent[0]), emptied.leased_as(&lent[1])],
+            );
+            for delivery in batch {
+                delivery.ack().await.expect("the delivery acknowledges");
+            }
+        }
+        drop(subscriber);
+        assert_eq!(db.count("mail_jobs").await, 0, "the acknowledgements deleted both rows");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
