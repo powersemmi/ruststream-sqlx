@@ -905,3 +905,15 @@ name = "manual_guide_enqueueing"
 path = "examples/manual/guide/enqueueing.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "guide_retries"
+path = "examples/guide/retries.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_retries"
+path = "examples/manual/guide/retries.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
