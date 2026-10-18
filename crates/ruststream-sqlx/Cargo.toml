@@ -929,3 +929,15 @@ name = "manual_guide_claim_forms"
 path = "examples/manual/guide/claim_forms.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "guide_ordering"
+path = "examples/guide/ordering.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_ordering"
+path = "examples/manual/guide/ordering.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
