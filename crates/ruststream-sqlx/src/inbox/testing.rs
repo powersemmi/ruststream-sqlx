@@ -4,7 +4,7 @@
 //! The inbox has no model of a database to run in process: its in-process mode reaches the
 //! database the test's pool names, as `connect` does. Every database call of an in-process
 //! connection runs through [`off_clock`], so a test on a paused tokio clock does not see its
-//! timers fire while a reply is on its way, and "now" follows the tokio clock.
+//! timers fire while a reply is on its way, and the system clock follows the tokio clock.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -28,8 +28,10 @@ use super::error::SqlxBrokerError;
 use super::publish::{TableWake, insert_routed};
 use super::queue::Queue;
 
-/// Where an in-process connection reads "now": the tokio clock, anchored to the wall clock when
-/// the broker connected, so a test that moves a paused clock moves the queue's time with it.
+/// What an in-process connection reads in place of [`SystemClock`](crate::SystemClock): the tokio
+/// clock, anchored to the wall clock when the broker connected, so a test that moves a paused
+/// clock moves the queue's time with it. A clock of the service's own and the database's clock
+/// are read as they are live.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TestClock {
     system: SystemTime,
