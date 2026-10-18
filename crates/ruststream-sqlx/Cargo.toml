@@ -879,3 +879,17 @@ name = "manual_sqlx_time_types"
 path = "examples/manual/sqlx_time_types.rs"
 required-features = ["inbox", "sqlite", "time", "testing"]
 test = true
+
+# --- examples: guides ---
+
+[[example]]
+name = "guide_getting_started"
+path = "examples/guide/getting_started.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_getting_started"
+path = "examples/manual/guide/getting_started.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
