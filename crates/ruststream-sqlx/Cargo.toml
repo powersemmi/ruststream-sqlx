@@ -382,5 +382,27 @@ path = "examples/manual/sqlx_publishing_route.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
 
+[[example]]
+name = "sqlx_wake"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_wake"
+path = "examples/manual/sqlx_wake.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_wake_notify"
+required-features = ["inbox", "postgres", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_wake_notify"
+path = "examples/manual/sqlx_wake_notify.rs"
+required-features = ["inbox", "postgres", "chrono", "testing", "asyncapi"]
+test = true
+
 
 # Outbox.
