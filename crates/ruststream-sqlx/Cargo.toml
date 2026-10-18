@@ -404,5 +404,82 @@ path = "examples/manual/sqlx_wake_notify.rs"
 required-features = ["inbox", "postgres", "chrono", "testing", "asyncapi"]
 test = true
 
+[[example]]
+name = "sqlx_databases"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases"
+path = "examples/manual/sqlx_databases.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_postgres"
+required-features = ["inbox", "postgres", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_postgres"
+path = "examples/manual/sqlx_databases_postgres.rs"
+required-features = ["inbox", "postgres", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_mysql"
+required-features = ["inbox", "mysql", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_mysql"
+path = "examples/manual/sqlx_databases_mysql.rs"
+required-features = ["inbox", "mysql", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_sqlite"
+required-features = ["inbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_sqlite"
+path = "examples/manual/sqlx_databases_sqlite.rs"
+required-features = ["inbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_dialect"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_databases_any"
+required-features = ["inbox", "any", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_any"
+path = "examples/manual/sqlx_databases_any.rs"
+required-features = ["inbox", "any", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_asyncapi"
+required-features = ["inbox", "postgres", "asyncapi", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_asyncapi"
+path = "examples/manual/sqlx_asyncapi.rs"
+required-features = ["inbox", "postgres", "asyncapi", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_dialect"
+path = "examples/manual/sqlx_databases_dialect.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
 
 # Outbox.
