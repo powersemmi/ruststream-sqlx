@@ -181,15 +181,17 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///
 /// # Testing
 ///
-/// A test hands [`TestApp::start`](https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html)
-/// the app `main` runs, unchanged, and addresses the broker by its production type (feature
-/// `testing`). The broker connects in process to the database the test's pool reaches, so the
-/// service's SQL runs as in production, and the harness waits for every publish. SQLite in memory
-/// needs no server. After `tokio::time::pause()` the queue reads "now" from the test's clock, which
-/// `tb.advance(d)` moves past a delayed retry or a lease; a table on [`DatabaseClock`](crate::DatabaseClock) reads the
-/// database's time instead. The crate registers `SqlxBroker<Postgres>`, `SqlxBroker<MySql>`,
-/// `SqlxBroker<Sqlite>` and `SqlxBroker<Any>` with the harness, and a broker on a dialect of the
-/// service's own is registered by the service ([`with_dialect`](Self::with_dialect)).
+/// A test hands [`TestApp::start`] the app `main` runs, unchanged, and addresses the broker by its
+/// production type (feature `testing`). The broker connects in process to the database the test's
+/// pool reaches, so the service's SQL runs as in production, and the harness waits for every
+/// publish. SQLite in memory needs no server. After `tokio::time::pause()` the queue reads "now"
+/// from the test's clock, which `tb.advance(d)` moves past a delayed retry or a lease; a table on
+/// [`DatabaseClock`](crate::DatabaseClock) reads the database's time instead. The crate registers
+/// `SqlxBroker<Postgres>`, `SqlxBroker<MySql>`, `SqlxBroker<Sqlite>` and `SqlxBroker<Any>` with the
+/// harness, and a broker on a dialect of the service's own is registered by the service
+/// ([`with_dialect`](Self::with_dialect)).
+///
+/// [`TestApp::start`]: https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html#method.start
 ///
 /// ```no_run
 /// # #[cfg(all(feature = "sqlite", feature = "chrono", feature = "testing"))]
@@ -566,7 +568,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// unless set. A subscription's own [`poll_interval`](crate::InboxQueue::poll_interval)
     /// overrides it. A publish through this broker wakes the subscriptions of its table and group
     /// before then, and so does a notification with [`listen_notify`](Self::listen_notify)
-    /// ([waking a subscription](crate#waking-a-subscription)).
+    /// ([waking a subscription](https://powersemmi.github.io/ruststream-sqlx/latest/components/wake/)).
     ///
     /// # Examples
     ///

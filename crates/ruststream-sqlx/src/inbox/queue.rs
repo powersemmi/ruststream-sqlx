@@ -72,7 +72,7 @@ pub(crate) use open::{Registration, open};
 ///
 /// A table in payload mode hands its handler the payload, decoded by a codec. A table in row mode,
 /// whose struct has no `#[field(payload)]` field, hands it the row itself: `&Row` for one
-/// delivery, `&[Row]` for a batch (see [Row mode](crate#row-mode)). The forms, transactional mode
+/// delivery, `&[Row]` for a batch (see [row mode](https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/rows/)). The forms, transactional mode
 /// and the retry declarations work the same in both modes.
 ///
 /// # Examples
@@ -234,7 +234,7 @@ impl<Row> InboxQueue<Row> {
     /// How long this subscription waits between claims that found the queue empty; the broker's
     /// interval unless set. After a full claim the next one runs at once. A publish through the
     /// broker into the subscription's table and group ends the wait early
-    /// ([waking a subscription](crate#waking-a-subscription)).
+    /// ([waking a subscription](https://powersemmi.github.io/ruststream-sqlx/latest/components/wake/)).
     ///
     /// # Examples
     ///

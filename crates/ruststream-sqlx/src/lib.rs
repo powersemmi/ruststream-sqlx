@@ -1,22 +1,4 @@
 #![doc = include_str!("README.md")]
-#![doc = include_str!("overview/manual.md")]
-#![doc = include_str!("overview/roles.md")]
-#![doc = include_str!("overview/time.md")]
-#![doc = include_str!("overview/row_mode.md")]
-#![doc = include_str!("overview/headers.md")]
-#![doc = include_str!("overview/forms.md")]
-#![doc = include_str!("overview/transactional.md")]
-#![doc = include_str!("overview/isolation.md")]
-#![doc = include_str!("overview/fifo.md")]
-#![doc = include_str!("overview/databases.md")]
-#![doc = include_str!("overview/own_dialect.md")]
-#![doc = include_str!("overview/checked.md")]
-#![doc = include_str!("overview/decoding.md")]
-#![doc = include_str!("overview/batches.md")]
-#![doc = include_str!("overview/names.md")]
-#![doc = include_str!("overview/wake.md")]
-#![doc = include_str!("overview/testing.md")]
-#![cfg_attr(feature = "outbox", doc = include_str!("overview/outbox.md"))]
 #![forbid(unsafe_code)]
 
 pub use ruststream_sqlx_dialect as dialect;
@@ -115,7 +97,8 @@ pub mod __private {
 ///
 /// The struct is an ordinary sqlx struct: `#[inbox(..)]` names the table, sqlx's own
 /// attributes name the columns, and `#[field(..)]` marks the columns that run the queue. The
-/// [macro or manual](crate#macro-or-manual) section shows the same table written by hand.
+/// [`InboxSpec` page](https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/inbox-spec/) shows the same
+/// table written by hand.
 ///
 /// # Examples
 ///

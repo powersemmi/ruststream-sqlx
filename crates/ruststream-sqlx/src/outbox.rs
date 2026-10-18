@@ -8,6 +8,21 @@
 //! (`#[outbox(custom(..))]`, or [`OutboxSpec::own`]), and always [`Publish`], which has no
 //! default.
 //!
+//! Each topic has its page on the site:
+//!
+//! - [The outbox](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/): what it tracks and the at-least-once guarantee.
+//! - [Record](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/record/): the outbox table, derived or described by hand.
+//! - [Registry](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/registry/): `outbox!`, [`Outbox::track`] and
+//!   [`Outbox::register`].
+//! - [Tracking](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/tracking/): [`Outbox::layer`] and [`Outbox::publish_layer`].
+//! - [republish](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/republish/): [`Outbox::republish`] at startup.
+//! - [wrap](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/wrap/): [`Outbox::wrap`], a publisher outside the pipeline.
+//! - [set_pool](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/set-pool/): [`Outbox::set_pool`] inside `#[ruststream::app]`.
+//! - [Statements](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/statements/): the record's events in the service's own SQL.
+//! - [Interplay](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/interplay/): the outbox beside the inbox.
+//! - [Switch](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/switch/): `RUSTSTREAM_SQLX_OUTBOX=on` in test builds.
+//! - [OutboxError](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/outbox-error/): [`OutboxError`].
+//!
 //! # Examples
 //!
 //! A service whose replies to `orders` are tracked over the in-memory broker. Inside

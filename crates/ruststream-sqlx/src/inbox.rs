@@ -62,7 +62,7 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 /// The struct puts its table in one of two modes. In payload mode a `#[field(payload)]` field
 /// holds the message, and a codec decodes it for the handler ([`PayloadRow`]). In row mode the
 /// struct has no such field, and the handler takes the struct itself, `&Row` or `&[Row]` (see
-/// [Row mode](crate#row-mode)).
+/// [row mode](https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/rows/)).
 ///
 /// # Examples
 ///
@@ -292,7 +292,8 @@ impl<Row> Lane<Row> for RowLane {
 ///
 /// A struct without a payload field is in row mode: its handler takes the row itself, and the
 /// derive's [`insert`](crate::Insert::insert) or a [`Repository`] over the service's own
-/// [`Publish`] writes its tasks (see [Row mode](crate#row-mode)).
+/// [`Publish`] writes its tasks (see
+/// [row mode](https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/rows/)).
 ///
 /// # Examples
 ///

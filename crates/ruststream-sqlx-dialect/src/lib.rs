@@ -63,13 +63,13 @@
 //! in its database's SQL. A service on a built-in dialect that writes
 //! one statement its own way writes it as an event of its inbox: `#[inbox(custom(ack))]` and an
 //! `Ack` implementation of its own, in
-//! [`ruststream-sqlx`](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/index.html#an-event-of-the-services-own).
+//! [`ruststream-sqlx`](https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/events/).
 //!
 //! # Examples
 //!
 //! A dialect for SQL Server, a database without a built-in one, in the row lock form. The service
 //! mounts it with `SqlxBroker::with_dialect`, as the [`ruststream-sqlx`
-//! overview](https://docs.rs/ruststream-sqlx/latest/ruststream_sqlx/#a-dialect-of-the-services-own)
+//! site](https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/dialect/)
 //! shows.
 //!
 //! ```

@@ -79,7 +79,7 @@ pub trait Claim<DB: Database>: InboxRow {
 /// The dialect builds it, for a flat table and for a message assembled from header fields; a table
 /// names `fetch` as its own (`custom(fetch)`, or [`own::Fetch`](crate::spec::own::Fetch) by hand)
 /// to assemble messages itself, from other tables
-/// ([a fetch over a join](crate#a-fetch-over-a-join)). Rows are matched to the claimed ids by their `id` field; a
+/// ([a fetch over a join](https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/fetch/)). Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row settles by the decode-failure policy before its handler runs, and the
 /// log names the id. It runs inside the claim's transaction, or right after a lease claim that
 /// leased the rows and committed in one statement, as on Postgres and SQLite. In the advisory lock
@@ -748,7 +748,7 @@ pub trait Publish<DB: Database>: InboxRow {
 /// columns, so the service writes that insert itself.
 /// A table described by hand implements it over the text
 /// [`dialect::insert`](crate::dialect::insert) renders from its description, binding the columns
-/// in the description's order; [row mode](crate#row-mode) shows one.
+/// in the description's order, as below.
 ///
 /// # Examples
 ///
