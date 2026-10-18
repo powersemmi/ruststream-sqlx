@@ -125,7 +125,8 @@ dhat.workspace = true
 # The two services the documentation site shows, one per component.
 [[example]]
 name = "inbox"
-required-features = ["inbox", "postgres"]
+required-features = ["inbox", "postgres", "testing"]
+test = true
 
 [[example]]
 name = "outbox"

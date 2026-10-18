@@ -14,7 +14,7 @@
 //! `PGDATABASE` environment variables.
 //!
 //! ```text
-//! cargo run -p ruststream-sqlx --example inbox --features inbox,postgres
+//! cargo run -p ruststream-sqlx --example inbox --features inbox,postgres,testing
 //! ```
 
 // --8<-- [start:service]
@@ -52,14 +52,14 @@ impl Publish<Postgres> for SendEmail {
     }
 }
 
-#[derive(Deserialize, Serialize, Outgoing)]
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
 struct Email {
     to: String,
 }
 
 #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 async fn send(email: &Email) -> HandlerOutcome {
-    println!("sending to {}", email.to);
+    tracing::info!(to = %email.to, "sending");
     HandlerOutcome::ack()
 }
 
@@ -82,3 +82,45 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 // --8<-- [end:service]
+
+// The live suites' gate: the test runs on the Postgres stand `POSTGRES_TEST_URL` names, whose
+// schema holds `email_jobs`, and skips without it.
+#[cfg(test)]
+#[path = "../tests/live/mod.rs"]
+mod live;
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+
+    use ruststream::testing::TestApp;
+    use ruststream_sqlx::prelude::*;
+    use sqlx::Postgres;
+
+    use super::{Email, app, live};
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_email_published_to_the_route_is_sent() -> Result<(), Box<dyn Error>> {
+        let Some(db) = live::postgres::database().await else {
+            return Ok(());
+        };
+        let tb = TestApp::start(app(db.pool.clone())).await?;
+        let email = Email {
+            to: "ops@example.com".to_owned(),
+        };
+        tb.broker::<SqlxBroker<Postgres>>()
+            .message(&email)
+            .to("emails")
+            .publish()
+            .await?;
+
+        tb.broker::<SqlxBroker<Postgres>>()
+            .subscriber("emails")
+            .assert_called_once()
+            .with(&email)
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await?;
+        db.finish().await;
+        Ok(())
+    }
+}
