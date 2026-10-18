@@ -357,3 +357,271 @@ name = "manual_sqlx_headers_fetch"
 path = "examples/manual/sqlx_headers_fetch.rs"
 required-features = ["inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
 test = true
+
+# --- examples: group c ---
+# Publishing, Wake, Databases, AsyncAPI and Testing.
+[[example]]
+name = "sqlx_publishing_repository"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_publishing_repository"
+path = "examples/manual/sqlx_publishing_repository.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_publishing_route"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_publishing_route"
+path = "examples/manual/sqlx_publishing_route.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_wake"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_wake"
+path = "examples/manual/sqlx_wake.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_wake_notify"
+required-features = ["inbox", "postgres", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_wake_notify"
+path = "examples/manual/sqlx_wake_notify.rs"
+required-features = ["inbox", "postgres", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases"
+path = "examples/manual/sqlx_databases.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_postgres"
+required-features = ["inbox", "postgres", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_postgres"
+path = "examples/manual/sqlx_databases_postgres.rs"
+required-features = ["inbox", "postgres", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_mysql"
+required-features = ["inbox", "mysql", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_mysql"
+path = "examples/manual/sqlx_databases_mysql.rs"
+required-features = ["inbox", "mysql", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_sqlite"
+required-features = ["inbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_sqlite"
+path = "examples/manual/sqlx_databases_sqlite.rs"
+required-features = ["inbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_databases_dialect"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_databases_any"
+required-features = ["inbox", "any", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_any"
+path = "examples/manual/sqlx_databases_any.rs"
+required-features = ["inbox", "any", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_asyncapi"
+required-features = ["inbox", "postgres", "asyncapi", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_asyncapi"
+path = "examples/manual/sqlx_asyncapi.rs"
+required-features = ["inbox", "postgres", "asyncapi", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_databases_dialect"
+path = "examples/manual/sqlx_databases_dialect.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_testing"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_testing_live"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_testing"
+path = "examples/manual/sqlx_testing.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "manual_sqlx_testing_live"
+path = "examples/manual/sqlx_testing_live.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+
+# Outbox.
+[[example]]
+name = "sqlx_outbox"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox"
+path = "examples/manual/sqlx_outbox.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_record"
+required-features = ["outbox", "sqlite", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_record"
+path = "examples/manual/sqlx_outbox_record.rs"
+required-features = ["outbox", "sqlite", "json", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_registry"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_registry"
+path = "examples/manual/sqlx_outbox_registry.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_tracking"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_tracking"
+path = "examples/manual/sqlx_outbox_tracking.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_republish"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_republish"
+path = "examples/manual/sqlx_outbox_republish.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_wrap"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_wrap"
+path = "examples/manual/sqlx_outbox_wrap.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_errors"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_errors"
+path = "examples/manual/sqlx_outbox_errors.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_pool"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_pool"
+path = "examples/manual/sqlx_outbox_pool.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_statements"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_statements"
+path = "examples/manual/sqlx_outbox_statements.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_interplay"
+required-features = ["outbox", "inbox", "sqlite", "chrono", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_interplay"
+path = "examples/manual/sqlx_outbox_interplay.rs"
+required-features = ["outbox", "inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_switch"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_switch"
+path = "examples/manual/sqlx_outbox_switch.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
