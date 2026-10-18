@@ -357,3 +357,8 @@ name = "manual_sqlx_headers_fetch"
 path = "examples/manual/sqlx_headers_fetch.rs"
 required-features = ["inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
 test = true
+
+# --- examples: group c ---
+# Publishing, Wake, Databases, AsyncAPI and Testing.
+
+# Outbox.
