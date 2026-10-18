@@ -151,10 +151,10 @@ mod tests {
             })
             .collect();
         assert_eq!(read, [("ops@example.com", Some("disk full"), 1)]);
-        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_jobs")
+        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_jobs")
             .fetch_one(&pool)
             .await?;
-        assert_eq!(left, 0, "the acknowledgement deleted the row");
+        assert_eq!(remaining, 0, "the acknowledgement deleted the row");
         Ok(())
     }
 }

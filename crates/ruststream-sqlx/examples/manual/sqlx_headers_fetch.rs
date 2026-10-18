@@ -201,11 +201,11 @@ mod tests {
             .assert_called(2)
             .settled(HandlerOutcome::drop())
             .assert_last_failed_to_decode();
-        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_jobs")
+        let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM mail_jobs")
             .fetch_one(&pool)
             .await?;
         assert_eq!(
-            left, 0,
+            remaining, 0,
             "the acknowledgement and the decode policy settled both jobs"
         );
         Ok(())
