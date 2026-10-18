@@ -481,5 +481,27 @@ path = "examples/manual/sqlx_databases_dialect.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
 
+[[example]]
+name = "sqlx_testing"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_testing_live"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_testing"
+path = "examples/manual/sqlx_testing.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "manual_sqlx_testing_live"
+path = "examples/manual/sqlx_testing_live.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
 
 # Outbox.
