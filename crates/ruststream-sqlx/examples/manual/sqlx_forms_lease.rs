@@ -80,7 +80,7 @@ fn service(pool: SqlitePool) -> RustStream {
         SqlxBroker::new(pool).route::<RenderReport>("reports"),
         |b| {
             let render = subscriber("reports", Render).map_source(|_| {
-                InboxQueue::<RenderReport>::new("reports").lease(Duration::from_secs(60))
+                InboxQueue::<RenderReport>::new("reports").lease(Duration::from_mins(1))
             });
             b.include(render.build());
         },

@@ -33,7 +33,7 @@ struct RenderReport {
 
 /// A report takes minutes to render. The subscription extends the minute's lease every thirty
 /// seconds while the handler runs; after a crash the row waits out its minute, then returns.
-#[subscriber(InboxQueue::<RenderReport>::new("reports").lease(Duration::from_secs(60)))]
+#[subscriber(InboxQueue::<RenderReport>::new("reports").lease(Duration::from_mins(1)))]
 async fn render(report: &Report) -> HandlerOutcome {
     draw(report).await;
     tracing::info!(report.id, "report rendered");

@@ -252,3 +252,135 @@ name = "manual_sqlx_forms_lock"
 path = "examples/manual/sqlx_forms_lock.rs"
 required-features = ["inbox", "sqlite", "testing"]
 test = true
+
+[[example]]
+name = "sqlx_settlement_outcomes"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_settlement_outcomes"
+path = "examples/manual/sqlx_settlement_outcomes.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_settlement_retry_after"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_settlement_retry_after"
+path = "examples/manual/sqlx_settlement_retry_after.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_settlement_dead_letter"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_settlement_dead_letter"
+path = "examples/manual/sqlx_settlement_dead_letter.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_transactions"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_transactions"
+path = "examples/manual/sqlx_transactions.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_transactions_isolation"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_transactions_isolation"
+path = "examples/manual/sqlx_transactions_isolation.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_context"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_context"
+path = "examples/manual/sqlx_context.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_context_attempt"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_context_attempt"
+path = "examples/manual/sqlx_context_attempt.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_context_pool"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_context_pool"
+path = "examples/manual/sqlx_context_pool.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_time"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_time"
+path = "examples/manual/sqlx_time.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_time_database"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_time_database"
+path = "examples/manual/sqlx_time_database.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_time_clock"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_time_clock"
+path = "examples/manual/sqlx_time_clock.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_time_types"
+required-features = ["inbox", "sqlite", "time", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_time_types"
+path = "examples/manual/sqlx_time_types.rs"
+required-features = ["inbox", "sqlite", "time", "testing"]
+test = true
