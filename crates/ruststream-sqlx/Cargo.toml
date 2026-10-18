@@ -977,3 +977,15 @@ name = "manual_guide_relay"
 path = "examples/manual/guide/relay.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "guide_outbox"
+path = "examples/guide/outbox.rs"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_outbox"
+path = "examples/manual/guide/outbox.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
