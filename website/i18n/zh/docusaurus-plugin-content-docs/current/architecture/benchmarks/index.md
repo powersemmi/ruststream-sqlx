@@ -3,7 +3,7 @@ title: 基准测试
 description: "ruststream-sqlx 在每条消息上的开销：与直接用 sqlx 编写的循环对比的吞吐量，以及其代码的指令数与内存分配。"
 ---
 
-# 基准测试 {#benchmarks}
+# 基准测试 {/* #benchmarks */}
 
 数据库表里的队列，每条消息都要付出一次领取和一次结算，crate 还要在上面加上自己的活：订阅的流、
 解码、分发、结算的记账。这一页说明这些活花了多少，参照物是同样的领取和结算用 sqlx 手写一遍。
@@ -26,7 +26,7 @@ outbox 不是 Broker，而是一个插件，也按插件来测：同一个应用
 [RustStream 基准测试页](https://powersemmi.github.io/ruststream/latest/zh/benchmarks/#methodology)
 上；这一页公布它在这台机器上得出的结果。
 
-## 数字 {#the-numbers}
+## 数字 {/* #the-numbers */}
 
 在测试环境的 Postgres 上、多线程运行时里的每秒消息数。三个交错轮次中的最佳值，括号里是中位的
 一轮。越大越好。
@@ -54,7 +54,7 @@ outbox 不是 Broker，而是一个插件，也按插件来测：同一个应用
 [`benchmarks/results.json`](https://powersemmi.github.io/ruststream-sqlx/latest/benchmarks/results.json)，
 框架的站点用它拼出跨 Broker 的汇总表。
 
-## 吞吐量 {#throughput}
+## 吞吐量 {/* #throughput */}
 
 <div id="benchmark-throughput"></div>
 
@@ -74,7 +74,7 @@ Postgres 和 MySQL 用行锁形式。SQLite 没有行锁，所以用租约形式
 那一列和裸循环并排，显示的是同样并发度下 crate 的开销；在四个和八个工作者时，它和服务之间的差距
 来自领取，而不是分发。一批一次领取最多一批大小的行，所以一次领取能服务同样多的投递。
 
-## crate 自己的代码 {#the-crates-own-code}
+## crate 自己的代码 {/* #the-crates-own-code */}
 
 <div id="benchmark-code"></div>
 
@@ -103,7 +103,7 @@ Postgres 和 MySQL 用行锁形式。SQLite 没有行锁，所以用租约形式
 `just bench-code --baseline=main` 拿改动和它比较。失败的运行会打印它超出的每一个上限，旧值和新值
 并列。改变开销的拉取请求要附上自己的数字。
 
-## 作为插件的 outbox {#the-outbox-as-a-plugin}
+## 作为插件的 outbox {/* #the-outbox-as-a-plugin */}
 
 <div id="benchmark-outbox"></div>
 
@@ -135,7 +135,7 @@ outbox 对不用 outbox，是插件的全部开销：跟踪一条消息总共要
 计数把同样的应用跑在 `MemoryBroker` 上，所以数字里没有传输。同一时刻只有一条消息在途，所以中继器
 和接收器从不互相等待连接。
 
-## 剩下的开销 {#the-costs-that-remain}
+## 剩下的开销 {/* #the-costs-that-remain */}
 
 这个 crate 遵守整个家族的规则：热路径上每条消息除 sqlx 自身之外，没有内存分配、动态调用、额外的
 原子操作和拷贝。剩下的开销列在这里，各自注明适用的地方：
@@ -156,14 +156,14 @@ outbox 对不用 outbox，是插件的全部开销：跟踪一条消息总共要
 - 不在处理器里、而是通过运行中应用的发布者进行的发布，会把每条消息编码到它自己的缓冲区里。裸循环
   所有消息共用一个缓冲区。
 
-## 机器 {#the-machine}
+## 机器 {/* #the-machine */}
 
 <div id="benchmark-environment"></div>
 
 构建标志和数字一起公布，因为它们会改变数字：用 `-C target-cpu=native` 构建的二进制得出的结果，
 在别的机器上无法复现，所以配方在构建之前会清空这个变量。
 
-## 这些数字不代表什么 {#what-they-do-not-mean}
+## 这些数字不代表什么 {/* #what-they-do-not-mean */}
 
 这里是一张表、一个很小的 JSON 消息体和回环地址上的一台数据库服务器。测的是一条消息在这个 crate
 里的开销，而不是 Postgres、MySQL 或 SQLite 能承载多少。这里的一行不能和为某个消息 Broker 的 crate
@@ -180,7 +180,7 @@ outbox 对不用 outbox，是插件的全部开销：跟踪一条消息总共要
 这些数字是一台机器在某一天的快照。它们在一台专门留给这次运行的机器上手动重测：这一页关心的差值，
 比共享机器的噪声还小。
 
-## 自己运行 {#running-it-yourself}
+## 自己运行 {/* #running-it-yourself */}
 
 ```bash
 just bench
