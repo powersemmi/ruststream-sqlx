@@ -1,4 +1,21 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
+  "folders": [
+    "docs",
+    "crates/ruststream-sqlx/src",
+    "crates/ruststream-sqlx/examples",
+    "crates/ruststream-sqlx-dialect/src",
+    "examples",
+    "website/static"
+  ],
+  "excludeFolders": [
+    "docs/benchmarks",
+    "website/i18n",
+    "website/build",
+    "website/.docusaurus",
+    "website/node_modules",
+    "target"
+  ],
   "rules": [
     "Declare `#[field(locked_until)]` on a queue struct for the lease form where a handler runs long or the pool cannot hold a connection per message in work; a SQLite table declares `locked_until` or `#[inbox(advisory_lock = \"..\")]`, as SQLite has no row locks.",
     "A lease setting needs the field: `InboxQueue::lease` compiles only for a struct with `#[field(locked_until)]`, and `SqlxBroker::lease` sets the lease of those tables alone.",
