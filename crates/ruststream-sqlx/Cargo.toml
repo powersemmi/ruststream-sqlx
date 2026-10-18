@@ -941,3 +941,15 @@ name = "manual_guide_ordering"
 path = "examples/manual/guide/ordering.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "guide_transactional"
+path = "examples/guide/transactional.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_transactional"
+path = "examples/manual/guide/transactional.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
