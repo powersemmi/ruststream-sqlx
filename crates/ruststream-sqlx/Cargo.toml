@@ -360,5 +360,27 @@ test = true
 
 # --- examples: group c ---
 # Publishing, Wake, Databases, AsyncAPI and Testing.
+[[example]]
+name = "sqlx_publishing_repository"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_publishing_repository"
+path = "examples/manual/sqlx_publishing_repository.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_publishing_route"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_publishing_route"
+path = "examples/manual/sqlx_publishing_route.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
 
 # Outbox.
