@@ -893,3 +893,15 @@ name = "manual_guide_getting_started"
 path = "examples/manual/guide/getting_started.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "guide_enqueueing"
+path = "examples/guide/enqueueing.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_enqueueing"
+path = "examples/manual/guide/enqueueing.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
