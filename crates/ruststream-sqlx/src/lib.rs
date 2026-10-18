@@ -3,12 +3,6 @@
 #![doc = include_str!("overview/roles.md")]
 #![doc = include_str!("overview/time.md")]
 #![doc = include_str!("overview/row_mode.md")]
-// The compile errors of row mode need the inbox and a driver: without them each example would fail
-// for that reason alone. They render where both are on, as on docs.rs.
-#![cfg_attr(
-    all(feature = "inbox", feature = "postgres"),
-    doc = include_str!("overview/row_mode_errors.md")
-)]
 #![doc = include_str!("overview/headers.md")]
 #![doc = include_str!("overview/forms.md")]
 #![doc = include_str!("overview/transactional.md")]
@@ -182,6 +176,55 @@ pub mod __private {
 /// the service ([`Lock`], [`Unlock`]). Every built-in dialect builds the lease and advisory lock
 /// forms; Postgres and MySQL build the row lock form too.
 ///
+/// A table in the advisory lock form holds each row by a lock on its key while the handler runs,
+/// with no transaction open:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// // jobs: job_id BIGSERIAL PRIMARY KEY, attempt SMALLINT NOT NULL DEFAULT 1,
+/// // payload BYTEA NOT NULL
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", advisory_lock = "jobs-{job_id}")]
+/// pub struct Transcode {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Video {
+///     path: String,
+/// }
+///
+/// # async fn encode(video: &Video) -> bool { !video.path.is_empty() }
+/// // A video takes minutes to encode. The delivery's connection keeps the job's lock while the
+/// // handler runs, with no transaction open. If the process dies, the database ends that session,
+/// // and the job returns.
+/// #[subscriber(InboxQueue::<Transcode>::new("videos"))]
+/// async fn transcode(video: &Video) -> HandlerOutcome {
+///     if encode(video).await {
+///         return HandlerOutcome::ack();
+///     }
+///     HandlerOutcome::retry()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(transcode);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
 /// # Isolation and mode
 ///
 /// `isolation = <level>` opens the table's transactions at an isolation level:
@@ -265,6 +308,123 @@ pub mod __private {
 ///
 /// `generated`, alone or beside a role, marks a column the database fills in.
 ///
+/// Each role turns on one behaviour of the queue, and a table without it keeps the default. The
+/// subscription below reads the `billing` group, takes urgent tickets first, keeps each customer's
+/// tickets in order on one worker, delays a failed ticket by five minutes, and moves it to the
+/// `escalated` group at the fifth failure. An acknowledged ticket stays in the table with its
+/// `processed_at` set.
+///
+/// ```
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
+///
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// // support_tickets: id BIGSERIAL PRIMARY KEY, queue TEXT NOT NULL, urgency SMALLINT NOT NULL,
+/// // customer TEXT NOT NULL, retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
+/// // attempt SMALLINT NOT NULL DEFAULT 1, processed_at TIMESTAMPTZ, payload BYTEA NOT NULL
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "support_tickets")]
+/// pub struct Ticket {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(group)]
+///     queue: String,
+///     #[field(priority)]
+///     urgency: i16,
+///     #[field(partition_key)]
+///     customer: String,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     #[field(processed_at, generated)]
+///     processed_at: Option<DateTime<Utc>>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Question {
+///     text: String,
+/// }
+///
+/// # async fn answer(_: &Question) -> bool { true }
+/// #[subscriber(InboxQueue::<Ticket>::new("billing"))]
+/// async fn triage(question: &Question) -> HandlerOutcome {
+///     if answer(question).await {
+///         return HandlerOutcome::ack();
+///     }
+///     HandlerOutcome::retry_after(Duration::from_secs(300))
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("support", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(triage.workers_by_key(nonzero!(4)))
+///             .max_attempts(nonzero!(5u32))
+///             .dead_letter("escalated");
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// `#[field(group, fifo = true)]` keeps each group in order: one row of a group is in work at a
+/// time, however many brokers read it, and a claim takes the group's head alone:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// // sync_jobs: id BIGSERIAL PRIMARY KEY, target TEXT NOT NULL,
+/// // retry_after TIMESTAMPTZ NOT NULL DEFAULT now(), payload BYTEA NOT NULL
+/// // Each group holds the changes bound for one system.
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "sync_jobs")]
+/// pub struct SyncChange {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(group, fifo = true)]
+///     target: String,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Change {
+///     record: String,
+/// }
+///
+/// # async fn push(change: &Change) -> bool { !change.record.is_empty() }
+/// // The CRM receives its changes one at a time, in the order they were queued.
+/// #[subscriber(InboxQueue::<SyncChange>::new("crm"))]
+/// async fn sync(change: &Change) -> HandlerOutcome {
+///     if push(change).await {
+///         return HandlerOutcome::ack();
+///     }
+///     // At once, so the change keeps its place at the head of the group.
+///     HandlerOutcome::retry()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(sync);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
 /// # The headers layout
 ///
 /// A `#[field(headers)]` field with `#[sqlx(flatten)]` holds a headers struct, which derives
@@ -331,6 +491,66 @@ pub mod __private {
 /// and `Clone + Debug + Send + Sync + 'static` of the `id` field's type. In row mode a handler
 /// takes it where its parameters make it `Clone`.
 ///
+/// # Events of the service's own
+///
+/// `custom(..)` names the events the struct writes itself, and every other event keeps the
+/// statement its dialect builds. The struct implements each named event's trait for its database
+/// ([`Claim`], [`Fetch`], [`Ack`], [`Retry`], [`RetryAfter`], [`Discard`], [`DeadLetter`],
+/// [`Extend`], and [`Lock`] and [`Unlock`] in the advisory lock form). A settlement of the service's
+/// own runs in the transaction the crate commits:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::Ack;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
+///
+/// // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs", custom(ack))]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// // A sent email stays in its table, in the `sent` group, for an audit.
+/// impl Ack<Postgres> for SendEmail {
+///     async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
+///         sqlx::query("UPDATE email_jobs SET name = 'sent' WHERE job_id = $1")
+///             .bind(id)
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0"))
+///         .with_broker(SqlxBroker::new(pool), |b| {
+///             b.include(send);
+///         })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
 /// # Column names
 ///
 /// A column is named in one place, sqlx's attributes. `#[sqlx(rename = "..")]` names a field's
@@ -347,8 +567,51 @@ pub mod __private {
 /// `#[inbox(checked, db = postgres)]` (or `mysql`, `sqlite`) also puts the statements the struct
 /// determines into sqlx's compile-time check, against `DATABASE_URL` or the `.sqlx` data of
 /// `cargo sqlx prepare`; the service's sqlx needs its `macros` feature. In the headers layout
-/// `checked` goes on the headers struct. [Statements checked at compile
-/// time](crate#statements-checked-at-compile-time) shows what it covers and what it refuses.
+/// `checked` goes on the headers struct. [The checked mode's
+/// page](https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/checked/) lists what it covers and
+/// what it refuses.
+///
+/// ```
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL,
+/// // attempt SMALLINT NOT NULL DEFAULT 1, payload BYTEA NOT NULL
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs", checked, db = postgres)]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 ///
 /// # Compile errors
 ///
@@ -396,7 +659,11 @@ pub mod __private {
 ///
 /// A handler that does not fit its table's mode meets the core's errors at the mount site: a
 /// handler of rows on a table in payload mode, a batch handler of rows with a reply or `Out`
-/// slots. [Row mode](crate#row-mode) shows both.
+/// slots:
+///
+// The compile errors of row mode need a driver: without one each example would fail for that
+// reason alone. They render where it is on, as on docs.rs.
+#[cfg_attr(feature = "postgres", doc = include_str!("inbox/row_mode_errors.md"))]
 #[cfg(feature = "inbox")]
 pub use ruststream_sqlx_macros::Inbox;
 /// Describes the queue table of a message assembled from it, and implements [`InboxHeaders`]
@@ -407,7 +674,7 @@ pub use ruststream_sqlx_macros::Inbox;
 /// `custom(..)`, `payload` and `headers` belong to the message struct, which flattens this one
 /// into its `#[field(headers)]` field. `#[inbox(checked, db = ..)]` checks the table's statements
 /// at compile time, and the message then reads its rows in a `Fetch` of its own ([the headers
-/// layout, checked](crate#the-headers-layout-checked)).
+/// layout, checked](https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/checked/)).
 ///
 /// # Examples
 ///
@@ -445,6 +712,67 @@ pub use ruststream_sqlx_macros::Inbox;
 ///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         b.include(ship);
 ///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// With `checked` on the headers struct, the message lists `fetch` in `custom(..)` and reads its
+/// rows in a [`Fetch`] of its own, where `sqlx::query!` checks that statement too:
+///
+/// ```
+/// # #[cfg(all(feature = "inbox", feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::Fetch;
+/// use ruststream_sqlx::prelude::*;
+/// use sqlx::{Error, FromRow, PgConnection, Postgres};
+///
+/// // order_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, processed_at TIMESTAMPTZ,
+/// // trace TEXT, total BIGINT NOT NULL
+/// #[derive(Debug, Clone, InboxHeaders, FromRow)]
+/// #[inbox(table = "order_jobs", checked, db = postgres)]
+/// pub struct OrderHeaders {
+///     #[field(id, generated)]
+///     pub job_id: i64,
+///     #[field(group)]
+///     pub name: String,
+///     #[field(processed_at)]
+///     pub processed_at: Option<DateTime<Utc>>,
+///     pub trace: Option<String>,
+/// }
+///
+/// #[derive(Debug, Clone, Inbox, FromRow)]
+/// #[inbox(custom(fetch))]
+/// pub struct Order {
+///     #[field(headers)]
+///     #[sqlx(flatten)]
+///     pub headers: OrderHeaders,
+///     pub total: i64,
+/// }
+///
+/// impl Fetch<Postgres> for Order {
+///     async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, Error> {
+///         let rows = sqlx::query!(
+///             "SELECT job_id, name, processed_at, trace, total FROM order_jobs \
+///              WHERE job_id = ANY($1)",
+///             ids
+///         )
+///         .fetch_all(conn)
+///         .await?;
+///         Ok(rows
+///             .into_iter()
+///             .map(|row| Self {
+///                 headers: OrderHeaders {
+///                     job_id: row.job_id,
+///                     name: row.name,
+///                     processed_at: row.processed_at,
+///                     trace: row.trace,
+///                 },
+///                 total: row.total,
+///             })
+///             .collect())
+///     }
 /// }
 /// # }
 /// # fn main() {}

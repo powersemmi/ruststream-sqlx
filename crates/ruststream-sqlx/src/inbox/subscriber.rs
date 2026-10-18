@@ -137,6 +137,56 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// # }
 /// # fn main() {}
 /// ```
+///
+/// A handler of a slice takes one claim of up to `batch(n)` rows, and each delivery settles its own
+/// row:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Email {
+///     to: String,
+/// }
+///
+/// # async fn deliver(email: &Email) -> bool { !email.to.is_empty() }
+/// // One claim is the batch, and each email settles its own row.
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send_all(emails: &[Email]) -> Vec<HandlerOutcome> {
+///     let mut outcomes = Vec::with_capacity(emails.len());
+///     for email in emails {
+///         outcomes.push(if deliver(email).await {
+///             HandlerOutcome::ack()
+///         } else {
+///             HandlerOutcome::retry()
+///         });
+///     }
+///     outcomes
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send_all.batch(nonzero!(50)));
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     pub(super) shared: Arc<Shared<DB>>,
     queue: &'static Queue,
