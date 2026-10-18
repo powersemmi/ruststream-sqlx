@@ -29,7 +29,7 @@ The statements are built once, when a subscription opens, so a message costs the
 A dialect may wrap a built-in one, such as [`dialect::Sqlite`](api:ruststream_sqlx_dialect::Sqlite), and write one statement its own way.
 It then forwards every other method, the provided methods the built-in dialect overrides included, or the wrapped statements change.
 One statement written the service's own way is usually an [event of the table](../tables/events.md) instead, which needs no dialect.
-A test addresses the broker by its type, `tb.broker::<SqlxBroker<Sqlite, Audited>>()`.
+The crate registers the brokers of its built-in dialects with the test harness; a test of a broker on a dialect of the service's own registers its type once, with `ruststream::register_testable_broker!(SqlxBroker<Sqlite, Audited>)`, and addresses it by that type, `tb.broker::<SqlxBroker<Sqlite, Audited>>()`.
 
 ## Example
 
