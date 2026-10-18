@@ -205,7 +205,7 @@ item's own documentation keeps the detail.
 - [Dialect][c-dialect]: [`SqlxBroker::with_dialect`] and [`dialect`], a dialect of the service's
   own.
 
-## AsyncAPI and testing
+## Tooling
 
 - [AsyncAPI][c-asyncapi]: the [server][c-asyncapi-server] and the [channels][c-asyncapi-channels]
   the generated document names (feature `asyncapi`).

@@ -184,7 +184,8 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// A test hands [`TestApp::start`] the app `main` runs, unchanged, and addresses the broker by its
 /// production type (feature `testing`). The broker connects in process to the database the test's
 /// pool reaches, so the service's SQL runs as in production, and the harness waits for every
-/// publish. SQLite in memory needs no server. After `tokio::time::pause()` the queue reads "now"
+/// publish: a row counts for the queue it lands in, its table and group, whatever name a
+/// subscription reads it by. SQLite in memory needs no server. After `tokio::time::pause()` the queue reads "now"
 /// from the test's clock, which `tb.advance(d)` moves past a delayed retry or a lease; a table on
 /// [`DatabaseClock`](crate::DatabaseClock) reads the database's time instead. The crate registers
 /// `SqlxBroker<Postgres>`, `SqlxBroker<MySql>`, `SqlxBroker<Sqlite>` and `SqlxBroker<Any>` with the
@@ -395,6 +396,11 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// mode [`Opens`] for it. The dialect runs while subscriptions start; messages travel through
     /// the statements it built.
     ///
+    /// The crate registers the brokers of its built-in dialects with the test harness. A test of
+    /// a broker on a dialect of the service's own registers its type once,
+    /// `ruststream::register_testable_broker!(SqlxBroker<Postgres, Audited>);`, and addresses it
+    /// by that type, `tb.broker::<SqlxBroker<Postgres, Audited>>()`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -406,7 +412,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// /// Postgres with statements of the service's own, written out in the crate overview.
+    /// /// Postgres with statements of the service's own.
     /// #[derive(Debug)]
     /// pub struct Audited;
     /// # impl Dialect for Audited {
