@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // An `AnyPool` reaches its driver by the URL's scheme.
     install_default_drivers();
     let pool = AnyPool::connect(&env::var("DATABASE_URL")?).await?;
+    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
     service(pool.clone()).run().await?;
     pool.close().await;
     Ok(())
