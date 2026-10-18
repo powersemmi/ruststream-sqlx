@@ -2,6 +2,8 @@
 //! retry and a processed mark. A by-name subscription reads it through the same column kinds
 //! whichever form describes it.
 
+use std::time::Duration;
+
 use ruststream::OutgoingMessage;
 use ruststream::testing::TestApp;
 use ruststream_sqlx::__private::Events;
@@ -10,7 +12,7 @@ use ruststream_sqlx::{InboxRow, Publish};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection};
 
-use super::{SETTLED, broker, count, database};
+use super::{broker, count, database};
 
 const SCHEMA: &str = "
 CREATE TABLE email_tasks (
@@ -24,8 +26,8 @@ CREATE TABLE email_tasks (
 );
 ";
 
-const QUEUED: &str =
-    "INSERT INTO email_tasks (name, payload) VALUES ('emails', '{\"to\":\"ops@example.com\"}')";
+/// How long a first delivery waits before it comes back.
+const RETRY: Duration = Duration::from_millis(50);
 
 const PROCESSED: &str = "SELECT count(*) FROM email_tasks WHERE processed_at IS NOT NULL";
 
@@ -154,7 +156,7 @@ impl Publish<Sqlite> for manual::EmailJob {
 async fn send_derived(_email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
     // The first delivery waits a moment and comes back counted as the second attempt.
     if attempt == Some(1) {
-        HandlerOutcome::retry_after(SETTLED / 8)
+        HandlerOutcome::retry_after(RETRY)
     } else {
         HandlerOutcome::ack()
     }
@@ -163,7 +165,7 @@ async fn send_derived(_email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> Handl
 #[subscriber(InboxQueue::<manual::EmailJob>::new("emails"))]
 async fn send_manual(_email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
     if attempt == Some(1) {
-        HandlerOutcome::retry_after(SETTLED / 8)
+        HandlerOutcome::retry_after(RETRY)
     } else {
         HandlerOutcome::ack()
     }
@@ -177,15 +179,22 @@ async fn send_by_name(_email: &Email) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_derived_table_retries_then_marks_the_row() {
     let db = database(SCHEMA).await;
-    sqlx::query(QUEUED)
-        .execute(&db.pool)
-        .await
-        .expect("the row writes");
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker(&db.pool), |b| {
+    let broker = broker(&db.pool).route::<derived::EmailJob>("emails");
+    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
         b.include(send_derived);
     });
+    // Live: the retry's delay passes in real time, and the harness waits for the delivery it
+    // saw published and for the retry it asked.
     let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the delivery settles");
+    tb.broker::<SqlxBroker<Sqlite>>()
+        .message(&email())
+        .to("emails")
+        .publish()
+        .await
+        .expect("the first delivery settles");
+    tb.advance(RETRY)
+        .await
+        .expect("the retried delivery settles");
     tb.broker::<SqlxBroker<Sqlite>>()
         .subscriber("emails")
         .assert_called(2)
@@ -203,15 +212,22 @@ async fn the_derived_table_retries_then_marks_the_row() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_manual_table_retries_then_marks_the_row() {
     let db = database(SCHEMA).await;
-    sqlx::query(QUEUED)
-        .execute(&db.pool)
-        .await
-        .expect("the row writes");
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker(&db.pool), |b| {
+    let broker = broker(&db.pool).route::<manual::EmailJob>("emails");
+    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
         b.include(send_manual);
     });
+    // Live: the retry's delay passes in real time, and the harness waits for the delivery it
+    // saw published and for the retry it asked.
     let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the delivery settles");
+    tb.broker::<SqlxBroker<Sqlite>>()
+        .message(&email())
+        .to("emails")
+        .publish()
+        .await
+        .expect("the first delivery settles");
+    tb.advance(RETRY)
+        .await
+        .expect("the retried delivery settles");
     tb.broker::<SqlxBroker<Sqlite>>()
         .subscriber("emails")
         .assert_called(2)
@@ -233,14 +249,13 @@ async fn a_subscription_by_name_reads_the_manual_table() {
     let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
         b.include(send_by_name);
     });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
+    let tb = TestApp::start(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Sqlite>>()
         .message(&email())
         .to("emails")
         .publish()
         .await
         .expect("the publish settles");
-    tb.advance(SETTLED).await.expect("the delivery settles");
     tb.broker::<SqlxBroker<Sqlite>>()
         .subscriber("emails")
         .assert_called_once()
