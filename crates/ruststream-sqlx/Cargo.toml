@@ -559,3 +559,48 @@ name = "manual_sqlx_outbox_republish"
 path = "examples/manual/sqlx_outbox_republish.rs"
 required-features = ["outbox", "sqlite", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "sqlx_outbox_wrap"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_wrap"
+path = "examples/manual/sqlx_outbox_wrap.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_errors"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_errors"
+path = "examples/manual/sqlx_outbox_errors.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_pool"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_pool"
+path = "examples/manual/sqlx_outbox_pool.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_statements"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_statements"
+path = "examples/manual/sqlx_outbox_statements.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
