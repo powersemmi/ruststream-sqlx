@@ -1,6 +1,6 @@
 ---
 sidebar_position: 11
-description: "Run a queue in production: the schema and its index, startup checks and compile-time checked SQL, the pool, database versions, poolers, shutdown and the AsyncAPI document."
+description: "Run a queue in production: its schema and index, startup and compile-time checks, the pool, database versions, poolers, shutdown and the AsyncAPI document."
 ---
 
 import Tabs from '@theme/Tabs';
