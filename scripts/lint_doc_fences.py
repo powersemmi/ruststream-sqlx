@@ -71,7 +71,7 @@ SNIPPET_ROOT = ROOT / "crates" / "ruststream-sqlx"
 # Paths within a documentation tree: the English one under `docs/` and each translation under
 # `website/i18n/<locale>/docusaurus-plugin-content-docs/current/` hold the same pages.
 # The testing guide walks through the tests of its service, so it shows tests too.
-TESTING_PAGES = ("components/testing/", "guides/testing")
+TESTING_PAGES = ("components/testing/", "components/outbox/switch", "guides/testing")
 COMPONENT_PAGES = ("components/",)
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
 BANNED_HEADINGS = ("how it works", "see also", "pages in this category")
