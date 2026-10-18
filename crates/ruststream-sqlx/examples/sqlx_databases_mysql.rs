@@ -17,10 +17,10 @@ use sqlx::mysql::{MySql, MySqlConnection, MySqlPool};
 use ruststream_sqlx::prelude::*;
 
 // --8<-- [start:service]
-/// One row of `email_jobs`, claimed under a lease. The claim stamps `locked_until` with a whole
+/// One row of `welcome_jobs`, claimed under a lease. The claim stamps `locked_until` with a whole
 /// second, so a `DATETIME` column without fractions holds it.
 #[derive(Inbox, sqlx::FromRow)]
-#[inbox(table = "email_jobs")]
+#[inbox(table = "welcome_jobs")]
 struct SendEmail {
     #[field(id, generated)]
     id: i64,
@@ -33,7 +33,7 @@ struct SendEmail {
 }
 
 /// The claim order, `(group, id)` for this table's columns, keeps each claim to its group's rows.
-const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS email_jobs (
+const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS welcome_jobs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(64) NOT NULL,
     locked_until DATETIME,
@@ -79,7 +79,7 @@ impl Publish<MySql> for SendEmail {
         conn: &mut MySqlConnection,
         message: &OutgoingMessage<'_>,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query("INSERT INTO email_jobs (name, payload) VALUES (?, ?)")
+        sqlx::query("INSERT INTO welcome_jobs (name, payload) VALUES (?, ?)")
             .bind(message.name())
             .bind(message.payload())
             .execute(conn)
