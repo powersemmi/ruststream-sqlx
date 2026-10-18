@@ -25,14 +25,14 @@ export function table(words: Words): {boxes: Box[]; links: Link[]} {
   });
   const boxes: Box[] = [
     {id: 'write', x: 12, y: 0, w: 336, h: 44, kind: 'service', lines: lines(words, 'write')},
-    {id: 'table', x: 0, y: 70, w: 360, h: 390, kind: 'group', lines: lines(words, 'table')},
-    state('scheduled', LEFT, 96, 'step'),
-    state('due', RIGHT, 96, 'step'),
-    state('inWork', RIGHT, 195, 'core', '/architecture/queues/claims/'),
-    state('deadLetter', LEFT, 294, 'bad', '/architecture/settlement/'),
-    state('finished', RIGHT, 294, 'good', '/architecture/settlement/'),
-    {id: 'roles', x: 12, y: 374, w: 336, h: 74, kind: 'broker', lines: lines(words, 'roles')},
-    {id: 'optional', x: 0, y: 472, w: 360, h: 44, kind: 'note', lines: lines(words, 'optional')},
+    {id: 'table', x: 0, y: 92, w: 360, h: 390, kind: 'group', lines: lines(words, 'table')},
+    state('scheduled', LEFT, 118, 'step'),
+    state('due', RIGHT, 118, 'step'),
+    state('inWork', RIGHT, 217, 'core', '/architecture/queues/claims/'),
+    state('deadLetter', LEFT, 316, 'bad', '/architecture/settlement/'),
+    state('finished', RIGHT, 316, 'good', '/architecture/settlement/'),
+    {id: 'roles', x: 12, y: 396, w: 336, h: 74, kind: 'broker', lines: lines(words, 'roles')},
+    {id: 'optional', x: 0, y: 494, w: 360, h: 44, kind: 'note', lines: lines(words, 'optional')},
   ];
   // Where along the write box a link leaves, straight above the column it enters.
   const above = (x: number): number => (x + COLUMN / 2 - 12) / 336;

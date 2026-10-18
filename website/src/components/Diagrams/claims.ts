@@ -57,25 +57,6 @@ export function claims(words: Words): {boxes: Box[]; links: Link[]; lanes: Lane[
       }),
     ),
   );
-  // The lease is kept alive beside its handler, by a task of the subscription's own.
-  boxes.push({
-    id: 'keeper',
-    x: columnX(1),
-    y: TOP + 2 * STEP,
-    w: COLUMN,
-    h: H,
-    kind: 'note',
-    lines: lines(words, 'keeper'),
-  });
-  boxes.push({
-    id: 'connections',
-    x: 0,
-    y: TOP + 4 * STEP + H + 22,
-    w: 360,
-    h: 44,
-    kind: 'note',
-    lines: lines(words, 'connections'),
-  });
   const links: Link[] = FORMS.flatMap((form) =>
     STEPS[form].slice(1).map(([id], index) => ({from: STEPS[form][index]![0], to: id})),
   );

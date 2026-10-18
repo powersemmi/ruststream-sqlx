@@ -17,15 +17,13 @@ export const words = {
   "rowLockSettle": ["Settlement", "statement,", "then COMMIT"],
   "leaseClaim": ["UPDATE ..", "locked_until,", "attempt + 1", "RETURNING"],
   "leaseCommit": ["COMMIT at", "once: no", "connection", "held"],
-  "keeper": ["the lease is", "extended every", "half lease"],
-  "leaseHandler": ["Handler runs,", "no transaction", "open"],
+  "leaseHandler": ["Handler runs,", "no transaction;", "lease extended", "each half lease"],
   "leaseSettle": ["Settlement", "WHERE the", "lease is still", "its own"],
   "advisoryCandidates": ["Select due", "rows with", "their keys"],
   "advisoryLock": ["Lock each key", "on its own", "connection,", "never waiting"],
   "advisoryTake": ["Take the row:", "count the", "attempt,", "read it"],
   "advisoryHandler": ["Handler runs,", "the key's lock", "held"],
-  "advisorySettle": ["Settlement on", "that", "connection,", "then unlock"],
-  "connections": ["A row lock and an advisory lock hold a connection", "per delivery; a lease holds one only for a statement"]
+  "advisorySettle": ["Settlement on", "that", "connection,", "then unlock"]
 };
 
 # Claims

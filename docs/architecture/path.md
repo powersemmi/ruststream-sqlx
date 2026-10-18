@@ -16,7 +16,7 @@ export const words = {
   "delivery": ["InboxDelivery", "the row, its", "id, attempt"],
   "decode": ["The codec", "reads the", "payload lent", "from the row"],
   "handler": ["Handler"],
-  "reply": ["Reply: one", "buffer reused,", "Routed inserts", "it"],
+  "reply": ["Reply: one", "buffer reused,", "inserted by", "Routed"],
   "settle": ["The outcome", "settles the", "row"],
   "batchClaim": ["Claim up to", "the batch", "size in rows"],
   "batchDelivery": ["A batch of", "deliveries,", "one claim"],
@@ -62,5 +62,5 @@ shut down and that the table can hold every header of the message. After the ins
 the row with `pg_notify` under `listen_notify`, and wakes the subscriptions of its table in the
 process. The delivery settles after the reply, as [Settlement](settlement.md) draws.
 
-[Benchmarks](benchmarks/index.md) publishes what a message costs on each of these paths, in
+[Benchmarks](/architecture/benchmarks/) publishes what a message costs on each of these paths, in
 instructions and allocations, beside a raw sqlx loop running the same statements.

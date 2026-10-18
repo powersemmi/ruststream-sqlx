@@ -25,7 +25,7 @@ export const retries = {
   "outcome": ["The handler returns retry() or retry_after(d)"],
   "cap": ["max_attempts: has the attempt reached the cap?"],
   "returns": ["Below the cap: the row", "returns with one more", "attempt, at once or", "after retry_after"],
-  "deadLetter": ["At the cap: the row", "moves to the dead-", "letter group, or into", "the dead-letter table"],
+  "deadLetter": ["At the cap: the row", "moves to its", "dead-letter group", "or table"],
   "restart": ["The delay is a column of the row: it outlives a restart,", "and no copy of the message is ever published"],
   "handled": "handled",
   "retries": "asks again",

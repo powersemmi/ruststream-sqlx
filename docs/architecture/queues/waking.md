@@ -13,7 +13,7 @@ export const words = {
   "full": ["Did the claim", "fill its limit?"],
   "wait": ["Wait", "the poll interval,", "or less when woken"],
   "publish": ["A publish of this", "broker into the", "table and group"],
-  "reconnect": ["The listening", "connection is back:", "every subscription"],
+  "reconnect": ["The listening", "connection is back:", "wakes them all"],
   "notification": ["A notification on", "the table's channel,", "on PostgreSQL"],
   "writer": ["Another process,", "a trigger: pg_notify", "(channel, group)"],
   "floor": ["The poll interval stays the floor under every wake-up:", "one second unless the broker or the subscription sets one"],

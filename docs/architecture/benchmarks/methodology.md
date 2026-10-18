@@ -34,7 +34,7 @@ table through `Routed`, the connected broker's default publisher.
 The outbox's scenarios are one app in three variants that take the three places: the app with no
 outbox, the same app with the outbox written by hand in raw sqlx, on the connections the crate's
 middleware takes, and the same app with this crate's outbox. A message published from outside a
-handler goes through [`Outbox::wrap`](api:ruststream_sqlx::Outbox::wrap) in the last one.
+handler goes through [`Outbox::wrap`](api:ruststream_sqlx::outbox::Outbox::wrap) in the last one.
 
 ## The run
 

@@ -36,7 +36,7 @@ once a consumer acknowledges, and resends the rest at startup.
 
 The outbox is a plugin of the RustStream runtime, not part of a queue table: two middlewares and a
 startup hook that wrap the publishers and handlers of any broker, the inbox's included. A registry,
-built with `outbox!` or [`Outbox::track`](api:ruststream_sqlx::Outbox::track), names the
+built with `outbox!` or [`Outbox::track`](api:ruststream_sqlx::outbox::Outbox::track), names the
 messages it tracks and the record type each one writes. The publish layer writes a record of each
 tracked message through the record's own
 [`Publish`](api:ruststream_sqlx::outbox::Publish) impl, then sends the message with the record's

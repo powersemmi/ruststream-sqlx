@@ -74,7 +74,7 @@ was built with. Both take the encoded bytes as a lent slice, so a reply's buffer
 message to the next.
 
 What remains per message is stated by the crate and measured on
-[Benchmarks](benchmarks/index.md):
+[Benchmarks](/architecture/benchmarks/):
 
 - `Routed` makes one hash lookup and one dynamic call into the row's `Publish`. The call's future
   stays in a 1024-byte slot in place, and is boxed only when it is larger.
