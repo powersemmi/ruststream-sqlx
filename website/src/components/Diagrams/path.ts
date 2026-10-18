@@ -40,10 +40,10 @@ export const STEPS: Record<keyof typeof COLUMNS, [string, number][]> = {
  */
 export function path(words: Words): {boxes: Box[]; links: Link[]; lanes: Lane[]} {
   const kind = (id: string): Box['kind'] => {
-    if (/[hH]andler$/.test(id)) {
+    if (/handler$/i.test(id)) {
       return 'service';
     }
-    return /[sS]ettle$/.test(id) ? 'core' : 'broker';
+    return /settle$/i.test(id) ? 'core' : 'broker';
   };
   const href = (id: string): string | undefined => {
     if (/[sS]ettle$/.test(id)) {
