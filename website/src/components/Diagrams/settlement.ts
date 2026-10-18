@@ -1,5 +1,5 @@
 import type {Box, Link} from './flow';
-import {lines, word, type Words} from './words';
+import {lines, type Words} from './words';
 
 // The three forms at the foot of the drawing, each where its statement takes effect.
 export const ENDS = ['rowLock', 'lease', 'advisory'] as const;
@@ -41,7 +41,7 @@ export function settlement(words: Words): {boxes: Box[]; links: Link[]} {
   ];
   const along = (index: number): number => (columnX(index) + COLUMN / 2 - 12) / 336;
   const links: Link[] = [
-    {from: 'outcome', to: 'rollback', label: word(words, 'transactional')},
+    {from: 'outcome', to: 'rollback'},
     {from: 'rollback', to: 'statement'},
     ...ENDS.map((id, index): Link => ({from: 'statement', to: id, exitAt: along(index)})),
   ];

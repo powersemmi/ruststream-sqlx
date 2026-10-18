@@ -3,8 +3,8 @@ import {lines, word, type Words} from './words';
 
 // The two columns of row states: the rows that wait, and the rows the queue works through.
 const LEFT = 12;
-const RIGHT = 198;
-const COLUMN = 150;
+const RIGHT = 188;
+const COLUMN = 160;
 
 /*
  * One queue table and the states of its rows. A publish or the service's own insert writes a

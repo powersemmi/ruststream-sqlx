@@ -11,12 +11,11 @@ export const settlement = {
   "text": "The diagram as text",
   "outcome": ["The handler's outcome: ack, drop, retry(),", "retry_after(d), or the dead letter at the cap"],
   "rollback": ["In transactional mode, any outcome but ack first", "rolls back what the handler wrote"],
-  "statement": ["The table's statement for the outcome, the dialect's", "or the service's own: an UPDATE, a DELETE,", "or a move to the dead letter"],
+  "statement": ["The table's statement for the outcome, its own", "or the dialect's: an UPDATE, a DELETE, or a", "move to the dead letter"],
   "rowLock": ["Row lock:", "in the claim's", "transaction,", "then COMMIT"],
   "lease": ["Lease: only", "while the row", "holds this", "delivery's", "lease"],
   "advisory": ["Advisory lock:", "on the key's", "connection,", "then unlock"],
-  "dropped": ["A delivery dropped unsettled: the transaction rolls back,", "the lease is released, or the lock goes with its connection"],
-  "transactional": "settles"
+  "dropped": ["Dropped unsettled: the transaction rolls back, the lease", "is released, or the lock goes with its connection"]
 };
 
 export const retries = {
@@ -24,8 +23,8 @@ export const retries = {
   "text": "The diagram as text",
   "row": ["A row in work, its attempt column", "counting the deliveries"],
   "outcome": ["The handler returns retry() or retry_after(d)"],
-  "cap": ["max_attempts: has the row's attempt reached the cap?"],
-  "returns": ["Below the cap: the row", "returns, at once or once", "retry_after passes,", "with one more attempt"],
+  "cap": ["max_attempts: has the attempt reached the cap?"],
+  "returns": ["Below the cap: the row", "returns with one more", "attempt, at once or", "after retry_after"],
   "deadLetter": ["At the cap: the row", "moves to the dead-", "letter group, or into", "the dead-letter table"],
   "restart": ["The delay is a column of the row: it outlives a restart,", "and no copy of the message is ever published"],
   "handled": "handled",

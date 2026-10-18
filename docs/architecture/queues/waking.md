@@ -9,10 +9,10 @@ import {Diagram} from '@site/src/components/Diagrams';
 export const words = {
   "title": "A subscription's claim loop, and what ends its wait before the poll interval",
   "text": "The diagram as text",
-  "claim": ["Claim", "up to the limit: a row", "per free worker, or a batch"],
+  "claim": ["Claim", "a row per free", "worker, or a batch"],
   "full": ["Did the claim", "fill its limit?"],
   "wait": ["Wait", "the poll interval,", "or less when woken"],
-  "publish": ["A publish of this broker", "into the table, for", "its group"],
+  "publish": ["A publish of this", "broker into the", "table and group"],
   "reconnect": ["The listening", "connection is back:", "every subscription"],
   "notification": ["A notification on", "the table's channel,", "on PostgreSQL"],
   "writer": ["Another process,", "a trigger: pg_notify", "(channel, group)"],

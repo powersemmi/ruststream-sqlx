@@ -10,13 +10,13 @@ export const words = {
   "title": "One subscription mounted with workers(4) on a pool of eight connections: a claim per free worker, and one connection left for the handlers",
   "text": "The diagram as text",
   "subscription": ["InboxQueue subscription, workers(4): a claim", "in flight for each free worker"],
-  "worker0": ["Worker 1", "claim, run,", "settle"],
-  "worker1": ["Worker 2", "claim, run,", "settle"],
-  "worker2": ["Worker 3", "claim, run,", "settle"],
-  "worker3": ["Worker 4", "claim, run,", "settle"],
+  "worker0": ["Worker 1", "claim", "and settle"],
+  "worker1": ["Worker 2", "claim", "and settle"],
+  "worker2": ["Worker 3", "claim", "and settle"],
+  "worker3": ["Worker 4", "claim", "and settle"],
   "pool": ["Pool of 8: the subscription holds up to 7,", "one stays for the handlers' own queries"],
-  "oneClaim": ["One claim in flight at a time on SQLite, on a FIFO table, on a", "table with a partition_key column, and on a MySQL or", "MariaDB lease table"],
-  "byKey": ["workers_by_key(n): a row runs on the lane its partition_key", "picks, so the rows of one key keep their claim order"],
+  "oneClaim": ["One claim in flight at a time: on SQLite, on a FIFO", "table, on a table with a partition_key column, and", "on a MySQL or MariaDB lease table"],
+  "byKey": ["workers_by_key(n): a row runs on the lane of its", "partition_key, so one key keeps its claim order"],
   "claims": "claims"
 };
 

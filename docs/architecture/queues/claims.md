@@ -25,7 +25,7 @@ export const words = {
   "advisoryTake": ["Take the row:", "count the", "attempt,", "read it"],
   "advisoryHandler": ["Handler runs,", "the key's lock", "held"],
   "advisorySettle": ["Settlement on", "that", "connection,", "then unlock"],
-  "connections": ["A row lock and an advisory lock hold a connection per delivery", "in work; a lease holds one only while a statement runs"]
+  "connections": ["A row lock and an advisory lock hold a connection", "per delivery; a lease holds one only for a statement"]
 };
 
 # Claims

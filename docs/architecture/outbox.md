@@ -10,7 +10,7 @@ export const words = {
   "title": "A tracked message: recorded, sent with its record's id over any broker, fetched by the consumer and marked once its handler acknowledges",
   "text": "The diagram as text",
   "producer": ["Producer handler", "publishes a tracked message"],
-  "republish": ["At startup:", "every record still", "unprocessed"],
+  "republish": ["At startup:", "each record not", "yet processed"],
   "record": ["Publish layer: the service's", "INSERT of the record, on a", "connection of its own"],
   "broker": ["Any RustStream broker: the", "message and its record's id"],
   "fetch": ["Subscription layer: the", "record fetched by its id", "while still unprocessed"],

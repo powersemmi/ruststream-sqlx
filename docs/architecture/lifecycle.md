@@ -16,7 +16,7 @@ export const words = {
   "closed": ["ClosedSqlxBroker", "locks_released,", "connections_closed"],
   "config": ["The pool, routes, poll", "interval, lease: no I/O"],
   "connection": ["One connection taken,", "the dialect resolved;", "one held for LISTEN", "under listen_notify"],
-  "subscriptions": ["Each subscription:", "its declaration checked,", "statements built, the", "server's version read,", "each statement prepared"],
+  "subscriptions": ["Each subscription:", "declaration checked,", "statements built,", "server version read,", "each one prepared"],
   "running": ["Claim loops run;", "a keeper extends the", "leases each half lease"],
   "stop": ["Claims and keepers", "stop; advisory locks", "released; the listener", "closed; the pool stays", "the service's"],
   "afterShutdown": ["A publisher that outlives the broker answers", "SqlxBrokerError::Closed, never a silent success"],
