@@ -32,6 +32,14 @@ struct Invoice {
     n: u32,
 }
 
+/// The job a handler of `orders` answers with, a row of the table without groups that `worker`
+/// reads under a name of its own.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
+#[outgoing(name = "jobs")]
+struct Followup {
+    n: u32,
+}
+
 /// How long a test waits for a job before it reports that no wake-up brought the subscription to
 /// it: a bound on a failure, far below the poll interval.
 const HANDLED: Duration = Duration::from_secs(10);
@@ -47,6 +55,7 @@ live::matrix! {
         SqlxBroker::new(pool.clone())
             .poll_interval(INTERVAL)
             .route::<Plain>("plain")
+            .route::<Plain>("jobs")
             .route::<SendEmail>("orders")
             .route::<SendEmail>("a")
             .route::<SendEmail>("invoices")
@@ -80,6 +89,16 @@ live::matrix! {
     #[subscriber(InboxQueue::<SendEmail>::new("b"))]
     async fn second(_job: &Job) -> HandlerOutcome {
         HandlerOutcome::ack()
+    }
+
+    #[subscriber(InboxQueue::<Plain>::new("worker"))]
+    async fn work(_job: &Job) -> HandlerOutcome {
+        HandlerOutcome::ack()
+    }
+
+    #[subscriber(InboxQueue::<SendEmail>::new("orders"), reply)]
+    async fn follow_up(job: &Job) -> Followup {
+        Followup { n: job.n }
     }
 
     /// Starts `app` in process.
@@ -229,6 +248,60 @@ live::matrix! {
         tb.settle().await.expect("the refused write settles");
         tb.broker::<SqlxBroker<Db>>().subscriber("plain").assert_not_called();
         assert_eq!(db.count("plain_jobs").await, 0, "the refused row never reached the table");
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    // A table without groups is one queue, whatever names its route and its subscription give it.
+    // The test runs on one thread, so nothing else runs between the publish's return and the
+    // assertion, and the handler runs only after the row's write and its claim, each a database
+    // call: a harness that did not count the row returns before either.
+    #[tokio::test]
+    async fn the_harness_waits_for_a_row_its_subscription_reads_under_another_name() {
+        let Some(db) = database().await else { return };
+        let app = RustStream::new(AppInfo::new("worker", "0.0.0"))
+            .with_broker(broker(&db.pool), |b| {
+                b.include(work);
+            });
+        let tb = started(app).await;
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&Job { n: 3 })
+            .to("jobs")
+            .publish()
+            .await
+            .expect("the job is handled");
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("worker")
+            .assert_called_once()
+            .with(&Job { n: 3 })
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
+    // The same, for a row the service's own publisher writes under a name the subscription does
+    // not carry. A claim that runs while the replying delivery settles counts the row itself, so
+    // this test is the certain one only where the two do not overlap; the test above always is.
+    #[tokio::test]
+    async fn the_harness_waits_for_a_reply_its_subscription_reads_under_another_name() {
+        let Some(db) = database().await else { return };
+        let app = RustStream::new(AppInfo::new("follow-ups", "0.0.0"))
+            .with_broker(broker(&db.pool), |b| {
+                b.include(follow_up).out_reply(Repository::<Plain>::default());
+                b.include(work);
+            });
+        let tb = started(app).await;
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&Job { n: 5 })
+            .to("orders")
+            .publish()
+            .await
+            .expect("the order and its follow-up are handled");
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("worker")
+            .assert_called_once()
+            .with(&Job { n: 5 })
+            .settled(HandlerOutcome::ack());
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
     }

@@ -18,7 +18,7 @@ use crate::inbox::form::advisory::settle::settle_advised;
 use crate::inbox::form::lease::settle::{lease_lost, settle_leased};
 use crate::inbox::form::row_lock::{settle_batched, settle_own};
 #[cfg(feature = "testing")]
-use crate::inbox::testing::{off_clock, returns_after};
+use crate::inbox::testing::{QueueAt, off_clock, returns_after};
 use crate::inbox::transactional::InboxMode;
 use crate::inbox::transactional::settle::{settle_leased_lent, settle_lent, transaction_held};
 
@@ -121,13 +121,13 @@ where
         step: Step,
     ) -> Result<(), AckError> {
         let harness = &connection.harness;
-        let name = self.queue.name;
+        let queue = self.queue;
         let leased = matches!(self.hold, Some(Hold::Lease { .. }));
         let advised = matches!(self.hold, Some(Hold::Advisory(_)));
         // A retry's row is counted again before the statement that returns it, so a claim that
         // takes it at once finds it counted.
         if step == Step::Retry {
-            harness.expect(name);
+            harness.expect(QueueAt::read(queue));
         }
         let settled = off_clock(self.run(step, harness.now()))
             .await
@@ -138,10 +138,10 @@ where
             // leased row comes back only from a release that took effect, and a row whose session
             // `shutdown` released never comes back to this connection.
             Step::Retry if (leased || (advised && is_closed(&settled))) && settled.is_err() => {
-                harness.refused(name);
+                harness.refused(QueueAt::read(queue));
             }
             // The row comes back once its delay runs out, which `TestApp::advance` fires.
-            Step::RetryAfter(delay) if settled.is_ok() => returns_after(&connection, name, delay),
+            Step::RetryAfter(delay) if settled.is_ok() => returns_after(&connection, queue, delay),
             _ => {}
         }
         harness.released();

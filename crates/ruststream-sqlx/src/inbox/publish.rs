@@ -17,7 +17,7 @@ use super::engine::Events;
 use super::error::SqlxBrokerError;
 use super::events::Publish;
 #[cfg(feature = "testing")]
-use super::testing::{cancelled, off_clock};
+use super::testing::{QueueAt, cancelled, off_clock};
 use crate::home;
 
 mod repository;
@@ -199,12 +199,16 @@ where
     Row: Publish<DB> + Events<DB>,
 {
     #[cfg(feature = "testing")]
-    shared.harness.expect(message.name());
+    shared
+        .harness
+        .expect(QueueAt::written(wake, message.name()));
     let inserted = insert::<DB, Row>(shared, wake, message).await;
     #[cfg(feature = "testing")]
     match &inserted {
         Ok(()) => shared.harness.published(message),
-        Err(_) => shared.harness.refused(message.name()),
+        Err(_) => shared
+            .harness
+            .refused(QueueAt::written(wake, message.name())),
     }
     if inserted.is_ok() {
         wake.wake(message.name());

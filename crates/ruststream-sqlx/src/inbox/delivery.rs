@@ -27,7 +27,7 @@ use super::form::row_lock::BatchTx;
 use super::headers::HeaderCell;
 use super::queue::Queue;
 #[cfg(feature = "testing")]
-use super::testing::off_clock;
+use super::testing::{QueueAt, off_clock};
 use super::transactional::{InboxMode, Plain, TxHold};
 use super::tx::PoolTx;
 use super::{Lane, QueueRow, RowLane};
@@ -559,7 +559,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
                 if let Some(connection) = in_process {
                     // The row comes back once its session ends; it is counted first, so a claim
                     // that takes it at once finds it counted.
-                    connection.harness.expect(self.queue.name);
+                    connection.harness.expect(QueueAt::read(self.queue));
                     drop(hold);
                     connection.harness.released();
                     return;
@@ -592,7 +592,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
         }
         #[cfg(feature = "testing")]
         if let Some(connection) = in_process {
-            connection.harness.returned(self.queue.name);
+            connection.harness.returned(QueueAt::read(self.queue));
         }
     }
 }
