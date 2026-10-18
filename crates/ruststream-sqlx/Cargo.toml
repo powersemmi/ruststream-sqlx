@@ -879,3 +879,137 @@ name = "manual_sqlx_time_types"
 path = "examples/manual/sqlx_time_types.rs"
 required-features = ["inbox", "sqlite", "time", "testing"]
 test = true
+
+# --- examples: guides ---
+
+[[example]]
+name = "guide_getting_started"
+path = "examples/guide/getting_started.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_getting_started"
+path = "examples/manual/guide/getting_started.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_enqueueing"
+path = "examples/guide/enqueueing.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_enqueueing"
+path = "examples/manual/guide/enqueueing.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_retries"
+path = "examples/guide/retries.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_retries"
+path = "examples/manual/guide/retries.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_claim_forms"
+path = "examples/guide/claim_forms.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_claim_forms"
+path = "examples/manual/guide/claim_forms.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_ordering"
+path = "examples/guide/ordering.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_ordering"
+path = "examples/manual/guide/ordering.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_transactional"
+path = "examples/guide/transactional.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_transactional"
+path = "examples/manual/guide/transactional.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_scaling"
+path = "examples/guide/scaling.rs"
+required-features = ["inbox", "sqlite", "postgres", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_scaling"
+path = "examples/manual/guide/scaling.rs"
+required-features = ["inbox", "sqlite", "postgres", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_relay"
+path = "examples/guide/relay.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_relay"
+path = "examples/manual/guide/relay.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_outbox"
+path = "examples/guide/outbox.rs"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_outbox"
+path = "examples/manual/guide/outbox.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_testing"
+path = "examples/guide/testing.rs"
+required-features = ["inbox", "sqlite", "postgres", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_testing"
+path = "examples/manual/guide/testing.rs"
+required-features = ["inbox", "sqlite", "postgres", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "guide_production"
+path = "examples/guide/production.rs"
+required-features = ["inbox", "postgres", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "manual_guide_production"
+path = "examples/manual/guide/production.rs"
+required-features = ["inbox", "postgres", "testing", "asyncapi"]
+test = true
