@@ -1,12 +1,12 @@
 ---
-title: Settlement
+title: Outcomes
 description: "A handler's outcome is a statement on its row: ack deletes it or sets processed_at, retry returns it at once with one more attempt, drop finishes it."
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 
-# Settlement
+# Outcomes
 
 A handler's outcome is a statement on its row: `ack` deletes it or sets `processed_at`, `retry` returns it at once with one more attempt, `drop` finishes it.
 
