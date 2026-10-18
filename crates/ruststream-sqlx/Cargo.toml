@@ -269,3 +269,36 @@ test = true
 name = "sqlx_tables_checked"
 required-features = ["inbox", "postgres", "testing"]
 test = true
+
+[[example]]
+name = "sqlx_messages_payload"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_messages_payload"
+path = "examples/manual/sqlx_messages_payload.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_messages_rows"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_messages_rows"
+path = "examples/manual/sqlx_messages_rows.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_messages_decoding"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_messages_decoding"
+path = "examples/manual/sqlx_messages_decoding.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
