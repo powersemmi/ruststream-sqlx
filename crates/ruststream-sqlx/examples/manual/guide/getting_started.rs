@@ -182,7 +182,7 @@ mod tests {
             .subscriber("thumbnails")
             .assert_called_once()
             .with(&image)
-            .settled(HandlerOutcome::drop());
+            .settled(HandlerOutcome::ack());
         let left: i64 = sqlx::query_scalar("SELECT count(*) FROM thumbnail_jobs")
             .fetch_one(&pool)
             .await?;
@@ -204,7 +204,7 @@ mod tests {
         tb.broker::<SqlxBroker<Sqlite>>()
             .subscriber("thumbnails")
             .assert_called_once()
-            .settled(HandlerOutcome::ack());
+            .settled(HandlerOutcome::drop());
         Ok(())
     }
 }
