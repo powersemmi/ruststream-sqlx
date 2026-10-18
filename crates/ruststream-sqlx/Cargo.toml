@@ -604,3 +604,24 @@ path = "examples/manual/sqlx_outbox_statements.rs"
 required-features = ["outbox", "sqlite", "testing", "asyncapi"]
 test = true
 
+[[example]]
+name = "sqlx_outbox_interplay"
+required-features = ["outbox", "inbox", "sqlite", "chrono", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_interplay"
+path = "examples/manual/sqlx_outbox_interplay.rs"
+required-features = ["outbox", "inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_outbox_switch"
+required-features = ["outbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_outbox_switch"
+path = "examples/manual/sqlx_outbox_switch.rs"
+required-features = ["outbox", "sqlite", "testing", "asyncapi"]
+test = true
