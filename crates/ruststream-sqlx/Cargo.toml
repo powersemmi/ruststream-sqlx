@@ -208,3 +208,47 @@ name = "manual_sqlx_subscriptions_names"
 path = "examples/manual/sqlx_subscriptions_names.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing"]
 test = true
+
+[[example]]
+name = "sqlx_forms_row_lock"
+required-features = ["inbox", "postgres", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_forms_row_lock"
+path = "examples/manual/sqlx_forms_row_lock.rs"
+required-features = ["inbox", "postgres", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_forms_lease"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_forms_lease"
+path = "examples/manual/sqlx_forms_lease.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_forms_advisory"
+required-features = ["inbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_forms_advisory"
+path = "examples/manual/sqlx_forms_advisory.rs"
+required-features = ["inbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "sqlx_forms_lock"
+required-features = ["inbox", "sqlite", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_forms_lock"
+path = "examples/manual/sqlx_forms_lock.rs"
+required-features = ["inbox", "sqlite", "testing"]
+test = true
