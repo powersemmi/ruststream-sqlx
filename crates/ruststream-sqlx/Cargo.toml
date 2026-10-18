@@ -302,3 +302,58 @@ name = "manual_sqlx_messages_decoding"
 path = "examples/manual/sqlx_messages_decoding.rs"
 required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "sqlx_headers"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers"
+path = "examples/manual/sqlx_headers.rs"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_column"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_column"
+path = "examples/manual/sqlx_headers_column.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_layout"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_layout"
+path = "examples/manual/sqlx_headers_layout.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_field"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_field"
+path = "examples/manual/sqlx_headers_field.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
+
+[[example]]
+name = "sqlx_headers_fetch"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing"]
+test = true
+
+[[example]]
+name = "manual_sqlx_headers_fetch"
+path = "examples/manual/sqlx_headers_fetch.rs"
+required-features = ["inbox", "sqlite", "chrono", "json", "testing", "asyncapi"]
+test = true
