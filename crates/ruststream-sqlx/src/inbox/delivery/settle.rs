@@ -129,6 +129,12 @@ where
         if step == Step::Retry {
             harness.expect(QueueAt::read(queue));
         }
+        // A delayed retry's row is booked as returning before its statement, so whichever counts
+        // it first, its timer or a claim that takes it as soon as it is due, counts it alone.
+        let back = match step {
+            Step::RetryAfter(delay) => harness.holds_back(QueueAt::read(queue), delay),
+            _ => None,
+        };
         let settled = off_clock(self.run(step, harness.now()))
             .await
             .unwrap_or_else(|| Err(AckError::Broker(Box::new(SqlxBrokerError::Closed))));
@@ -140,8 +146,15 @@ where
             Step::Retry if (leased || (advised && is_closed(&settled))) && settled.is_err() => {
                 harness.refused(QueueAt::read(queue));
             }
-            // The row comes back once its delay runs out, which `TestApp::advance` fires.
-            Step::RetryAfter(delay) if settled.is_ok() => returns_after(&connection, queue, delay),
+            // The row comes back once its delay runs out, which `TestApp::advance` fires; a row the
+            // statement left where it was is no longer booked as returning.
+            Step::RetryAfter(delay) => match back {
+                Some(ticket) if settled.is_ok() => {
+                    returns_after(&connection, queue, delay, ticket);
+                }
+                Some(ticket) => harness.withdraw(QueueAt::read(queue), ticket),
+                None => {}
+            },
             _ => {}
         }
         harness.released();
