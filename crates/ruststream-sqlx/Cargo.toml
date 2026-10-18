@@ -965,3 +965,15 @@ name = "manual_guide_scaling"
 path = "examples/manual/guide/scaling.rs"
 required-features = ["inbox", "sqlite", "postgres", "chrono", "testing", "asyncapi"]
 test = true
+
+[[example]]
+name = "guide_relay"
+path = "examples/guide/relay.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing"]
+test = true
+
+[[example]]
+name = "manual_guide_relay"
+path = "examples/manual/guide/relay.rs"
+required-features = ["inbox", "sqlite", "chrono", "testing", "asyncapi"]
+test = true
