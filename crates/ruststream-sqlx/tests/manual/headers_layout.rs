@@ -2,13 +2,18 @@
 //! the message flattens it, and the delivery's header map is built from the fields on its first
 //! read.
 
-use ruststream::testing::TestApp;
+use std::pin::pin;
+
+use futures::StreamExt;
+use ruststream::{
+    Broker, Carries, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+};
 use ruststream_sqlx::__private::Events;
 use ruststream_sqlx::InboxRow;
 use ruststream_sqlx::prelude::*;
 use sqlx::Sqlite;
 
-use super::{SETTLED, broker, count, database};
+use super::{broker, count, database};
 
 const SCHEMA: &str = "
 CREATE TABLE shipping_jobs (
@@ -119,67 +124,79 @@ mod manual {
     }
 }
 
-/// Acknowledges a job whose headers and note the fields hold; anything else goes back.
-fn settle(tenant: Option<&str>, trace: Option<&str>, note: Option<&str>) -> HandlerOutcome {
-    // A NULL leaves its header out.
-    if (tenant, trace, note) == (Some("acme"), None, Some("fragile")) {
-        HandlerOutcome::ack()
-    } else {
-        HandlerOutcome::retry()
-    }
-}
-
-#[subscriber(InboxQueue::<derived::OrderJob>::new("orders"))]
-async fn ship_derived(job: &derived::OrderJob, ctx: &mut Context<'_>) -> HandlerOutcome {
-    let headers = ctx.headers();
-    settle(
-        headers.get_str("tenant"),
-        headers.get_str("trace"),
-        job.note.as_deref(),
-    )
-}
-
-#[subscriber(InboxQueue::<manual::OrderJob>::new("orders"))]
-async fn ship_manual(job: &manual::OrderJob, ctx: &mut Context<'_>) -> HandlerOutcome {
-    let headers = ctx.headers();
-    settle(
-        headers.get_str("tenant"),
-        headers.get_str("trace"),
-        job.note.as_deref(),
-    )
-}
-
+// The subject is the header map a delivery builds, read off the subscription itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_derived_layout_builds_its_headers() {
     let db = database(SCHEMA).await;
-    let app = RustStream::new(AppInfo::new("shop", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(ship_derived);
-    });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the delivery settles");
-    tb.broker::<SqlxBroker<Sqlite>>()
-        .subscriber("orders")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
+    let connected = broker(&db.pool)
+        .connect()
+        .await
+        .expect("the broker connects");
+    let mut subscriber = InboxQueue::<derived::OrderJob>::new("orders")
+        .subscribe(&connected)
+        .await
+        .expect("the subscription opens");
+    {
+        let mut deliveries = pin!(subscriber.stream());
+        let delivery = deliveries
+            .next()
+            .await
+            .expect("a delivery")
+            .expect("the claim");
+        let note = delivery.carried().expect("the row").note.clone();
+        let headers = delivery.headers();
+        // A NULL leaves its header out.
+        assert_eq!(
+            (
+                headers.get_str("tenant"),
+                headers.get_str("trace"),
+                note.as_deref()
+            ),
+            (Some("acme"), None, Some("fragile"))
+        );
+        delivery.ack().await.expect("the delivery acknowledges");
+    }
+    drop(subscriber);
     assert_eq!(count(&db.pool, LEFT).await, 0, "the ack deleted the row");
-    tb.shutdown().await.expect("the app stops");
+    connected.shutdown().await.expect("the broker shuts down");
     db.finish().await;
 }
 
+// The subject is the header map a delivery builds, read off the subscription itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_manual_layout_builds_its_headers() {
     let db = database(SCHEMA).await;
-    let app = RustStream::new(AppInfo::new("shop", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(ship_manual);
-    });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the delivery settles");
-    tb.broker::<SqlxBroker<Sqlite>>()
-        .subscriber("orders")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
+    let connected = broker(&db.pool)
+        .connect()
+        .await
+        .expect("the broker connects");
+    let mut subscriber = InboxQueue::<manual::OrderJob>::new("orders")
+        .subscribe(&connected)
+        .await
+        .expect("the subscription opens");
+    {
+        let mut deliveries = pin!(subscriber.stream());
+        let delivery = deliveries
+            .next()
+            .await
+            .expect("a delivery")
+            .expect("the claim");
+        let note = delivery.carried().expect("the row").note.clone();
+        let headers = delivery.headers();
+        // A NULL leaves its header out.
+        assert_eq!(
+            (
+                headers.get_str("tenant"),
+                headers.get_str("trace"),
+                note.as_deref()
+            ),
+            (Some("acme"), None, Some("fragile"))
+        );
+        delivery.ack().await.expect("the delivery acknowledges");
+    }
+    drop(subscriber);
     assert_eq!(count(&db.pool, LEFT).await, 0, "the ack deleted the row");
-    tb.shutdown().await.expect("the app stops");
+    connected.shutdown().await.expect("the broker shuts down");
     db.finish().await;
 }
 

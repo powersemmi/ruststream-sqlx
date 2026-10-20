@@ -1,14 +1,15 @@
 //! A table in the advisory lock form, its key built from the row's id, on the database's clock
 //! and opening its transactions in SQLite's IMMEDIATE mode.
 
+use ruststream::OutgoingMessage;
 use ruststream::testing::TestApp;
 use ruststream_sqlx::__private::Events;
-use ruststream_sqlx::InboxRow;
 use ruststream_sqlx::prelude::*;
-use serde::Deserialize;
-use sqlx::Sqlite;
+use ruststream_sqlx::{InboxRow, Publish};
+use serde::{Deserialize, Serialize};
+use sqlx::{Sqlite, SqliteConnection};
 
-use super::{SETTLED, broker, count, database};
+use super::{broker, count, database};
 
 const SCHEMA: &str = "
 CREATE TABLE locked_jobs (
@@ -18,12 +19,11 @@ CREATE TABLE locked_jobs (
     attempt      INTEGER NOT NULL DEFAULT 1,
     payload      BLOB NOT NULL
 );
-INSERT INTO locked_jobs (name, payload) VALUES ('jobs', '{\"n\":1}'), ('jobs', '{\"n\":2}');
 ";
 
 const LEFT: &str = "SELECT count(*) FROM locked_jobs";
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Outgoing)]
 struct Task {
     n: u32,
 }
@@ -107,6 +107,37 @@ mod manual {
     }
 }
 
+/// Writes a published task into the table, for a route to either form.
+async fn publish_into(
+    conn: &mut SqliteConnection,
+    message: &OutgoingMessage<'_>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO locked_jobs (name, payload) VALUES (?, ?)")
+        .bind(message.name())
+        .bind(message.payload())
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+impl Publish<Sqlite> for derived::LockedJob {
+    async fn publish(
+        conn: &mut SqliteConnection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), sqlx::Error> {
+        publish_into(conn, message).await
+    }
+}
+
+impl Publish<Sqlite> for manual::LockedJob {
+    async fn publish(
+        conn: &mut SqliteConnection,
+        message: &OutgoingMessage<'_>,
+    ) -> Result<(), sqlx::Error> {
+        publish_into(conn, message).await
+    }
+}
+
 #[subscriber(InboxQueue::<derived::LockedJob>::new("jobs"))]
 async fn run_derived(_task: &Task) -> HandlerOutcome {
     HandlerOutcome::ack()
@@ -120,11 +151,19 @@ async fn run_manual(_task: &Task) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_derived_table_takes_each_row_under_its_lock() {
     let db = database(SCHEMA).await;
-    let app = RustStream::new(AppInfo::new("worker", "0.0.0")).with_broker(broker(&db.pool), |b| {
+    let broker = broker(&db.pool).route::<derived::LockedJob>("jobs");
+    let app = RustStream::new(AppInfo::new("worker", "0.0.0")).with_broker(broker, |b| {
         b.include(run_derived);
     });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the deliveries settle");
+    let tb = TestApp::start(app).await.expect("the app starts");
+    for n in [1, 2] {
+        tb.broker::<SqlxBroker<Sqlite>>()
+            .message(&Task { n })
+            .to("jobs")
+            .publish()
+            .await
+            .expect("the delivery settles");
+    }
     let mut tasks = tb
         .broker::<SqlxBroker<Sqlite>>()
         .subscriber("jobs")
@@ -141,11 +180,19 @@ async fn the_derived_table_takes_each_row_under_its_lock() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_manual_table_takes_each_row_under_its_lock() {
     let db = database(SCHEMA).await;
-    let app = RustStream::new(AppInfo::new("worker", "0.0.0")).with_broker(broker(&db.pool), |b| {
+    let broker = broker(&db.pool).route::<manual::LockedJob>("jobs");
+    let app = RustStream::new(AppInfo::new("worker", "0.0.0")).with_broker(broker, |b| {
         b.include(run_manual);
     });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the deliveries settle");
+    let tb = TestApp::start(app).await.expect("the app starts");
+    for n in [1, 2] {
+        tb.broker::<SqlxBroker<Sqlite>>()
+            .message(&Task { n })
+            .to("jobs")
+            .publish()
+            .await
+            .expect("the delivery settles");
+    }
     let mut tasks = tb
         .broker::<SqlxBroker<Sqlite>>()
         .subscriber("jobs")

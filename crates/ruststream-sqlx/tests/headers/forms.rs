@@ -3,13 +3,16 @@
 //! advisory lock form frees the key once the delivery settles.
 
 use std::future::{Future, ready};
+use std::pin::pin;
 use std::time::Duration;
 
+use futures::StreamExt;
 use ruststream::testing::TestApp;
+use ruststream::{ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
 use ruststream_sqlx::prelude::*;
 use sqlx::{Database, Pool};
 
-use super::{POLL, SETTLED};
+use super::POLL;
 use crate::live;
 
 /// A stand's database, and where it keeps the advisory locks the broker's sessions hold.
@@ -84,32 +87,32 @@ live::lease_stands! {
 }
 
 live::advisory_stands! {
-    #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
-    async fn acked(_job: &OrderJob) -> HandlerOutcome {
-        HandlerOutcome::ack()
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_delivery_acks_and_frees_its_key() {
         let Some(db) = database().await else { return };
         db.mail(&[OrderJob::queued("orders", "acme", None, 7).headers]).await;
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .with_broker(SqlxBroker::new(db.pool.clone()).poll_interval(POLL), |b| {
-                b.include(acked);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        // The row was written before the app started, so the claim loop finds it on its own.
-        tb.advance(SETTLED).await.expect("the delivery settles");
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .assert_called_once()
-            .settled(HandlerOutcome::ack());
+        // The subject is the key a delivery holds, so the delivery is read off the subscription.
+        let connected = SqlxBroker::new(db.pool.clone())
+            .poll_interval(POLL)
+            .connect()
+            .await
+            .expect("the broker connects");
+        let mut subscriber = InboxQueue::<OrderJob>::new("orders")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            let delivery = deliveries.next().await.expect("a delivery").expect("the claim");
+            delivery.ack().await.expect("the delivery acknowledges");
+        }
         assert_eq!(db.count("headed_jobs").await, 0, "the job is done");
         // The key the headers struct's template names, over its `job_id`.
         if let Some(held) = <Db as DatabaseLocks>::locks_held(&db.pool, &["order-1"]).await {
             assert_eq!(held, 0, "the database holds advisory locks of the broker");
         }
-        tb.shutdown().await.expect("the app stops");
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 }
