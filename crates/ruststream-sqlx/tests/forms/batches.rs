@@ -12,8 +12,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::prelude::*;
-use ruststream::testing::TestApp;
-use ruststream::{AckError, BatchSubscriber, ConnectedBroker, SubscriptionSource};
+use ruststream::{AckError, BatchSubscriber, ConnectedBroker, IncomingMessage, SubscriptionSource};
 use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
 
@@ -25,53 +24,47 @@ struct Line {
 }
 
 live::matrix! {
-    #[subscriber(InboxQueue::<Plain>::new("plain"))]
-    async fn settle(lines: &[Line]) -> Vec<HandlerOutcome> {
-        lines
-            .iter()
-            .map(|line| {
-                if line.n % 2 == 0 {
-                    HandlerOutcome::ack()
-                } else {
-                    HandlerOutcome::drop()
-                }
-            })
-            .collect()
-    }
-
+    // The subject is what each claim hands over, so the batches are read off the subscription.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_claim_is_the_batch_and_each_delivery_settles_on_its_own() {
         let Some(db) = database().await else { return };
-        // Rows written before the app starts: the first claim takes four of them.
+        // Rows written before the subscription opens: the first claim takes four of them.
         let lines: Vec<Vec<u8>> = (0..6_u32)
             .map(|n| serde_json::to_vec(&Line { n }).expect("json"))
             .collect();
         db.plain(&lines).await;
-        let broker = SqlxBroker::new(db.pool.clone())
+        let connected = SqlxBroker::new(db.pool.clone())
             .poll_interval(Duration::from_millis(20))
-            .route::<Plain>("plain");
-        let app = RustStream::new(AppInfo::new("batches", "0.0.0")).with_broker(broker, |b| {
-            b.include(settle.batch(nonzero!(4)));
-        });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(Duration::from_millis(300))
+            .connect()
             .await
-            .expect("the batches settle");
-        let sizes: Vec<usize> = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("plain")
-            .batches::<Line>()
-            .iter()
-            .map(Vec::len)
-            .collect();
-        assert_eq!(
-            sizes,
-            [4, 2],
-            "a full claim is followed at once by the next"
-        );
+            .expect("the broker connects");
+        let mut subscriber = InboxQueue::<Plain>::new("plain")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut batches = pin!(subscriber.batches(nonzero!(4_usize)));
+            let mut sizes = Vec::new();
+            while sizes.iter().sum::<usize>() < lines.len() {
+                let batch = batches.next().await.expect("a batch").expect("the claim");
+                sizes.push(batch.len());
+                // Each delivery settles on its own: the even lines acknowledged, the odd dropped.
+                for delivery in batch {
+                    let line: Line =
+                        serde_json::from_slice(delivery.payload()).expect("the line decodes");
+                    if line.n.is_multiple_of(2) {
+                        delivery.ack().await.expect("the delivery acknowledges");
+                    } else {
+                        delivery.nack(false).await.expect("the delivery drops");
+                    }
+                }
+            }
+            assert_eq!(sizes, [4, 2], "a full claim is followed by the next");
+        }
+        drop(subscriber);
         // Every row was settled: acknowledged or dropped, each deleted by its own statement.
         assert_eq!(db.plain_rows("plain_jobs").await, Vec::<Vec<u8>>::new());
-        tb.shutdown().await.expect("the app stops");
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 

@@ -1,6 +1,6 @@
-//! Queue tables described by hand beside the same tables derived: each scenario runs both forms
-//! as an application through `TestApp::start_live` on an in-process SQLite and observes the same
-//! description, the same events, the same delivery and the same settlement.
+//! Queue tables described by hand beside the same tables derived: each scenario runs both forms on
+//! an in-process SQLite and observes the same description, the same events, the same delivery and
+//! the same settlement.
 
 #![cfg(all(
     feature = "inbox",
@@ -27,9 +27,6 @@ use live::Database;
 
 /// How long a subscription waits after a claim that found its queue short.
 const POLL: Duration = Duration::from_millis(20);
-
-/// How long a test lets the claim loop run: every row it wrote settles in it.
-const SETTLED: Duration = Duration::from_millis(400);
 
 /// A fresh in-memory database with the scenario's own tables beside the shared schema.
 ///

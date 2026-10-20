@@ -1,14 +1,19 @@
 //! A table in row mode, in the lease form, with a partition key, an `ack` of the service's own and
 //! the insert a producer writes a task with: the handler takes the row itself.
 
-use ruststream::testing::TestApp;
+use std::pin::pin;
+
+use futures::StreamExt;
+use ruststream::{
+    Broker, Carries, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+};
 use ruststream_sqlx::__private::Events;
 use ruststream_sqlx::dialect::{Dialect, Sqlite as SqliteDialect};
 use ruststream_sqlx::prelude::*;
 use ruststream_sqlx::{InboxRow, InboxTable, Insert};
 use sqlx::{Sqlite, SqliteConnection, SqlitePool};
 
-use super::{SETTLED, broker, database};
+use super::{broker, database};
 
 const SCHEMA: &str = "
 CREATE TABLE mail_tasks (
@@ -147,16 +152,6 @@ mod manual {
     }
 }
 
-#[subscriber(InboxQueue::<derived::Mail>::new("mail"))]
-async fn send_derived(_mail: &derived::Mail) -> HandlerOutcome {
-    HandlerOutcome::ack()
-}
-
-#[subscriber(InboxQueue::<manual::Mail>::new("mail"))]
-async fn send_manual(_mail: &manual::Mail) -> HandlerOutcome {
-    HandlerOutcome::ack()
-}
-
 async fn done(pool: &SqlitePool) -> Vec<String> {
     sqlx::query_scalar("SELECT recipient FROM mail_done")
         .fetch_all(pool)
@@ -184,33 +179,36 @@ async fn the_derived_row_runs_its_own_ack() {
         },
     )
     .await;
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(send_derived);
-    });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the delivery settles");
-    tb.broker::<SqlxBroker<Sqlite>>()
-        .subscriber("mail")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
-    let lent = tb
-        .broker::<SqlxBroker<Sqlite>>()
-        .subscriber("mail")
-        .received_values::<derived::Mail>();
-    assert_eq!(
-        (
-            lent[0].recipient.as_str(),
-            lent[0].tenant.as_str(),
-            lent[0].attempt
-        ),
-        ("ops@example.com", "acme", 1)
-    );
+    // The subject is the row a delivery lends and the ack it runs, read off the subscription.
+    let connected = broker(&db.pool)
+        .connect()
+        .await
+        .expect("the broker connects");
+    let mut subscriber = InboxQueue::<derived::Mail>::new("mail")
+        .subscribe(&connected)
+        .await
+        .expect("the subscription opens");
+    {
+        let mut deliveries = pin!(subscriber.stream());
+        let delivery = deliveries
+            .next()
+            .await
+            .expect("a delivery")
+            .expect("the claim");
+        let lent = delivery.carried().expect("the row").clone();
+        assert_eq!(
+            (lent.recipient.as_str(), lent.tenant.as_str(), lent.attempt),
+            ("ops@example.com", "acme", 1)
+        );
+        delivery.ack().await.expect("the delivery acknowledges");
+    }
     assert_eq!(
         done(&db.pool).await,
         ["ops@example.com"],
         "the own ack moved the mail"
     );
-    tb.shutdown().await.expect("the app stops");
+    drop(subscriber);
+    connected.shutdown().await.expect("the broker shuts down");
     db.finish().await;
 }
 
@@ -229,33 +227,36 @@ async fn the_manual_row_runs_its_own_ack() {
         },
     )
     .await;
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(send_manual);
-    });
-    let tb = TestApp::start_live(app).await.expect("the app starts");
-    tb.advance(SETTLED).await.expect("the delivery settles");
-    tb.broker::<SqlxBroker<Sqlite>>()
-        .subscriber("mail")
-        .assert_called_once()
-        .settled(HandlerOutcome::ack());
-    let lent = tb
-        .broker::<SqlxBroker<Sqlite>>()
-        .subscriber("mail")
-        .received_values::<manual::Mail>();
-    assert_eq!(
-        (
-            lent[0].recipient.as_str(),
-            lent[0].tenant.as_str(),
-            lent[0].attempt
-        ),
-        ("ops@example.com", "acme", 1)
-    );
+    // The subject is the row a delivery lends and the ack it runs, read off the subscription.
+    let connected = broker(&db.pool)
+        .connect()
+        .await
+        .expect("the broker connects");
+    let mut subscriber = InboxQueue::<manual::Mail>::new("mail")
+        .subscribe(&connected)
+        .await
+        .expect("the subscription opens");
+    {
+        let mut deliveries = pin!(subscriber.stream());
+        let delivery = deliveries
+            .next()
+            .await
+            .expect("a delivery")
+            .expect("the claim");
+        let lent = delivery.carried().expect("the row").clone();
+        assert_eq!(
+            (lent.recipient.as_str(), lent.tenant.as_str(), lent.attempt),
+            ("ops@example.com", "acme", 1)
+        );
+        delivery.ack().await.expect("the delivery acknowledges");
+    }
     assert_eq!(
         done(&db.pool).await,
         ["ops@example.com"],
         "the own ack moved the mail"
     );
-    tb.shutdown().await.expect("the app stops");
+    drop(subscriber);
+    connected.shutdown().await.expect("the broker shuts down");
     db.finish().await;
 }
 

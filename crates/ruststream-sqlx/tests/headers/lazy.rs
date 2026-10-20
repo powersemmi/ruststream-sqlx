@@ -6,13 +6,15 @@
 use std::pin::pin;
 
 use futures::StreamExt;
-use ruststream::testing::{Outcome, TestApp};
-use ruststream::{BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, SubscriptionSource};
+use ruststream::{
+    BatchSubscriber, Broker, Carries, ConnectedBroker, IncomingMessage, Subscriber,
+    SubscriptionSource,
+};
 use ruststream_sqlx::prelude::*;
 use serde::Deserialize;
 use sqlx::Pool;
 
-use super::{POLL, SETTLED};
+use super::POLL;
 use crate::live;
 
 /// The header contract of an order's job, as a handler reads it.
@@ -37,53 +39,38 @@ live::matrix! {
         }
     }
 
-    #[subscriber(InboxQueue::<OrderJob>::new("orders"), on_failure(decode = drop))]
-    async fn typed(job: &OrderJob, Headers(meta): Headers<OrderMeta>) -> HandlerOutcome {
-        // The headers spell the row's own fields: an acknowledgement says they do.
-        if meta == meta_of(job) {
-            HandlerOutcome::ack()
-        } else {
-            HandlerOutcome::retry()
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_typed_header_contract_reads_the_headers_structs_fields() {
+    async fn the_headers_spell_the_headers_structs_fields() {
         let Some(db) = database().await else { return };
         db.mail(&[
             OrderJob::queued("orders", "acme", Some("t-1"), 7).headers,
             OrderJob::queued("orders", "globex", None, 8).headers,
         ])
         .await;
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(typed);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the rows settle");
-        tb.broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .assert_called(2)
-            .settled(HandlerOutcome::ack());
-        assert_eq!(db.count("headed_jobs").await, 0, "both rows were acknowledged");
-        tb.shutdown().await.expect("the app stops");
-        db.finish().await;
-    }
-
-    #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
-    async fn listed(job: &OrderJob, ctx: &mut Context<'_>) -> HandlerOutcome {
-        let names: Vec<&str> = ctx.headers().iter().map(|(name, _)| name).collect();
-        // The mechanics stay in the typed struct; a `NULL` trace is no header.
-        let expected: &[&str] = if job.headers.trace.is_some() {
-            &["tenant", "trace", "order_id"]
-        } else {
-            &["tenant", "order_id"]
-        };
-        if names == expected {
-            HandlerOutcome::ack()
-        } else {
-            HandlerOutcome::drop()
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<OrderJob>::new("orders")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            for _ in 0..2 {
+                let delivery = deliveries.next().await.expect("a delivery").expect("the claim");
+                let job = delivery.carried().expect("the row").clone();
+                let headers = delivery.headers();
+                let read = OrderMeta {
+                    tenant: headers.get_str("tenant").expect("a tenant").to_owned(),
+                    trace: headers.get_str("trace").map(str::to_owned),
+                    order_id: headers.get_str("order_id").expect("an order").to_owned(),
+                };
+                assert_eq!(read, meta_of(&job), "the headers spell the row's own fields");
+                delivery.ack().await.expect("the delivery acknowledges");
+            }
         }
+        drop(subscriber);
+        assert_eq!(db.count("headed_jobs").await, 0, "both rows were acknowledged");
+        connected.shutdown().await.expect("the broker shuts down");
+        db.finish().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -94,20 +81,29 @@ live::matrix! {
             OrderJob::queued("orders", "globex", None, 8).headers,
         ])
         .await;
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .with_broker(broker(&db.pool), |b| {
-                b.include(listed);
-            });
-        let tb = TestApp::start_live(app).await.expect("the app starts");
-        tb.advance(SETTLED).await.expect("the rows settle");
-        // Each delivery's outcome, the traced one's and the untraced one's.
-        let outcomes = tb
-            .broker::<SqlxBroker<Db>>()
-            .subscriber("orders")
-            .assert_called(2)
-            .outcomes();
-        assert_eq!(outcomes, [Outcome::Ack, Outcome::Ack]);
-        tb.shutdown().await.expect("the app stops");
+        let connected = broker(&db.pool).connect().await.expect("the broker connects");
+        let mut subscriber = InboxQueue::<OrderJob>::new("orders")
+            .subscribe(&connected)
+            .await
+            .expect("the subscription opens");
+        {
+            let mut deliveries = pin!(subscriber.stream());
+            for _ in 0..2 {
+                let delivery = deliveries.next().await.expect("a delivery").expect("the claim");
+                let traced = delivery.carried().expect("the row").headers.trace.is_some();
+                let names: Vec<&str> = delivery.headers().iter().map(|(name, _)| name).collect();
+                // The mechanics stay in the typed struct; a `NULL` trace is no header.
+                let expected: &[&str] = if traced {
+                    &["tenant", "trace", "order_id"]
+                } else {
+                    &["tenant", "order_id"]
+                };
+                assert_eq!(names, expected);
+                delivery.ack().await.expect("the delivery acknowledges");
+            }
+        }
+        drop(subscriber);
+        connected.shutdown().await.expect("the broker shuts down");
         db.finish().await;
     }
 
