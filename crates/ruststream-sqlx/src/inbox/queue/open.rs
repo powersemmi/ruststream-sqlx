@@ -26,6 +26,8 @@ use crate::inbox::named::kinds::Kinds;
 use crate::inbox::pools::ServicePool;
 use crate::inbox::publish::table_of;
 use crate::inbox::subscriber::{Holding, InboxSubscriber, Opened};
+#[cfg(feature = "testing")]
+use crate::inbox::testing::QueueAt;
 use crate::inbox::threads::InboxThreads;
 use crate::inbox::transactional::{InboxMode, TxBook};
 
@@ -322,7 +324,7 @@ impl<DB: Database> Registration<DB> {
         queues.push((table, group.map(str::to_owned)));
         drop(queues);
         #[cfg(feature = "testing")]
-        shared.harness.opened(name);
+        shared.harness.opened(QueueAt::registered(table, group));
         Ok(Self {
             shared: Arc::clone(shared),
             table,
@@ -342,7 +344,9 @@ impl<DB: Database> Drop for Registration<DB> {
         queues.retain(|(table, group)| !(*table == self.table && *group == self.group));
         drop(queues);
         #[cfg(feature = "testing")]
-        self.shared.harness.closed(&self.name);
+        self.shared
+            .harness
+            .closed(QueueAt::registered(self.table, self.group.as_deref()));
     }
 }
 

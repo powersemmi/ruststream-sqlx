@@ -30,7 +30,7 @@ use super::form::lease::claim::{begin_work, claim_leased};
 use super::form::row_lock::claim_locked;
 use super::queue::{Queue, Registration};
 #[cfg(feature = "testing")]
-use super::testing::{cancelled, off_clock};
+use super::testing::{QueueAt, cancelled, off_clock};
 use super::transactional::{InboxMode, Plain, TxBook};
 use super::tx::PoolTx;
 use crate::inbox::pools::ServicePool;
@@ -443,7 +443,7 @@ where
         let taken = claimed.map_err(|(statement, source)| self.failed(statement, source))?;
         self.shared
             .harness
-            .claimed(queue.name, self.claimed.rows.len());
+            .claimed(QueueAt::read(queue), self.claimed.rows.len());
         Ok((taken, self.claimed.rows.len()))
     }
 
@@ -690,7 +690,9 @@ where
         .await
         .unwrap_or_else(|| (Err(("BEGIN", cancelled())), ClaimBuffers::default()));
         if claimed.is_ok() {
-            shared.harness.claimed(queue.name, buffers.rows.len());
+            shared
+                .harness
+                .claimed(QueueAt::read(queue), buffers.rows.len());
         }
         return (claimed, buffers);
     }

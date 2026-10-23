@@ -22,6 +22,9 @@ use crate::live;
 
 const POLL: Duration = Duration::from_millis(20);
 
+/// How long a delayed retry waits on a paused clock.
+const MINUTE: Duration = Duration::from_mins(1);
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Email {
     to: String,
@@ -209,6 +212,51 @@ live::matrix! {
         assert_eq!(outcomes, [Outcome::Nack, Outcome::Ack]);
         tb.shutdown().await.expect("the app stops");
         db.finish().await;
+    }
+
+    #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    async fn in_a_minute(_email: &Email, Ctx(attempt): Ctx<Attempt>) -> HandlerOutcome {
+        if attempt < Some(2) {
+            HandlerOutcome::retry_after(MINUTE)
+        } else {
+            HandlerOutcome::ack()
+        }
+    }
+
+    /// In process on a paused clock, the redelivery timer and the subscription's poll come due at
+    /// the same instant, and either may count the returning row first: `advance` returns once the
+    /// row is delivered again, whichever did. A row counted twice would keep `advance` running,
+    /// the paused clock moving a poll at a time, until the timeout below fails the test.
+    #[tokio::test]
+    async fn in_process_advance_returns_once_a_delayed_retry_is_delivered() {
+        let Some(db) = database().await else { return };
+        tokio::time::pause();
+        // The broker's own poll interval, a second, divides the delay.
+        let broker = SqlxBroker::new(db.pool.clone()).route::<SendEmail>("emails");
+        let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker, |b| {
+            b.include(in_a_minute);
+        });
+        let tb = TestApp::start(app).await.expect("the app starts");
+        tb.broker::<SqlxBroker<Db>>()
+            .message(&email())
+            .to("emails")
+            .publish()
+            .await
+            .expect("the publish settles");
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("emails")
+            .assert_called_once()
+            .settled(HandlerOutcome::retry_after(MINUTE));
+        tokio::time::timeout(2 * MINUTE, tb.advance(MINUTE))
+            .await
+            .expect("advance returns once the row is delivered again")
+            .expect("the redelivery settles");
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("emails")
+            .assert_called(2)
+            .settled(HandlerOutcome::ack());
+        tb.shutdown().await.expect("the app stops");
+        live::unpaused(db.finish()).await;
     }
 
     #[subscriber(InboxQueue::<Plain>::new("plain"))]

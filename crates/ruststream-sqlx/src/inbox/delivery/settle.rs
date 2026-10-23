@@ -18,7 +18,7 @@ use crate::inbox::form::advisory::settle::settle_advised;
 use crate::inbox::form::lease::settle::{lease_lost, settle_leased};
 use crate::inbox::form::row_lock::{settle_batched, settle_own};
 #[cfg(feature = "testing")]
-use crate::inbox::testing::{off_clock, returns_after};
+use crate::inbox::testing::{QueueAt, off_clock, returns_after};
 use crate::inbox::transactional::InboxMode;
 use crate::inbox::transactional::settle::{settle_leased_lent, settle_lent, transaction_held};
 
@@ -121,14 +121,31 @@ where
         step: Step,
     ) -> Result<(), AckError> {
         let harness = &connection.harness;
-        let name = self.queue.name;
+        let queue = self.queue;
         let leased = matches!(self.hold, Some(Hold::Lease { .. }));
         let advised = matches!(self.hold, Some(Hold::Advisory(_)));
         // A retry's row is counted again before the statement that returns it, so a claim that
         // takes it at once finds it counted.
         if step == Step::Retry {
-            harness.expect(name);
+            harness.expect(QueueAt::read(queue));
         }
+        // A delayed retry's row is booked as returning before its statement, so whichever counts
+        // it first, its timer or a claim that takes it as soon as it is due, counts it alone.
+        let back = match step {
+            Step::RetryAfter(delay) => harness.holds_back(QueueAt::read(queue), delay),
+            _ => None,
+        };
+        // A spent row is counted where it moves before its statement, so the subscription that
+        // reads there is waited for. A move of the service's own writes where its statement says,
+        // which the harness cannot read; a claim there counts the row when it takes it.
+        let moved = match step {
+            Step::DeadLetter(destination) if !step.overridden(Row::SHAPE) => {
+                let at = QueueAt::dead_letter(queue, destination);
+                harness.expect(at);
+                Some(at)
+            }
+            _ => None,
+        };
         let settled = off_clock(self.run(step, harness.now()))
             .await
             .unwrap_or_else(|| Err(AckError::Broker(Box::new(SqlxBrokerError::Closed))));
@@ -138,10 +155,23 @@ where
             // leased row comes back only from a release that took effect, and a row whose session
             // `shutdown` released never comes back to this connection.
             Step::Retry if (leased || (advised && is_closed(&settled))) && settled.is_err() => {
-                harness.refused(name);
+                harness.refused(QueueAt::read(queue));
             }
-            // The row comes back once its delay runs out, which `TestApp::advance` fires.
-            Step::RetryAfter(delay) if settled.is_ok() => returns_after(&connection, name, delay),
+            // The row comes back once its delay runs out, which `TestApp::advance` fires; a row the
+            // statement left where it was is no longer booked as returning.
+            Step::RetryAfter(delay) => match back {
+                Some(ticket) if settled.is_ok() => {
+                    returns_after(&connection, queue, delay, ticket);
+                }
+                Some(ticket) => harness.withdraw(QueueAt::read(queue), ticket),
+                None => {}
+            },
+            // A move that failed left the row where it was.
+            Step::DeadLetter(_) if settled.is_err() => {
+                if let Some(at) = moved {
+                    harness.refused(at);
+                }
+            }
             _ => {}
         }
         harness.released();
