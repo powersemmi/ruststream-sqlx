@@ -79,7 +79,7 @@ pub trait Claim<DB: Database>: InboxRow {
 /// The dialect builds it, for a flat table and for a message assembled from header fields; a table
 /// names `fetch` as its own (`custom(fetch)`, or [`own::Fetch`](crate::spec::own::Fetch) by hand)
 /// to assemble messages itself, from other tables
-/// ([a fetch over a join](crate#a-fetch-over-a-join)). Rows are matched to the claimed ids by their `id` field; a
+/// ([a fetch over a join](https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/fetch/)). Rows are matched to the claimed ids by their `id` field; a
 /// claimed id with no row settles by the decode-failure policy before its handler runs, and the
 /// log names the id. It runs inside the claim's transaction, or right after a lease claim that
 /// leased the rows and committed in one statement, as on Postgres and SQLite. In the advisory lock
@@ -115,6 +115,107 @@ pub trait Claim<DB: Database>: InboxRow {
 ///         .fetch_all(conn)
 ///         .await
 ///     }
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// In the headers layout two messages may flatten one headers struct: the default fetch reads one
+/// from the queue table, and the service's own fetch reads the other over a join. A claimed id the
+/// join finds no row for settles by the decode policy before the handler runs:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::Fetch;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
+///
+/// // order_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, attempt SMALLINT DEFAULT 1, tenant TEXT,
+/// // trace TEXT NULL, order_id BIGINT, note TEXT NULL
+/// // orders: id BIGINT PRIMARY KEY, customer TEXT, total BIGINT
+/// /// The queue table: the columns that run the queue, and the headers `tenant`, `trace` and
+/// /// `order_id`.
+/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
+/// pub struct OrderHeaders {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     tenant: String,
+///     trace: Option<String>,
+///     order_id: i64,
+/// }
+///
+/// /// A job and its note, read from the queue table by the default fetch.
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// pub struct OrderJob {
+///     #[field(headers)]
+///     #[sqlx(flatten)]
+///     headers: OrderHeaders,
+///     note: Option<String>,
+/// }
+///
+/// /// A job and the order it is for, read by the service's own fetch over a join.
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// #[inbox(custom(fetch))]
+/// pub struct OrderMail {
+///     #[field(headers)]
+///     #[sqlx(flatten)]
+///     headers: OrderHeaders,
+///     customer: String,
+///     total: i64,
+/// }
+///
+/// impl Fetch<Postgres> for OrderMail {
+///     async fn fetch(conn: &mut PgConnection, ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
+///         sqlx::query_as(
+///             "SELECT j.job_id, j.name, j.attempt, j.tenant, j.trace, j.order_id, \
+///                     o.customer, o.total \
+///              FROM order_jobs j JOIN orders o ON o.id = j.order_id \
+///              WHERE j.job_id = ANY($1)",
+///         )
+///         .bind(ids)
+///         .fetch_all(conn)
+///         .await
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Tenant {
+///     tenant: String,
+///     trace: Option<String>,
+/// }
+///
+/// #[subscriber(InboxQueue::<OrderJob>::new("packing"))]
+/// async fn pack(job: &OrderJob) -> HandlerOutcome {
+///     tracing::info!(attempt = job.headers.attempt, note = ?job.note, "packing");
+///     HandlerOutcome::ack()
+/// }
+///
+/// // The header map is built from `OrderHeaders` on its first read, here by `Headers<Tenant>`.
+/// #[subscriber(InboxQueue::<OrderMail>::new("receipts"))]
+/// async fn send_receipt(mail: &OrderMail, Headers(tenant): Headers<Tenant>) -> HandlerOutcome {
+///     tracing::info!(
+///         tenant = %tenant.tenant,
+///         trace = ?tenant.trace,
+///         customer = %mail.customer,
+///         total = mail.total,
+///         "sending the receipt"
+///     );
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(pack);
+///         // A job whose order is gone fails to decode: the default policy drops it.
+///         b.include(send_receipt);
+///     })
 /// }
 /// # }
 /// # fn main() {}
@@ -427,6 +528,69 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// # }
 /// # fn main() {}
 /// ```
+///
+/// A queue that takes the lock another system already holds on an account, so a payout never
+/// runs beside that system's work on it:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::{Lock, Unlock};
+/// use serde::Deserialize;
+/// use sqlx::{PgConnection, PgPool, Postgres};
+///
+/// // payouts: id BIGSERIAL PRIMARY KEY, account_id BIGINT NOT NULL, payload BYTEA NOT NULL
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "payouts", advisory_lock = "{account_id}", custom(lock, unlock))]
+/// pub struct Payout {
+///     #[field(id, generated)]
+///     id: i64,
+///     account_id: i64,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// // The billing system holds `pg_advisory_lock(account_id)` while it changes an account. The queue
+/// // takes the same lock, so a payout never runs beside a billing run of its account.
+/// impl Lock<Postgres> for Payout {
+///     async fn lock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+///         sqlx::query_scalar("SELECT pg_try_advisory_lock($1::bigint)")
+///             .bind(key)
+///             .fetch_one(conn)
+///             .await
+///     }
+/// }
+///
+/// impl Unlock<Postgres> for Payout {
+///     async fn unlock(conn: &mut PgConnection, key: &str) -> Result<bool, sqlx::Error> {
+///         sqlx::query_scalar("SELECT pg_advisory_unlock($1::bigint)")
+///             .bind(key)
+///             .fetch_one(conn)
+///             .await
+///     }
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Transfer {
+///     cents: i64,
+/// }
+///
+/// # async fn transfer_to_bank(transfer: &Transfer) { let _ = transfer.cents; }
+/// #[subscriber(InboxQueue::<Payout>::new("payouts"))]
+/// async fn pay(transfer: &Transfer) -> HandlerOutcome {
+///     transfer_to_bank(transfer).await;
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(pay);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` runs its own `lock` (`custom(lock)` in `#[inbox(..)]`, or `own::Lock` in its `InboxSpec`) and does not implement `Lock<{DB}>`",
     label = "the service's own lock is missing",
@@ -584,7 +748,7 @@ pub trait Publish<DB: Database>: InboxRow {
 /// columns, so the service writes that insert itself.
 /// A table described by hand implements it over the text
 /// [`dialect::insert`](crate::dialect::insert) renders from its description, binding the columns
-/// in the description's order; [row mode](crate#row-mode) shows one.
+/// in the description's order, as below.
 ///
 /// # Examples
 ///
@@ -620,6 +784,92 @@ pub trait Publish<DB: Database>: InboxRow {
 ///         job.insert(conn).await
 ///     }
 /// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// A table described by hand in row mode writes its insert over the text
+/// [`dialect::insert`](crate::dialect::insert) renders, in a constant:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream::runtime::{Input, SoloCarried};
+/// use ruststream_sqlx::dialect::Column;
+/// use ruststream_sqlx::dialect::insert::{self, Sql};
+/// use ruststream_sqlx::prelude::*;
+/// use ruststream_sqlx::spec::Attempt;
+/// use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable};
+/// use serde::{Deserialize, Serialize};
+/// use sqlx::{PgConnection, PgPool};
+///
+/// #[derive(sqlx::FromRow, Clone)]
+/// pub struct SendEmail {
+///     job_id: i64,
+///     name: String,
+///     attempt: i16,
+///     to: String,
+///     subject: Option<String>,
+///     #[sqlx(json)]
+///     attachments: Vec<Attachment>,
+/// }
+///
+/// #[derive(Clone, Serialize, Deserialize)]
+/// pub struct Attachment {
+///     file: String,
+/// }
+///
+/// impl InboxTable for SendEmail {
+///     type Id = i64;
+///     type Table = InboxSpec<(Attempt,)>;
+///     const TABLE: Self::Table = InboxSpec::new("email_jobs", Column::new("job_id").generated())
+///         .group(Column::new("name"))
+///         .attempt(Column::new("attempt").generated())
+///         .data(&[Column::new("to"), Column::new("subject"), Column::new("attachments")]);
+///
+///     fn id(&self) -> &i64 {
+///         &self.job_id
+///     }
+/// }
+///
+/// // Row mode: a handler takes the row itself.
+/// impl Input for SendEmail {
+///     type Axis = SoloCarried<Self>;
+/// }
+///
+/// impl AttemptRow for SendEmail {
+///     type Attempt = i16;
+///
+///     fn attempt(&self) -> &i16 {
+///         &self.attempt
+///     }
+/// }
+///
+/// // INSERT INTO "email_jobs" ("name", "to", "subject", "attachments") VALUES ($1, $2, $3, $4)
+/// const INSERT: Sql<128> = insert::postgres(&SendEmail::TABLE.spec());
+///
+/// impl Insert<PgConnection> for SendEmail {
+///     async fn insert(&self, conn: &mut PgConnection) -> Result<(), sqlx::Error> {
+///         sqlx::query(INSERT.as_str())
+///             .bind(&self.name)
+///             .bind(&self.to)
+///             .bind(&self.subject)
+///             .bind(sqlx::types::Json(&self.attachments))
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+/// # async fn deliver(_: &SendEmail) -> bool { true }
+/// # #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// # async fn send(email: &SendEmail) -> HandlerOutcome {
+/// #     if deliver(email).await { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
+/// # }
+/// # pub fn app(pool: PgPool) -> RustStream {
+/// #     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+/// #         b.include(send);
+/// #     })
+/// # }
 /// # }
 /// # fn main() {}
 /// ```

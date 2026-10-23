@@ -54,6 +54,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from datetime import date
 from pathlib import Path
 
@@ -64,12 +65,15 @@ LOCK = REPO / "Cargo.lock"
 
 # What `just bench` builds the benchmark with. Both are recipe decisions rather than machine
 # facts, so they are stated here next to the recipe rather than sniffed.
-PROFILE = "bench, inheriting release (opt-level = 3, lto = false, codegen-units = 16)"
 FEATURES = (
     "ruststream-sqlx inbox,outbox,postgres,mysql,sqlite,chrono; ruststream macros,json,memory; "
     "ruststream-fred default"
 )
 RUSTFLAGS = "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)"
+
+# What cargo compiles a release with when the manifest says nothing. The benchmark profile
+# inherits release, so this is where its description starts.
+RELEASE_DEFAULTS = {"opt-level": 3, "lto": False, "codegen-units": 16, "debug": False}
 
 # The servers the compose stand runs and the benchmarks measure against, by their service names:
 # the databases, and the Redis the outbox's wall clock publishes through.
@@ -154,6 +158,21 @@ def locked_version(name: str) -> str:
     return match.group(1) if match else "unknown"
 
 
+def bench_profile() -> str:
+    """The profile the benchmarks are built with, as the manifest resolves it."""
+    manifest = tomllib.loads(MANIFEST.read_text(encoding="utf-8"))
+    profiles = manifest.get("profile", {})
+    resolved = dict(RELEASE_DEFAULTS)
+    resolved.update(profiles.get("release", {}))
+    resolved.update(profiles.get("bench", {}))
+    resolved.pop("inherits", None)
+    settings = ", ".join(
+        f"{key} = {str(value).lower() if isinstance(value, bool) else value}"
+        for key, value in resolved.items()
+    )
+    return f"bench, inheriting release ({settings})"
+
+
 def environment(round_trip: str) -> dict[str, str]:
     cpu = lscpu()
     return {
@@ -170,7 +189,7 @@ def environment(round_trip: str) -> dict[str, str]:
         "round_trip": round_trip,
         "rustc": run("rustc", "--version").replace("rustc", "").strip().split()[0],
         "sqlx": locked_version("sqlx"),
-        "profile": PROFILE,
+        "profile": bench_profile(),
         "features": FEATURES,
         "rustflags": RUSTFLAGS,
     }
@@ -188,9 +207,10 @@ CODE_MESSAGES = 1000
 
 # An instruction count below this on a code run of the default count means the measured region
 # stopped matching its frame and the run reported the process exit, not that the code got faster.
-# The floor scales with the count. The cold run handles one delivery, so it is held to a lower
-# floor.
-CODE_FLOOR = 1_000_000
+# The floor scales with the count and sits well under the cheapest scenario: a plain publish over
+# `MemoryBroker`, the app with no outbox, costs under a thousand instructions a message in the fat
+# LTO build. The cold run handles one delivery, so it is held to a lower floor.
+CODE_FLOOR = 250_000
 CODE_COLD_FLOOR = 1_000
 
 # The code table, in reading order: the published name and the benchmarks of its loops, each as

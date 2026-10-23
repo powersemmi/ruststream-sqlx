@@ -252,7 +252,9 @@ pub trait LeaseRow: InboxRow {
 /// A clock on the host: what "now" is for the statements that bind it.
 ///
 /// `#[inbox(clock = MyClock)]` makes a table read it. Hosts' clocks must agree to well within the
-/// delays the queue works with; keeping them in step is the service's concern (NTP).
+/// delays the queue works with; keeping them in step is the service's concern (NTP). A test in
+/// process reads a clock of the service's own as production does: only [`SystemClock`] follows
+/// the test's clock.
 ///
 /// # Examples
 ///
