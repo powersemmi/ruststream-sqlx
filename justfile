@@ -24,7 +24,7 @@ check:
     # The compile-fail snapshots of the derives: rustc's exact wording on the stable toolchain
     # this repository selects. REQUIRE_UI_TESTS turns a skip into a failure, so a lost opt-in
     # shows here.
-    RUN_UI_TESTS=1 REQUIRE_UI_TESTS=1 cargo test -p ruststream-sqlx --all-features --test ui
+    RUN_UI_TESTS=1 REQUIRE_UI_TESTS=1 cargo test -p ruststream-sqlx --all-features --test suite ui::
 
 test:
     cargo test --workspace --all-features

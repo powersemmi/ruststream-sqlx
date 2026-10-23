@@ -14,6 +14,9 @@ readme = "../../README.md"
 exclude = [".sqlx", "sqlx.toml"]
 keywords = ["sqlx", "outbox", "queue", "messaging", "ruststream"]
 categories = ["asynchronous", "database"]
+# Every file and directory under `tests/` is a module of one test binary, the allocation counts
+# aside: one link instead of one per file.
+autotests = false
 
 [lints]
 workspace = true
@@ -121,6 +124,16 @@ serde.workspace = true
 serde_json.workspace = true
 trybuild.workspace = true
 dhat.workspace = true
+
+[[test]]
+name = "suite"
+path = "tests/main.rs"
+
+# The allocation counts own their process: dhat's allocator is the binary's global one, and its
+# heap counts would take in every test running beside them.
+[[test]]
+name = "allocations"
+path = "tests/allocations.rs"
 
 # The two services the documentation site shows, one per component.
 [[example]]

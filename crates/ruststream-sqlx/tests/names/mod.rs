@@ -3,9 +3,6 @@
 
 #![cfg(all(feature = "inbox", feature = "chrono", feature = "json"))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod by_name;
 mod own_ack;
 mod publish;

@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 use ruststream_sqlx::prelude::*;
 
 use crate::live;
-use crate::locks::HeldLocks;
-use crate::pool::{every_connection_answers, fresh_pool};
-use crate::probe::{GUARD, Probe};
+use crate::threads::locks::HeldLocks;
+use crate::threads::pool::{every_connection_answers, fresh_pool};
+use crate::threads::probe::{GUARD, Probe};
 
 const POLL: Duration = Duration::from_millis(20);
 

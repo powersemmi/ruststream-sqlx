@@ -10,7 +10,7 @@ use ruststream_sqlx::prelude::*;
 
 use crate::live;
 use crate::live::rows::lease::Plain;
-use crate::probe::{GUARD, Probe};
+use crate::threads::probe::{GUARD, Probe};
 
 /// `error` and every source under it, one after another.
 fn chain(error: &(dyn std::error::Error + 'static)) -> String {
