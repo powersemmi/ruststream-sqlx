@@ -242,12 +242,12 @@ pub trait Lane<Row>: Send + Sync + 'static {
 /// Payload mode: the handler takes the payload decoded by a codec.
 #[doc(hidden)]
 #[derive(Debug)]
-pub enum PayloadLane {}
+pub struct PayloadLane;
 
 /// Row mode: the handler takes the row itself, `&Row`, or a batch of them, `&[Row]`.
 #[doc(hidden)]
 #[derive(Debug)]
-pub enum RowLane {}
+pub struct RowLane;
 
 impl<Row: PayloadRow> Lane<Row> for PayloadLane {
     const ROWS: bool = false;
