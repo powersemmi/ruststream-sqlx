@@ -10,12 +10,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::io;
 use std::panic::resume_unwind;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use ruststream::testing::{Backlog, Coordinator, InProcess, TestableBroker};
 use ruststream::{HeaderMap, OutgoingMessage, RawMessage};
-use ruststream_sqlx_dialect::Dialect;
+use ruststream_sqlx_dialect::{Dialect, Role};
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
@@ -25,7 +26,8 @@ use super::broker::{ConnectedSqlxBroker, Shared, SqlxBroker};
 use super::database::QueueDatabase;
 use super::engine::Now;
 use super::error::SqlxBrokerError;
-use super::publish::insert_routed;
+use super::publish::{TableWake, insert_routed};
+use super::queue::Queue;
 
 /// What an in-process connection reads in place of [`SystemClock`](crate::SystemClock): the tokio
 /// clock, anchored to the wall clock when the broker connected, so a test that moves a paused
@@ -74,6 +76,103 @@ pub(crate) fn cancelled() -> sqlx::Error {
     ))
 }
 
+/// A queue the harness counts rows for: a table, and the group of a table that keeps groups.
+///
+/// A row counts for the subscription that reads where it landed, whatever name it was written
+/// under: a table without groups is one queue, and its subscription and its routes name it
+/// freely.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct QueueAt<'a> {
+    /// The table, qualified with its schema.
+    table: &'a str,
+    /// The group; empty for a table without groups.
+    group: &'a str,
+}
+
+impl<'a> QueueAt<'a> {
+    /// Where a write of `name` into the table of `wake` lands.
+    pub(crate) fn written(wake: &'a TableWake, name: &'a str) -> Self {
+        Self {
+            table: wake.table(),
+            group: wake.group(name),
+        }
+    }
+
+    /// The queue the subscription `queue` reads.
+    pub(crate) fn read(queue: &'a Queue) -> Self {
+        Self {
+            table: queue.table,
+            group: queue.spec.column(Role::Group).map_or("", |_| queue.name),
+        }
+    }
+
+    /// Where a spent row of `queue` moves to `destination`: that group of its table, or, from a
+    /// table without groups, that table.
+    pub(crate) fn dead_letter(queue: &'a Queue, destination: &'a str) -> Self {
+        match queue.spec.column(Role::Group) {
+            Some(_) => Self {
+                table: queue.table,
+                group: destination,
+            },
+            None => Self {
+                table: destination,
+                group: "",
+            },
+        }
+    }
+
+    /// The queue a subscription registers for: `group` is `None` in a table without groups.
+    pub(crate) fn registered(table: &'a str, group: Option<&'a str>) -> Self {
+        Self {
+            table,
+            group: group.unwrap_or_default(),
+        }
+    }
+}
+
+/// The books of one open subscription.
+#[derive(Debug, Default)]
+struct Tally {
+    /// The messages counted ahead of a claim.
+    ahead: usize,
+    /// The rows delayed retries hold back, not counted yet. Each is counted once, by its timer or
+    /// by the claim that takes it first: on a paused clock the subscription's poll and the timer
+    /// come due at the same instant, in either order.
+    returning: Vec<Return>,
+}
+
+impl Tally {
+    /// Whether the row `ticket` booked was still held back; it is not any more.
+    fn take_return(&mut self, ticket: Ticket) -> bool {
+        let Some(at) = self.returning.iter().position(|back| back.ticket == ticket) else {
+            return false;
+        };
+        self.returning.swap_remove(at);
+        true
+    }
+
+    /// The held-back row due first leaves the books: a claim took it.
+    fn take_earliest_return(&mut self) {
+        if let Some(at) = (0..self.returning.len()).min_by_key(|&at| self.returning[at].due) {
+            self.returning.swap_remove(at);
+        }
+    }
+}
+
+/// A row a delayed retry holds back until `due`.
+#[derive(Debug, Clone, Copy)]
+struct Return {
+    due: Instant,
+    ticket: Ticket,
+}
+
+/// Which held-back row a redelivery timer counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ticket(u64);
+
+/// The open subscriptions of a connection by table, then by group, each with its books.
+type Credits = HashMap<Box<str>, HashMap<Box<str>, Tally>>;
+
 /// The harness's books of one connection: the coordinator a test installed, and every message the
 /// broker's own publishers and the test's injections wrote.
 #[derive(Debug, Default)]
@@ -82,8 +181,11 @@ pub(crate) struct Harness {
     log: Mutex<Vec<RawMessage>>,
     /// The clock of an in-process connection; unset on a connection to the server.
     clock: OnceLock<TestClock>,
-    /// The connection's open subscriptions by name, with the messages counted ahead of a claim.
-    credits: Mutex<HashMap<String, usize>>,
+    /// The connection's open subscriptions by queue, with the messages counted ahead of a claim
+    /// and the rows delayed retries hold back.
+    credits: Mutex<Credits>,
+    /// The last ticket a held-back row took.
+    tickets: AtomicU64,
     /// The last injection's write, which the next one waits for.
     writes: Mutex<Option<oneshot::Receiver<()>>>,
 }
@@ -104,53 +206,110 @@ impl Harness {
         self.clock.get().and_then(|_| self.coordinator.get())
     }
 
-    fn credits(&self) -> MutexGuard<'_, HashMap<String, usize>> {
+    fn credits(&self) -> MutexGuard<'_, Credits> {
         self.credits.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// A subscription to `name` opened on the connection.
-    pub(crate) fn opened(&self, name: &str) {
-        self.credits().entry(name.to_owned()).or_insert(0);
+    /// The books of the open subscription that reads `queue`, if one does.
+    fn credit<'books>(
+        credits: &'books mut Credits,
+        queue: QueueAt<'_>,
+    ) -> Option<&'books mut Tally> {
+        credits.get_mut(queue.table)?.get_mut(queue.group)
     }
 
-    /// The subscription to `name` closed.
-    pub(crate) fn closed(&self, name: &str) {
-        self.credits().remove(name);
+    /// A subscription to `queue` opened on the connection.
+    pub(crate) fn opened(&self, queue: QueueAt<'_>) {
+        self.credits()
+            .entry(queue.table.into())
+            .or_default()
+            .entry(queue.group.into())
+            .or_default();
     }
 
-    /// A message reached the queue `name`: counted now when a subscription of the connection
-    /// reads it, so the harness waits for its delivery.
-    pub(crate) fn expect(&self, name: &str) {
+    /// The subscription to `queue` closed.
+    pub(crate) fn closed(&self, queue: QueueAt<'_>) {
+        let mut credits = self.credits();
+        if let Some(groups) = credits.get_mut(queue.table) {
+            groups.remove(queue.group);
+            if groups.is_empty() {
+                credits.remove(queue.table);
+            }
+        }
+    }
+
+    /// A message reached `queue`: counted now when a subscription of the connection reads it, so
+    /// the harness waits for its delivery.
+    pub(crate) fn expect(&self, queue: QueueAt<'_>) {
         let Some(coordinator) = self.books() else {
             return;
         };
-        if let Some(credit) = self.credits().get_mut(name) {
-            *credit += 1;
+        if let Some(tally) = Self::credit(&mut self.credits(), queue) {
+            tally.ahead += 1;
             coordinator.enqueued();
         }
     }
 
-    /// A message counted for `name` never reached the table.
-    pub(crate) fn refused(&self, name: &str) {
+    /// A message counted for `queue` never reached the table.
+    pub(crate) fn refused(&self, queue: QueueAt<'_>) {
         let Some(coordinator) = self.books() else {
             return;
         };
-        if let Some(credit) = self.credits().get_mut(name)
-            && *credit > 0
+        if let Some(tally) = Self::credit(&mut self.credits(), queue)
+            && tally.ahead > 0
         {
-            *credit -= 1;
+            tally.ahead -= 1;
             coordinator.consumed();
         }
     }
 
-    /// A claim of `name` took `count` rows: each was counted ahead, or is counted now.
-    pub(crate) fn claimed(&self, name: &str, count: usize) {
+    /// A delayed retry is about to hold a row of `queue` back for `delay`: the row is booked as
+    /// returning, uncounted until its timer fires or a claim takes it. `None` when no subscription
+    /// of the connection reads `queue`.
+    pub(crate) fn holds_back(&self, queue: QueueAt<'_>, delay: Duration) -> Option<Ticket> {
+        self.books()?;
+        let ticket = Ticket(self.tickets.fetch_add(1, Ordering::Relaxed));
+        let due = Instant::now() + delay;
+        Self::credit(&mut self.credits(), queue)?
+            .returning
+            .push(Return { due, ticket });
+        Some(ticket)
+    }
+
+    /// The row `ticket` booked stays where it was: the statement that would hold it back failed.
+    pub(crate) fn withdraw(&self, queue: QueueAt<'_>, ticket: Ticket) {
+        if let Some(tally) = Self::credit(&mut self.credits(), queue) {
+            tally.take_return(ticket);
+        }
+    }
+
+    /// The timer of the row `ticket` booked fired: the row is counted now, unless a claim took it
+    /// first.
+    fn comes_due(&self, queue: QueueAt<'_>, ticket: Ticket) {
         let Some(coordinator) = self.books() else {
             return;
         };
-        let covered = self.credits().get_mut(name).map_or(0, |credit| {
-            let covered = (*credit).min(count);
-            *credit -= covered;
+        if let Some(tally) = Self::credit(&mut self.credits(), queue)
+            && tally.take_return(ticket)
+        {
+            tally.ahead += 1;
+            coordinator.enqueued();
+        }
+    }
+
+    /// A claim of `queue` took `count` rows: each was counted ahead, or is counted now. A row
+    /// counted now may be one a delayed retry held back, taken before its timer fired: the
+    /// earliest one due leaves the books, so its timer counts nothing.
+    pub(crate) fn claimed(&self, queue: QueueAt<'_>, count: usize) {
+        let Some(coordinator) = self.books() else {
+            return;
+        };
+        let covered = Self::credit(&mut self.credits(), queue).map_or(0, |tally| {
+            let covered = tally.ahead.min(count);
+            tally.ahead -= covered;
+            for _ in covered..count {
+                tally.take_earliest_return();
+            }
             covered
         });
         for _ in covered..count {
@@ -165,9 +324,9 @@ impl Harness {
         }
     }
 
-    /// A delivery of `name` dropped unsettled: its row returns, and the delivery leaves the books.
-    pub(crate) fn returned(&self, name: &str) {
-        self.expect(name);
+    /// A delivery of `queue` dropped unsettled: its row returns, and the delivery leaves the books.
+    pub(crate) fn returned(&self, queue: QueueAt<'_>) {
+        self.expect(queue);
         self.released();
     }
 
@@ -188,18 +347,22 @@ impl Harness {
     }
 }
 
-/// The row of an in-process delivery of `name` comes back after `delay`: it is counted when the
-/// delay runs out, as `TestApp::advance` fires the timer.
+/// The row of an in-process delivery of `queue`, booked under `ticket`, comes back after `delay`:
+/// it is counted when the delay runs out, as `TestApp::advance` fires the timer, unless a claim
+/// took it first.
 pub(crate) fn returns_after<DB: QueueDatabase>(
     connection: &Arc<Shared<DB>>,
-    name: &'static str,
+    queue: &'static Queue,
     delay: Duration,
+    ticket: Ticket,
 ) {
     let Some(coordinator) = connection.harness.books() else {
         return;
     };
     let connection = Arc::clone(connection);
-    coordinator.schedule_redelivery(delay, move || connection.harness.expect(name));
+    coordinator.schedule_redelivery(delay, move || {
+        connection.harness.comes_due(QueueAt::read(queue), ticket);
+    });
 }
 
 impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
@@ -247,7 +410,15 @@ impl<DB: QueueDatabase, D: Dialect + 'static> TestableBroker for ConnectedSqlxBr
     fn inject(&self, message: OutgoingMessage<'_>) {
         let harness = &self.shared.harness;
         harness.record(&message);
-        harness.expect(message.name());
+        // A name no route leads to a table is refused below, and counts nowhere.
+        let wake = self
+            .shared
+            .routes
+            .find_with_wake(message.name())
+            .map(|(_, wake)| wake);
+        if let Some(wake) = wake {
+            harness.expect(QueueAt::written(wake, message.name()));
+        }
         let (name, payload, headers) = message.into_parts();
         let (name, payload) = (name.to_owned(), payload.to_vec());
         // Each injection waits for the one before it, so they reach the table in the order the
@@ -301,7 +472,9 @@ async fn inject<DB: QueueDatabase>(
         }),
     };
     if let Err(error) = written {
-        shared.harness.refused(name);
+        if let Some((_, wake)) = shared.routes.find_with_wake(name) {
+            shared.harness.refused(QueueAt::written(wake, name));
+        }
         tracing::warn!(target: "ruststream_sqlx", %error, name, "an injected message was refused");
     }
 }

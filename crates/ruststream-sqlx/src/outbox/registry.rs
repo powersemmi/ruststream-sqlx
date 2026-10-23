@@ -228,9 +228,10 @@ impl<DB: Database> Outbox<DB, Nil> {
 }
 
 impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
-    /// Tracks the messages published under `name` with the record type `Record`, for a name known
-    /// only at run time; [`track`](Self::track) refuses a repeated name while the service
-    /// compiles. The record's default statements are built here, once.
+    /// Tracks the messages published under `name` with the record type `Record`, a name the
+    /// service passes as a `&'static str` value; [`track`](Self::track) takes the name as a type
+    /// and refuses a repeated name while the service compiles, and here a repeated name panics
+    /// when the app is built. The record's default statements are built here, once.
     ///
     /// # Panics
     ///

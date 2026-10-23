@@ -19,7 +19,7 @@ use crate::inbox::engine::{Events, Now, Settled, Settling};
 use crate::inbox::error::SqlxBrokerError;
 use crate::inbox::queue::Queue;
 #[cfg(feature = "testing")]
-use crate::inbox::testing::off_clock;
+use crate::inbox::testing::{QueueAt, off_clock};
 use crate::inbox::tx::PoolTx;
 
 /// Settles the delivery in `slot` of `book`'s subscription on a connection of its own, committed
@@ -137,14 +137,14 @@ pub(crate) fn release_in_process<DB, Row>(
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    connection.harness.expect(queue.name);
+    connection.harness.expect(QueueAt::read(queue));
     drop(book.runtime().spawn(async move {
         let now = connection.harness.now();
         let released = off_clock(release::<DB, Row>(book, slot, queue, id, now))
             .await
             .unwrap_or(false);
         if !released {
-            connection.harness.refused(queue.name);
+            connection.harness.refused(QueueAt::read(queue));
         }
         connection.harness.released();
     }));

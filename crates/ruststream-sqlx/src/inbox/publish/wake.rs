@@ -49,8 +49,7 @@ impl TableWake {
     /// The wake-up a subscription to `name` of the table waits on, kept for every later
     /// subscription to the same group on the connection. Cold: run as a subscription opens.
     pub(crate) fn subscribe(&self, name: &str) -> &'static Notify {
-        // A table without groups is one queue, whatever name its subscription gives it.
-        let group = if self.grouped { name } else { "" };
+        let group = self.group(name);
         // `get_or_init` lets one caller append at the tail, so two subscriptions opening at once
         // neither lose an entry nor add a group twice.
         let mut entry = *self.first.get_or_init(|| Entry::leak(group));
@@ -60,6 +59,13 @@ impl TableWake {
             }
             entry = *entry.next.get_or_init(|| Entry::leak(group));
         }
+    }
+
+    /// The group a subscription to `name`, or a write of a message named `name`, reads or writes;
+    /// empty in a table without groups, which is one queue whatever name its subscription and its
+    /// routes give it.
+    pub(crate) fn group<'name>(&self, name: &'name str) -> &'name str {
+        if self.grouped { name } else { "" }
     }
 
     /// Wakes the subscription of the group `name` after a write into the table; every subscription

@@ -74,7 +74,7 @@ async fn place(cmd: &PlaceOrder) -> OrderPlaced {
 /// After the ack, the record is marked processed.
 #[subscriber("orders")]
 async fn fulfil(order: &OrderPlaced) -> HandlerOutcome {
-    println!("fulfilling order {}", order.id);
+    tracing::info!(order = order.id, "fulfilling the order");
     HandlerOutcome::ack()
 }
 

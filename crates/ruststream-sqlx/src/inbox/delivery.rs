@@ -27,7 +27,7 @@ use super::form::row_lock::BatchTx;
 use super::headers::HeaderCell;
 use super::queue::Queue;
 #[cfg(feature = "testing")]
-use super::testing::off_clock;
+use super::testing::{QueueAt, off_clock};
 use super::transactional::{InboxMode, Plain, TxHold};
 use super::tx::PoolTx;
 use super::{Lane, QueueRow, RowLane};
@@ -178,6 +178,55 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// A claimed row whose columns do not decode settles by the subscription's decode policy before
+/// the handler runs, and still spends its attempt. Here such a row comes back every ten minutes:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
+///
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     // A row that does not decode stays in the table and comes back every ten minutes, until a
+///     // release that reads it ships.
+///     let keep = FailurePolicy::RetryAfter(Duration::from_secs(600));
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send.on_failure(FailurePolicies::default().with_decode(keep)));
 ///     })
 /// }
 /// # }
@@ -559,7 +608,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
                 if let Some(connection) = in_process {
                     // The row comes back once its session ends; it is counted first, so a claim
                     // that takes it at once finds it counted.
-                    connection.harness.expect(self.queue.name);
+                    connection.harness.expect(QueueAt::read(self.queue));
                     drop(hold);
                     connection.harness.released();
                     return;
@@ -592,7 +641,7 @@ impl<DB: QueueDatabase, Row: Events<DB>, Mode> Drop for InboxDelivery<DB, Row, M
         }
         #[cfg(feature = "testing")]
         if let Some(connection) = in_process {
-            connection.harness.returned(self.queue.name);
+            connection.harness.returned(QueueAt::read(self.queue));
         }
     }
 }

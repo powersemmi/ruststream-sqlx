@@ -12,6 +12,8 @@
 #[path = "../live/mod.rs"]
 mod live;
 
+mod in_process;
+
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};

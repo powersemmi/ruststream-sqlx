@@ -101,6 +101,58 @@ use super::any::AnyDialect;
 /// # }
 /// # fn main() {}
 /// ```
+///
+/// On SQLite the table takes the lease form, and the same struct serves a `PgPool` and a
+/// `MySqlPool` unchanged:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "sqlite", feature = "chrono"))]
+/// # mod demo {
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::SqlitePool;
+///
+/// // thumbnail_jobs: id INTEGER PRIMARY KEY, attempt INTEGER NOT NULL DEFAULT 1,
+/// // locked_until TEXT, payload BLOB NOT NULL
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "thumbnail_jobs")]
+/// pub struct MakeThumbnail {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     #[field(locked_until)]
+///     locked_until: Option<DateTime<Utc>>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Image {
+///     path: String,
+/// }
+///
+/// # async fn resize(image: &Image) -> bool { !image.path.is_empty() }
+/// #[subscriber(InboxQueue::<MakeThumbnail>::new("thumbnails"))]
+/// async fn thumbnail(image: &Image) -> HandlerOutcome {
+///     if resize(image).await {
+///         HandlerOutcome::ack()
+///     } else {
+///         HandlerOutcome::retry()
+///     }
+/// }
+///
+/// // The same struct serves a `PgPool` and a `MySqlPool` too: the broker takes the dialect of its
+/// // pool, which builds its statements from the table's description.
+/// pub fn app(pool: SqlitePool) -> RustStream {
+///     RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(thumbnail);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 pub struct BuiltIn<DB: BuiltInDialect>(DB::Picked);
 
 impl<DB: BuiltInDialect> BuiltIn<DB> {

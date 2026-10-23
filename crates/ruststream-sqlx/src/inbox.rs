@@ -62,7 +62,7 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 /// The struct puts its table in one of two modes. In payload mode a `#[field(payload)]` field
 /// holds the message, and a codec decodes it for the handler ([`PayloadRow`]). In row mode the
 /// struct has no such field, and the handler takes the struct itself, `&Row` or `&[Row]` (see
-/// [Row mode](crate#row-mode)).
+/// [row mode](https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/rows/)).
 ///
 /// # Examples
 ///
@@ -98,6 +98,82 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         b.include(send);
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// A struct in row mode hands its handler the row itself: one row, the rows of one claim as a
+/// slice, or one row beside its delivery's transaction:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::{Deserialize, Serialize};
+/// use sqlx::{PgPool, Postgres};
+///
+/// // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, attempt SMALLINT DEFAULT 1, "to" TEXT,
+/// // subject TEXT NULL, attachments JSONB
+/// /// One mail to send: the table has no payload column, so a handler takes the row itself.
+/// #[derive(Inbox, sqlx::FromRow, Clone)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     to: String,
+///     subject: Option<String>,
+///     #[sqlx(json)]
+///     attachments: Vec<Attachment>,
+/// }
+///
+/// #[derive(Clone, Serialize, Deserialize)]
+/// pub struct Attachment {
+///     file: String,
+/// }
+///
+/// # async fn deliver(_: &SendEmail) -> bool { true }
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &SendEmail) -> HandlerOutcome {
+///     if deliver(email).await {
+///         HandlerOutcome::ack()
+///     } else {
+///         HandlerOutcome::retry()
+///     }
+/// }
+///
+/// /// One SMTP session per claim of up to 64 rows.
+/// #[subscriber(InboxQueue::<SendEmail>::new("newsletters"))]
+/// async fn send_newsletter(emails: &[SendEmail]) -> HandlerOutcome {
+///     tracing::info!(count = emails.len(), "sent a newsletter page");
+///     HandlerOutcome::ack()
+/// }
+///
+/// /// The audit row commits with the acknowledgement of the mail's row, or neither does.
+/// #[subscriber(InboxQueue::<SendEmail>::new("receipts"))]
+/// async fn send_receipt(email: &SendEmail, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
+///     let logged = sqlx::query("INSERT INTO sent_mail (job_id, recipient) VALUES ($1, $2)")
+///         .bind(email.job_id)
+///         .bind(&email.to)
+///         .execute(&mut *tx)
+///         .await;
+///     if logged.is_ok() && deliver(email).await {
+///         HandlerOutcome::ack()
+///     } else {
+///         HandlerOutcome::retry()
+///     }
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send);
+///         b.include(send_newsletter.batch(nonzero!(64)));
+///         b.include(send_receipt.transactional());
 ///     })
 /// }
 /// # }
@@ -216,7 +292,8 @@ impl<Row> Lane<Row> for RowLane {
 ///
 /// A struct without a payload field is in row mode: its handler takes the row itself, and the
 /// derive's [`insert`](crate::Insert::insert) or a [`Repository`] over the service's own
-/// [`Publish`] writes its tasks (see [Row mode](crate#row-mode)).
+/// [`Publish`] writes its tasks (see
+/// [row mode](https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/rows/)).
 ///
 /// # Examples
 ///

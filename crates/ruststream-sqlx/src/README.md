@@ -1,51 +1,16 @@
 SQL databases for the [RustStream](https://github.com/powersemmi/ruststream) messaging framework,
 through [`sqlx`](https://docs.rs/sqlx).
 
-The crate serves task queues kept in the service's own tables, on Postgres, MySQL, MariaDB and
-SQLite. A struct of the service's own describes a queue table: [`Inbox`] reads the table from
-`#[inbox(..)]`, the column names from sqlx's attributes and the role of each column from
-`#[field(..)]`. The same description may be written by hand, through [`InboxTable`] and its typed
-builder [`InboxSpec`] ([macro or manual](#macro-or-manual)). [`SqlxBroker`] serves the queues of the service's sqlx pool as a RustStream
-broker: a subscription claims rows, a handler's outcome settles them, and a publish writes a row
-through the service's own SQL.
+The crate has two parts. The inbox is a task queue in the service's own table, on Postgres, MySQL,
+MariaDB and SQLite: a struct describes the table, [`SqlxBroker`] serves it as a RustStream
+broker, a subscription claims rows, and a handler's outcome settles them. The outbox records what
+a service publishes on any RustStream broker until a consumer has processed it, and publishes the
+rest again at startup.
 
-The crate also serves a transactional outbox over any RustStream broker: what a service publishes
-is recorded in its own table until a consumer has processed it, and what was not processed is
-published again at startup. It is described in [the transactional outbox](#the-transactional-outbox).
+# A service
 
-The inbox fits work that belongs to the service's data: a task written in the same transaction as
-the data it serves, a queue in the database the service already runs, a handler that writes its
-results in its delivery's transaction. The outbox fits messages a service publishes on another broker
-and must not lose. A service may use both: the outbox's middlewares wrap inbox handlers as they
-wrap any other.
-
-The `inbox` feature turns the broker on, the `outbox` feature the outbox, and a service adds what
-its database and its tables need:
-
-- `postgres`, `mysql` (MySQL and MariaDB) and `sqlite`: a built-in dialect and its sqlx driver;
-- `any`: an `AnyPool`, served by the dialect of the database it reaches;
-- `chrono` or `time`: the time columns; `json`: the headers column;
-- `testing`: the broker's in-process mode for `TestApp`, and the outbox's test switch;
-  `asyncapi`: what a subscription adds to the generated document.
-
-Where things are:
-
-- [`Inbox`]: what a struct declares, the roles a column plays, the compile errors it meets.
-- [`InboxTable`] and [`InboxSpec`]: a queue table described by hand, its settings in
-  [`spec`].
-- [`SqlxBroker`] and [`InboxQueue`]: the broker and its subscriptions, described below.
-- [Roles](#roles) and [Time](#time): what each column turns on, and where "now" comes from.
-- [`Repository`] and [`Routed`]: publishing into tables.
-- [`keys`]: what a handler reads off a delivery.
-- [`InboxSettings::transactional`] and [`Tx`]: transactional mode, where a handler writes through
-  its delivery's transaction.
-- [`dialect`]: the SQL each database runs, and the traits a dialect of the service's own
-  implements.
-- [The transactional outbox](#the-transactional-outbox): `#[derive(Outbox)]` or a record
-  described by hand, `outbox!` or `track`, and the registry's middlewares, under the `outbox`
-  feature.
-
-# The inbox broker
+A queue in a Postgres table, a handler that owns its backoff, and a route that writes a publish
+to `emails` through the service's own `INSERT`:
 
 ```no_run
 # #[cfg(all(feature = "postgres", feature = "chrono"))]
@@ -118,155 +83,244 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-[`SqlxBroker`] serves the queues in the tables of the service's pool, and the pool stays the
-service's. An [`InboxQueue`] subscription reads one queue: its name selects a group where the
-table has a `group` column, and addresses the whole table where it has none. A subscription
-claims rows when its stream is polled; after a claim that found fewer rows than it asked for, it
-waits the poll interval, one second unless set. The bytes reach the codec lent from the row. A
-table without a payload column hands its handler the row itself (see [Row mode](#row-mode)). The
-same table described by hand opens [macro or manual](#macro-or-manual).
+[`SqlxBroker::new`] only records the pool, which stays the service's. The runtime connects the
+broker at startup and shuts it down when the service stops.
 
-What a handler answers decides the row's fate:
+# Where things are
 
-- `ack()` deletes the row, or sets `processed_at` where the table has it;
-- `retry()` returns the row to the queue at once, and its next delivery reads one more attempt;
-- `retry_after(d)` hides the row until `retry_after` comes; a table without that column returns
-  it at once, and the runtime logs a warning;
-- `drop()` finishes the row as `ack()` does;
-- `max_attempts(n)` and `dead_letter(..)` on the mount come together: `attempt` counts the
-  deliveries, and at the cap the row moves to another group or into a table with the same
-  columns. With `max_attempts(1)` every failure moves the row at once. A mount that declares one
-  without the other stops at startup.
+The [guides][guides] build a service on SQL databases, in this order:
+[getting started][g-start], [enqueueing jobs][g-enqueueing], [retries and dead letters][g-retries],
+[long jobs and the claim form][g-forms], [ordering][g-ordering],
+[transactional handlers][g-transactional], [several instances][g-scaling],
+[relaying events to another broker][g-relay], [the outbox][g-outbox], [testing][g-testing] and
+[running in production][g-production]. The [architecture][architecture] pages show how a queue in
+a SQL table works and where the crate sits between the database and the runtime, and the
+[benchmarks][benchmarks] what it costs.
 
-Each `#[field(..)]` role turns on one behaviour of the queue ([Roles](#roles)). "Now" comes from
-the host's clock unless the table names another source ([Time](#time)).
+Each topic below links to its component page on the site, which shows it in a service; the
+item's own documentation keeps the detail.
 
+## Broker
 
-## An event of the service's own
+- [SqlxBroker][c-broker]: [`SqlxBroker`], connected into [`ConnectedSqlxBroker`] and closed into
+  [`ClosedSqlxBroker`].
+- [Connections][c-connections]: what each message in work holds of the pool, and
+  [`SqlxBroker::connection_limit`].
+- [Startup][c-startup]: the statements a subscription prepares when it opens.
+- [Shutdown][c-shutdown]: the advisory locks released, and a publisher kept past it.
+- [Prelude][c-prelude]: [`prelude`], the one glob an inbox service imports.
+- [Errors][c-errors]: [`SqlxBrokerError`].
 
-```no_run
-# #[cfg(all(feature = "inbox", feature = "postgres"))]
-# mod demo {
-use ruststream_sqlx::Ack;
-use ruststream_sqlx::prelude::*;
-use serde::Deserialize;
-use sqlx::{PgConnection, PgPool, Postgres};
+## Tables
 
-// email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL
-#[derive(Inbox, sqlx::FromRow)]
-#[inbox(table = "email_jobs", custom(ack))]
-pub struct SendEmail {
-    #[field(id, generated)]
-    job_id: i64,
-    #[field(group)]
-    name: String,
-    #[field(payload)]
-    payload: Vec<u8>,
-}
+- [Inbox][c-tables]: [`Inbox`](derive@Inbox), a queue table described by a struct.
+- [Roles][c-roles]: what each `#[field(..)]` role turns on, and the row traits by hand
+  ([`PayloadRow`], [`KeyRow`], [`AttemptRow`], [`HeaderRow`]).
+- [Columns][c-columns]: column names from sqlx's attributes.
+- [InboxSpec][c-inbox-spec]: [`InboxTable`] and [`InboxSpec`], a table described by hand, with its
+  settings in [`spec`].
+- [Insert][c-insert]: [`Insert`], a task written in the service's own transaction, and
+  [`dialect::insert`] by hand.
+- [Events][c-events]: `custom(..)` and [`spec::own`], one event in the service's own SQL
+  ([`Claim`], [`Fetch`], [`Ack`], [`Retry`], [`RetryAfter`], [`Discard`], [`DeadLetter`],
+  [`Extend`]).
+- [checked][c-checked]: `#[inbox(checked, db = ..)]`, the statements in sqlx's compile-time check.
 
-// A sent email stays in its table, in the `sent` group, for an audit.
-impl Ack<Postgres> for SendEmail {
-    async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE email_jobs SET name = 'sent' WHERE job_id = $1")
-            .bind(id)
-            .execute(conn)
-            .await?;
-        Ok(())
-    }
-}
+## Messages
 
-#[derive(Deserialize)]
-pub struct Email {
-    to: String,
-}
+- [Payload][c-payload]: payload mode, the column's bytes lent to the codec.
+- [Rows][c-rows]: row mode, a handler of the row itself, and [`RowBatch`].
+- [Decoding][c-decoding]: a row that does not decode, settled by the decode policy.
 
-#[subscriber(InboxQueue::<SendEmail>::new("emails"))]
-async fn send(email: &Email) -> HandlerOutcome {
-    tracing::info!(to = %email.to, "sending");
-    HandlerOutcome::ack()
-}
+## Headers
 
-pub fn app(pool: PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.1.0"))
-        .with_broker(SqlxBroker::new(pool), |b| {
-            b.include(send);
-        })
-}
-# }
-# fn main() {}
-```
+- [Headers][c-headers]: a `headers` column of JSON strings.
+- [HeaderColumn][c-header-column]: [`HeaderColumn`], a headers column of the service's own type.
+- [InboxHeaders][c-inbox-headers]: [`InboxHeaders`](derive@InboxHeaders), a message assembled
+  from a headers struct.
+- [HeaderField][c-header-field]: [`HeaderField`], the header value of a field, and
+  [`HeaderFields`] with [`put_header`] by hand.
+- [Fetch][c-fetch]: `custom(fetch)`, a message read over a join.
 
-By hand, the table names the event in its chain and in its type:
+## Subscriptions
 
-```no_run
-# #[cfg(all(feature = "inbox", feature = "postgres"))]
-# mod demo {
-use ruststream_sqlx::dialect::Column;
-use ruststream_sqlx::prelude::*;
-use ruststream_sqlx::spec::{Payload, own};
-use ruststream_sqlx::{Ack, InboxSpec, InboxTable, PayloadRow};
-use sqlx::{PgConnection, Postgres};
-# use serde::Deserialize;
-# use sqlx::PgPool;
+- [InboxQueue][c-subscriptions]: [`InboxQueue`], one queue of a table, opened as an
+  [`InboxSubscriber`].
+- [poll_interval][c-poll-interval]: [`InboxQueue::poll_interval`] and
+  [`SqlxBroker::poll_interval`].
+- [Workers][c-workers]: claims in flight for `workers(n)`, and `workers_by_key(n)`.
+- [Batches][c-batches]: one claim as a batch.
+- [FIFO][c-fifo]: `#[field(group, fifo = true)]`, one row of a group in work.
+- [on_threads][c-on-threads]: [`InboxSettings::on_threads`] and [`InboxThreads`].
+- [Names][c-names]: `#[subscriber("name")]`, a [`NamedSubscriber`] through a route.
 
-#[derive(sqlx::FromRow)]
-pub struct SendEmail {
-    job_id: i64,
-    payload: Vec<u8>,
-}
+## Forms
 
-impl InboxTable for SendEmail {
-    type Id = i64;
-    type Table = InboxSpec<(Payload, own::Ack)>;
-    const TABLE: Self::Table = InboxSpec::new("email_jobs", Column::new("job_id").generated())
-        .group(Column::new("name"))
-        .payload(Column::new("payload"))
-        .own::<own::Ack>();
+- [Forms][c-forms]: the row lock form, `FOR UPDATE SKIP LOCKED` held while the handler runs.
+- [Lease][c-lease]: `#[field(locked_until)]`, [`InboxQueue::lease`] and [`SqlxBroker::lease`].
+- [Advisory][c-advisory]: `advisory_lock = ".."`, a lock on each row's key.
+- [Lock][c-lock]: `custom(lock, unlock)` with [`Lock`] and [`Unlock`].
 
-    fn id(&self) -> &i64 {
-        &self.job_id
-    }
-}
+## Settlement
 
-impl PayloadRow for SendEmail {
-    type Column = Vec<u8>;
+- [Outcomes][c-settlement]: what `ack`, `retry` and `drop` do to a row.
+- [retry_after][c-retry-after]: a row hidden until its `retry_after` comes.
+- [dead_letter][c-dead-letter]: `max_attempts(n)` with `dead_letter(..)`.
 
-    fn payload(&self) -> &[u8] {
-        &self.payload
-    }
-}
+## Transactions
 
-impl Ack<Postgres> for SendEmail {
-    async fn ack(conn: &mut PgConnection, id: &i64) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE email_jobs SET name = 'sent' WHERE job_id = $1")
-            .bind(id)
-            .execute(conn)
-            .await?;
-        Ok(())
-    }
-}
-# #[derive(Deserialize)]
-# pub struct Email { to: String }
-# #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
-# async fn send(email: &Email) -> HandlerOutcome {
-#     tracing::info!(to = %email.to, "sending");
-#     HandlerOutcome::ack()
-# }
-# pub fn app(pool: PgPool) -> RustStream {
-#     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-#         b.include(send);
-#     })
-# }
-# }
-# fn main() {}
-```
+- [Transactional][c-transactions]: [`InboxSettings::transactional`] and [`Tx`], the handler's
+  writes committed with the settlement.
+- [Isolation][c-isolation]: `isolation = ..` and SQLite's `mode = ..`.
 
-An event the table names, in `custom(..)` on the derive or with `.own::<..>()` by hand, runs the
-service's own SQL in place of the statement the dialect builds, and every other event keeps the
-dialect's. The table and the broker stay as they were. Each event is a trait the struct implements
-for its database: [`Claim`], [`Fetch`], [`Ack`], [`Retry`], [`RetryAfter`], [`Discard`],
-[`DeadLetter`], [`Extend`], and [`Lock`] and [`Unlock`] in the advisory lock form; the markers of
-[`spec::own`] name them by hand. A named event without its impl does not compile, and the error
-names the trait. A settlement of the service's own runs in the transaction the crate commits, so it
-settles the row as the built-in one does. An acknowledgement takes the row out of what the claim
-selects: a row it leaves claimable is delivered again.
+## Context
+
+- [Context][c-context]: [`keys`], what a handler reads through `Ctx<..>`.
+- [Attempt][c-attempt]: [`keys::Attempt`].
+- [Pool][c-pool]: [`keys::Pool`], writes that commit on their own.
+
+## Time
+
+- [Time][c-time]: [`SystemClock`], "now" from the host.
+- [DatabaseClock][c-database-clock]: [`DatabaseClock`], "now" from the database.
+- [Clock][c-clock]: [`Clock`], a clock of the service's own.
+- [QueueTime][c-queue-time]: [`QueueTime`], the time types `chrono` and `time`.
+
+## Publishing
+
+- [Repository][c-publishing]: [`Publish`] and [`Repository`], a publish written into a table.
+- [route][c-route]: [`SqlxBroker::route`] and [`Routed`].
+
+## Wake
+
+- [Wake][c-wake]: a publish that wakes the subscriptions of its table.
+- [listen_notify][c-listen-notify]: [`SqlxBroker::listen_notify`] on Postgres.
+
+## Databases
+
+- [Databases][c-databases]: [`SqlxBroker::new`] and [`BuiltIn`], the dialect built in for the
+  pool's database.
+- [Postgres][c-postgres], [MySQL][c-mysql] and [SQLite][c-sqlite]: what each database serves.
+- [AnyPool][c-any-pool]: an `AnyPool`, served by the dialect of the database it reaches.
+- [Dialect][c-dialect]: [`SqlxBroker::with_dialect`] and [`dialect`], a dialect of the service's
+  own.
+
+## Tooling
+
+- [AsyncAPI][c-asyncapi]: the [server][c-asyncapi-server] and the [channels][c-asyncapi-channels]
+  the generated document names (feature `asyncapi`).
+- [Testing][c-testing]: the in-process mode
+  [`TestApp`](https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html) connects
+  the broker through (feature `testing`), and [Live][c-live] on the real clock.
+
+## Outbox
+
+- [Transactional outbox][c-outbox]: [`outbox`](mod@outbox), what a service publishes tracked
+  until a consumer processed it.
+- [Record][c-record]: [`Outbox`](derive@Outbox) and [`OutboxTable`](outbox::OutboxTable), the
+  outbox table.
+- [Registry][c-registry]: [`outbox!`](macro@outbox), [`Outbox::track`](outbox::Outbox::track) and
+  [`Outbox::register`](outbox::Outbox::register).
+- [Tracking][c-tracking]: [`Outbox::layer`](outbox::Outbox::layer) and
+  [`Outbox::publish_layer`](outbox::Outbox::publish_layer).
+- [republish][c-republish]: [`Outbox::republish`](outbox::Outbox::republish) at startup.
+- [wrap][c-wrap]: [`Outbox::wrap`](outbox::Outbox::wrap), a publisher outside the pipeline.
+- [set_pool][c-set-pool]: [`Outbox::set_pool`](outbox::Outbox::set_pool) inside
+  `#[ruststream::app]`.
+- [Statements][c-statements]: `custom(..)`, the record's events in the service's own SQL.
+- [Interplay][c-interplay]: the outbox beside the inbox.
+- [Switch][c-switch]: `RUSTSTREAM_SQLX_OUTBOX=on` in test builds.
+- [OutboxError][c-outbox-error]: [`OutboxError`](outbox::OutboxError).
+
+# Cargo features
+
+`inbox` turns the broker on and `outbox` the outbox, each independently of the other. `postgres`,
+`mysql` (MySQL and MariaDB) and `sqlite` add a built-in dialect and its sqlx driver, and `any` an
+`AnyPool` served by the dialect of the database it reaches. `chrono` or `time` add the time
+columns, and `json` a headers column. `testing` adds the broker's in-process mode for `TestApp`
+and the outbox's test switch, and `asyncapi` what a subscription adds to the generated document.
+
+[guides]: https://powersemmi.github.io/ruststream-sqlx/latest/
+[g-start]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/getting-started/
+[g-enqueueing]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/enqueueing/
+[g-retries]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/retries/
+[g-forms]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/claim-forms/
+[g-ordering]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/ordering/
+[g-transactional]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/transactional/
+[g-scaling]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/scaling/
+[g-relay]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/relay/
+[g-outbox]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/outbox/
+[g-testing]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/testing/
+[g-production]: https://powersemmi.github.io/ruststream-sqlx/latest/guides/production/
+[architecture]: https://powersemmi.github.io/ruststream-sqlx/latest/architecture/
+[benchmarks]: https://powersemmi.github.io/ruststream-sqlx/latest/architecture/benchmarks/
+[c-broker]: https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/
+[c-connections]: https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/connections/
+[c-startup]: https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/startup/
+[c-shutdown]: https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/shutdown/
+[c-prelude]: https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/prelude/
+[c-errors]: https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/errors/
+[c-tables]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/
+[c-roles]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/roles/
+[c-columns]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/columns/
+[c-inbox-spec]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/inbox-spec/
+[c-insert]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/insert/
+[c-events]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/events/
+[c-checked]: https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/checked/
+[c-payload]: https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/
+[c-rows]: https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/rows/
+[c-decoding]: https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/decoding/
+[c-headers]: https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/
+[c-header-column]: https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/header-column/
+[c-inbox-headers]: https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/inbox-headers/
+[c-header-field]: https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/header-field/
+[c-fetch]: https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/fetch/
+[c-subscriptions]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/
+[c-poll-interval]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/poll-interval/
+[c-workers]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/workers/
+[c-batches]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/batches/
+[c-fifo]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/fifo/
+[c-on-threads]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/on-threads/
+[c-names]: https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/names/
+[c-forms]: https://powersemmi.github.io/ruststream-sqlx/latest/components/forms/
+[c-lease]: https://powersemmi.github.io/ruststream-sqlx/latest/components/forms/lease/
+[c-advisory]: https://powersemmi.github.io/ruststream-sqlx/latest/components/forms/advisory/
+[c-lock]: https://powersemmi.github.io/ruststream-sqlx/latest/components/forms/lock/
+[c-settlement]: https://powersemmi.github.io/ruststream-sqlx/latest/components/settlement/
+[c-retry-after]: https://powersemmi.github.io/ruststream-sqlx/latest/components/settlement/retry-after/
+[c-dead-letter]: https://powersemmi.github.io/ruststream-sqlx/latest/components/settlement/dead-letter/
+[c-transactions]: https://powersemmi.github.io/ruststream-sqlx/latest/components/transactions/
+[c-isolation]: https://powersemmi.github.io/ruststream-sqlx/latest/components/transactions/isolation/
+[c-context]: https://powersemmi.github.io/ruststream-sqlx/latest/components/context/
+[c-attempt]: https://powersemmi.github.io/ruststream-sqlx/latest/components/context/attempt/
+[c-pool]: https://powersemmi.github.io/ruststream-sqlx/latest/components/context/pool/
+[c-time]: https://powersemmi.github.io/ruststream-sqlx/latest/components/time/
+[c-database-clock]: https://powersemmi.github.io/ruststream-sqlx/latest/components/time/database-clock/
+[c-clock]: https://powersemmi.github.io/ruststream-sqlx/latest/components/time/clock/
+[c-queue-time]: https://powersemmi.github.io/ruststream-sqlx/latest/components/time/queue-time/
+[c-publishing]: https://powersemmi.github.io/ruststream-sqlx/latest/components/publishing/
+[c-route]: https://powersemmi.github.io/ruststream-sqlx/latest/components/publishing/route/
+[c-wake]: https://powersemmi.github.io/ruststream-sqlx/latest/components/wake/
+[c-listen-notify]: https://powersemmi.github.io/ruststream-sqlx/latest/components/wake/listen-notify/
+[c-databases]: https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/
+[c-postgres]: https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/postgres/
+[c-mysql]: https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/mysql/
+[c-sqlite]: https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/sqlite/
+[c-any-pool]: https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/any-pool/
+[c-dialect]: https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/dialect/
+[c-asyncapi]: https://powersemmi.github.io/ruststream-sqlx/latest/components/asyncapi/
+[c-asyncapi-server]: https://powersemmi.github.io/ruststream-sqlx/latest/components/asyncapi/server/
+[c-asyncapi-channels]: https://powersemmi.github.io/ruststream-sqlx/latest/components/asyncapi/channels/
+[c-testing]: https://powersemmi.github.io/ruststream-sqlx/latest/components/testing/
+[c-live]: https://powersemmi.github.io/ruststream-sqlx/latest/components/testing/live/
+[c-outbox]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/
+[c-record]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/record/
+[c-registry]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/registry/
+[c-tracking]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/tracking/
+[c-republish]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/republish/
+[c-wrap]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/wrap/
+[c-set-pool]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/set-pool/
+[c-statements]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/statements/
+[c-interplay]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/interplay/
+[c-switch]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/switch/
+[c-outbox-error]: https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/outbox-error/

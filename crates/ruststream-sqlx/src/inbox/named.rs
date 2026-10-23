@@ -312,7 +312,7 @@ pub(crate) type ErasedStream =
 /// interval, on a broker whose dialect implements [`ByName`](crate::ByName) for its database, as
 /// every built-in dialect does. A route whose row leaves every event to
 /// the crate, with role columns of types the crate reads itself, is read by those columns alone,
-/// in the row lock form and in the lease form: no box and no dynamic call per message. Each
+/// in every form: no box and no dynamic call per message. Each
 /// column is held to the type the struct reads it as, so a row that would not decode into the
 /// struct goes to the decode-failure policy here too. The types are an `i16`, `i32`, `i64`,
 /// `String` or `Vec<u8>` id, a `Vec<u8>` or `String` payload, headers as JSON, a text or byte key,

@@ -13,6 +13,8 @@ use super::insert_routed;
 use crate::inbox::broker::{ConnectedSqlxBroker, Shared};
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::error::SqlxBrokerError;
+#[cfg(feature = "testing")]
+use crate::inbox::testing::QueueAt;
 
 /// The broker's default publish policy: a publish goes where the route table leads its name.
 ///
@@ -199,12 +201,17 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
             });
         };
         #[cfg(feature = "testing")]
-        self.shared.harness.expect(msg.name());
+        self.shared
+            .harness
+            .expect(QueueAt::written(wake, msg.name()));
         let inserted = insert_routed(&self.shared, route, wake, &msg).await;
         #[cfg(feature = "testing")]
         match &inserted {
             Ok(()) => self.shared.harness.published(&msg),
-            Err(_) => self.shared.harness.refused(msg.name()),
+            Err(_) => self
+                .shared
+                .harness
+                .refused(QueueAt::written(wake, msg.name())),
         }
         inserted
     }

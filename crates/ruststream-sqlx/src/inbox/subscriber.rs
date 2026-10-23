@@ -30,7 +30,7 @@ use super::form::lease::claim::{begin_work, claim_leased};
 use super::form::row_lock::claim_locked;
 use super::queue::{Queue, Registration};
 #[cfg(feature = "testing")]
-use super::testing::{cancelled, off_clock};
+use super::testing::{QueueAt, cancelled, off_clock};
 use super::transactional::{InboxMode, Plain, TxBook};
 use super::tx::PoolTx;
 use crate::inbox::pools::ServicePool;
@@ -132,6 +132,56 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///     RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Four workers, and still one change of the group at a time, in order.
 ///         b.include(push.workers(nonzero!(4)));
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
+///
+/// A handler of a slice takes one claim of up to `batch(n)` rows, and each delivery settles its own
+/// row:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "inbox", feature = "postgres"))]
+/// # mod demo {
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Email {
+///     to: String,
+/// }
+///
+/// # async fn deliver(email: &Email) -> bool { !email.to.is_empty() }
+/// // One claim is the batch, and each email settles its own row.
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send_all(emails: &[Email]) -> Vec<HandlerOutcome> {
+///     let mut outcomes = Vec::with_capacity(emails.len());
+///     for email in emails {
+///         outcomes.push(if deliver(email).await {
+///             HandlerOutcome::ack()
+///         } else {
+///             HandlerOutcome::retry()
+///         });
+///     }
+///     outcomes
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send_all.batch(nonzero!(50)));
 ///     })
 /// }
 /// # }
@@ -393,7 +443,7 @@ where
         let taken = claimed.map_err(|(statement, source)| self.failed(statement, source))?;
         self.shared
             .harness
-            .claimed(queue.name, self.claimed.rows.len());
+            .claimed(QueueAt::read(queue), self.claimed.rows.len());
         Ok((taken, self.claimed.rows.len()))
     }
 
@@ -640,7 +690,9 @@ where
         .await
         .unwrap_or_else(|| (Err(("BEGIN", cancelled())), ClaimBuffers::default()));
         if claimed.is_ok() {
-            shared.harness.claimed(queue.name, buffers.rows.len());
+            shared
+                .harness
+                .claimed(QueueAt::read(queue), buffers.rows.len());
         }
         return (claimed, buffers);
     }
