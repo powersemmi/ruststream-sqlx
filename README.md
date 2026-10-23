@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <b><a href="https://powersemmi.github.io/ruststream-sqlx/">Documentation</a></b>
+  <b><a href="https://powersemmi.github.io/ruststream-sqlx/latest/">Documentation</a></b>
 </p>
 
 ---
@@ -51,8 +51,8 @@ RustStream broker.
   subscription middleware takes the record into work by that id and marks it processed when the
   handler acknowledges. Unprocessed records are published again at startup, so each message is
   delivered at least once.
-- **Tests on the production app:** `TestApp` runs the service's own app against a real database;
-  SQLite needs no server.
+- **Tests on the production app:** `TestApp::start` runs the service's own app against a real
+  database, with a clock the test moves; SQLite in memory needs no server.
 
 ## Inbox or outbox
 
@@ -117,14 +117,14 @@ impl Publish<Postgres> for SendEmail {
     }
 }
 
-#[derive(Deserialize, Serialize, Outgoing)]
+#[derive(Debug, PartialEq, Deserialize, Serialize, Outgoing)]
 struct Email {
     to: String,
 }
 
 #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 async fn send(email: &Email) -> HandlerOutcome {
-    println!("sending to {}", email.to);
+    tracing::info!(to = %email.to, "sending");
     HandlerOutcome::ack()
 }
 
@@ -146,7 +146,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 ```
 
-sqlx builds a pool only inside a Tokio runtime, so `main` builds it and hands it to the app.
+sqlx builds a pool only inside a Tokio runtime, so `main` builds it and hands it to the app. The
+whole service is [`examples/inbox.rs`](./crates/ruststream-sqlx/examples/inbox.rs).
 
 Messages published on any broker, tracked by the outbox:
 
@@ -201,7 +202,7 @@ async fn place(cmd: &PlaceOrder) -> OrderPlaced {
 
 #[subscriber("orders")]
 async fn fulfil(order: &OrderPlaced) -> HandlerOutcome {
-    println!("fulfilling order {}", order.id);
+    tracing::info!(order = order.id, "fulfilling the order");
     HandlerOutcome::ack()
 }
 
@@ -235,20 +236,21 @@ fn app() -> impl App {
 ```
 
 `#[ruststream::app]` generates `main` and builds the app before the runtime starts, so the outbox
-starts without a pool and `on_startup` hands it one with `set_pool`. Both services are in
-[`crates/ruststream-sqlx/examples`](./crates/ruststream-sqlx/examples), and `examples/outbox`
-runs the outbox over Redis Pub/Sub.
+starts without a pool and `on_startup` hands it one with `set_pool`. The whole service is
+[`examples/outbox.rs`](./crates/ruststream-sqlx/examples/outbox.rs), and
+[`examples/outbox`](./examples/outbox) runs the outbox over Redis Pub/Sub.
 
 ## Test it
 
-`TestApp` runs the service's own app against a real database, because the service's SQL is part
-of what the test checks.
+`TestApp::start` runs the service's own app in process against a real database, because the
+service's SQL is part of what the test checks. SQLite in memory needs no server; on Postgres the
+test takes a database of its own.
 
 ```rust
 use ruststream::testing::TestApp;
 
 let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-let tb = TestApp::start_live(app(pool)).await?;
+let tb = TestApp::start(app(pool)).await?;
 
 tb.broker::<SqlxBroker<Postgres>>()
     .message(&Email { to: "ann@example.com".to_owned() })
@@ -259,17 +261,30 @@ tb.broker::<SqlxBroker<Postgres>>()
 tb.broker::<SqlxBroker<Postgres>>()
     .subscriber("emails")
     .assert_called_once()
+    .with(&Email { to: "ann@example.com".to_owned() })
     .settled(HandlerOutcome::ack());
 ```
+
+The harness waits for every publish, and after `tokio::time::pause()` `tb.advance(d)` moves the
+queue's clock past a delayed retry or a lease ([testing](https://powersemmi.github.io/ruststream-sqlx/latest/components/testing/)).
 
 A test build leaves the outbox off, so a test needs no outbox table;
 `RUSTSTREAM_SQLX_OUTBOX=on` in the environment turns it on.
 
 ## Documentation
 
-- This crate: <https://docs.rs/ruststream-sqlx>
-- The site, with the benchmarks: <https://powersemmi.github.io/ruststream-sqlx/>
-- The framework: <https://powersemmi.github.io/ruststream/latest>
+- [Getting started](https://powersemmi.github.io/ruststream-sqlx/latest/guides/getting-started/) - a queue table, a first handler
+  and its test on SQLite, with no server.
+- [Guides](https://powersemmi.github.io/ruststream-sqlx/latest/) - enqueueing, retries and dead letters, claim forms, ordering,
+  transactional handlers, several instances, relaying, the outbox, testing and production.
+- [Components](https://powersemmi.github.io/ruststream-sqlx/latest/components/) - one page per part of the crate: the broker,
+  tables, subscriptions, forms, settlement, transactions, time, databases and the outbox.
+- [Architecture](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/) - how a queue in a SQL table works and where
+  the crate sits between the database and the runtime.
+- [Benchmarks](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/benchmarks/) - what the crate costs over a raw sqlx
+  loop, and the outbox's cost to an app.
+- [API reference](https://docs.rs/ruststream-sqlx) - every item on docs.rs.
+- The framework: <https://powersemmi.github.io/ruststream/latest/>
 
 ## Minimum supported Rust version
 

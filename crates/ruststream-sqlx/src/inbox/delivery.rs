@@ -183,6 +183,55 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// # }
 /// # fn main() {}
 /// ```
+///
+/// A claimed row whose columns do not decode settles by the subscription's decode policy before
+/// the handler runs, and still spends its attempt. Here such a row comes back every ten minutes:
+///
+/// ```no_run
+/// # #[cfg(all(feature = "postgres", feature = "chrono"))]
+/// # mod demo {
+/// use std::time::Duration;
+///
+/// use chrono::{DateTime, Utc};
+/// use ruststream_sqlx::prelude::*;
+/// use serde::Deserialize;
+/// use sqlx::PgPool;
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
+/// pub struct SendEmail {
+///     #[field(id, generated)]
+///     job_id: i64,
+///     #[field(group)]
+///     name: String,
+///     #[field(retry_after, generated)]
+///     retry_after: DateTime<Utc>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// #[derive(Deserialize)]
+/// pub struct Email {
+///     to: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// async fn send(email: &Email) -> HandlerOutcome {
+///     tracing::info!(to = %email.to, "sending");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: PgPool) -> RustStream {
+///     // A row that does not decode stays in the table and comes back every ten minutes, until a
+///     // release that reads it ships.
+///     let keep = FailurePolicy::RetryAfter(Duration::from_secs(600));
+///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
+///         b.include(send.on_failure(FailurePolicies::default().with_decode(keep)));
+///     })
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 pub struct InboxDelivery<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     claimed: Claimed<Row>,
     headers: Row::Headers,

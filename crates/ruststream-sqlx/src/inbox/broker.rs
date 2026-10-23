@@ -178,6 +178,114 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// # }
 /// # fn main() {}
 /// ```
+///
+/// # Testing
+///
+/// A test hands [`TestApp::start`] the app `main` runs, unchanged, and addresses the broker by its
+/// production type (feature `testing`). The broker connects in process to the database the test's
+/// pool reaches, so the service's SQL runs as in production, and the harness waits for every
+/// publish: a row counts for the queue it lands in, its table and group, whatever name a
+/// subscription reads it by. SQLite in memory needs no server. After `tokio::time::pause()` the queue reads "now"
+/// from the test's clock, which `tb.advance(d)` moves past a delayed retry or a lease; a table on
+/// [`DatabaseClock`](crate::DatabaseClock) reads the database's time instead. The crate registers
+/// `SqlxBroker<Postgres>`, `SqlxBroker<MySql>`, `SqlxBroker<Sqlite>` and `SqlxBroker<Any>` with the
+/// harness, and a broker on a dialect of the service's own is registered by the service
+/// ([`with_dialect`](Self::with_dialect)).
+///
+/// [`TestApp::start`]: https://docs.rs/ruststream/latest/ruststream/testing/struct.TestApp.html#method.start
+///
+/// ```no_run
+/// # #[cfg(all(feature = "sqlite", feature = "chrono", feature = "testing"))]
+/// # mod demo {
+/// use std::error::Error;
+///
+/// use chrono::{DateTime, Utc};
+/// use ruststream::OutgoingMessage;
+/// use ruststream::testing::TestApp;
+/// use ruststream_sqlx::prelude::*;
+/// use serde::{Deserialize, Serialize};
+/// use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+/// use sqlx::{Connection, Sqlite, SqliteConnection, SqlitePool};
+///
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "thumbnail_jobs")]
+/// pub struct MakeThumbnail {
+///     #[field(id, generated)]
+///     id: i64,
+///     #[field(attempt, generated)]
+///     attempt: i16,
+///     #[field(locked_until)]
+///     locked_until: Option<DateTime<Utc>>,
+///     #[field(payload)]
+///     payload: Vec<u8>,
+/// }
+///
+/// impl Publish<Sqlite> for MakeThumbnail {
+///     async fn publish(
+///         conn: &mut SqliteConnection,
+///         message: &OutgoingMessage<'_>,
+///     ) -> Result<(), sqlx::Error> {
+///         sqlx::query("INSERT INTO thumbnail_jobs (payload) VALUES (?)")
+///             .bind(message.payload())
+///             .execute(conn)
+///             .await?;
+///         Ok(())
+///     }
+/// }
+///
+/// #[derive(Serialize, Deserialize, Outgoing)]
+/// pub struct Image {
+///     path: String,
+/// }
+///
+/// #[subscriber(InboxQueue::<MakeThumbnail>::new("thumbnails"))]
+/// async fn thumbnail(image: &Image) -> HandlerOutcome {
+///     tracing::info!(path = %image.path, "making a thumbnail");
+///     HandlerOutcome::ack()
+/// }
+///
+/// pub fn app(pool: SqlitePool) -> RustStream {
+///     RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
+///         SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
+///         |b| {
+///             b.include(thumbnail);
+///         },
+///     )
+/// }
+///
+/// const SCHEMA: &str = "CREATE TABLE thumbnail_jobs (id INTEGER PRIMARY KEY, \
+///     attempt INTEGER NOT NULL DEFAULT 1, locked_until TEXT, payload BLOB NOT NULL)";
+///
+/// // The body of a `#[tokio::test]`.
+/// pub async fn a_thumbnail_is_made() -> Result<(), Box<dyn Error>> {
+///     // A database in memory that every connection naming it shares, alive while one of them is
+///     // open: the test holds that one beside the pool.
+///     let options: SqliteConnectOptions =
+///         "sqlite:file:thumbnails?mode=memory&cache=shared".parse()?;
+///     let _keeper = SqliteConnection::connect_with(&options).await?;
+///     let pool = SqlitePoolOptions::new()
+///         .min_connections(1)
+///         .idle_timeout(None)
+///         .connect_with(options)
+///         .await?;
+///     sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+///
+///     let tb = TestApp::start(app(pool)).await?;
+///     // Through the route and the service's own `Publish`, as in production.
+///     tb.broker::<SqlxBroker<Sqlite>>()
+///         .message(&Image { path: "cat.png".to_owned() })
+///         .to("thumbnails")
+///         .publish()
+///         .await?;
+///     tb.broker::<SqlxBroker<Sqlite>>()
+///         .subscriber("thumbnails")
+///         .assert_called_once()
+///         .settled(HandlerOutcome::ack());
+///     Ok(())
+/// }
+/// # }
+/// # fn main() {}
+/// ```
 pub struct SqlxBroker<DB: Database, D = BuiltIn<DB>> {
     pub(crate) pool: Pool<DB>,
     pub(crate) dialect: DialectChoice<DB, D>,
@@ -288,6 +396,11 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// mode [`Opens`] for it. The dialect runs while subscriptions start; messages travel through
     /// the statements it built.
     ///
+    /// The crate registers the brokers of its built-in dialects with the test harness. A test of
+    /// a broker on a dialect of the service's own registers its type once,
+    /// `ruststream::register_testable_broker!(SqlxBroker<Postgres, Audited>);`, and addresses it
+    /// by that type, `tb.broker::<SqlxBroker<Postgres, Audited>>()`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -299,7 +412,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// /// Postgres with statements of the service's own, written out in the crate overview.
+    /// /// Postgres with statements of the service's own.
     /// #[derive(Debug)]
     /// pub struct Audited;
     /// # impl Dialect for Audited {
@@ -461,7 +574,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// unless set. A subscription's own [`poll_interval`](crate::InboxQueue::poll_interval)
     /// overrides it. A publish through this broker wakes the subscriptions of its table and group
     /// before then, and so does a notification with [`listen_notify`](Self::listen_notify)
-    /// ([waking a subscription](crate#waking-a-subscription)).
+    /// ([waking a subscription](https://powersemmi.github.io/ruststream-sqlx/latest/components/wake/)).
     ///
     /// # Examples
     ///

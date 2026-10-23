@@ -93,10 +93,10 @@ sqlx-prepare:
 # as a RustStream service, timed on a multi-threaded runtime, then the throughput grid, a filled
 # table drained by n workers on Postgres, MySQL and SQLite. The outbox's scenarios compare one app
 # over the stand's Redis in three variants: no outbox, the outbox written by hand, this crate's.
-# On demand only - it takes about half an hour and it wants the machine to itself. The page it
-# feeds is docs/benchmarks.md. `RUSTSTREAM_BENCH_SECONDS` sets the shortest wall-clock run,
-# `RUSTSTREAM_BENCH_THROUGHPUT_ROWS` the rows of a throughput run, `RUSTSTREAM_BENCH_PAIRS` the
-# rounds.
+# On demand only - it takes about half an hour and it wants the machine to itself. The pages it
+# feeds are under docs/architecture/benchmarks/. `RUSTSTREAM_BENCH_SECONDS` sets the shortest
+# wall-clock run, `RUSTSTREAM_BENCH_THROUGHPUT_ROWS` the rows of a throughput run,
+# `RUSTSTREAM_BENCH_PAIRS` the rounds.
 bench *ARGS: brokers-up
     #!/usr/bin/env bash
     set -euo pipefail
@@ -120,9 +120,9 @@ bench *ARGS: brokers-up
 # counted under valgrind: instructions through callgrind and allocations through DHAT, each
 # scenario a service on the production broker and the raw sqlx loop beside it, against the
 # stand's Postgres; an outbox scenario is one app over `MemoryBroker` with no outbox, with the
-# outbox written by hand, and with this crate's. The page it feeds is the code table of
-# docs/benchmarks.md. RUSTFLAGS is cleared because valgrind aborts on the instructions a recent CPU
-# advertises. Needs valgrind.
+# outbox written by hand, and with this crate's. The pages it feeds are under
+# docs/architecture/benchmarks/. RUSTFLAGS is cleared because valgrind aborts on the instructions
+# a recent CPU advertises. Needs valgrind.
 #
 # The benchmarks hand the measurement to gungraun's runner, which has to be the release of the
 # library the lock file pins. The recipe installs that release into `target/gungraun-runner` on
