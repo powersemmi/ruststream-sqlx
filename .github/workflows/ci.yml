@@ -191,7 +191,9 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-minimal
         run: |
           cargo check --locked -p ruststream-sqlx-bench --all-targets
-          cargo test --locked --workspace --all-features --no-fail-fast
+          cargo check --locked --workspace --exclude ruststream-sqlx-bench --examples --all-features
+          cargo test --locked --workspace --all-features --no-fail-fast --tests
+          cargo test --locked --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the minimal versions build
         if: always()
@@ -250,7 +252,11 @@ jobs:
         env:
           RUN_UI_TESTS: "1"
           REQUIRE_UI_TESTS: "1"
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own, and clippy has already compiled each one.
+        run: |
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       # The other feature edge: an all-features run hides a doc example that names a
       # feature-gated item without gating itself.
@@ -311,7 +317,13 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: beta
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-beta
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own. The advisory clippy run does not gate this
+        # toolchain, so the examples are compiled here.
+        run: |
+          cargo check --workspace --exclude ruststream-sqlx-bench --examples --all-features
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the beta build
         if: always()
@@ -336,7 +348,13 @@ jobs:
         env:
           RUSTUP_TOOLCHAIN: "1.95"
           CARGO_TARGET_DIR: ${{ runner.temp }}/target-floor
-        run: cargo test --workspace --all-features --no-fail-fast
+        # `--tests` and not every target: the examples' tests are modules of one test binary, so
+        # an example needs no binary of its own. Nothing else compiles them on the floor,
+        # so they are checked here.
+        run: |
+          cargo check --workspace --exclude ruststream-sqlx-bench --examples --all-features
+          cargo test --workspace --all-features --no-fail-fast --tests
+          cargo test --workspace --all-features --no-fail-fast --doc
 
       - name: Delete the floor build
         if: always()
@@ -377,7 +395,7 @@ jobs:
           MARIADB_TEST_URL: mysql://root:ruststream@127.0.0.1:53307
           RUSTSTREAM_REQUIRE_LIVE: "1"
           RUSTSTREAM_SQLX_OUTBOX: "on"
-        run: cargo test -p ruststream-sqlx --all-features --no-fail-fast
+        run: cargo test -p ruststream-sqlx --all-features --no-fail-fast --tests
 
       # The checked fixtures' statements are the ones the broker prepares at startup.
       - name: Run the checked fixtures' startup tests

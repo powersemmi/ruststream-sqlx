@@ -3,7 +3,6 @@
 //! same SQL.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ruststream_sqlx::{Insert, dialect};
@@ -64,13 +63,8 @@ pub(crate) async fn database() -> Option<Database<Db>> {
 ///
 /// Panics when the server refuses to create or serve the database.
 pub(crate) async fn database_on(variable: &str) -> Option<Database<Db>> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
     let url = url(variable)?;
-    let name = format!(
-        "rs_sqlx_{}_{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = super::database_name();
     let mut admin = MySqlConnection::connect(&url)
         .await
         .expect("the stand accepts a connection");

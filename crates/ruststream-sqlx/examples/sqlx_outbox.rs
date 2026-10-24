@@ -180,7 +180,7 @@ mod tests {
         if !tracking_on() {
             return Ok(());
         }
-        let (pool, _keeper) = database("sqlx_outbox_republish").await?;
+        let (pool, _keeper) = database("sqlx_outbox_startup").await?;
         sqlx::query("INSERT INTO outbox (name, payload) VALUES ('orders', ?)")
             .bind(br#"{"id":3}"#.as_slice())
             .execute(&pool)
