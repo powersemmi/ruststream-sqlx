@@ -17,11 +17,14 @@
 //! the tables in its own SQL; a row module holds the queue rows of one form under the names every
 //! form shares.
 
-// Each test target is its own binary and uses the part of this module its suites need, so what
-// one of them leaves alone, a macro included, is not dead code.
+// The suite and the allocation counts each use the part of this module their features turn on, so
+// what one of them leaves alone, a macro included, is not dead code.
 #![allow(dead_code, unused_macros)]
 
 use std::future::Future;
+use std::process;
+use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sqlx::{Database as Backend, Pool};
 
@@ -94,6 +97,20 @@ pub(crate) async fn unpaused<T>(read: impl Future<Output = T>) -> T {
     let value = read.await;
     tokio::time::pause();
     value
+}
+
+/// The name of a fresh test database, one no other test of the process holds.
+///
+/// The examples' tests share one process, and every example that includes this module holds a
+/// counter of its own, so the name carries the counter's address beside its count.
+pub(crate) fn database_name() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "rs_sqlx_{}_{:x}_{}",
+        process::id(),
+        ptr::from_ref(&NEXT).addr(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// A database of the test's own on a stand, with the stand's schema applied.

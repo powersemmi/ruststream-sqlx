@@ -11,7 +11,7 @@
 //! message change, run on stable and read every changed snapshot before committing it:
 //!
 //! ```text
-//! TRYBUILD=overwrite RUN_UI_TESTS=1 cargo test -p ruststream-sqlx --all-features --test ui
+//! TRYBUILD=overwrite RUN_UI_TESTS=1 cargo test -p ruststream-sqlx --all-features --test suite ui::
 //! ```
 
 #![cfg(feature = "inbox")]

@@ -12,7 +12,7 @@ use ruststream_sqlx::{HeaderColumn, Outbox};
 use sqlx::types::Json;
 use sqlx::{Database, Error, FromRow, MySql, Postgres, Sqlite};
 
-use crate::stand::Stand;
+use crate::outbox::stand::Stand;
 
 /// The `headers` column: a JSON object of strings, `NULL` for none.
 pub(crate) type Headers = Option<Json<BTreeMap<String, String>>>;

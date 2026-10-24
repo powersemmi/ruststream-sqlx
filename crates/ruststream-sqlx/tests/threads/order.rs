@@ -12,7 +12,7 @@ use ruststream_sqlx::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::live;
-use crate::probe::{GUARD, Probe};
+use crate::threads::probe::{GUARD, Probe};
 
 const POLL: Duration = Duration::from_millis(20);
 

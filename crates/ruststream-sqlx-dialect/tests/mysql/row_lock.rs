@@ -7,7 +7,7 @@ use ruststream_sqlx_dialect::{
     StatementError, TableName, TableSpec,
 };
 
-use crate::{BARE, BARE_LEASED, EMAILS, LEASED, LEASED_LEDGER};
+use crate::mysql::{BARE, BARE_LEASED, EMAILS, LEASED, LEASED_LEDGER};
 
 /// Every role a claim by role reads, beside a group and a column of data.
 const KEYED: TableSpec<'static> =

@@ -7,7 +7,7 @@ use ruststream_sqlx_dialect::{
     StatementError, TableName, TableSpec,
 };
 
-use crate::{LEASED, LOCKED};
+use crate::sqlite::{LEASED, LOCKED};
 
 const JOB_KEY: &[KeyPart<'static>] = &[KeyPart::Column("job_id")];
 
