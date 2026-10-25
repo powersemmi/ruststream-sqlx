@@ -137,7 +137,10 @@ pub(crate) fn release_in_process<DB, Row>(
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    connection.harness.expect(QueueAt::read(queue));
+    // The delivery leaves the books now, with its row counted again first: the release commits
+    // before its task resumes, so a claim may take the row and its handler settle it in between,
+    // and the books would count the dropped delivery after the redelivery is done.
+    connection.harness.returned(QueueAt::read(queue));
     drop(book.runtime().spawn(async move {
         let now = connection.harness.now();
         let released = off_clock(release::<DB, Row>(book, slot, queue, id, now))
@@ -146,7 +149,6 @@ pub(crate) fn release_in_process<DB, Row>(
         if !released {
             connection.harness.refused(QueueAt::read(queue));
         }
-        connection.harness.released();
     }));
 }
 

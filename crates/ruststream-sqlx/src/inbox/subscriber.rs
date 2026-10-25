@@ -24,6 +24,7 @@ use super::delivery::InboxDelivery;
 use super::engine::{self, Claimed, Claiming, Events, Leasing, Now};
 use super::error::SqlxBrokerError;
 use super::form::advisory::claim::{Advised, claim_advised};
+use super::form::advisory::session::Closing;
 use super::form::advisory::{LockBook, LockHold};
 use super::form::lease::LeaseBook;
 use super::form::lease::claim::{begin_work, claim_leased};
@@ -239,8 +240,9 @@ pub(crate) struct Opened<DB: QueueDatabase, Row: Events<DB>> {
 
 /// How a subscription holds the rows it claimed until they settle.
 pub(crate) enum Holding<DB: QueueDatabase, Row: Events<DB>> {
-    /// In the claim's transaction: the row lock form.
-    Transaction,
+    /// In the claim's transaction: the row lock form. A claim cut short drains through the
+    /// broker's closes.
+    Transaction(&'static Closing),
     /// By the lease the claim wrote and committed, each delivery's kept in the subscription's
     /// book: the lease form.
     Leases(&'static LeaseBook<DB, Row>),
@@ -767,8 +769,8 @@ where
         transactions,
     } = claimed;
     let book = match holding {
-        Holding::Transaction => {
-            return claim_locked::<DB, Row>(pool, &cx, ids, rows)
+        Holding::Transaction(closing) => {
+            return claim_locked::<DB, Row>(pool, closing, &cx, ids, rows)
                 .await
                 .map(Taken::Locked);
         }
@@ -779,7 +781,7 @@ where
             return Ok(Taken::Advised);
         }
     };
-    let lease = claim_leased::<DB, Row>(pool, &cx, now, ids, rows).await?;
+    let lease = claim_leased::<DB, Row>(pool, book.closing(), &cx, now, ids, rows).await?;
     // In transactional mode each row's delivery writes in a transaction of its own, opened once
     // the claim committed: the lease, not this transaction, keeps other claims off the row. A
     // transaction that fails to open fails the claim, and the rows it took return once their
@@ -813,12 +815,13 @@ where
 }
 
 /// Opens a claim's transaction on a connection of `pool`, with the statement `queue`'s dialect
-/// opens it with, or `BEGIN`.
+/// opens it with, or `BEGIN`; cut short, it drains through `closing`.
 pub(crate) async fn begin<DB: QueueDatabase>(
     pool: &Pool<DB>,
     queue: &Queue,
+    closing: &'static Closing,
 ) -> Result<PoolTx<DB>, Failed> {
-    PoolTx::begin(pool, queue.begin_claim)
+    PoolTx::begin_claim(pool, queue.begin_claim, closing)
         .await
         .map_err(|source| (queue.begin_claim.unwrap_or("BEGIN"), source))
 }

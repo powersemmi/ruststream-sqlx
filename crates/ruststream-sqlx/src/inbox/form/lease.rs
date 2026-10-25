@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{Events, Now, Settled, Settling};
+use crate::inbox::form::advisory::session::Closing;
 use crate::inbox::queue::Queue;
 #[cfg(feature = "testing")]
 use crate::inbox::testing::off_clock;
@@ -34,6 +35,8 @@ pub(crate) struct LeaseBook<DB: QueueDatabase, Row: Events<DB>> {
     /// The runtime the broker connected on: the keeper runs there, and so does the release of a
     /// delivery dropped unsettled.
     runtime: Handle,
+    /// The broker's closes, where a claim cut short drains.
+    closing: &'static Closing,
     /// The subscription: the lease the keeper extends by, and its statements.
     queue: &'static Queue,
     /// Where "now" comes from for the keeper's extensions.
@@ -68,6 +71,7 @@ impl<DB: QueueDatabase, Row: Events<DB>> LeaseBook<DB, Row> {
             leases: Leases::default(),
             pool: shared.pool.clone(),
             runtime: shared.runtime.clone(),
+            closing: shared.closing,
             queue,
             #[cfg(feature = "testing")]
             now: shared.harness.now(),
@@ -115,6 +119,11 @@ impl<DB: QueueDatabase, Row: Events<DB>> LeaseBook<DB, Row> {
     /// The runtime the broker connected on.
     pub(crate) const fn runtime(&self) -> &Handle {
         &self.runtime
+    }
+
+    /// The broker's closes, where a claim cut short drains.
+    pub(crate) const fn closing(&self) -> &'static Closing {
+        self.closing
     }
 
     /// One round of extensions, a failure logged; in process, off a paused clock.
