@@ -33,6 +33,7 @@
     "On SQLite a transactional handler publishes a tracked outbox message before its first write through `Tx`: from that write the delivery's transaction holds the database's write lock, and a later tracked publish fails with `OutboxError::WriteLockHeld`.",
     "Test by handing the production app to `TestApp::start` over a real database, SQLite in memory with no server, as `tb.broker::<SqlxBroker<Sqlite>>()`; after `tokio::time::pause()`, `tb.advance(d)` moves the queue's clock.",
     "A broker on a dialect of the service's own is registered with the test harness by the service: `ruststream::register_testable_broker!(SqlxBroker<Sqlite, MyDialect>)`.",
+    "On SQLite, `workers(n)` speeds up a lease or advisory lock subscription, but a transactional subscription whose handlers write runs `workers(1)` in the advisory lock form: its deliveries' transactions would wait for each other in SQLite's busy handler.",
     "On Postgres, advisory lock tables need a direct connection or PgBouncer in session pooling, and a SQLite file with advisory lock tables is served by one process.",
     "`listen_notify()` on Postgres wakes subscriptions from other processes for one pool connection and a `pg_notify` per publish; a row written by the service's own SQL waits the poll interval unless the service notifies.",
     "Add `checked, db = postgres` (or `mysql`, `sqlite`) to `#[inbox(..)]` to put the derive's statements into `cargo sqlx prepare`: the service's sqlx needs its `macros` feature and `DATABASE_URL` or `.sqlx` data at build time."

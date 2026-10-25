@@ -36,7 +36,7 @@ The shop writes the invoice jobs with its own SQL, and the rendering service run
 
 [`workers(4)`](../components/subscriptions/workers.md) runs up to four invoices at once in each instance.
 The subscription keeps a claim in flight for each free worker, so its workers take rows at once instead of one after another.
-On SQLite, which takes one writer at a time, it keeps one claim in flight, and each claim still feeds the next free worker.
+On SQLite, which takes one writer at a time, it keeps one claim in flight, and in the lease form that claim takes a row for every worker.
 A second instance on the same table adds four more workers, and no invoice goes to both.
 
 ## How fast a new job is seen

@@ -32,7 +32,7 @@ import TabItem from '@theme/TabItem';
 </TabItem>
 </Tabs>
 
-[`workers(4)`](../components/subscriptions/workers.md) 让每个实例同时处理最多四张发票。订阅为每个空闲 worker 保持一次进行中的领取，所以它的 worker 同时取行，而不是一个接一个地取。SQLite 同一时间只接受一个写入者，订阅在那里只保持一次进行中的领取，每次领取仍然交给下一个空闲的 worker。同一张表上的第二个实例再增加四个 worker，任何发票都不会同时交给两者。
+[`workers(4)`](../components/subscriptions/workers.md) 让每个实例同时处理最多四张发票。订阅为每个空闲 worker 保持一次进行中的领取，所以它的 worker 同时取行，而不是一个接一个地取。SQLite 同一时间只接受一个写入者，订阅在那里只保持一次进行中的领取；在租约形式下，这次领取为每个 worker 各取一行。同一张表上的第二个实例再增加四个 worker，任何发票都不会同时交给两者。
 
 ## 新任务多快被发现 {/* #how-fast-a-new-job-is-seen */}
 
