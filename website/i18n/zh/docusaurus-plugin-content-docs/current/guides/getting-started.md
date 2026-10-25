@@ -71,6 +71,8 @@ ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono", "t
 
 [`#[derive(Inbox)]`](../components/tables/index.md) 描述这张表：`#[inbox(table = ..)]` 给出表名，每个 `#[field(..)]` 为一列指定[角色](../components/tables/roles.md)。`generated` 标记由数据库填充的列。在手写形式中，[`InboxSpec`](../components/tables/inbox-spec.md) 表达同样的内容。[`InboxQueue::<MakeThumbnail>::new("thumbnails")`](../components/subscriptions/index.md) 就是订阅：它领取 `thumbnail_jobs` 的行，把每个载荷交给编解码器。处理器的返回值结算该行：`ack()` 删除它，`drop()` 以同样的方式结束它，只是不生成缩略图。[`Ctx<keys::Attempt>`](../components/context/attempt.md) 读取这是该行的第几次投递。
 
+`service` 接收数据库的 URL。[`SqlxBroker::from_url`](../components/broker/index.md) 把它和连接池的选项一起记录下来，不做任何连接，所以应用在运行时启动之前就能构建。`on_startup` 在订阅检查这张表之前创建它。
+
 向 `thumbnails` 发布会写入一行。[`route`](../components/publishing/route.md) 把这个名称引向 `MakeThumbnail`，再由服务自己的 [`Publish`](../components/publishing/index.md) 语句插入该行。处理器的应答和测试也以同样的方式发布。处理器之外的代码，例如一个 HTTP 端点，用派生宏生成的 [`insert`](../components/tables/insert.md) 在自己的事务中写入该行，[任务入队](enqueueing.md)一页演示了这种做法。
 
 ## 运行服务 {/* #running-the-service */}
@@ -90,7 +92,7 @@ ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono", "t
 </TabItem>
 </Tabs>
 
-`main` 自己启动 Tokio 运行时，因为 sqlx 只能在 Tokio 运行时内构建连接池。[`SqlxBroker::new`](../components/broker/index.md) 接收这个连接池，连接池仍然属于服务。
+`#[ruststream::app]` 生成 `main`，由它构建应用并运行。Broker 在服务启动时构建自己的连接池，在服务停止时关闭它。
 
 ```bash
 cargo run
@@ -100,7 +102,7 @@ cargo run
 
 ## 第一个测试 {/* #the-first-test */}
 
-示例文件中还有两个测试。每个测试在内存中建立一个 SQLite 数据库，创建这张表，然后用 `TestApp::start` 启动同一个 `service`。测试像生产环境一样通过路由发布一张图片，然后检查 `thumbnail` 如何结算它，以及表中还剩下什么：
+示例文件中还有两个测试。每个测试打开一个内存中的 SQLite 数据库，然后用 `TestApp::start` 在它上面启动同一个 `service`。测试像生产环境一样通过路由发布一张图片，然后检查 `thumbnail` 如何结算它，以及表中还剩下什么：
 
 ```bash
 cargo test

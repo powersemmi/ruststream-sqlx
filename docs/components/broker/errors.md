@@ -17,6 +17,7 @@ The database's own error is its `source`.
 | Variant | When |
 |---|---|
 | `Connect` | the connect could not take a connection from the pool |
+| `Url` | the connect could not read the URL of a broker made with `from_url` |
 | `Backend` | an `AnyPool` reached a database whose dialect's feature is off |
 | `Schema` | a statement failed to prepare at [startup](./startup.md): the table lacks a table or a column the description names |
 | `Dialect` | the dialect could not build a statement for the table |

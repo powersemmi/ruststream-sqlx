@@ -40,7 +40,7 @@ import TabItem from '@theme/TabItem';
 
 [`checked, db = postgres`](../components/tables/checked.md) 把结构体确定的每条语句交给 sqlx 的编译期检查：领取、各种结算、组的死信转移和插入。结构体指名而表中缺少的列会让构建失败。构建对照 `DATABASE_URL` 检查，或者对照 `cargo sqlx prepare` 写出、与 crate 一起提交的 `.sqlx` 数据检查；CI 中的 `cargo sqlx prepare --check` 会让数据过期的构建失败。订阅执行的语句与没有 `checked` 时相同，所以每条消息的开销也相同。这项检查属于派生宏：手写描述的表只有启动检查。
 
-每个订阅还会[在启动时预备它的语句](../components/broker/startup.md)。数据库缺少的表或列会让服务以 `SqlxBrokerError::Schema` 停止，错误中写明订阅、表和语句。声明了上限却没有死信的挂载，或者反过来，也会让服务停止。所以 `main` 在应用之前运行迁移，这些检查看到的就是这个版本所读取的表结构。
+每个订阅还会[在启动时预备它的语句](../components/broker/startup.md)。数据库缺少的表或列会让服务以 `SqlxBrokerError::Schema` 停止，错误中写明订阅、表和语句。声明了上限却没有死信的挂载，或者反过来，也会让服务停止。所以 `on_startup` 在订阅打开之前运行迁移，这些检查看到的就是这个版本所读取的表结构。
 
 ## 连接池 {/* #the-pool */}
 
@@ -88,12 +88,12 @@ import TabItem from '@theme/TabItem';
 
 ## 关闭 {/* #shutdown */}
 
-关闭时，运行时停止各订阅，在它的关闭超时内让处理中的处理器完成，然后[关闭 Broker](../components/broker/shutdown.md)。行锁方式的投递在结算之前一直持有它的事务；进程退出时仍未结算的投递随它的连接一起回滚，它的行回到队列。租约方式的投递保留它的租约，能结算就结算，否则它的行在租约到期后回来。Broker 释放处理中投递的咨询锁。连接池仍然属于服务，`main` 在 `run` 返回后关闭它。
+关闭时，运行时停止各订阅，在它的关闭超时内让处理中的处理器完成，然后[关闭 Broker](../components/broker/shutdown.md)。行锁方式的投递在结算之前一直持有它的事务；进程退出时仍未结算的投递随它的连接一起回滚，它的行回到队列。租约方式的投递保留它的租约，能结算就结算，否则它的行在租约到期后回来。Broker 释放处理中投递的咨询锁。Broker 最后关闭它构建的连接池；处理中的投递仍持有的连接在归还时关闭。
 
 ## AsyncAPI 文档 {/* #the-asyncapi-document */}
 
-启用 `asyncapi` feature 后，生成的 [AsyncAPI 文档](../components/asyncapi/index.md)描述服务器，以及每个订阅的表和组。`with_broker_labeled` 的标签给出服务器的名称，服务器条目中是连接池的主机和端口，从不包含用户名或密码：这份文档会被发布和分享。
+启用 `asyncapi` feature 后，生成的 [AsyncAPI 文档](../components/asyncapi/index.md)描述服务器，以及每个订阅的表和组。`with_broker_labeled` 的标签给出服务器的名称，服务器条目中是数据库的主机和端口，从不包含用户名或密码：这份文档会被发布和分享。
 
 ## 测试 {/* #testing */}
 
-示例文件中的一个测试在一个带密码 URL 的延迟连接池上构建这份文档，不做任何 I/O，发现其中有主机和端口，而任何地方都没有密码。另外两个测试连接它们自己的 Postgres 数据库运行：缺少表的数据库让启动以一个指名该表的错误停止，受检语句则正常服务队列。它们从 `POSTGRES_TEST_URL` 读取服务器地址，没有这个变量时跳过（[在 SQL 上测试服务](testing.md)）。
+示例文件中的一个测试在一个带密码的 URL 上构建服务的这份文档，不做任何 I/O，发现其中有主机和端口，而任何地方都没有密码。另外两个测试连接它们自己的 Postgres 数据库运行：旧版本的表缺少结构体指名的列，让启动以一个指名该表的错误停止，受检语句则正常服务队列。它们从 `POSTGRES_TEST_URL` 读取服务器地址，没有这个变量时跳过（[在 SQL 上测试服务](testing.md)）。

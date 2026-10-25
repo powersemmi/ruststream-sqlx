@@ -55,7 +55,7 @@ import TabItem from '@theme/TabItem';
 </TabItem>
 </Tabs>
 
-`place_order` 打开一个 sqlx 事务，在其中写入三行：订单、确认邮件和提醒邮件。派生宏生成的 [`insert`](../components/tables/insert.md) 接受该表所在数据库的任意连接，因此 `&mut *tx` 把任务放进订单的事务。它们要么一起提交，要么一起回滚：插入失败的订单不会在表中留下邮件。下单的 HTTP 端点用服务的连接池调用同一个函数。
+`place_order` 打开一个 sqlx 事务，在其中写入三行：订单、确认邮件和提醒邮件。派生宏生成的 [`insert`](../components/tables/insert.md) 接受该表所在数据库的任意连接，因此 `&mut *tx` 把任务放进订单的事务。它们要么一起提交，要么一起回滚：插入失败的订单不会在表中留下邮件。下单的 HTTP 端点用服务自己的连接池调用同一个函数；端点和队列共用一个连接池的服务，把它交给 [`SqlxBroker::new`](../components/broker/index.md)。
 
 确认邮件现在就到期，而且紧急。提醒邮件三天后到期，在那之前没有领取会取走它。周期性任务也是同样的做法：它的处理器插入下一行，并设置更晚的 `retry_after`。只能存在一次的任务，则由服务自己的唯一索引加上一条单独的 `INSERT .. ON CONFLICT DO NOTHING` 语句来保证。
 

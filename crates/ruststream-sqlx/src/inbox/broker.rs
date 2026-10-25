@@ -85,9 +85,13 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 
 /// The inbox broker: task queues in the service's own tables, served through a sqlx pool.
 ///
-/// [`new`](Self::new) records the pool and does no I/O; the pool belongs to the service, and the
-/// broker never closes it. [`connect`](Broker::connect) takes one connection to check the
-/// database, and picks the built-in dialect by it where the service passed none. A message in
+/// [`from_url`](Self::from_url) and [`from_connect_options`](Self::from_connect_options) record
+/// the pool's settings and do no I/O, so the service builds the broker in its app's builder;
+/// [`connect`](Broker::connect) builds the pool, and
+/// [`shutdown`](ruststream::ConnectedBroker::shutdown) closes it. [`new`](Self::new) takes a pool
+/// the service shares with code of its own, and the broker never closes that one. `connect` takes
+/// one connection to check the database, and picks the built-in dialect by it where the service
+/// passed none. A message in
 /// work holds one of the pool's connections until it settles (in the lease form outside
 /// transactional mode only while it settles), and a publish takes another, so the pool is sized
 /// for both.
@@ -100,13 +104,11 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// ```no_run
 /// # #[cfg(all(feature = "postgres", feature = "chrono"))]
 /// # mod demo {
-/// use std::error::Error;
-///
 /// use ruststream::OutgoingMessage;
 /// use ruststream::prelude::*;
 /// use ruststream_sqlx::{Inbox, InboxQueue, Publish, SqlxBroker};
 /// use serde::Deserialize;
-/// use sqlx::postgres::{PgConnectOptions, PgPool};
+/// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 /// use sqlx::{PgConnection, Postgres};
 ///
 /// #[derive(Inbox, sqlx::FromRow)]
@@ -145,23 +147,17 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///     HandlerOutcome::ack()
 /// }
 ///
-/// pub fn app(pool: PgPool) -> RustStream {
+/// #[ruststream::app]
+/// fn app() -> impl App {
+///     // The options read the `PG*` environment variables; the broker builds the pool when the
+///     // service starts and closes it when the service stops.
+///     let broker = SqlxBroker::from_connect_options(PgConnectOptions::new(), PgPoolOptions::new());
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-///         SqlxBroker::new(pool).route::<SendEmail>("emails"),
+///         broker.route::<SendEmail>("emails"),
 ///         |b| {
 ///             b.include(send);
 ///         },
 ///     )
-/// }
-///
-/// // sqlx builds a pool only inside a Tokio runtime, so the service builds it before the app.
-/// // The service owns the pool and closes it.
-/// #[tokio::main]
-/// async fn main() -> Result<(), Box<dyn Error>> {
-///     let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
-///     app(pool.clone()).run().await?;
-///     pool.close().await;
-///     Ok(())
 /// }
 /// # }
 /// # fn main() {}

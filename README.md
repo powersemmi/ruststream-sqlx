@@ -85,12 +85,10 @@ features: `chrono` or `time` for time columns, `json` for a headers column, and 
 A queue in a Postgres table, served by the inbox:
 
 ```rust
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use ruststream_sqlx::prelude::*;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, Postgres};
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, Postgres};
 
 #[derive(Inbox, sqlx::FromRow)]
 #[inbox(table = "email_jobs")]
@@ -128,26 +126,27 @@ async fn send(email: &Email) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn app(pool: PgPool) -> RustStream {
+fn service(options: PgConnectOptions) -> RustStream {
+    let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendEmail>("emails"),
+        broker.route::<SendEmail>("emails"),
         |b| {
             b.include(send);
         },
     )
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
-    app(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    // The options read the `PG*` environment variables.
+    service(PgConnectOptions::new())
 }
 ```
 
-sqlx builds a pool only inside a Tokio runtime, so `main` builds it and hands it to the app. The
-whole service is [`examples/inbox.rs`](./crates/ruststream-sqlx/examples/inbox.rs).
+`#[ruststream::app]` builds the app before the runtime starts, so the broker records the pool's
+settings there and builds the pool when it connects. A service that shares one pool with code of
+its own hands it to `SqlxBroker::new(pool)` instead. The whole service is
+[`examples/inbox.rs`](./crates/ruststream-sqlx/examples/inbox.rs).
 
 Messages published on any broker, tracked by the outbox:
 
@@ -249,8 +248,8 @@ test takes a database of its own.
 ```rust
 use ruststream::testing::TestApp;
 
-let pool = PgPool::connect(&std::env::var("DATABASE_URL")?).await?;
-let tb = TestApp::start(app(pool)).await?;
+let options: PgConnectOptions = std::env::var("DATABASE_URL")?.parse()?;
+let tb = TestApp::start(service(options)).await?;
 
 tb.broker::<SqlxBroker<Postgres>>()
     .message(&Email { to: "ann@example.com".to_owned() })
