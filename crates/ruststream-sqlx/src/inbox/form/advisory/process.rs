@@ -22,7 +22,7 @@ use sqlx::{Database, Pool};
 /// subscription opens. A SQLite database is its file, by its canonical path where the file
 /// resolves, so two spellings of one file are one database, or the name of an in-memory database,
 /// under `Any` too; any other database is the URL its options render.
-pub(super) fn database_of<DB: Database>(pool: &Pool<DB>) -> u64 {
+pub(crate) fn database_of<DB: Database>(pool: &Pool<DB>) -> u64 {
     let options = pool.connect_options();
     let options: &dyn Any = &*options;
     let hasher = FixedState::with_seed(SEED);

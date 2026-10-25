@@ -32,6 +32,8 @@ pub(crate) struct PoolTx<DB: Database> {
     /// Whether the server may hold the transaction open: from the begin statement until a commit
     /// or a rollback finished.
     open: bool,
+    /// The statement that began the transaction, `None` for `BEGIN`.
+    opened_with: Option<&'static str>,
     /// The closes of the broker whose claim runs in the transaction: dropped open, the claim was
     /// cut short, and its connection drains there instead of closing at once.
     claim: Option<&'static Closing>,
@@ -62,12 +64,18 @@ impl<DB: Database> PoolTx<DB> {
         let mut tx = Self {
             conn: Some(conn),
             open: true,
+            opened_with: statement,
             claim: None,
         };
         // Why sqlx's transaction manager: it counts the transaction on the connection, so the
         // service's own SQL inside it nests a savepoint where it begins one.
         DB::TransactionManager::begin(&mut *tx, statement.map(SqlStr::from_static)).await?;
         Ok(tx)
+    }
+
+    /// The statement that began the transaction, `None` for `BEGIN`.
+    pub(crate) const fn opened_with(&self) -> Option<&'static str> {
+        self.opened_with
     }
 
     /// Opens a claim's transaction on a connection of `pool`, as [`begin`](Self::begin) does,
@@ -87,6 +95,7 @@ impl<DB: Database> PoolTx<DB> {
         let mut tx = Self {
             conn: Some(conn),
             open: true,
+            opened_with: statement,
             claim: Some(closing),
         };
         DB::TransactionManager::begin(&mut *tx, statement.map(SqlStr::from_static)).await?;

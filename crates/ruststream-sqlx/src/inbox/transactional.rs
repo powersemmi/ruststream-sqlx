@@ -10,6 +10,7 @@ use super::threads::{InboxThreads, ThreadsStep};
 mod book;
 pub(crate) mod settle;
 mod tx;
+pub(crate) mod writers;
 
 pub(crate) use book::{Returned, TxBook, TxHold};
 pub(crate) use tx::Lender;
@@ -208,8 +209,10 @@ pub trait InboxSettings: Declared {
     /// Each delivery in work holds one pool connection, so a handler that takes another connection
     /// of the same pool needs a pool larger than its `workers(n)`. On SQLite a delivery's
     /// transaction holds the database's one write lock from its first write, or from its start in
-    /// `immediate` mode, until it settles: every other writer waits for it. Transactional mode
-    /// serves single deliveries: a batch handler mounted with it does not compile.
+    /// `immediate` mode, until it settles: every other writer waits for it. A tracked outbox
+    /// publish of the handler from then on fails with `OutboxError::WriteLockHeld`, since its
+    /// record needs that lock. Transactional mode serves single deliveries: a batch handler
+    /// mounted with it does not compile.
     ///
     /// # Examples
     ///

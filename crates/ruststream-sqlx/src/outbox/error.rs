@@ -86,6 +86,27 @@ pub enum OutboxError {
         #[source]
         source: SqlError,
     },
+    /// A transactional handler on SQLite published a message under a registered name while its
+    /// own delivery transaction held the database's write lock, which the record needs; the
+    /// message was not sent.
+    ///
+    /// The transaction holds the lock from its first write through `Tx`, or from its begin in an
+    /// immediate or exclusive mode, until the delivery settles. A transaction that took the lock as
+    /// it began fails the publish at once. After a statement through `Tx` the record waits for the
+    /// lock at most the pool's acquire timeout, since SQLite tells whether that statement wrote
+    /// only by the wait. Such a handler publishes its tracked messages before its first write.
+    #[error(
+        "the outbox did not record a message published under `{name}` in `{record}`: the \
+         handler's own delivery transaction holds SQLite's write lock, from its first write \
+         through `Tx` (or its begin in an immediate or exclusive mode) until the delivery \
+         settles; publish tracked messages before that write"
+    )]
+    WriteLockHeld {
+        /// The registered name.
+        name: &'static str,
+        /// The record type.
+        record: &'static str,
+    },
     /// The unprocessed records of a name were not read at startup.
     #[error("the outbox did not read the unprocessed records of `{name}` from `{record}`")]
     Recover {

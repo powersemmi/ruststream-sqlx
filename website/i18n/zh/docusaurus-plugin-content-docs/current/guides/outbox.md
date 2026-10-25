@@ -93,7 +93,7 @@ import TabItem from '@theme/TabItem';
 
 消息至少投递一次。记录在消息发送之前写入，因此发送失败、消费者在处理器中途停止，或处理器要求再次投递消息时，记录都会留给下一次启动。两个同时启动的实例可能都再次发送同一条记录，所以不能重复处理消息的消费者要自己检查这一点。
 
-记录在自己的连接上写入，并立即提交。它不加入服务的事务：被重试的[事务](transactional.md) inbox 处理器丢弃它自己的写入，却保留它所发布内容的记录。在 SQLite 上，这样的处理器要在通过事务第一次写入之前发布，否则记录的插入要等待这个事务的写锁（[相互作用](../components/outbox/interplay.md)）。必须与业务行一起提交的事件，是业务事务中的一行，之后再中继出去：见[把事件中继到另一个 Broker](relay.md)。
+记录在自己的连接上写入，并立即提交。它不加入服务的事务：被重试的[事务](transactional.md) inbox 处理器丢弃它自己的写入，却保留它所发布内容的记录。在 SQLite 上，这样的处理器要在通过事务第一次写入之前发布，因为记录的插入需要这个事务持有的写锁；这次写入之后的发布以 `OutboxError::WriteLockHeld` 失败（[相互作用](../components/outbox/interplay.md)）。必须与业务行一起提交的事件，是业务事务中的一行，之后再中继出去：见[把事件中继到另一个 Broker](relay.md)。
 
 处理器之外的发布，例如一个 HTTP 端点，取得运行中应用的发布者，用注册表把它 [`wrap`](../components/outbox/wrap.md) 起来，于是它以同样的方式被跟踪。跟踪的开销是每次被跟踪的发布一个连接，每次被跟踪的投递两个连接：一个用于取出记录，一个用于结算。名称不在注册表中的消息，只付出一次名称比较。仓库中的 [`examples/outbox`](https://github.com/powersemmi/ruststream-sqlx/tree/main/examples/outbox) 在 Redis Pub/Sub 上运行同样的流程，带有迁移和它自己的取出语句。
 

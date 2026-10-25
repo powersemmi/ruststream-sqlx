@@ -368,7 +368,7 @@ impl<DB: QueueDatabase> ContextField for Tx<DB> {
     ///
     /// When the transaction is lent already: a handler reads it once per delivery.
     fn read(self, src: &TxContext<DB>) -> super::Tx<DB> {
-        super::Tx::lent_by(src.lender).expect(
+        super::Tx::lent_by(src.lender, src.pool).expect(
             "the delivery's transaction is lent already: a handler reads `Ctx<keys::Tx<..>>` \
              once per delivery",
         )

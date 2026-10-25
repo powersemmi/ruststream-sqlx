@@ -20,8 +20,11 @@ A message tracked into an inbox table carries its record id only where the table
 The consumer's subscription then reads the id back, and its acknowledgement marks the record.
 A table without a headers column refuses a publish that carries a header, the id among them.
 
-SQLite takes one writer at a time, and a transaction holds the write lock from its first write until it ends.
-A handler there publishes its tracked messages before its first write through the delivery's transaction: a record's insert on its own connection waits for that transaction otherwise, and the transaction waits for the handler.
+SQLite takes one writer at a time, and a transaction holds the write lock from its first write until it ends, or from its start in `immediate` or `exclusive` mode.
+A handler there publishes its tracked messages before its first write through the delivery's transaction: a record's insert on its own connection needs that transaction's write lock, and the transaction waits for the handler.
+A tracked publish that comes later fails with [`OutboxError::WriteLockHeld`](./outbox-error.md) and is not sent.
+In `immediate` or `exclusive` mode it fails at once.
+After a statement through `Tx` the record waits for the lock at most the pool's acquire timeout, since SQLite tells whether that statement wrote only by the wait.
 A record written or marked from a subscription on dedicated threads opens its connection on the app's runtime, so the pool outlives the threads.
 
 ## Example

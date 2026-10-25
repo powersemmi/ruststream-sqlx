@@ -30,6 +30,7 @@ mod registry;
 mod stand;
 mod threads;
 mod tracked;
+mod transactional;
 
 /// The variable that turns the outbox on in a test build.
 const SWITCH: &str = "RUSTSTREAM_SQLX_OUTBOX";

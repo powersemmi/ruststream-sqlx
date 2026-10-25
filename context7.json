@@ -30,7 +30,7 @@
     "Track publishes with the outbox: `#[derive(Outbox)]` with an `outbox::Publish` impl, `outbox!` for the names, `tracking.layer()`, `tracking.publish_layer()` and `b.after_startup(policy, tracking.republish())`.",
     "Inside `#[ruststream::app]` write `outbox!` without `pool:` and hand the pool built in `on_startup` to `tracking.set_pool(pool)`; publish from outside a handler through `tracking.wrap(publisher)`.",
     "The outbox delivers at least once: a consumer that must not process a message twice checks the record id in the `x-ruststream-outbox-id` header. A test build leaves the outbox off unless `RUSTSTREAM_SQLX_OUTBOX=on`.",
-    "On SQLite a transactional handler publishes a tracked outbox message before its first write through `Tx`: from that write the delivery's transaction holds the database's write lock, and the record's insert waits for it.",
+    "On SQLite a transactional handler publishes a tracked outbox message before its first write through `Tx`: from that write the delivery's transaction holds the database's write lock, and a later tracked publish fails with `OutboxError::WriteLockHeld`.",
     "Test by handing the production app to `TestApp::start` over a real database, SQLite in memory with no server, as `tb.broker::<SqlxBroker<Sqlite>>()`; after `tokio::time::pause()`, `tb.advance(d)` moves the queue's clock.",
     "A broker on a dialect of the service's own is registered with the test harness by the service: `ruststream::register_testable_broker!(SqlxBroker<Sqlite, MyDialect>)`.",
     "On Postgres, advisory lock tables need a direct connection or PgBouncer in session pooling, and a SQLite file with advisory lock tables is served by one process.",

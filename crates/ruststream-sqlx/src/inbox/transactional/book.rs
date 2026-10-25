@@ -3,11 +3,13 @@
 
 use std::fmt;
 use std::mem::{self, ManuallyDrop};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use sqlx::Database;
+use tokio::task::Id;
 
 use super::tx::Lender;
+use super::writers::{self, Holding, Lookup, Ran, Watch};
 use crate::inbox::tx::PoolTx;
 
 /// A delivery's place in a [`TxBook`]: the slot, and which of the deliveries that held the slot it
@@ -27,6 +29,9 @@ pub(crate) struct TxSlot {
 /// the subscription has more deliveries in work than ever before.
 pub(crate) struct TxBook<DB: Database> {
     slots: Mutex<TxSlots<DB>>,
+    /// What a tracked publish needs to know of the subscription's transactions, `None` off
+    /// SQLite: learnt at the first lend in a process that tracks publishes.
+    watch: OnceLock<Option<Watch>>,
 }
 
 /// Every slot the book has held, and which of them are free.
@@ -41,6 +46,11 @@ struct TxEntry<DB: Database> {
     /// Counts the deliveries that held the slot; the current one's lender carries it.
     generation: u64,
     standing: TxStanding<DB>,
+    /// The task the delivery's handler runs on, noted as it is lent in a process that tracks
+    /// publishes on SQLite: a tracked publish of that task finds its own delivery by it.
+    task: Option<Id>,
+    /// Whether the handler ran a statement through `Tx`, made as the slot first notes a task.
+    ran: Option<Ran>,
 }
 
 /// Where a slot's transaction is.
@@ -70,7 +80,20 @@ impl<DB: Database> TxBook<DB> {
                 entries: Vec::new(),
                 free: Vec::new(),
             }),
+            watch: OnceLock::new(),
         }))
+    }
+
+    /// What a tracked publish needs to know of the subscription's transactions, learnt from
+    /// `learn` the first time; a book on SQLite then enters the list the publish asks.
+    pub(super) fn watch(&'static self, learn: impl FnOnce() -> Option<Watch>) -> Option<Watch> {
+        *self.watch.get_or_init(|| {
+            let watch = learn();
+            if watch.is_some() {
+                writers::list(self);
+            }
+            watch
+        })
     }
 
     /// Records a delivery's transaction `tx` until the delivery settles.
@@ -87,6 +110,7 @@ impl<DB: Database> TxBook<DB> {
         let slot = if let Some((index, entry)) = reused {
             entry.generation = entry.generation.wrapping_add(1);
             entry.standing = held;
+            entry.task = None;
             TxSlot {
                 index,
                 generation: entry.generation,
@@ -95,6 +119,8 @@ impl<DB: Database> TxBook<DB> {
             entries.push(TxEntry {
                 generation: 0,
                 standing: held,
+                task: None,
+                ran: None,
             });
             TxSlot {
                 index: entries.len() - 1,
@@ -105,9 +131,10 @@ impl<DB: Database> TxBook<DB> {
         TxHold { book: self, slot }
     }
 
-    /// The transaction in `slot`, out of the book for the handler; `None` unless it waits there for
+    /// The transaction in `slot`, out of the book for the handler, with the note its handler's
+    /// first statement sets where the handler's `task` is noted; `None` unless it waits there for
     /// the delivery `slot` names.
-    pub(super) fn lend(&self, slot: TxSlot) -> Option<PoolTx<DB>> {
+    pub(super) fn lend(&self, slot: TxSlot, task: Option<Id>) -> Option<(PoolTx<DB>, Option<Ran>)> {
         let mut slots = self.slots();
         let lent = slots
             .entries
@@ -115,7 +142,15 @@ impl<DB: Database> TxBook<DB> {
             .filter(|entry| entry.generation == slot.generation)
             .and_then(
                 |entry| match mem::replace(&mut entry.standing, TxStanding::Lent) {
-                    TxStanding::Held(held) => Some(held.tx),
+                    TxStanding::Held(held) => {
+                        entry.task = task;
+                        let ran = task.map(|_| {
+                            let ran = *entry.ran.get_or_insert_with(Ran::new);
+                            ran.clear();
+                            ran
+                        });
+                        Some((held.tx, ran))
+                    }
                     other => {
                         entry.standing = other;
                         None
@@ -167,6 +202,25 @@ impl<DB: Database> TxBook<DB> {
 
     fn slots(&self) -> MutexGuard<'_, TxSlots<DB>> {
         self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl<DB: Database> Lookup for TxBook<DB> {
+    fn holding(&self, task: Id, database: u64) -> Holding {
+        let Some(Some(watch)) = self.watch.get().copied() else {
+            return Holding::Nothing;
+        };
+        if watch.database != database {
+            return Holding::Nothing;
+        }
+        let slots = self.slots();
+        let ran = slots
+            .entries
+            .iter()
+            .find(|entry| entry.task == Some(task) && !matches!(entry.standing, TxStanding::Free))
+            .map(|entry| entry.ran.is_some_and(Ran::get));
+        drop(slots);
+        ran.map_or(Holding::Nothing, |ran| Holding::of(watch, ran))
     }
 }
 
@@ -237,9 +291,13 @@ mod tests {
         let hold = book.enter(PoolTx::begin(&pool, None).await?);
         let lender = hold.lender();
         let lent = lender
-            .lend()
-            .expect("the book lends the delivery's transaction");
-        assert!(lender.lend().is_none(), "a second borrower finds it lent");
+            .lend(None)
+            .expect("the book lends the delivery's transaction")
+            .0;
+        assert!(
+            lender.lend(None).is_none(),
+            "a second borrower finds it lent"
+        );
         lent.give_back(false);
         let returned = hold.settle().expect("the settlement finds it back");
         assert!(!returned.panicked);
@@ -251,7 +309,7 @@ mod tests {
         let pool = pool().await?;
         let book = TxBook::<Sqlite>::leak();
         let hold = book.enter(PoolTx::begin(&pool, None).await?);
-        let lent = hold.lender().lend().expect("lends");
+        let lent = hold.lender().lend(None).expect("lends").0;
         lent.give_back(true);
         let returned = hold.settle().expect("the settlement finds it back");
         assert!(
@@ -268,7 +326,7 @@ mod tests {
         let book = TxBook::<Sqlite>::leak();
         let first = book.enter(PoolTx::begin(&pool, None).await?);
         let stale = first.lender();
-        let kept = stale.lend().expect("lends");
+        let kept = stale.lend(None).expect("lends").0;
         assert!(
             first.settle().is_none(),
             "a settlement finds the transaction still lent"
@@ -276,11 +334,11 @@ mod tests {
         // The next delivery takes the freed slot, and its handler borrows its own transaction.
         let second = book.enter(PoolTx::begin(&pool, None).await?);
         assert_eq!(slot(second.lender()).index, slot(stale).index);
-        let borrowed = second.lender().lend().expect("lends");
+        let borrowed = second.lender().lend(None).expect("lends").0;
         // The first transaction comes back late: the slot it left refuses it, so it ends there.
         kept.give_back(false);
         assert!(
-            second.lender().lend().is_none(),
+            second.lender().lend(None).is_none(),
             "the slot still waits for the second delivery's own transaction"
         );
         borrowed.give_back(false);
@@ -298,7 +356,7 @@ mod tests {
         let stale = dropped.lender();
         drop(dropped);
         assert!(
-            stale.lend().is_none(),
+            stale.lend(None).is_none(),
             "the dropped delivery's transaction ended"
         );
         let next = book.enter(PoolTx::begin(&pool, None).await?);
