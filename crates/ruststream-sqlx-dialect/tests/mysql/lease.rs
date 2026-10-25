@@ -6,7 +6,7 @@ use ruststream_sqlx_dialect::{
     ClaimShape, Column, Dialect, Lease, MySql, Param, Statement, StatementError, TableName,
 };
 
-use crate::{BARE_LEASED, LEASED, LEASED_LEDGER};
+use crate::mysql::{BARE_LEASED, LEASED, LEASED_LEDGER};
 
 #[test]
 fn the_lease_claim_selects_and_each_row_is_stamped() -> Result<(), StatementError> {

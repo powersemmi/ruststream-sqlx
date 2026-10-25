@@ -21,8 +21,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Error, FromRow, Pool, Sqlite, SqliteConnection};
 use tokio::time::timeout;
 
-use crate::records::OrderRecord;
-use crate::tracking_on;
+use crate::outbox::records::OrderRecord;
+use crate::outbox::tracking_on;
 
 /// How long a test lets its delivery take before it reports the hang: past the stand pool's
 /// acquire timeout, which bounds the record's wait where nothing tells the lock up front.
