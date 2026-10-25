@@ -13,15 +13,12 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod bound;
 mod budget;
 mod locks;
 mod order;
-mod pool;
-mod probe;
+pub(crate) mod pool;
+pub(crate) mod probe;
 mod runtimes;
 mod shutdown;
 mod transactional;

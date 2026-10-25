@@ -16,7 +16,7 @@
     feature = "testing"
 ))]
 
-mod live;
+use crate::live;
 
 use std::convert::Infallible;
 use std::time::Duration;

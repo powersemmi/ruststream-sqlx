@@ -6,7 +6,7 @@ use ruststream_sqlx::outbox::Outbox;
 use sqlx::Sqlite;
 use sqlx::sqlite::SqlitePoolOptions;
 
-use crate::records::{OrderRecord, RefundRecord};
+use crate::outbox::records::{OrderRecord, RefundRecord};
 
 #[test]
 #[should_panic(expected = "`orders` is registered with the outbox twice")]

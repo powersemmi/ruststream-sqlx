@@ -2,7 +2,6 @@
 //! the SQL the suites read and write its tables with. It needs no server, so it never skips.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ruststream_sqlx::{Insert, dialect};
@@ -27,12 +26,7 @@ pub(crate) const DIALECT: dialect::Sqlite = dialect::Sqlite;
 ///
 /// Panics when SQLite refuses to open the database or to apply the schema.
 pub(crate) async fn database() -> Option<Database<Db>> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let name = format!(
-        "rs_sqlx_{}_{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = super::database_name();
     let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
     let options: SqliteConnectOptions = url.parse().expect("the stand's URL parses");
     let keeper = SqliteConnection::connect_with(&options)
