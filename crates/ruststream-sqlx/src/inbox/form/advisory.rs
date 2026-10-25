@@ -5,11 +5,12 @@
 use std::borrow::Cow;
 use std::mem;
 use std::pin::pin;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use futures::future::{BoxFuture, join_all};
 use sqlx::{Database, Error};
 use tokio::sync::Notify;
+use tokio::task::Id;
 
 use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
@@ -17,6 +18,7 @@ use crate::inbox::engine::{Events, Now, Prepared, Settling, Shape};
 use crate::inbox::queue::Queue;
 #[cfg(feature = "testing")]
 use crate::inbox::testing::off_clock;
+use crate::inbox::transactional::writers::{self, Holding, Lookup, Ran, Watch};
 use session::{CLOSE_TIMEOUT, Closing, Session, Unlock, Unlocking};
 
 pub(crate) mod claim;
@@ -28,7 +30,7 @@ pub(crate) mod settle;
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use std::pin::pin;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
     use futures::future::BoxFuture;
@@ -102,6 +104,7 @@ mod tests {
                 KeptBy::Database
             },
             database: 0,
+            watch: OnceLock::new(),
             unlock,
             now: Now::default(),
         }))
@@ -507,6 +510,28 @@ mod tests {
     }
 }
 
+impl<DB: Database> Lookup for LockBook<DB> {
+    fn holding(&self, task: Id, database: u64) -> Holding {
+        let Some(Some(watch)) = self.watch.get().copied() else {
+            return Holding::Nothing;
+        };
+        if watch.database != database {
+            return Holding::Nothing;
+        }
+        let slots = self.slots();
+        let ran = slots
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.task == Some(task)
+                    && matches!(entry.standing, Standing::Held(_) | Standing::Lent(_))
+            })
+            .map(|entry| entry.ran.is_some_and(Ran::get));
+        drop(slots);
+        ran.map_or(Holding::Nothing, |ran| Holding::of(watch, ran))
+    }
+}
+
 pub(crate) use hold::{LockHold, Locked, Unlent};
 pub(crate) use process::{ProcessKey, ProcessLocks, database_of};
 
@@ -528,6 +553,9 @@ pub(crate) struct LockBook<DB: Database> {
     /// The database the subscription reads, as the process tells databases apart: the keys it
     /// keeps are each database's own.
     database: u64,
+    /// What a tracked publish needs to know of the subscription's transactions, `None` off
+    /// SQLite: learnt at the first lend in a process that tracks publishes.
+    watch: OnceLock<Option<Watch>>,
     /// The row's unlock, for a session that closes while it holds a lock.
     unlock: Unlock<DB>,
     /// Where "now" comes from for that unlock.
@@ -584,6 +612,11 @@ struct Entry<DB: Database> {
     /// settlement then rolls back what the handler wrote, whatever the outcome.
     panicked: bool,
     standing: Standing<DB>,
+    /// The task the delivery's handler runs on, noted as its session is lent in a process that
+    /// tracks publishes on SQLite: a tracked publish of that task finds its own delivery by it.
+    task: Option<Id>,
+    /// Whether the handler ran a statement through `Tx`, made as the slot first notes a task.
+    ran: Option<Ran>,
 }
 
 /// Where a slot's session is.
@@ -639,6 +672,7 @@ impl<DB: QueueDatabase> LockBook<DB> {
             queue,
             kept_by: KeptBy::of(&queue.prepared, Row::SHAPE),
             database: database_of(&shared.pool),
+            watch: OnceLock::new(),
             unlock: unlock::<DB, Row>,
             #[cfg(feature = "testing")]
             now: shared.harness.now(),
@@ -688,6 +722,7 @@ impl<DB: Database> LockBook<DB> {
             entry.generation = entry.generation.wrapping_add(1);
             entry.panicked = false;
             entry.standing = standing;
+            entry.task = None;
             LockSlot {
                 index,
                 generation: entry.generation,
@@ -698,6 +733,8 @@ impl<DB: Database> LockBook<DB> {
                 generation: 0,
                 panicked: false,
                 standing,
+                task: None,
+                ran: None,
             });
             LockSlot {
                 index: entries.len() - 1,
@@ -713,7 +750,19 @@ impl<DB: Database> LockBook<DB> {
 
     /// The session of the delivery in `slot` with its key, out of the book for its handler's
     /// transaction; `None` unless it waits there for the delivery `slot` names.
+    #[cfg(test)]
     pub(crate) fn lend(&'static self, slot: LockSlot) -> Option<Locked<'static, DB>> {
+        self.lend_to(slot, None).map(|(locked, _)| locked)
+    }
+
+    /// The session of the delivery in `slot` with its key, out of the book for its handler's
+    /// transaction, with `task` noted as the handler's and the note its first statement sets;
+    /// `None` unless it waits there for the delivery `slot` names.
+    pub(crate) fn lend_to(
+        &'static self,
+        slot: LockSlot,
+        task: Option<Id>,
+    ) -> Option<(Locked<'static, DB>, Option<Ran>)> {
         let mut slots = self.slots();
         let lent = slots
             .entries
@@ -721,7 +770,15 @@ impl<DB: Database> LockBook<DB> {
             .filter(|entry| entry.generation == slot.generation)
             .and_then(|entry| {
                 match mem::replace(&mut entry.standing, Standing::Lent(Borrower::Handler)) {
-                    Standing::Held(session) => Some((session, mem::take(&mut entry.key))),
+                    Standing::Held(session) => {
+                        entry.task = task;
+                        let ran = task.map(|_| {
+                            let ran = *entry.ran.get_or_insert_with(Ran::new);
+                            ran.clear();
+                            ran
+                        });
+                        Some((session, mem::take(&mut entry.key), ran))
+                    }
                     other => {
                         entry.standing = other;
                         None
@@ -729,10 +786,13 @@ impl<DB: Database> LockBook<DB> {
                 }
             });
         drop(slots);
-        lent.map(|(session, key)| Locked {
-            session: Some(session),
-            key: Cow::Owned(key),
-            book: self,
+        lent.map(|(session, key, ran)| {
+            let locked = Locked {
+                session: Some(session),
+                key: Cow::Owned(key),
+                book: self,
+            };
+            (locked, ran)
         })
     }
 
@@ -786,21 +846,18 @@ impl<DB: Database> LockBook<DB> {
         self.closing
     }
 
-    /// The statement that begins a handler's transaction on a session, `None` for `BEGIN`.
-    pub(crate) const fn begin_work(&self) -> Option<&'static str> {
-        self.queue.prepared.begin_work
-    }
-
-    /// The database the subscription reads, as the process tells databases apart.
-    pub(crate) const fn database(&self) -> u64 {
-        self.database
-    }
-
-    /// Whether the delivery `slot` names is still in work: its session held or lent.
-    pub(crate) fn in_work(&self, slot: LockSlot) -> bool {
-        self.slots().entries.get(slot.index).is_some_and(|entry| {
-            entry.generation == slot.generation
-                && matches!(entry.standing, Standing::Held(_) | Standing::Lent(_))
+    /// What a tracked publish needs to know of the subscription's transactions, from `on_sqlite`
+    /// the first time; a book on SQLite then enters the list the publish asks.
+    pub(crate) fn watch(&'static self, on_sqlite: impl FnOnce() -> bool) -> Option<Watch> {
+        *self.watch.get_or_init(|| {
+            let watch = on_sqlite().then(|| Watch {
+                database: self.database,
+                at_begin: writers::locks_at_begin(self.queue.prepared.begin_work),
+            });
+            if watch.is_some() {
+                writers::list(self);
+            }
+            watch
         })
     }
 

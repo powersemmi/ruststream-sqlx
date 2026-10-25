@@ -1,61 +1,51 @@
-//! The SQLite delivery transactions in work, by the task that runs their handler: what a tracked
-//! publish of that task reads before it writes its record.
+//! What a tracked publish learns of its own task's SQLite delivery transaction before it writes its
+//! record.
 //!
 //! SQLite takes one writer at a time, and a delivery's transaction holds the write lock from its
 //! first write until the delivery settles. A tracked publish of the handler that holds it writes
 //! its record on a connection of its own, which would wait for the handler, and the handler for
-//! the publish. The book is kept only in a process that tracks publishes, and only for SQLite.
+//! the publish. Each subscription's book of transactions notes, beside a delivery's transaction and
+//! under the lock it takes anyway to lend it, the task the handler runs on and whether the handler
+//! ran a statement through `Tx`. A tracked publish asks the books of the SQLite subscriptions in
+//! the process, which enter a list once, as their first delivery is lent.
 
-use std::any::Any as Dynamic;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::any::{Any as Dynamic, TypeId};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use sqlx::{Any, AnyConnection, Database};
 #[cfg(feature = "sqlite")]
-use sqlx::SqliteConnection;
-use sqlx::{AnyConnection, Database};
+use sqlx::{Sqlite, SqliteConnection};
 use tokio::task::{self, Id};
-
-use super::book::TxSlot;
-use crate::inbox::form::advisory::LockSlot;
 
 /// Whether the process tracks publishes: set as an outbox is made, before any delivery.
 static TRACKING: AtomicBool = AtomicBool::new(false);
 
-/// The tasks that hold a SQLite delivery transaction, as many as hold one at a time.
-static HOLDERS: Mutex<Vec<Holder>> = Mutex::new(Vec::new());
+/// The first of the books that lend SQLite delivery transactions; each holds the next.
+static BOOKS: OnceLock<&'static Listed> = OnceLock::new();
 
-/// How many entries of [`HOLDERS`] name a task: a publish reads it without the lock, and finds
-/// no holder of its own while it reads zero.
-static HELD: AtomicUsize = AtomicUsize::new(0);
-
-/// The book a delivery's transaction is lent from, asked whether the delivery is still in work.
-pub(crate) trait InWork: Sync {
-    /// Whether the delivery `slot` names is still in work.
-    fn in_work(&self, slot: Slot) -> bool;
+/// A book in the list, with the one after it.
+struct Listed {
+    book: &'static dyn Lookup,
+    next: OnceLock<&'static Self>,
 }
 
-/// A delivery's place in the book its transaction is lent from.
+/// What a subscription's transactions are, for a tracked publish: learnt at its first lend in a
+/// process that tracks publishes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Slot {
-    /// In a [`TxBook`](super::TxBook).
-    Tx(TxSlot),
-    /// In a [`LockBook`](crate::inbox::form::advisory::LockBook).
-    Lock(LockSlot),
+pub(crate) struct Watch {
+    /// The database the transactions run in, as the process tells databases apart.
+    pub(crate) database: u64,
+    /// Whether each transaction takes the write lock as it begins, in an immediate or exclusive
+    /// mode.
+    pub(crate) at_begin: bool,
 }
 
-/// One entry of the book, kept once made: a task that holds a delivery transaction, or none.
-struct Holder {
-    task: Option<Id>,
-    /// The book of the delivery, and its place there: an entry its settlement did not clear, as
-    /// a settlement on another task does not, is stale once the delivery leaves the book.
-    delivery: Option<(&'static dyn InWork, Slot)>,
-    /// The database the transaction runs in, as the process tells databases apart.
-    database: u64,
-    /// Whether the transaction took the write lock as it began, in an immediate or exclusive mode.
-    at_begin: bool,
-    /// Whether the transaction may hold the write lock: from its begin in an immediate or
-    /// exclusive mode, from the handler's first statement through `Tx` otherwise.
-    locked: &'static AtomicBool,
+/// A book of a subscription's delivery transactions, asked by a tracked publish.
+pub(crate) trait Lookup: Sync {
+    /// What the transaction of the delivery whose handler runs on `task` means for a record
+    /// written into `database`.
+    fn holding(&self, task: Id, database: u64) -> Holding;
 }
 
 /// What a tracked publish into a database learns of its own task's delivery transaction there.
@@ -72,17 +62,67 @@ pub(crate) enum Holding {
     HoldsWriteLock,
 }
 
-/// Records that the process tracks publishes, so its SQLite deliveries enter the book.
+impl Holding {
+    /// What a delivery in work whose handler ran on the asking task means, in a subscription that
+    /// opens its transactions as `watch` says; `ran` tells whether the handler ran a statement.
+    pub(crate) const fn of(watch: Watch, ran: bool) -> Self {
+        if watch.at_begin {
+            Self::HoldsWriteLock
+        } else if ran {
+            Self::MayHoldWriteLock
+        } else {
+            Self::Nothing
+        }
+    }
+}
+
+/// A slot's note of whether its delivery's handler ran a statement through `Tx`: made once per
+/// slot, set by the handler's first statement, cleared under the book's lock as a delivery is lent.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ran(&'static AtomicBool);
+
+impl Ran {
+    /// The note of a new slot.
+    pub(crate) fn new() -> Self {
+        Self(Box::leak(Box::new(AtomicBool::new(false))))
+    }
+
+    /// Clears the note for the slot's next delivery.
+    pub(crate) fn clear(self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+
+    /// Notes the handler's first statement.
+    pub(crate) fn set(self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether the handler ran a statement.
+    pub(crate) fn get(self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Records that the process tracks publishes, so its SQLite deliveries note their handler's task.
 pub(crate) fn track() {
     TRACKING.store(true, Ordering::Relaxed);
 }
 
-/// Whether a delivery on `conn` writes into a database that takes one writer at a time, in a
-/// process that tracks publishes.
-pub(crate) fn watched<DB: Database>(conn: &DB::Connection) -> bool {
-    if !TRACKING.load(Ordering::Relaxed) {
-        return false;
+/// The task a delivery on `DB` notes as its handler's, in a process that tracks publishes on a
+/// driver that may reach SQLite: one load and a type check the compiler folds otherwise.
+pub(crate) fn noted_task<DB: Database>() -> Option<Id> {
+    let may_be_sqlite = TypeId::of::<DB>() == TypeId::of::<Any>();
+    #[cfg(feature = "sqlite")]
+    let may_be_sqlite = may_be_sqlite || TypeId::of::<DB>() == TypeId::of::<Sqlite>();
+    if may_be_sqlite && TRACKING.load(Ordering::Relaxed) {
+        task::try_id()
+    } else {
+        None
     }
+}
+
+/// Whether `conn` runs on SQLite, through its own driver or `Any`.
+pub(crate) fn on_sqlite<DB: Database>(conn: &DB::Connection) -> bool {
     let conn: &dyn Dynamic = conn;
     #[cfg(feature = "sqlite")]
     if conn.is::<SqliteConnection>() {
@@ -104,64 +144,24 @@ pub(crate) fn locks_at_begin(statement: Option<&str>) -> bool {
     })
 }
 
-/// Enters the current task as the holder of a SQLite delivery transaction in `database`,
-/// `at_begin` when the transaction took the write lock as it began. Returns the flag the handler's
-/// first statement sets; `None` outside a Tokio task.
-pub(crate) fn enlist(
-    at_begin: bool,
-    database: u64,
-    delivery: (&'static dyn InWork, Slot),
-) -> Option<&'static AtomicBool> {
-    let task = task::try_id()?;
-    let mut holders = holders();
-    let own = holders.iter().position(|holder| holder.task == Some(task));
-    let index = own
-        .or_else(|| holders.iter().position(|holder| holder.task.is_none()))
-        .unwrap_or_else(|| {
-            // One flag per entry, made once: the book holds as many entries as tasks hold
-            // delivery transactions at one time.
-            holders.push(Holder {
-                task: None,
-                delivery: None,
-                database,
-                at_begin,
-                locked: Box::leak(Box::new(AtomicBool::new(false))),
-            });
-            holders.len() - 1
-        });
-    if own.is_none() {
-        HELD.store(HELD.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
-    }
-    let holder = &mut holders[index];
-    holder.task = Some(task);
-    holder.delivery = Some(delivery);
-    holder.database = database;
-    holder.at_begin = at_begin;
-    holder.locked.store(at_begin, Ordering::Relaxed);
-    let flag = holder.locked;
-    drop(holders);
-    Some(flag)
-}
-
-/// Takes the current task out of the book as its delivery settles.
-pub(crate) fn release() {
-    if HELD.load(Ordering::Relaxed) == 0 {
-        return;
-    }
-    let Some(task) = task::try_id() else { return };
-    let mut holders = holders();
-    if let Some(holder) = holders.iter_mut().find(|holder| holder.task == Some(task)) {
-        holder.task = None;
-        holder.delivery = None;
-        holder.locked.store(false, Ordering::Relaxed);
-        HELD.store(HELD.load(Ordering::Relaxed) - 1, Ordering::Relaxed);
+/// Enters `book` in the list a tracked publish asks: once per book, as it learns its [`Watch`].
+pub(crate) fn list(book: &'static dyn Lookup) {
+    let listed: &'static Listed = Box::leak(Box::new(Listed {
+        book,
+        next: OnceLock::new(),
+    }));
+    let mut tail = &BOOKS;
+    while tail.set(listed).is_err() {
+        // Another book took this place first: the next one is that book's.
+        if let Some(taken) = tail.get() {
+            tail = &taken.next;
+        }
     }
 }
 
-/// Whether the current task holds a SQLite delivery transaction: what a tracked publish asks
-/// before it learns which database its record goes to. One load while no task holds one.
-pub(crate) fn any_held() -> bool {
-    HELD.load(Ordering::Relaxed) != 0
+/// Whether any book lends SQLite delivery transactions: one load before a publish asks them.
+pub(crate) fn any_listed() -> bool {
+    BOOKS.get().is_some()
 }
 
 /// What the current task's delivery transaction means for a record it writes into `database`.
@@ -169,34 +169,20 @@ pub(crate) fn holding(database: u64) -> Holding {
     let Some(task) = task::try_id() else {
         return Holding::Nothing;
     };
-    let holders = holders();
-    let found = holders
-        .iter()
-        .find(|holder| holder.task == Some(task) && holder.database == database)
-        .map(|holder| {
-            (
-                holder.at_begin,
-                holder.locked.load(Ordering::Relaxed),
-                holder.delivery,
-            )
-        });
-    drop(holders);
-    match found {
-        // A stale entry may only cost a bounded wait, never refuse a publish: the refusal asks the
-        // delivery's book first, outside the lock of this one.
-        Some((true, _, Some((book, slot)))) if book.in_work(slot) => Holding::HoldsWriteLock,
-        Some((_, true, _)) => Holding::MayHoldWriteLock,
-        _ => Holding::Nothing,
+    let mut next = BOOKS.get();
+    while let Some(listed) = next {
+        let holding = listed.book.holding(task, database);
+        if holding != Holding::Nothing {
+            return holding;
+        }
+        next = listed.next.get();
     }
-}
-
-fn holders() -> MutexGuard<'static, Vec<Holder>> {
-    HOLDERS.lock().unwrap_or_else(PoisonError::into_inner)
+    Holding::Nothing
 }
 
 #[cfg(test)]
 mod tests {
-    use super::locks_at_begin;
+    use super::{Holding, Watch, locks_at_begin};
 
     #[test]
     fn an_immediate_or_exclusive_begin_takes_the_write_lock() {
@@ -205,5 +191,20 @@ mod tests {
         assert!(!locks_at_begin(Some("BEGIN DEFERRED")));
         assert!(!locks_at_begin(Some("BEGIN")));
         assert!(!locks_at_begin(None));
+    }
+
+    #[test]
+    fn a_lock_taken_at_begin_is_held_and_a_statement_may_have_taken_it() {
+        let deferred = Watch {
+            database: 1,
+            at_begin: false,
+        };
+        let immediate = Watch {
+            at_begin: true,
+            ..deferred
+        };
+        assert_eq!(Holding::of(immediate, false), Holding::HoldsWriteLock);
+        assert_eq!(Holding::of(deferred, true), Holding::MayHoldWriteLock);
+        assert_eq!(Holding::of(deferred, false), Holding::Nothing);
     }
 }

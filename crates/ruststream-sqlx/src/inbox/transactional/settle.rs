@@ -6,7 +6,7 @@ use std::fmt::Debug;
 use ruststream::{AckError, IncomingMessage};
 use sqlx_core::transaction::TransactionManager;
 
-use super::{Lender, Returned, Transactional, writers};
+use super::{Lender, Returned, Transactional};
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::delivery::settle::{Step, run_step};
 use crate::inbox::delivery::{Hold, InboxDelivery};
@@ -62,7 +62,6 @@ where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    writers::release();
     let Returned { mut tx, panicked } = returned;
     // Only an acknowledgement of a handler that ended keeps what the handler wrote.
     let discard = step != Step::Ack || panicked;
@@ -125,7 +124,6 @@ where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    writers::release();
     let Returned { mut tx, panicked } = returned;
     if step != Step::Ack || panicked {
         // A rollback that fails leaves the transaction to its drop, which closes the connection.
@@ -193,7 +191,6 @@ where
     DB: QueueDatabase,
     Row: Events<DB>,
 {
-    writers::release();
     if step != Step::Ack || panicked {
         DB::TransactionManager::rollback(session.conn()).await?;
         session.set_open(false);

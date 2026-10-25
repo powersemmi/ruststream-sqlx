@@ -107,9 +107,9 @@ pub(super) async fn record<DB: Database, Record: Publish<DB>>(
         record: type_name::<Record>(),
         source,
     };
-    // One load while no task holds a SQLite delivery transaction.
+    // One load in a process with no transactional subscription on SQLite.
     #[cfg(feature = "inbox")]
-    if writers::any_held()
+    if writers::any_listed()
         && let Some(database) = store.one_writer(|| one_writer(pool))
     {
         match writers::holding(database) {
