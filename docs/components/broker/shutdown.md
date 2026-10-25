@@ -13,6 +13,7 @@ Shutdown returns [`ClosedSqlxBroker`](api:ruststream_sqlx::ClosedSqlxBroker), re
 
 At shutdown the runtime first stops the subscriptions and lets the handlers in work finish, up to its shutdown timeout.
 Then it shuts the broker down: the claim loops stop, and so does the extension of the leases.
+A claim the runtime cut short as it stopped a subscription may still run on the server; shutdown waits until the server has ended it and rolled its transaction back, so the stopped service holds no lock on the table.
 A delivery in work in the [lease form](../forms/lease.md) keeps its lease, which runs out unless the delivery settles first; its row then returns to the queue.
 In the [advisory lock form](../forms/advisory.md) the broker releases the lock of every delivery in work and waits for the settlements in flight, so no lock of the broker is left.
 

@@ -77,9 +77,12 @@ where
     let mut session = Session::acquire(pool, book.closing())
         .await
         .map_err(|source| ("acquire", source))?;
-    select_candidates::<DB, Row>(&mut session, book, cx, beside, candidates)
-        .await
-        .map_err(named(prepared.claim, "claim"))?;
+    // Marked before the select leaves: cut short, the claim leaves it running on the server, and
+    // the session drains, so `shutdown` waits for it.
+    session.set_busy(true);
+    let selected = select_candidates::<DB, Row>(&mut session, book, cx, beside, candidates).await;
+    session.set_busy(false);
+    selected.map_err(named(prepared.claim, "claim"))?;
     let mut spare = Some(session);
     for index in 0..candidates.len() {
         let Some((id, key)) = candidates.get(index) else {
@@ -122,9 +125,10 @@ where
             continue;
         }
         let before = taking.rows.len();
-        let found = Row::take(locked.session().conn(), cx, id, taking.rows)
-            .await
-            .map_err(named(prepared.take, "take"))?;
+        locked.session().set_busy(true);
+        let found = Row::take(locked.session().conn(), cx, id, taking.rows).await;
+        locked.session().set_busy(false);
+        let found = found.map_err(named(prepared.take, "take"))?;
         if !found {
             // Another holder settled the row between the select and the lock: its key goes, and
             // the session tries the next candidate.

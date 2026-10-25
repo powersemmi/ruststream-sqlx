@@ -109,9 +109,10 @@ impl<DB: Database> Shared<DB> {
 /// The connected inbox broker: the typed witness that the database answered.
 ///
 /// It hands out publishers and opens subscriptions; [`shutdown`](ConnectedBroker::shutdown) stops
-/// its claim loops and the extension of its leases, and refuses every handle it handed out. A
-/// delivery in work keeps its lease after `shutdown` and settles as before; its lease is no
-/// longer extended. In the advisory lock form `shutdown` releases the lock of every delivery in
+/// its claim loops and the extension of its leases, and refuses every handle it handed out. It
+/// returns once the server has ended every claim the runtime cut short as it stopped the
+/// subscriptions. A delivery in work keeps its lease after `shutdown` and settles as before; its
+/// lease is no longer extended. In the advisory lock form `shutdown` releases the lock of every delivery in
 /// work and returns once no lock of the broker is left; such a delivery's settlement then fails
 /// with [`SqlxBrokerError::Closed`].
 ///
@@ -229,6 +230,11 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
     /// out before. A delivery in work in the lease or row lock form settles as before; its lease
     /// runs out unless it settles first.
     ///
+    /// A claim the runtime cut short when it stopped a subscription may still run on the server:
+    /// its connection waits for the server to end the claim's statement and roll its transaction
+    /// back, then closes, and `shutdown` waits for it, so the stopped broker holds no lock on the
+    /// table.
+    ///
     /// In the advisory lock form it then releases the lock of every delivery in work: each
     /// session unlocks its key and goes back to the pool, or closes where the database does not
     /// confirm the release. It waits for each session lent to a settlement in flight, and for the
@@ -256,7 +262,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
                 .clone();
             let released = join_all(books.into_iter().map(LockBook::release_all)).await;
             // A session closing after its delivery or its claim was dropped may still hold its
-            // lock.
+            // lock, and a claim the runtime cut short may still run on the server.
             shared.closing.settled().await;
             notify::close(&shared).await;
             if shared.pool_owner == PoolOwner::Broker {

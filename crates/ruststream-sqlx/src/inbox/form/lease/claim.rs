@@ -2,10 +2,14 @@
 //! transaction holds them; in transactional mode each row's delivery opens a transaction of its
 //! own.
 
+use std::ops::{Deref, DerefMut};
+
 use sqlx::Pool;
+use sqlx::pool::PoolConnection;
 
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::engine::{self, Claimed, Claiming, Events, Leasing, Now};
+use crate::inbox::form::advisory::session::Closing;
 use crate::inbox::queue::Queue;
 use crate::inbox::subscriber::{Failed, begin, take_group};
 use crate::inbox::tx::PoolTx;
@@ -15,6 +19,7 @@ use crate::inbox::tx::PoolTx;
 /// hold: committed before it returns, so the rows hold their leases and no transaction does.
 pub(crate) async fn claim_leased<DB, Row>(
     pool: &Pool<DB>,
+    closing: &'static Closing,
     cx: &Claiming,
     now: Now,
     ids: &mut Row::Ids,
@@ -37,7 +42,7 @@ where
         // group first, and the group stays taken until the transaction commits its lease. Either
         // way the transaction commits before the handlers run, so the rows hold their leases, not
         // the transaction.
-        let mut tx = begin(pool, queue).await?;
+        let mut tx = begin(pool, queue, closing).await?;
         let claimed = async {
             let lease = Row::lease(queue, now).map_err(claim_failed)?;
             let taken = take_group::<DB, Row>(&mut tx, cx, Some(&lease)).await?;
@@ -70,12 +75,58 @@ where
         };
     }
     // The claim writes the lease itself, in one statement that commits on its own.
-    let mut conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
+    let conn = pool.acquire().await.map_err(|source| ("acquire", source))?;
+    let mut conn = ClaimConn {
+        conn: Some(conn),
+        closing,
+    };
     let lease = Row::lease(queue, now).map_err(claim_failed)?;
-    Row::claim(&mut conn, cx, Some(&lease), ids, rows)
-        .await
-        .map_err(claim_failed)?;
+    let claimed = Row::claim(&mut conn, cx, Some(&lease), ids, rows).await;
+    conn.claimed();
+    claimed.map_err(claim_failed)?;
     Ok(lease.expiry)
+}
+
+/// The connection a claim's one statement runs on. Dropped before the statement ended, as a
+/// subscription's stream drops its claim in flight at shutdown, it drains through the broker's
+/// closes, so `shutdown` returns once the server ended the statement and released the rows it
+/// locked; otherwise it goes back to the pool.
+struct ClaimConn<DB: QueueDatabase> {
+    conn: Option<PoolConnection<DB>>,
+    closing: &'static Closing,
+}
+
+impl<DB: QueueDatabase> ClaimConn<DB> {
+    /// The statement ended: the connection goes back to the pool.
+    fn claimed(&mut self) {
+        drop(self.conn.take());
+    }
+}
+
+impl<DB: QueueDatabase> Deref for ClaimConn<DB> {
+    type Target = DB::Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.conn
+            .as_ref()
+            .expect("a claim holds its connection until its statement ends")
+    }
+}
+
+impl<DB: QueueDatabase> DerefMut for ClaimConn<DB> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.conn
+            .as_mut()
+            .expect("a claim holds its connection until its statement ends")
+    }
+}
+
+impl<DB: QueueDatabase> Drop for ClaimConn<DB> {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            self.closing.drain(conn, false);
+        }
+    }
 }
 
 /// Opens a transactional delivery's own transaction on a connection of `pool`, at the table's
