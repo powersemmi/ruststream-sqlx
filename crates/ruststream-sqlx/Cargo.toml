@@ -14,8 +14,8 @@ readme = "../../README.md"
 exclude = [".sqlx", "sqlx.toml"]
 keywords = ["sqlx", "outbox", "queue", "messaging", "ruststream"]
 categories = ["asynchronous", "database"]
-# Every file and directory under `tests/` is a module of one test binary, the allocation counts
-# aside: one link instead of one per file.
+# The test binaries are declared below: a few binaries group the files and directories under
+# `tests/` as modules, a link each instead of one per file.
 autotests = false
 
 [lints]
@@ -129,9 +129,41 @@ dhat.workspace = true
 # version is dropped on publish.
 ruststream-example-suite = { git = "https://github.com/powersemmi/ruststream", branch = "main" }
 
+# The integration suite, in binaries of a few modules each. As one binary it takes rustc about
+# 17 GB of memory, more than a CI runner has; a group stays near the 4 GB of the largest binary
+# the suite had per file. A module that uses another's items shares its binary.
 [[test]]
-name = "suite"
-path = "tests/main.rs"
+name = "forms"
+path = "tests/suite_forms.rs"
+
+[[test]]
+name = "rows"
+path = "tests/suite_rows.rs"
+
+[[test]]
+name = "delivery"
+path = "tests/suite_delivery.rs"
+
+[[test]]
+name = "retries"
+path = "tests/suite_retries.rs"
+
+[[test]]
+name = "names"
+path = "tests/suite_names.rs"
+
+[[test]]
+name = "conformance"
+path = "tests/suite_conformance.rs"
+
+[[test]]
+name = "threads"
+path = "tests/suite_threads.rs"
+
+# The compile-fail snapshots drive builds of their own and need no broker stack in the binary.
+[[test]]
+name = "ui"
+path = "tests/ui.rs"
 
 # The tests of the examples, one module per example, in a binary of their own beside the suite.
 [[test]]
