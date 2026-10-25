@@ -1358,6 +1358,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruststream-example-suite"
+version = "0.0.0"
+source = "git+https://github.com/powersemmi/ruststream?branch=main#c87b3de83e65677b1f319493fcc8bf0311fabfc7"
+dependencies = [
+ "toml 1.1.6+spec-1.1.0",
+]
+
+[[package]]
 name = "ruststream-fred"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,6 +1401,7 @@ dependencies = [
  "foldhash",
  "futures",
  "ruststream",
+ "ruststream-example-suite",
  "ruststream-sqlx-dialect",
  "ruststream-sqlx-macros",
  "serde",
