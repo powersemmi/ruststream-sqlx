@@ -312,6 +312,39 @@ live::stands! {
         db.finish().await;
     }
 
+    #[subscriber(InboxQueue::<Plain>::new("plain").lease(Duration::from_secs(1)))]
+    async fn outlasting_the_lease(_task: &Task) -> HandlerOutcome {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        HandlerOutcome::ack()
+    }
+
+    // On SQLite one claim takes a row for every worker, and the rows past the free workers wait
+    // in the subscription for the next one free: longer than their lease here, so a wait the
+    // keeper did not extend would let the next claim take a waiting row a second time.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rows_waiting_for_a_busy_worker_keep_their_leases() {
+        let Some(db) = database().await else { return };
+        // The rows wait in the table before the service starts, so a claim finds more than one.
+        let tasks: Vec<String> = (0..6).map(|n| format!(r#"{{"n":{n}}}"#)).collect();
+        db.plain(&tasks).await;
+        let broker = SqlxBroker::new(db.pool.clone())
+            .poll_interval(Duration::from_millis(50))
+            .route::<Plain>("plain");
+        let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
+            b.include(outlasting_the_lease.workers(nonzero!(3)));
+        });
+        let tb = TestApp::start_live(app).await.expect("the app starts");
+        tb.advance(Duration::from_secs(6))
+            .await
+            .expect("the handlers finish");
+        tb.broker::<SqlxBroker<Db>>()
+            .subscriber("plain")
+            .assert_called(6);
+        assert_eq!(db.count("plain_jobs").await, 0, "every row was acknowledged");
+        tb.shutdown().await.expect("the app stops");
+        db.finish().await;
+    }
+
     #[tokio::test]
     async fn a_lease_delivery_dropped_unsettled_returns_its_row_at_once() {
         let Some(db) = database().await else { return };
