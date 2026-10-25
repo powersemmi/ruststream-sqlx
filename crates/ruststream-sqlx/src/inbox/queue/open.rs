@@ -27,7 +27,7 @@ use crate::inbox::pools::ServicePool;
 use crate::inbox::publish::table_of;
 use crate::inbox::subscriber::{Holding, InboxSubscriber, Opened};
 #[cfg(feature = "testing")]
-use crate::inbox::testing::QueueAt;
+use crate::inbox::testing::{QueueAt, open_books};
 use crate::inbox::threads::InboxThreads;
 use crate::inbox::transactional::{InboxMode, TxBook};
 
@@ -200,6 +200,8 @@ where
         cap: cap_of(declaration),
     }
     .intern();
+    #[cfg(feature = "testing")]
+    open_books::<DB, Row>(shared, form.dialect(), queue, group).await?;
     // A book per subscription, not per queue: a queue's description is shared by every
     // subscription that reads it alike, its deliveries are not.
     let (holding, keeper) = match queue.lease {
@@ -323,8 +325,6 @@ impl<DB: Database> Registration<DB> {
         }
         queues.push((table, group.map(str::to_owned)));
         drop(queues);
-        #[cfg(feature = "testing")]
-        shared.harness.opened(QueueAt::registered(table, group));
         Ok(Self {
             shared: Arc::clone(shared),
             table,

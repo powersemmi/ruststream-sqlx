@@ -159,6 +159,15 @@ pub trait QueueDatabase: Database {
         arguments: Self::Arguments,
     ) -> impl Future<Output = Result<bool, Error>> + Send + 'c;
 
+    /// Runs a query whose one row starts with a 64-bit integer, such as the count of the rows a
+    /// claim could take, and returns the integer. Machinery.
+    #[doc(hidden)]
+    fn fetch_count<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> impl Future<Output = Result<i64, Error>> + Send + 'c;
+
     /// Runs the advisory claim of candidates into `out`: the id in the first column, the lock key
     /// as text in the second, copied into the buffers `out` keeps. Machinery.
     #[doc(hidden)]
@@ -301,6 +310,14 @@ where
             .fetch_one(conn)
             .await?;
         Ok(flag != 0)
+    }
+
+    fn fetch_count<'c>(
+        conn: &'c mut Self::Connection,
+        sql: &'static str,
+        arguments: Self::Arguments,
+    ) -> impl Future<Output = Result<i64, Error>> + Send + 'c {
+        sqlx::query_scalar_with::<Self, i64, _>(sql, arguments).fetch_one(conn)
     }
 
     async fn fetch_candidates<'c, Id>(

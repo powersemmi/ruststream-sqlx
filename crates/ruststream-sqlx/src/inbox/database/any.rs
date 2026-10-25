@@ -149,6 +149,10 @@ impl Dialect for AnyDialect {
     fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
         self.base().fifo_guard(spec)
     }
+
+    fn count_claimable(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.base().count_claimable(spec)
+    }
 }
 
 #[cfg(feature = "any")]

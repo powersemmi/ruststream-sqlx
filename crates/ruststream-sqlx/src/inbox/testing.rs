@@ -24,7 +24,7 @@ use tokio::time::Instant;
 
 use super::broker::{ConnectedSqlxBroker, Shared, SqlxBroker};
 use super::database::QueueDatabase;
-use super::engine::Now;
+use super::engine::{Claiming, Event, Events, Now, Values, arguments, intern};
 use super::error::SqlxBrokerError;
 use super::publish::{TableWake, insert_routed};
 use super::queue::Queue;
@@ -218,13 +218,20 @@ impl Harness {
         credits.get_mut(queue.table)?.get_mut(queue.group)
     }
 
-    /// A subscription to `queue` opened on the connection.
-    pub(crate) fn opened(&self, queue: QueueAt<'_>) {
+    /// A subscription to `queue` opened on the connection, which found `waiting` rows it can claim
+    /// already there: each is counted now, so the harness waits for its delivery.
+    pub(crate) fn opened(&self, queue: QueueAt<'_>, waiting: usize) {
         self.credits()
             .entry(queue.table.into())
             .or_default()
             .entry(queue.group.into())
-            .or_default();
+            .or_default()
+            .ahead += waiting;
+        if let Some(coordinator) = self.books() {
+            for _ in 0..waiting {
+                coordinator.enqueued();
+            }
+        }
     }
 
     /// The subscription to `queue` closed.
@@ -363,6 +370,93 @@ pub(crate) fn returns_after<DB: QueueDatabase>(
     coordinator.schedule_redelivery(delay, move || {
         connection.harness.comes_due(QueueAt::read(queue), ticket);
     });
+}
+
+/// Opens the harness's books for the subscription `queue`, which reads `group` (`None` in a table
+/// without groups), with the rows it can claim already counted.
+///
+/// The rows are counted before the books open: a message published meanwhile is counted once, by
+/// this count or by the claim that takes it, never by both.
+///
+/// # Errors
+///
+/// As [`claimable`].
+pub(crate) async fn open_books<DB, Row>(
+    connection: &Arc<Shared<DB>>,
+    dialect: &dyn Dialect,
+    queue: &'static Queue,
+    group: Option<&str>,
+) -> Result<(), SqlxBrokerError>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    let waiting = claimable::<DB, Row>(connection, dialect, queue).await?;
+    connection
+        .harness
+        .opened(QueueAt::registered(queue.table, group), waiting);
+    Ok(())
+}
+
+/// The rows the subscription `queue` of an in-process connection can claim as it opens: rows the
+/// service wrote with its own SQL before the test, which the harness waits for as for published
+/// messages. Counted with the dialect's [`count_claimable`](Dialect::count_claimable), bound as the
+/// claim binds; none on a connection that keeps no books, for a claim of the service's own, or
+/// where the dialect counts none.
+///
+/// # Errors
+///
+/// The dialect's refusal, or the database's error.
+async fn claimable<DB, Row>(
+    connection: &Arc<Shared<DB>>,
+    dialect: &dyn Dialect,
+    queue: &'static Queue,
+) -> Result<usize, SqlxBrokerError>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+{
+    // A claim of the service's own reads the rows its way, which a count cannot follow.
+    if connection.harness.books().is_none() || Row::SHAPE.custom_claim {
+        return Ok(0);
+    }
+    let counting =
+        dialect
+            .count_claimable(&queue.spec)
+            .map_err(|source| SqlxBrokerError::Dialect {
+                subscription: queue.name.to_owned(),
+                table: queue.table.to_owned(),
+                row: queue.row,
+                source,
+            })?;
+    let Some(counting) = counting else {
+        return Ok(0);
+    };
+    let statement = intern(&counting);
+    let (pool, now) = (connection.pool.clone(), connection.harness.now());
+    let counted = off_clock(async move {
+        // Bound as the claim binds: a lease table's rows are free by the lease's own "now".
+        let lease = queue.lease.map(|_| Row::lease(queue, now)).transpose()?;
+        let cx = Claiming {
+            queue,
+            limit: 0,
+            now,
+        };
+        let values = Values::claiming(cx, Event::Claim, lease.as_ref());
+        let arguments = arguments::<DB, Row>(statement, &values)?;
+        let mut conn = pool.acquire().await?;
+        DB::fetch_count(&mut conn, statement.sql, arguments).await
+    })
+    .await
+    .unwrap_or_else(|| Err(cancelled()))
+    .map_err(|source| SqlxBrokerError::Sqlx {
+        subscription: queue.name.to_owned(),
+        table: queue.table.to_owned(),
+        row: queue.row,
+        statement: statement.sql,
+        source: Box::new(source),
+    })?;
+    Ok(usize::try_from(counted).unwrap_or_default())
 }
 
 impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
