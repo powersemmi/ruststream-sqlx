@@ -1,6 +1,6 @@
 ---
 title: SqlxBroker
-description: "SqlxBroker serves the queues in the tables of the service's database through a sqlx pool it builds at connect, or the service's own; connect checks one connection and picks the dialect."
+description: "SqlxBroker serves queues from the service's tables through a sqlx pool, built at connect or the service's own; connect checks a connection and picks a dialect."
 ---
 
 import Tabs from '@theme/Tabs';

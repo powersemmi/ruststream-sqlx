@@ -1,7 +1,7 @@
 ---
 title: Lifecycle
 sidebar_position: 3
-description: "SqlxBroker's constructor records configuration, connect builds the pool and resolves the dialect, each subscription prepares its SQL at startup, and shutdown stops the claims."
+description: "The constructor records configuration, connect builds the pool and picks the dialect, a subscription prepares its SQL at startup, and shutdown stops the claims."
 ---
 
 import {Diagram} from '@site/src/components/Diagrams';
