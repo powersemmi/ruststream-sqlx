@@ -12,9 +12,9 @@ use serde::Serialize;
 use sqlx::Pool;
 
 use crate::live;
-use crate::locks::HeldLocks;
-use crate::pool::{every_connection_answers, fresh_pool};
-use crate::probe::{GUARD, Probe, until};
+use crate::threads::locks::HeldLocks;
+use crate::threads::pool::{every_connection_answers, fresh_pool};
+use crate::threads::probe::{GUARD, Probe, until};
 
 const POLL: Duration = Duration::from_millis(20);
 

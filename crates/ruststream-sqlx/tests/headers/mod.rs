@@ -13,9 +13,6 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod forms;
 mod joined;
 mod layout;

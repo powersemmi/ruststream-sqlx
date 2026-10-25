@@ -2,7 +2,6 @@
 //! SQL the suites read and write its tables with.
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use ruststream_sqlx::{Insert, dialect};
@@ -57,13 +56,8 @@ pub(crate) async fn idle_in_transaction(pool: &PgPool) -> i64 {
 ///
 /// Panics when the stand refuses to create or serve the database.
 pub(crate) async fn database() -> Option<Database<Db>> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
     let url = url(URL)?;
-    let name = format!(
-        "rs_sqlx_{}_{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    );
+    let name = super::database_name();
     let mut admin = PgConnection::connect(&url)
         .await
         .expect("the stand accepts a connection");
