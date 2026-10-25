@@ -444,7 +444,7 @@ where
             group,
         };
         // A binding that fails to build is a binding the document goes without.
-        Binding::extension("x-sqlx", &table)
+        Binding::extension(TABLE_EXTENSION, &table)
             .map_or_else(|_| Bindings::new(), |binding| Bindings::new().with(binding))
     }
 
@@ -462,6 +462,11 @@ where
             })
     }
 }
+
+/// The key a subscription's table binding sits under: the family writes a broker's extensions as
+/// `x-ruststream-<broker>`.
+#[cfg(feature = "asyncapi")]
+const TABLE_EXTENSION: &str = "x-ruststream-sqlx";
 
 /// What a subscription adds to the `AsyncAPI` document: the table it reads, and the group its name
 /// selects where the table has one.
