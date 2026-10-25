@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: Channels
-description: "Each InboxQueue channel carries x-sqlx: the table it reads, qualified with its schema, and the group its name selects where the table has groups."
+description: "Each InboxQueue channel carries x-ruststream-sqlx: the table it reads, qualified with its schema, and the group its name selects where the table has groups."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # Channels
 
-Each [`InboxQueue`](../subscriptions/index.md) channel carries `x-sqlx`: the table it reads, qualified with its schema, and the group its name selects where the table has groups.
+Each [`InboxQueue`](../subscriptions/index.md) channel carries `x-ruststream-sqlx`: the table it reads, qualified with its schema, and the group its name selects where the table has groups.
 
 The extension holds two fields.
 `table` is the table's name, with its schema in front where the description names one (`app.email_jobs`).

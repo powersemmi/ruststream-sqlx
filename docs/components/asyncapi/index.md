@@ -13,7 +13,7 @@ With the `asyncapi` feature the document names the database server and, on each 
 The core builds the [AsyncAPI document](api:ruststream::asyncapi) from the app, before anything connects.
 This crate adds what it knows about the parts the core describes.
 A [server](./server.md) reports the database the pool reaches: its host and port and the protocol, never a credential.
-A [channel](./channels.md) of an `InboxQueue` subscription reports the table it reads under the extension `x-sqlx`, with the group its name selects.
+A [channel](./channels.md) of an `InboxQueue` subscription reports the table it reads under the extension `x-ruststream-sqlx`, with the group its name selects.
 Everything comes from the service's own declarations: the pool's options, the table's description and the subscription's name.
 
 A message a handler decodes is documented by its type's `JsonSchema`, as on every broker.

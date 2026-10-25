@@ -157,11 +157,11 @@ mod tests {
         let channels = &spec["channels"];
 
         assert_eq!(
-            channels["emails"]["bindings"]["x-sqlx"],
+            channels["emails"]["bindings"]["x-ruststream-sqlx"],
             json!({ "table": "app.email_jobs", "group": "emails" })
         );
         assert_eq!(
-            channels["reports"]["bindings"]["x-sqlx"],
+            channels["reports"]["bindings"]["x-ruststream-sqlx"],
             json!({ "table": "reports" })
         );
         Ok(())
