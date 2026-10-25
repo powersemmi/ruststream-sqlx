@@ -6,7 +6,7 @@ use ruststream_sqlx_dialect::{
     ClaimShape, Column, Dialect, Form, Lease, Param, Postgres, StatementError, TableName, TableSpec,
 };
 
-use crate::{EXPIRY, LEASED};
+use crate::postgres::{EXPIRY, LEASED};
 
 /// Only an id, a lease and a payload: rows are deleted when finished.
 const BARE: TableSpec<'static> = TableSpec::new("jobs", Column::new("job_id"), Form::Lease(EXPIRY))

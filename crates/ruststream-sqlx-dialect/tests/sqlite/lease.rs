@@ -7,7 +7,7 @@ use ruststream_sqlx_dialect::{
     TableName, TableSpec,
 };
 
-use crate::{BARE, EXPIRY, LEASED};
+use crate::sqlite::{BARE, EXPIRY, LEASED};
 
 /// Every role a claim by role reads, beside a group and a column of data.
 const KEYED: TableSpec<'static> =

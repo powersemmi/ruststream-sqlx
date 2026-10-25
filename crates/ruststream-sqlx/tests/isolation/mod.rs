@@ -7,11 +7,8 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
+use crate::transactional::job;
 
-#[path = "../transactional/job.rs"]
-mod job;
 mod openings;
 mod repeatable_read;
 mod sqlite_modes;

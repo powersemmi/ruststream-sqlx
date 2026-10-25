@@ -7,7 +7,7 @@ use ruststream_sqlx_dialect::{
     StatementError, TableName, TableSpec,
 };
 
-use crate::BARE;
+use crate::postgres::BARE;
 
 /// Every role the row lock form reads, in a table inside a schema.
 const EMAILS: TableSpec<'static> =

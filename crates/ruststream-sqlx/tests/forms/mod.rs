@@ -8,9 +8,6 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod advisory;
 mod backlog;
 mod batches;

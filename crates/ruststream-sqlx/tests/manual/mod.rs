@@ -10,8 +10,7 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
+use crate::live;
 
 mod advisory;
 mod flat_payload;
