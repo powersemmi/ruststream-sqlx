@@ -1,12 +1,6 @@
 //! What a broker reports of its server to the generated document: the host and port its URL
 //! names, never its credentials.
 
-#[cfg(any(
-    feature = "postgres",
-    feature = "mysql",
-    feature = "sqlite",
-    feature = "any"
-))]
 use ruststream::{DescribeServer, ServerSpec};
 use ruststream_sqlx_dialect::Dialect;
 #[cfg(feature = "any")]

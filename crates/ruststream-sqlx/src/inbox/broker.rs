@@ -22,6 +22,12 @@ use super::publish::Routes;
 use super::{FormDialect, FormOn, PayloadRow};
 
 mod connected;
+#[cfg(any(
+    feature = "postgres",
+    feature = "mysql",
+    feature = "sqlite",
+    feature = "any"
+))]
 mod describe;
 mod source;
 

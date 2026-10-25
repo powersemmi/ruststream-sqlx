@@ -98,6 +98,7 @@ impl<DB: Database> PoolSource<DB> {
 mod tests {
     use std::time::Duration;
 
+    #[cfg(feature = "testing")]
     use ruststream::testing::InProcess;
     use ruststream::{Broker, ConnectedBroker};
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -185,6 +186,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "testing")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_in_process_connect_builds_and_closes_the_pool_too() {
         let (url, _keeper) = shared_memory("source_in_process").await;
