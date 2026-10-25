@@ -3,9 +3,6 @@
 
 #![cfg(all(feature = "inbox", feature = "chrono", feature = "testing"))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod database_clock;
 mod outcomes;
 mod own_clock;

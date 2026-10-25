@@ -6,9 +6,11 @@
 //! leaves the outbox off runs only without it: a test build reads the switch once per process, so
 //! the suite cannot turn it on or off for itself.
 
+// `chrono` because the pool and the probe come from the thread suite, which needs it.
 #![cfg(all(
     feature = "outbox",
     feature = "inbox",
+    feature = "chrono",
     feature = "json",
     feature = "testing",
     feature = "postgres",
@@ -18,13 +20,9 @@
 
 use std::env;
 
-#[path = "../live/mod.rs"]
-mod live;
+use crate::live;
 
-#[path = "../threads/pool.rs"]
-mod pool;
-#[path = "../threads/probe.rs"]
-mod probe;
+use crate::threads::{pool, probe};
 
 mod manual;
 mod records;

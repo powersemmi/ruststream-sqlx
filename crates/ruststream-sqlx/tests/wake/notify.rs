@@ -5,6 +5,7 @@
 //! The subject is the transport, so the tests write and announce rows with the test's own SQL, and
 //! read what the broker announces and which sessions listen through Postgres itself.
 
+use std::any::type_name;
 use std::time::Duration;
 
 use ruststream::testing::TestApp;
@@ -316,8 +317,9 @@ async fn a_table_named_past_a_channel_stops_its_subscription_at_startup() {
     let refused = refused.to_string();
     assert!(
         refused.contains(&format!(
-            "subscription `long` on table `{LONG}` (wake::notify::Long): the table's qualified name is \
-             {} bytes, and a Postgres notification channel holds at most 63",
+            "subscription `long` on table `{LONG}` ({}): the table's qualified name is {} bytes, and \
+             a Postgres notification channel holds at most 63",
+            type_name::<Long>(),
             LONG.len()
         )),
         "{refused}"

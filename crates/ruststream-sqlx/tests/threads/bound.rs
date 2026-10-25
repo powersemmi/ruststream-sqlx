@@ -8,8 +8,8 @@ use std::time::Duration;
 use ruststream_sqlx::prelude::*;
 
 use crate::live;
-use crate::pool::fresh_pool;
-use crate::probe::{GUARD, Probe, until};
+use crate::threads::pool::fresh_pool;
+use crate::threads::probe::{GUARD, Probe, until};
 
 const POLL: Duration = Duration::from_millis(20);
 

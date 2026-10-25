@@ -8,11 +8,8 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod advisory_session;
-mod job;
+pub(crate) mod job;
 mod lease_in_work;
 mod writes;
 
