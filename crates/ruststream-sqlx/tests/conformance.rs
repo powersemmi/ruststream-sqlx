@@ -29,6 +29,7 @@ use ruststream::testing::Backlog;
 use ruststream::{Bytes, Connected, PublishPolicy, Publisher, nonzero};
 use ruststream_sqlx::{InboxQueue, Repository, Routed, SqlxBroker};
 use sqlx::Pool;
+use sqlx::pool::PoolOptions;
 
 live::matrix! {
     /// A publisher of the connected broker: the carried suites take one, and a subscription whose
@@ -70,6 +71,28 @@ live::matrix! {
         // future may take on the stack.
         Box::pin(harness::lifecycle(
             move || SqlxBroker::new(pool.clone()).poll_interval(Duration::from_millis(50)),
+            |name| InboxQueue::<LifecycleRow>::new(name.to_owned()),
+            // Pairing a repository does no I/O, so its future is ready at once.
+            |connected| {
+                block_on(Repository::<LifecycleRow>::default().pair(connected))
+                    .expect("a repository pairs with the connected broker")
+            },
+        ))
+        .await;
+        db.finish().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_broker_that_builds_its_pool_climbs_the_lifecycle() {
+        let Some(db) = database().await else { return };
+        // The settings of the stand's pool: the broker builds a pool of its own from them at
+        // connect, and closes it at shutdown.
+        let options = db.pool.connect_options().as_ref().clone();
+        Box::pin(harness::lifecycle(
+            move || {
+                SqlxBroker::from_connect_options(options.clone(), PoolOptions::<Db>::new())
+                    .poll_interval(Duration::from_millis(50))
+            },
             |name| InboxQueue::<LifecycleRow>::new(name.to_owned()),
             // Pairing a repository does no I/O, so its future is ready at once.
             |connected| {
@@ -309,6 +332,19 @@ mod credentials {
             |addrs| SqlxBroker::new(lazy(addrs[0])),
             "postgres",
         );
+        // A broker that builds its pool describes itself from the URL it recorded.
+        harness::describes_without_credentials(
+            &SqlxBroker::from_url(
+                format!("postgres://app:{SECRET}@db.invalid:5432/app"),
+                PgPoolOptions::new(),
+            ),
+            &InboxQueue::<LifecycleRow>::new("orders"),
+            SECRET,
+        );
+        message_shape::describes_addresses_without_credentials(
+            |addrs| SqlxBroker::<Postgres>::from_url(addrs[0], PgPoolOptions::new()),
+            "postgres",
+        );
         message_shape::publishes_without_credentials::<Connected<SqlxBroker<Postgres>>, _>(
             &Repository::<LifecycleRow>::default(),
             SECRET,
@@ -337,6 +373,19 @@ mod credentials {
         );
         message_shape::describes_addresses_without_credentials(
             |addrs| SqlxBroker::new(lazy(addrs[0])),
+            "mysql",
+        );
+        // A broker that builds its pool describes itself from the URL it recorded.
+        harness::describes_without_credentials(
+            &SqlxBroker::from_url(
+                format!("mysql://app:{SECRET}@db.invalid:3306/app"),
+                MySqlPoolOptions::new(),
+            ),
+            &InboxQueue::<LifecycleRow>::new("orders"),
+            SECRET,
+        );
+        message_shape::describes_addresses_without_credentials(
+            |addrs| SqlxBroker::<MySql>::from_url(addrs[0], MySqlPoolOptions::new()),
             "mysql",
         );
         message_shape::publishes_without_credentials::<Connected<SqlxBroker<MySql>>, _>(

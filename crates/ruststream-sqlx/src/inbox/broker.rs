@@ -8,24 +8,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ruststream::Broker;
-#[cfg(any(
-    feature = "postgres",
-    feature = "mysql",
-    feature = "sqlite",
-    feature = "any"
-))]
-use ruststream::{DescribeServer, ServerSpec};
 use ruststream_sqlx_dialect::{Dialect, Opens};
-#[cfg(feature = "any")]
-use sqlx::Any;
-#[cfg(any(feature = "postgres", feature = "mysql", feature = "any"))]
-use sqlx::ConnectOptions;
-#[cfg(feature = "mysql")]
-use sqlx::MySql;
-#[cfg(feature = "postgres")]
-use sqlx::Postgres;
-#[cfg(feature = "sqlite")]
-use sqlx::Sqlite;
+use sqlx::pool::PoolOptions;
 use sqlx::{Database, Pool};
 use tokio::runtime::Handle;
 
@@ -38,9 +22,13 @@ use super::publish::Routes;
 use super::{FormDialect, FormOn, PayloadRow};
 
 mod connected;
+mod describe;
+mod source;
 
 pub(crate) use connected::Shared;
 pub use connected::{ClosedSqlxBroker, ConnectedSqlxBroker};
+pub(crate) use source::PoolOwner;
+use source::{ConnectOptionsOf, PoolSource, Target};
 
 /// How long a subscription waits between claims that found its queue empty, unless it names
 /// another interval.
@@ -287,7 +275,7 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// # fn main() {}
 /// ```
 pub struct SqlxBroker<DB: Database, D = BuiltIn<DB>> {
-    pub(crate) pool: Pool<DB>,
+    pub(crate) pool: PoolSource<DB>,
     pub(crate) dialect: DialectChoice<DB, D>,
     routes: Routes<DB, FormOf<D>>,
     poll_interval: Duration,
@@ -300,6 +288,7 @@ pub struct SqlxBroker<DB: Database, D = BuiltIn<DB>> {
 impl<DB: Database, D: Dialect> fmt::Debug for SqlxBroker<DB, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SqlxBroker")
+            .field("pool", &self.pool.kind())
             .field("dialect", &self.dialect.name())
             .field("routes", &self.routes)
             .field("poll_interval", &self.poll_interval)
@@ -311,12 +300,143 @@ impl<DB: Database, D: Dialect> fmt::Debug for SqlxBroker<DB, D> {
 }
 
 impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
-    /// A broker on `pool`, with the dialect built into the crate for its database.
+    /// A broker that builds its pool from `url` and `pool` when it connects, with the dialect
+    /// built into the crate for the database.
     ///
-    /// Synchronous and free of I/O: the database type comes from the pool, and nothing connects
-    /// before [`connect`](Broker::connect), which picks the dialect from the connection it checks.
-    /// An `AnyPool` reaches a database named only then, and a database whose dialect's feature is
-    /// off stops `connect` with [`SqlxBrokerError::Backend`].
+    /// Synchronous and free of I/O, so the service builds it in its app's builder, before the
+    /// runtime starts. [`connect`](Broker::connect) builds the pool, takes one connection to
+    /// check the database, and picks the dialect by it;
+    /// [`shutdown`](ruststream::ConnectedBroker::shutdown) closes the pool once the broker's own
+    /// work is done. The driver reads the URL at `connect`: a URL it cannot read stops the
+    /// service's start with [`SqlxBrokerError::Url`]. A pool the service also queries outside
+    /// its handlers is the service's own: [`new`](Self::new) takes it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use std::env;
+    ///
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::postgres::PgPoolOptions;
+    ///
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     let url = env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/mail".into());
+    ///     // Nothing connects here: the broker builds the pool when the service starts.
+    ///     let broker = SqlxBroker::from_url(url, PgPoolOptions::new().max_connections(8));
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(send);
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    #[must_use]
+    pub fn from_url(url: impl Into<String>, pool: PoolOptions<DB>) -> Self {
+        let target = Target::Url(url.into());
+        Self::built(
+            PoolSource::Built { target, pool },
+            DialectChoice::Picked(built_in::<DB>),
+        )
+    }
+
+    /// A broker that builds its pool from the driver's connect options and `pool` when it
+    /// connects, with the dialect built into the crate for the database.
+    ///
+    /// The options a service sets in code or reads from the environment
+    /// (`PgConnectOptions::new()` reads the `PG*` variables); otherwise as
+    /// [`from_url`](Self::from_url): synchronous, free of I/O, the pool built at `connect` and
+    /// closed at `shutdown`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[cfg(feature = "postgres")]
+    /// # mod demo {
+    /// use ruststream_sqlx::prelude::*;
+    /// use serde::Deserialize;
+    /// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+    ///
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
+    /// pub struct SendEmail {
+    ///     #[field(id, generated)]
+    ///     job_id: i64,
+    ///     #[field(group)]
+    ///     name: String,
+    ///     #[field(payload)]
+    ///     payload: Vec<u8>,
+    /// }
+    ///
+    /// #[derive(Deserialize)]
+    /// struct Email {
+    ///     to: String,
+    /// }
+    ///
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// async fn send(email: &Email) -> HandlerOutcome {
+    ///     tracing::info!(to = %email.to, "sending");
+    ///     HandlerOutcome::ack()
+    /// }
+    ///
+    /// #[ruststream::app]
+    /// fn app() -> impl App {
+    ///     // The options read the `PG*` environment variables; the application name is the
+    ///     // service's own.
+    ///     let options = PgConnectOptions::new().application_name("mailer");
+    ///     let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
+    ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
+    ///         b.include(send);
+    ///     })
+    /// }
+    /// # }
+    /// # fn main() {}
+    /// ```
+    #[must_use]
+    pub fn from_connect_options(options: ConnectOptionsOf<DB>, pool: PoolOptions<DB>) -> Self {
+        let target = Target::Options(options);
+        Self::built(
+            PoolSource::Built { target, pool },
+            DialectChoice::Picked(built_in::<DB>),
+        )
+    }
+
+    /// A broker on the service's own `pool`, with the dialect built into the crate for its
+    /// database.
+    ///
+    /// For a pool the service shares with the rest of its code: an HTTP endpoint that writes
+    /// rows, a migration run before the app. The broker never closes it; the service does, once
+    /// the app has stopped. Synchronous and free of I/O: the database type comes from the pool,
+    /// and nothing connects before [`connect`](Broker::connect), which picks the dialect from the
+    /// connection it checks. An `AnyPool` reaches a database named only then, and a database
+    /// whose dialect's feature is off stops `connect` with [`SqlxBrokerError::Backend`]. sqlx
+    /// builds a pool only inside a Tokio runtime, so a service that owns one builds it in its
+    /// own `main`; a broker that builds its pool itself is [`from_url`](Self::from_url).
     ///
     /// # Examples
     ///
@@ -357,18 +477,19 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     })
     /// }
     ///
+    /// // The service shares the pool with code of its own, so it builds the pool in its `main`,
+    /// // inside the runtime, and closes it after the app.
     /// #[tokio::main]
     /// pub async fn main() -> Result<(), Box<dyn Error>> {
-    ///     // Nothing connects here: the pool connects lazily, and the broker once the service
-    ///     // starts. sqlx builds even a lazy pool only inside a Tokio runtime, so it is built
-    ///     // here rather than in the app's builder. The options read the `PG*` environment
-    ///     // variables.
+    ///     // A lazy pool: nothing connects before the service starts. The options read the
+    ///     // `PG*` environment variables.
     ///     let pool = PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new());
-    ///     let app = app(pool);
+    ///     let app = app(pool.clone());
     /// #   // The example runs without a database: it stops before the app connects.
     /// #   drop(app);
     /// #   return Ok(());
     ///     app.run().await?;
+    ///     pool.close().await;
     ///     Ok(())
     /// }
     /// # }
@@ -380,7 +501,10 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     /// ```
     #[must_use]
     pub fn new(pool: Pool<DB>) -> Self {
-        Self::built(pool, DialectChoice::Picked(built_in::<DB>))
+        Self::built(
+            PoolSource::Service(pool),
+            DialectChoice::Picked(built_in::<DB>),
+        )
     }
 }
 
@@ -469,10 +593,13 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// ```
     #[must_use]
     pub fn with_dialect(pool: Pool<DB>, dialect: D) -> Self {
-        Self::built(pool, DialectChoice::Given(Arc::new(dialect)))
+        Self::built(
+            PoolSource::Service(pool),
+            DialectChoice::Given(Arc::new(dialect)),
+        )
     }
 
-    fn built(pool: Pool<DB>, dialect: DialectChoice<DB, D>) -> Self {
+    fn built(pool: PoolSource<DB>, dialect: DialectChoice<DB, D>) -> Self {
         Self {
             pool,
             dialect,
@@ -822,8 +949,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
     type Connected = ConnectedSqlxBroker<DB, D>;
 
     async fn connect(self) -> Result<Self::Connected, Self::Error> {
-        let conn = self
-            .pool
+        let (pool, owner) = self.pool.open()?;
+        let conn = pool
             .acquire()
             .await
             .map_err(|source| SqlxBrokerError::Connect { source })?;
@@ -831,7 +958,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
         drop(conn);
         let listening = match self.listen {
             Some(start) => Some(
-                start(self.pool.clone())
+                start(pool.clone())
                     .await
                     .map_err(|source| SqlxBrokerError::Connect { source })?,
             ),
@@ -839,58 +966,10 @@ impl<DB: QueueDatabase, D: Dialect + 'static> Broker for SqlxBroker<DB, D> {
         };
         Ok(ConnectedSqlxBroker::new(
             self,
+            (pool, owner),
             dialect,
             Handle::current(),
             listening,
         ))
-    }
-}
-
-#[cfg(feature = "postgres")]
-impl<D: Dialect + 'static> DescribeServer for SqlxBroker<Postgres, D> {
-    fn describe_server(&self) -> ServerSpec {
-        ServerSpec::from_url(
-            self.pool.connect_options().to_url_lossy().as_str(),
-            "postgres",
-        )
-    }
-}
-
-#[cfg(feature = "mysql")]
-impl<D: Dialect + 'static> DescribeServer for SqlxBroker<MySql, D> {
-    fn describe_server(&self) -> ServerSpec {
-        ServerSpec::from_url(self.pool.connect_options().to_url_lossy().as_str(), "mysql")
-    }
-}
-
-/// SQLite runs inside the service, on a file or in memory: the description names the protocol and
-/// no host, so it holds neither the database's path nor any other part of its URL, and SQLite takes
-/// no credentials.
-#[cfg(feature = "sqlite")]
-impl<D: Dialect + 'static> DescribeServer for SqlxBroker<Sqlite, D> {
-    fn describe_server(&self) -> ServerSpec {
-        // Why not `from_url`: SQLite's URL holds a path, not a host, and sqlx's `to_url_lossy`
-        // panics on a database named `file:..`, the name `sqlite::memory:` takes.
-        // FIXME(sqlx-sqlite 0.9.0): `SqliteConnectOptions::to_url_lossy` panics with "BUG:
-        // generated un-parseable URL: InvalidPort" on every database named `file:..`. Once sqlx
-        // fixes it, the panic stops ruling out reading the URL here and this note goes; the
-        // description stays in-process, since SQLite has no host either way.
-        ServerSpec::in_process("sqlite")
-    }
-}
-
-/// An `AnyPool` is described by the scheme of its URL, as the broker of that database describes
-/// itself: the host and port of a server, or SQLite with no host.
-#[cfg(feature = "any")]
-impl<D: Dialect + 'static> DescribeServer for SqlxBroker<Any, D> {
-    fn describe_server(&self) -> ServerSpec {
-        // `Any` keeps the URL it was given, so reading it back is free of the SQLite panic above.
-        let url = self.pool.connect_options().to_url_lossy();
-        match url.scheme() {
-            "sqlite" => ServerSpec::in_process("sqlite"),
-            "postgres" | "postgresql" => ServerSpec::from_url(url.as_str(), "postgres"),
-            "mysql" | "mariadb" => ServerSpec::from_url(url.as_str(), "mysql"),
-            scheme => ServerSpec::from_url(url.as_str(), scheme),
-        }
     }
 }

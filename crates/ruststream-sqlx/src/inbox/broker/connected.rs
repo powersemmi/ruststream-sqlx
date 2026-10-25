@@ -24,11 +24,13 @@ use crate::inbox::form::advisory::session::Closing;
 use crate::inbox::publish::{Routes, TableWake, Wakes};
 use crate::inbox::threads::InboxThreads;
 
-use super::SqlxBroker;
+use super::{PoolOwner, SqlxBroker};
 
 /// What every handle of one connection shares.
 pub(crate) struct Shared<DB: Database> {
     pub(crate) pool: Pool<DB>,
+    /// Who closes the pool: the broker closes one it built, at the end of `shutdown`.
+    pool_owner: PoolOwner,
     /// The routes, each with the form of its table on the connection's dialect.
     pub(crate) routes: Routes<DB, FormDialect, &'static TableWake>,
     /// The wake-ups of the subscriptions of each table the connection's publishers write.
@@ -179,10 +181,12 @@ impl<DB: Database, D: Dialect> fmt::Debug for ConnectedSqlxBroker<DB, D> {
 }
 
 impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
-    /// The connected form of `broker`, whose statements `dialect` builds, whose internal tasks
-    /// run on `runtime`, and which listens on `listening` with `listen_notify`.
+    /// The connected form of `broker` on `pool`, which `owner` closes, whose statements `dialect`
+    /// builds, whose internal tasks run on `runtime`, and which listens on `listening` with
+    /// `listen_notify`.
     pub(crate) fn new(
         broker: SqlxBroker<DB, D>,
+        (pool, pool_owner): (Pool<DB>, PoolOwner),
         dialect: Arc<D>,
         runtime: Handle,
         listening: Option<Listening>,
@@ -194,7 +198,8 @@ impl<DB: Database, D> ConnectedSqlxBroker<DB, D> {
         );
         Self {
             shared: Arc::new(Shared {
-                pool: broker.pool,
+                pool,
+                pool_owner,
                 routes,
                 wakes,
                 poll_interval: broker.poll_interval,
@@ -230,9 +235,15 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
     /// sessions still closing after a delivery or a claim was dropped, and returns once no lock of
     /// the broker is left. In a service the runtime has stopped its subscriptions by then, and its
     /// shutdown timeout bounds the handlers that hold a session.
+    ///
+    /// A pool the broker built ([`from_url`](SqlxBroker::from_url)) is closed last: it lends no
+    /// new connection, and a delivery in work keeps the one it holds, which closes when it comes
+    /// back. A settlement after shutdown that needs a new connection, as in the lease form, then
+    /// fails, and its row comes back when its lease runs out. The service's own pool
+    /// ([`new`](SqlxBroker::new)) stays open.
     fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
-        // Why a flag rather than a type: the pool is the service's and stays open, so a
-        // publisher handed out before shutdown would otherwise keep writing.
+        // Why a flag rather than a type: a publisher handed out before shutdown may write through
+        // the service's pool, which stays open, so it would otherwise keep writing.
         self.shared.closed.store(true, Ordering::Release);
         self.shared.stopping.cancel();
         self.shared.closing.begin_shutdown();
@@ -248,6 +259,14 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
             // lock.
             shared.closing.settled().await;
             notify::close(&shared).await;
+            if shared.pool_owner == PoolOwner::Broker {
+                // The call marks the pool closed at once; its future closes the idle connections,
+                // then waits for those lent to deliveries still in work, which close as they come
+                // back. Shutdown does not wait for them, so the wait runs on its own.
+                drop(shared.pool.close());
+                let pool = shared.pool.clone();
+                shared.runtime.spawn(async move { pool.close().await });
+            }
             Ok(ClosedSqlxBroker {
                 locks_released: released.into_iter().sum(),
                 connections_closed: shared.closing.forced(),
@@ -337,9 +356,6 @@ impl ClosedSqlxBroker {
         self.connections_closed
     }
 }
-
-// Each description comes from `from_url`, which keeps the host and port and drops the user and
-// the password: the document is published and shared.
 
 #[cfg(test)]
 mod tests {
