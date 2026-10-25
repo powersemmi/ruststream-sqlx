@@ -61,8 +61,10 @@ pool stays open for the service. It stops the claim loops and the lease keepers.
 work in the row lock or lease form settles as before: its transaction or its lease still holds the
 row, and a lease is no longer extended. In the advisory lock form shutdown releases the lock of
 every delivery in work, and a delivery whose lock it released settles no more: its settlement
-fails with `Closed`, and its row is back in the queue. Shutdown waits for every session still
-closing, closes the listening connection, and returns
+fails with `Closed`, and its row is back in the queue. A claim the runtime cut short when it
+stopped a subscription may still run on the server; its connection waits for the server to end the
+claim's statement and roll its transaction back, and then closes. Shutdown waits for those
+connections and for every session still closing, closes the listening connection, and returns
 [`ClosedSqlxBroker`](api:ruststream_sqlx::ClosedSqlxBroker), which counts the locks released with
 their connections back in the pool and the connections closed instead.
 
