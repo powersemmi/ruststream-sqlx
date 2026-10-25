@@ -43,7 +43,8 @@ It lives while one of those connections is open, so the test holds one beside th
 
 The image goes in through the route and the service's own `Publish`, as in production.
 `publish` returns once the handler it woke has settled, so the lines after it read finished state: how `thumbnail` settled the row, and what the test's own query finds in the table.
-A row the test writes with its own SQL is counted only once a claim takes it, so `settle` does not wait for it; such a test runs on the real clock and lets the poll interval pass, as [Enqueueing jobs](enqueueing.md) does.
+A row written with the service's own SQL before the app starts, a seed or a migration, is counted when its subscription opens, so `settle` waits for it as for a published message.
+A row written that way while the test runs is counted only once a claim takes it, so `settle` does not wait for it; such a test runs on the real clock and lets the poll interval pass, as [Enqueueing jobs](enqueueing.md) does.
 The scenario takes the broker's handle as an argument, so the Postgres test below runs it too.
 
 A table without a payload column hands its handler the row itself ([Rows](../components/messages/rows.md)).

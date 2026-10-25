@@ -34,7 +34,7 @@ import TabItem from '@theme/TabItem';
 
 `database` 在内存中创建一个 SQLite 数据库，所有指名它的连接共享这个数据库。只要其中一个连接仍然打开，它就存在，所以测试在连接池之外再持有一个连接，并像服务的迁移那样创建表。[`TestApp::start`](api:ruststream::testing::TestApp::start) 在进程内把生产环境的应用连接到这个数据库，测试按生产类型访问 Broker：`tb.broker::<SqlxBroker<Sqlite>>()`。
 
-图片像在生产环境中一样，经由路由和服务自己的 `Publish` 进入队列。`publish` 在它唤醒的处理器完成结算后才返回，所以它之后的几行读到的是已经完成的状态：`thumbnail` 如何结算该行，以及测试自己的查询在表中找到什么。测试用自己的 SQL 写入的行，只有在领取取走它时才被计入，所以 `settle` 不等待它；这样的测试在真实时钟上运行，并让轮询间隔过去，[任务入队](enqueueing.md)一页就是这样做的。场景把 Broker 的句柄作为参数接收，所以下面的 Postgres 测试也运行它。
+图片像在生产环境中一样，经由路由和服务自己的 `Publish` 进入队列。`publish` 在它唤醒的处理器完成结算后才返回，所以它之后的几行读到的是已经完成的状态：`thumbnail` 如何结算该行，以及测试自己的查询在表中找到什么。服务在应用启动之前用自己的 SQL 写入的行（初始数据或迁移），在它的订阅打开时就被计入，所以 `settle` 像等待已发布的消息一样等待它。测试运行期间这样写入的行，只有在领取取走它时才被计入，所以 `settle` 不等待它；这样的测试在真实时钟上运行，并让轮询间隔过去，[任务入队](enqueueing.md)一页就是这样做的。场景把 Broker 的句柄作为参数接收，所以下面的 Postgres 测试也运行它。
 
 没有载荷列的表把行本身交给它的处理器（[行](../components/messages/rows.md)）。测试这样的处理器时，用 `with_value` 和 `received_values` 检查行，代替 `with` 和 `received`。
 

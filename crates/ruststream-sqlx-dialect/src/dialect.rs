@@ -974,4 +974,72 @@ pub trait Dialect: Debug + Send + Sync {
         let _ = spec;
         Ok(None)
     }
+
+    /// The query that counts the rows a claim of the subscription's group could take now, or
+    /// `None` when the dialect counts none.
+    ///
+    /// The broker's in-process mode, the one the test harness connects with, runs it once as a
+    /// subscription opens, so the harness waits for the rows a service wrote with its own SQL
+    /// before the test (a seed, a migration, a business transaction) as it waits for a published
+    /// message. A connection to the server never runs it.
+    ///
+    /// It binds what the claim binds, by the same [`Param`](crate::Param)s
+    /// ([`Group`](crate::Param::Group), [`Now`](crate::Param::Now),
+    /// [`LeaseNow`](crate::Param::LeaseNow)), and returns one row whose first column is a 64-bit
+    /// integer: the rows of the group that are due, carry no finish mark, and hold no lease in
+    /// force. A count above what the claims take keeps the harness waiting, so the query counts
+    /// no row the claim passes over.
+    ///
+    /// The built-in dialects count with the claim's own conditions. The provided method returns
+    /// `None`: the harness then counts such a row only when a claim takes it.
+    ///
+    /// # Errors
+    ///
+    /// The refusals of the table's claim, for a table the dialect cannot claim from.
+    ///
+    /// # Examples
+    ///
+    /// A dialect of the service's own counts the due rows of the group, as its claim reads them:
+    ///
+    /// ```
+    /// # use std::num::NonZeroUsize;
+    /// use ruststream_sqlx_dialect::{Dialect, Param, Statement, StatementError, TableSpec};
+    /// # use ruststream_sqlx_dialect::TableName;
+    ///
+    /// /// SQL Server, a database without a built-in dialect.
+    /// #[derive(Debug)]
+    /// pub struct Mssql;
+    ///
+    /// impl Dialect for Mssql {
+    ///     fn name(&self) -> &'static str {
+    ///         "mssql"
+    ///     }
+    ///
+    ///     // The rows of the group in `email_jobs` that the claim would find due.
+    ///     fn count_claimable(
+    ///         &self,
+    ///         _spec: &TableSpec<'_>,
+    ///     ) -> Result<Option<Statement>, StatementError> {
+    ///         Ok(Some(Statement::new(
+    ///             "SELECT CAST(COUNT(*) AS bigint) FROM [email_jobs] \
+    ///              WHERE [name] = @p1 AND [retry_after] <= @p2",
+    ///             [Param::Group, Param::Now],
+    ///         )))
+    ///     }
+    /// #     fn quote_into(&self, ident: &str, out: &mut String) { out.push('['); out.push_str(&ident.replace(']', "]]")); out.push(']'); }
+    /// #     fn placeholder_into(&self, index: NonZeroUsize, out: &mut String) { out.push_str("@p"); out.push_str(&index.to_string()); }
+    /// #     fn fetch(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedFetch { dialect: self.name() }) }
+    /// #     fn ack(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn retry_after(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn discard(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_group(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn dead_letter_table(&self, spec: &TableSpec<'_>, target: TableName<'_>) -> Result<Vec<Statement>, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// #     fn insert(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> { Err(StatementError::UnsupportedForm { dialect: self.name(), form: spec.form().name() }) }
+    /// }
+    /// ```
+    fn count_claimable(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        let _ = spec;
+        Ok(None)
+    }
 }

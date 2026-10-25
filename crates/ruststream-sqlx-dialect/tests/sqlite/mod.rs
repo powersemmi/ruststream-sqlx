@@ -220,6 +220,7 @@ fn the_row_lock_form_is_refused_for_every_statement() -> Result<(), Box<dyn Erro
     assert_eq!(Sqlite.retry_after(&LOCKED), Err(refused.clone()));
     assert_eq!(Sqlite.discard(&LOCKED), Err(refused.clone()));
     assert_eq!(Sqlite.dead_letter_group(&LOCKED), Err(refused.clone()));
+    assert_eq!(Sqlite.count_claimable(&LOCKED), Err(refused.clone()));
     assert_eq!(
         Sqlite.dead_letter_table(&LOCKED, TableName::parse("jobs_dead")?),
         Err(refused.clone())

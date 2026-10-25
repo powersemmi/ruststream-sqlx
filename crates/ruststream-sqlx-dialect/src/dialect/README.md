@@ -24,6 +24,9 @@ at a table's isolation level or SQLite mode, and [`savepoint`](Self::savepoint) 
 [`rollback_to_savepoint`](Self::rollback_to_savepoint) mark where a handler's writes start
 and discard them. In a table with FIFO groups, a claim's transaction first takes the
 subscription's group with the statement [`fifo_guard`](Self::fifo_guard) gives.
+In the broker's in-process mode, the one the test harness connects with, a subscription that opens
+counts the rows it can claim with [`count_claimable`](Self::count_claimable), so the harness waits
+for rows written before the test.
 
 # Examples
 

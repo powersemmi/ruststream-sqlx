@@ -268,3 +268,26 @@ fn the_lease_cannot_read_the_database_clock() {
     assert_eq!(Sqlite.extend(&clocked), Err(refused.clone()));
     assert_eq!(Sqlite.stamp(&clocked), Err(refused));
 }
+
+#[test]
+fn the_count_of_claimable_rows_passes_over_a_group_in_work() -> Result<(), Box<dyn Error>> {
+    // The rows of the group count while no row of it holds a lease, as the claim takes them.
+    let count = Sqlite
+        .count_claimable(&LEASED_LEDGER)?
+        .ok_or("a built-in dialect counts the claimable rows")?;
+    assert_eq!(
+        count.sql(),
+        "SELECT COUNT(*) FROM `ledger` WHERE `account` = ? AND `retry_after` <= ? AND `processed_at` IS NULL AND (`locked_until` IS NULL OR `locked_until` <= ?) AND NOT EXISTS (SELECT 1 FROM `ledger` AS __work WHERE __work.`account` = ? AND __work.`locked_until` > ?)",
+    );
+    assert_eq!(
+        count.params(),
+        [
+            Param::Group,
+            Param::Now,
+            Param::LeaseNow,
+            Param::Group,
+            Param::LeaseNow
+        ]
+    );
+    Ok(())
+}

@@ -327,6 +327,10 @@ impl Dialect for MySql {
             .push(") AS SIGNED)");
         Ok(Some(sql.finish()))
     }
+
+    fn count_claimable(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.count_claimable_statement(spec)
+    }
 }
 
 impl OutboxDialect for MySql {

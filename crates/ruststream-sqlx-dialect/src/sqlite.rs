@@ -222,6 +222,10 @@ impl Dialect for Sqlite {
             Opening::Isolation(_) => Err(opening.refused(self.name())),
         }
     }
+
+    fn count_claimable(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.count_claimable_statement(spec)
+    }
 }
 
 impl OutboxDialect for Sqlite {

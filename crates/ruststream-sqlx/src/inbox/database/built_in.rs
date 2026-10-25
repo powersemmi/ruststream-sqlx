@@ -254,6 +254,10 @@ impl<DB: BuiltInDialect> Dialect for BuiltIn<DB> {
     fn fifo_guard(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
         self.0.fifo_guard(spec)
     }
+
+    fn count_claimable(&self, spec: &TableSpec<'_>) -> Result<Option<Statement>, StatementError> {
+        self.0.count_claimable(spec)
+    }
 }
 
 impl<DB: BuiltInDialect> Lease for BuiltIn<DB> {

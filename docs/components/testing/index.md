@@ -23,7 +23,8 @@ A test's input goes in through the route and the service's [`Publish`](../publis
 A publish through the harness returns once every handler it woke has settled, so the assertions that follow read finished state.
 A row is counted for the queue it lands in, its table and group, whatever name the subscription reads it by.
 A message published before its subscription opened waits in the table and is delivered once it opens.
-A row the test writes with its own SQL is counted only once a claim takes it, so `settle` does not wait for it: such a test moves the clock past the [poll interval](../subscriptions/poll-interval.md) with `tb.advance`.
+A row the service wrote with its own SQL before the test, a seed or a migration, is counted when its subscription opens, so `settle` waits for it as for a published message.
+A row written with the service's own SQL while the test runs is counted only once a claim takes it, so `settle` does not wait for it: such a test moves the clock past the [poll interval](../subscriptions/poll-interval.md) with `tb.advance`.
 
 The queue reads "now" from a clock the test controls.
 After `tokio::time::pause()`, `tb.advance(d)` moves the queue's time by `d`, and a lease runs out or a [delayed retry](../settlement/retry-after.md) comes back when the clock passes it.

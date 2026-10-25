@@ -424,6 +424,23 @@ pub(crate) trait BuiltIn: Dialect {
         Ok(vec![copy.finish(), delete.finish()])
     }
 
+    /// The count of the rows a claim could take now: the claim's conditions, and in a table with
+    /// FIFO groups, none while a row of the group holds a lease in force.
+    fn count_claimable_statement(
+        &self,
+        spec: &TableSpec<'_>,
+    ) -> Result<Option<Statement>, StatementError> {
+        self.form(spec)?;
+        let mut sql = SqlWriter::new(self);
+        sql.push("SELECT COUNT(*) FROM ")
+            .table(spec)
+            .claimable(spec);
+        if spec.is_fifo() {
+            sql.group_free(spec);
+        }
+        Ok(Some(sql.finish()))
+    }
+
     /// The insert of a row: every column the database does not fill, as the `const fn` of
     /// [`insert`](crate::insert) writes it.
     fn insert_statement(&self, spec: &TableSpec<'_>) -> Result<Statement, StatementError> {

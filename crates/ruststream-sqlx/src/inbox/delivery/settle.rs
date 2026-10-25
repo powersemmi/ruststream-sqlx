@@ -146,6 +146,15 @@ where
             }
             _ => None,
         };
+        // A batch's move takes place only if the batch's transaction commits, which the last of
+        // its deliveries to finish decides: the batch keeps the move's count until then.
+        let batched = match (&self.hold, moved) {
+            (Some(Hold::Batch(batch)), Some(at)) => {
+                batch.moving(at);
+                true
+            }
+            _ => false,
+        };
         let settled = off_clock(self.run(step, harness.now()))
             .await
             .unwrap_or_else(|| Err(AckError::Broker(Box::new(SqlxBrokerError::Closed))));
@@ -167,7 +176,7 @@ where
                 None => {}
             },
             // A move that failed left the row where it was.
-            Step::DeadLetter(_) if settled.is_err() => {
+            Step::DeadLetter(_) if settled.is_err() && !batched => {
                 if let Some(at) = moved {
                     harness.refused(at);
                 }

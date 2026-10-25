@@ -12,6 +12,7 @@
 use crate::live;
 
 mod in_process;
+mod rolled_back;
 
 use std::time::Duration;
 

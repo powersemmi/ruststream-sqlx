@@ -41,6 +41,10 @@
 //! [`Dialect::fifo_guard`] gives, so a row that enters the group ahead of the head in work waits
 //! for it; a lease claim also takes nothing while a row of the group holds a lease.
 //!
+//! The broker's in-process mode, which the test harness connects with, counts the rows a
+//! subscription can claim as it opens with [`Dialect::count_claimable`], so the harness waits for
+//! the rows a service wrote before the test.
+//!
 //! A table may open its transactions at an isolation level ([`Isolation`]) or, on SQLite, in a
 //! mode ([`Mode`]): its [`Opening`], set with [`TableSpec::isolation`] and [`TableSpec::mode`].
 //! [`Dialect::begin`] gives the statement that opens a transaction at it, and refuses an opening

@@ -320,3 +320,38 @@ fn a_fifo_claim_takes_its_group_first() -> Result<(), Box<dyn Error>> {
     assert_eq!(Postgres.fifo_guard(&BARE)?, None);
     Ok(())
 }
+
+#[test]
+fn the_count_of_claimable_rows_reads_the_claims_conditions() -> Result<(), Box<dyn Error>> {
+    let count = Postgres
+        .count_claimable(&EMAILS)?
+        .ok_or("a built-in dialect counts the claimable rows")?;
+    assert_eq!(
+        count.sql(),
+        r#"SELECT COUNT(*) FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= $2 AND "processed_at" IS NULL"#,
+    );
+    assert_eq!(count.params(), [Param::Group, Param::Now]);
+    // A table on the database's clock compares with the database's time.
+    let clocked = Postgres
+        .count_claimable(&EMAILS.database_clock())?
+        .ok_or("a built-in dialect counts the claimable rows")?;
+    assert_eq!(
+        clocked.sql(),
+        r#"SELECT COUNT(*) FROM "app"."email_jobs" WHERE "name" = $1 AND "retry_after" <= statement_timestamp() AND "processed_at" IS NULL"#,
+    );
+    assert_eq!(clocked.params(), [Param::Group]);
+    // A table of FIFO groups counts every due row of the group: each becomes the head in turn.
+    let ledger = Postgres
+        .count_claimable(&LEDGER)?
+        .ok_or("a built-in dialect counts the claimable rows")?;
+    assert_eq!(
+        ledger.sql(),
+        r#"SELECT COUNT(*) FROM "ledger" WHERE "account" = $1 AND "retry_after" <= $2 AND "processed_at" IS NULL"#,
+    );
+    let bare = Postgres
+        .count_claimable(&BARE)?
+        .ok_or("a built-in dialect counts the claimable rows")?;
+    assert_eq!(bare.sql(), r#"SELECT COUNT(*) FROM "jobs""#);
+    assert_eq!(bare.params(), []);
+    Ok(())
+}
