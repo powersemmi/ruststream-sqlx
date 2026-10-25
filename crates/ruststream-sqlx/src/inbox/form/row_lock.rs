@@ -9,13 +9,15 @@ use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 
 use crate::inbox::FormDialect;
+#[cfg(feature = "testing")]
+use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::delivery::settle::{Step, run_step};
 use crate::inbox::engine::{Claimed, Claiming, Events, Savepoint, Settled, Settling};
 use crate::inbox::queue::Queue;
 use crate::inbox::subscriber::{Failed, InboxSubscriber, Taken, begin, take_group};
 #[cfg(feature = "testing")]
-use crate::inbox::testing::off_clock;
+use crate::inbox::testing::{BatchMoves, QueueAt, off_clock};
 use crate::inbox::transactional::InboxMode;
 use crate::inbox::tx::PoolTx;
 
@@ -100,6 +102,10 @@ pub(crate) struct BatchTx<DB: QueueDatabase> {
     written: AtomicUsize,
     /// Set by the first statement that fails: the transaction can only roll back from then on.
     failed: AtomicBool,
+    /// The dead-letter moves the harness counted for an in-process batch, which the transaction's
+    /// end keeps or undoes.
+    #[cfg(feature = "testing")]
+    moves: BatchMoves<DB>,
 }
 
 impl<DB: QueueDatabase> BatchTx<DB> {
@@ -109,7 +115,22 @@ impl<DB: QueueDatabase> BatchTx<DB> {
             open: AtomicUsize::new(deliveries),
             written: AtomicUsize::new(0),
             failed: AtomicBool::new(false),
+            #[cfg(feature = "testing")]
+            moves: BatchMoves::default(),
         })
+    }
+
+    /// Keeps the harness's books of `connection` with the batch's transaction: a move it counted
+    /// for a delivery of the batch stands only once the transaction commits.
+    #[cfg(feature = "testing")]
+    pub(crate) fn watch(&self, connection: &Arc<Shared<DB>>) {
+        self.moves.watch(connection);
+    }
+
+    /// A delivery of the batch is about to move its row to `at`, where the harness counted it.
+    #[cfg(feature = "testing")]
+    pub(crate) fn moving(&self, at: QueueAt<'static>) {
+        self.moves.counted_at(at);
     }
 
     /// Marks one delivery finished; the last one commits what the batch wrote, or rolls back a
@@ -126,11 +147,18 @@ impl<DB: QueueDatabase> BatchTx<DB> {
         };
         if self.failed.load(Ordering::Acquire) {
             self.undone(queue);
+            #[cfg(feature = "testing")]
+            self.moves.undone();
             return tx.rollback().await;
         }
         if self.written.load(Ordering::Acquire) > 0 {
-            tx.commit().await
+            let committed = tx.commit().await;
+            #[cfg(feature = "testing")]
+            self.moves.ended(committed.is_ok());
+            committed
         } else {
+            #[cfg(feature = "testing")]
+            self.moves.undone();
             tx.rollback().await
         }
     }
@@ -156,27 +184,32 @@ impl<DB: QueueDatabase> BatchTx<DB> {
         let commit = !failed && self.written.load(Ordering::Acquire) > 0;
         // Without a runtime the transaction drops here: its connection closes, and the server rolls
         // it back.
-        if let Ok(runtime) = Handle::try_current() {
-            runtime.spawn(async move {
-                let ended = if commit {
-                    tx.commit().await
-                } else {
-                    tx.rollback().await
-                };
-                if let Err(error) = ended {
-                    tracing::warn!(
-                        target: "ruststream_sqlx",
-                        subscription = queue.name,
-                        table = queue.table,
-                        row = queue.row,
-                        commit,
-                        %error,
-                        "a batch's transaction failed to end after a delivery was dropped \
-                         unsettled; its connection closes",
-                    );
-                }
-            });
-        }
+        let Ok(runtime) = Handle::try_current() else {
+            #[cfg(feature = "testing")]
+            self.moves.undone();
+            return;
+        };
+        runtime.spawn(async move {
+            let ended = if commit {
+                tx.commit().await
+            } else {
+                tx.rollback().await
+            };
+            #[cfg(feature = "testing")]
+            self.moves.ended(commit && ended.is_ok());
+            if let Err(error) = ended {
+                tracing::warn!(
+                    target: "ruststream_sqlx",
+                    subscription = queue.name,
+                    table = queue.table,
+                    row = queue.row,
+                    commit,
+                    %error,
+                    "a batch's transaction failed to end after a delivery was dropped \
+                     unsettled; its connection closes",
+                );
+            }
+        });
     }
 
     /// Says how many settlements of a failed batch its rollback undoes.

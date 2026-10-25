@@ -89,6 +89,8 @@ where
         match taken {
             Taken::Locked(tx) => {
                 let batch = BatchTx::new(tx, count);
+                #[cfg(feature = "testing")]
+                batch.watch(&shared);
                 subscriber
                     .take_rows()
                     .map(|claimed| {
@@ -265,6 +267,8 @@ where
         let claims = match taken {
             Taken::Locked(tx) => {
                 let batch = BatchTx::new(tx, count);
+                #[cfg(feature = "testing")]
+                batch.watch(&shared);
                 for claimed in subscriber.take_rows() {
                     match claimed {
                         Claimed::Row(row) => take(row, &mut rows, &mut headers, count),

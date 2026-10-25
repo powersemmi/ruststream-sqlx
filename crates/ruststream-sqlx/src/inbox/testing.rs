@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::io;
+use std::mem;
 use std::panic::resume_unwind;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -351,6 +352,65 @@ impl Harness {
                 RawMessage::new(message.name().to_owned(), message.payload().to_vec())
                     .with_headers(message.headers().clone()),
             );
+    }
+}
+
+/// The dead-letter moves the harness counted for the deliveries of one row lock batch, where each
+/// row would move. The batch's transaction decides whether they took place: a commit keeps them,
+/// and a rollback leaves every row where it was, so the harness counts none of them.
+pub(crate) struct BatchMoves<DB: QueueDatabase> {
+    /// The in-process connection whose books counted the moves; unset outside the harness.
+    connection: OnceLock<Arc<Shared<DB>>>,
+    counted: Mutex<Vec<QueueAt<'static>>>,
+}
+
+impl<DB: QueueDatabase> Default for BatchMoves<DB> {
+    fn default() -> Self {
+        Self {
+            connection: OnceLock::new(),
+            counted: Mutex::default(),
+        }
+    }
+}
+
+impl<DB: QueueDatabase> BatchMoves<DB> {
+    /// Keeps the moves for the books of `connection`, where it keeps them.
+    pub(crate) fn watch(&self, connection: &Arc<Shared<DB>>) {
+        if connection.harness.books().is_some() {
+            let _ = self.connection.set(Arc::clone(connection));
+        }
+    }
+
+    fn counted(&self) -> MutexGuard<'_, Vec<QueueAt<'static>>> {
+        self.counted.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A delivery of the batch counted its row at `at`, where it moves; the move stands once the
+    /// batch commits.
+    pub(crate) fn counted_at(&self, at: QueueAt<'static>) {
+        if self.connection.get().is_some() {
+            self.counted().push(at);
+        }
+    }
+
+    /// The batch's transaction ended: committed, so every move took place, or not.
+    pub(crate) fn ended(&self, committed: bool) {
+        if committed {
+            self.counted().clear();
+        } else {
+            self.undone();
+        }
+    }
+
+    /// The batch's transaction rolled back: no row moved, and none is counted where it would have.
+    pub(crate) fn undone(&self) {
+        let Some(connection) = self.connection.get() else {
+            return;
+        };
+        let undone = mem::take(&mut *self.counted());
+        for at in undone {
+            connection.harness.refused(at);
+        }
     }
 }
 
