@@ -10,20 +10,18 @@
 //! );
 //! ```
 //!
-//! The pool reads its settings from the `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD` and
-//! `PGDATABASE` environment variables.
+//! The broker builds its pool when the service starts, from the `PGHOST`, `PGPORT`, `PGUSER`,
+//! `PGPASSWORD` and `PGDATABASE` environment variables.
 //!
 //! ```text
 //! cargo run -p ruststream-sqlx --example inbox --features inbox,postgres,testing
 //! ```
 
 // --8<-- [start:service]
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use ruststream_sqlx::prelude::*;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, Postgres};
+use sqlx::postgres::{PgConnectOptions, PgConnection, PgPoolOptions, Postgres};
 
 /// One row of `email_jobs`: the struct names the table and the role of each column.
 #[derive(Inbox, sqlx::FromRow)]
@@ -63,23 +61,22 @@ async fn send(email: &Email) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn app(pool: PgPool) -> RustStream {
+/// The service on the database `options` reach.
+fn service(options: PgConnectOptions) -> RustStream {
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendEmail>("emails"),
+        broker.route::<SendEmail>("emails"),
         |b| {
             b.include(send);
         },
     )
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // sqlx builds a pool only inside a Tokio runtime, so the service builds it here, before the
-    // app.
-    let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
-    app(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    // The options read the `PG*` environment variables.
+    service(PgConnectOptions::new())
 }
 // --8<-- [end:service]
 
@@ -97,14 +94,14 @@ mod tests {
     use ruststream_sqlx::prelude::*;
     use sqlx::Postgres;
 
-    use super::{Email, app, live};
+    use super::{Email, live, service};
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_email_published_to_the_route_is_sent() -> Result<(), Box<dyn Error>> {
         let Some(db) = live::postgres::database().await else {
             return Ok(());
         };
-        let tb = TestApp::start(app(db.pool.clone())).await?;
+        let tb = TestApp::start(service(db.options())).await?;
         let email = Email {
             to: "ops@example.com".to_owned(),
         };

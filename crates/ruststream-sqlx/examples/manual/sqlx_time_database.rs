@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_time_database --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use ruststream::schemars::JsonSchema;
 use ruststream_sqlx::dialect::{Column, KeyPart};
@@ -22,7 +20,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use ruststream_sqlx::DatabaseClock;
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `statement_jobs`, written by hosts whose clocks drift. The advisory lock form,
 /// because the lease form reads the host's clock.
@@ -90,15 +89,23 @@ impl Handle<Account, (), (), InboxContext> for SendOne {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("statements", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendStatement>("statements"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("statements", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<SendStatement>("statements"), |b| {
             let send = subscriber("statements", SendOne)
                 .map_source(|_| InboxQueue::<SendStatement>::new("statements"));
             b.include(send.build());
-        },
-    )
+        })
 }
 // --8<-- [end:database_clock]
 
@@ -109,13 +116,9 @@ async fn render(account: &Account, attempt: Option<u64>) -> bool {
     attempt != Some(1)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:statements.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:statements.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS statement_jobs (
@@ -159,10 +162,12 @@ mod tests {
     use super::{Account, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -170,15 +175,15 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // The database's clock is real time, which a paused tokio clock does not move, so the test
     // runs on the real clock and lets the second pass.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_delay_on_the_database_clock_brings_the_row_back() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_time_database").await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_time_database").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         let account = Account { id: 7 };
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&account)

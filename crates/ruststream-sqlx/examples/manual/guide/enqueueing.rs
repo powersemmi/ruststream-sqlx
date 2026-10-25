@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS email_jobs (
 
 // --8<-- [start:table]
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::{Sqlite, SqliteConnection, SqlitePool};
 
 /// One row of `email_jobs`.
@@ -174,28 +176,32 @@ impl Handle<Email> for Sender {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<CheckoutJob>("checkouts"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("shop", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<CheckoutJob>("checkouts"), |b| {
             let checkout = subscriber("checkouts", Checkout)
                 .map_source(|_| InboxQueue::<CheckoutJob>::new("checkouts"));
             b.include(checkout.build());
             let send =
                 subscriber("emails", Sender).map_source(|_| InboxQueue::<SendEmail>::new("emails"));
             b.include(send.build());
-        },
-    )
+        })
 }
 // --8<-- [end:service]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:shop.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:shop.db?mode=rwc")
 }
 
 /// The checkouts the shop's front end queues.
@@ -298,9 +304,11 @@ mod tests {
 
     // A database in memory that every connection naming it shares, alive while one of them is
     // open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -308,7 +316,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     fn order(id: i64) -> Order {
@@ -324,8 +332,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_confirmation_is_sent_and_the_reminder_waits() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_enqueueing_order").await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_guide_enqueueing_order").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&order(7))
             .publish()
@@ -348,8 +356,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_order_that_fails_queues_no_email() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_enqueueing_rollback").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_guide_enqueueing_rollback").await?;
+        let tb = TestApp::start(service(&url)).await?;
         // The same order twice: the second insert fails, and its emails roll back with it.
         for _ in 0..2 {
             tb.broker::<SqlxBroker<Sqlite>>()
@@ -371,7 +379,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_urgent_email_goes_first() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_enqueueing_priority").await?;
+        let (url, pool, _keeper) = database("manual_guide_enqueueing_priority").await?;
         let now = Utc::now();
         let newsletter = Email {
             order: 0,
@@ -390,7 +398,7 @@ mod tests {
         SendEmail::new(&reset, URGENT, now)?
             .insert(&mut *pool.acquire().await?)
             .await?;
-        let tb = TestApp::start_live(service(pool)).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(POLL).await?;
 
         let sent = tb

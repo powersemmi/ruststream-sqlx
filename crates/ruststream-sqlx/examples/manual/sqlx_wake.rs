@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_wake --features inbox,sqlite,chrono,testing,asyncapi
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 use std::time::Duration;
 
@@ -15,9 +14,10 @@ use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::spec::{Lease, Payload};
 use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 // --8<-- [start:service]
 use ruststream::OutgoingMessage;
@@ -95,30 +95,38 @@ impl Handle<Welcome> for SendWelcome {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
     // The hourly poll reaches a row the service wrote with its own SQL.
-    let broker = SqlxBroker::new(pool)
+    let broker = broker
         .poll_interval(Duration::from_secs(3600))
         .route::<Job>("signups");
-    RustStream::new(AppInfo::new("signup", "0.1.0")).with_broker(broker, |b| {
-        let greet = subscriber("signups", Greet).map_source(|_| InboxQueue::<Job>::new("signups"));
-        b.include(greet.reply().build())
-            .out_reply(Repository::<Job>::default());
-        // The welcome's row wakes this subscription: no poll interval in between.
-        let send =
-            subscriber("welcome", SendWelcome).map_source(|_| InboxQueue::<Job>::new("welcome"));
-        b.include(send.build());
-    })
+    RustStream::new(AppInfo::new("signup", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            let greet =
+                subscriber("signups", Greet).map_source(|_| InboxQueue::<Job>::new("signups"));
+            b.include(greet.reply().build())
+                .out_reply(Repository::<Job>::default());
+            // The welcome's row wakes this subscription: no poll interval in between.
+            let send = subscriber("welcome", SendWelcome)
+                .map_source(|_| InboxQueue::<Job>::new("welcome"));
+            b.include(send.build());
+        })
 }
 // --8<-- [end:service]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:signups.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:signups.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS jobs (
@@ -154,10 +162,12 @@ mod tests {
     use super::{SCHEMA, Signup, Welcome, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -165,13 +175,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_welcome_is_sent_long_before_the_next_poll() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_wake").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_wake").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let signup = Signup {
             email: "ada@example.com".to_owned(),
         };

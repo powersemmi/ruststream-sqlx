@@ -164,6 +164,8 @@ fn service(pool: SqlitePool) -> impl App {
 }
 // --8<-- [end:interplay]
 
+// The outbox and the inbox share one pool, so `main` builds it inside the runtime, hands it to
+// both and closes it after the app.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let pool = SqlitePool::connect("sqlite:orders.db?mode=rwc").await?;

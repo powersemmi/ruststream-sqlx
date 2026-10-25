@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example guide_retries --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -26,7 +25,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS mail_jobs (
 
 // --8<-- [start:send]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::Connection;
+use sqlx::Sqlite;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `mail_jobs`; `name` is the queue the row waits in.
 #[derive(Inbox, sqlx::FromRow)]
@@ -78,28 +79,32 @@ async fn review(mail: &Mail, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome
 // --8<-- [end:dead_letters]
 
 // --8<-- [start:app]
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendMail>("emails"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<SendMail>("emails"), |b| {
             // Five deliveries, the first included; the fifth failure moves the row into the
             // `emails.dead` group.
             b.include(send)
                 .max_attempts(nonzero!(5u32))
                 .dead_letter("emails.dead");
             b.include(review);
-        },
-    )
+        })
 }
 // --8<-- [end:app]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:mailer.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:mailer.db?mode=rwc")
 }
 
 /// A publish to `emails` writes a row into that group.
@@ -161,9 +166,11 @@ mod tests {
 
     // A database in memory that every connection naming it shares, alive while one of them is
     // open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -171,7 +178,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     /// Past the subscriptions' poll interval, one second by default.
@@ -186,8 +193,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unanswered_email_is_tried_five_times_then_dead_lettered()
     -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_retries_dead").await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("guide_retries_dead").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&mail("ada@down.example"))
             .publish()
@@ -213,8 +220,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rejected_address_is_dropped_at_once() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_retries_rejected").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("guide_retries_rejected").await?;
+        let tb = TestApp::start(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&mail("ada@nobody.example"))
             .publish()
@@ -234,8 +241,8 @@ mod tests {
     // The row comes back when its `retry_after` comes due on the real clock.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_busy_provider_is_tried_again_after_the_backoff() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_retries_busy").await?;
-        let tb = TestApp::start_live(service(pool)).await?;
+        let (url, _pool, _keeper) = database("guide_retries_busy").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&mail("ada@busy.example"))
             .publish()

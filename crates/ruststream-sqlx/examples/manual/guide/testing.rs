@@ -6,11 +6,12 @@
 //! ```
 
 use std::env;
-use std::error::Error;
+use std::process::ExitCode;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
+use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::keys::InboxContext;
@@ -18,7 +19,9 @@ use ruststream_sqlx::prelude::*;
 use ruststream_sqlx::spec::{Attempt, Lease, Payload, RetryAfter};
 use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable, PayloadRow};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgConnection, PgPool, Postgres, Sqlite, SqliteConnection, SqlitePool};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Connection, PgConnection, Postgres, Sqlite, SqliteConnection};
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS thumbnail_jobs (
     id INTEGER PRIMARY KEY,
@@ -102,46 +105,54 @@ impl Handle<Image, (), (), InboxContext> for Thumbnail {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
-        |b| {
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("thumbnails", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
             b.include(thumbnail.build());
-        },
-    )
+        })
 }
 
 /// The same service on Postgres.
-fn service_on_postgres(pool: PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
-        |b| {
+fn service_on_postgres(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    let broker = SqlxBroker::from_url(url, PgPoolOptions::new());
+    RustStream::new(AppInfo::new("thumbnails", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = PgConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(POSTGRES_SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
             b.include(thumbnail.build());
-        },
-    )
+        })
 }
 
 /// Runs on Postgres when `DATABASE_URL` names it, on a SQLite file otherwise.
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+/// The service on Postgres where `DATABASE_URL` names it, and on a SQLite file otherwise.
+fn app() -> RustStream {
     if let Ok(url) = env::var("DATABASE_URL")
         && url.starts_with("postgres")
     {
-        let pool = PgPool::connect(&url).await?;
-        sqlx::raw_sql(POSTGRES_SCHEMA).execute(&pool).await?;
-        service_on_postgres(pool.clone()).run().await?;
-        pool.close().await;
-        return Ok(());
+        return service_on_postgres(&url);
     }
-    let pool = SqlitePool::connect("sqlite:thumbnails.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+    service("sqlite:thumbnails.db?mode=rwc")
+}
+
+fn main() -> ExitCode {
+    run_main(app)
 }
 
 /// A publish to `thumbnails` writes a row with the service's own statement.
@@ -202,22 +213,24 @@ mod tests {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::{Connection, Postgres, Sqlite, SqliteConnection, SqlitePool};
 
-    use super::{Image, POSTGRES_SCHEMA, SCHEMA, live, service, service_on_postgres};
+    use super::{Image, live, service, service_on_postgres};
 
     // --8<-- [start:in_process]
     /// A database in memory that every connection naming it shares, alive while one of them is
-    /// open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    /// open: the test holds that one beside the pool it reads the table through. The service
+    /// creates the table when it starts.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
             .idle_timeout(None)
             .connect_with(options)
             .await?;
-        sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     /// The scenario, on whichever database the app runs.
@@ -238,8 +251,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn in_process() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_testing").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_guide_testing").await?;
+        let tb = TestApp::start(service(&url)).await?;
         a_small_image_is_made_at_once(tb.broker::<SqlxBroker<Sqlite>>()).await?;
 
         let left: i64 = sqlx::query_scalar("SELECT count(*) FROM thumbnail_jobs")
@@ -253,11 +266,11 @@ mod tests {
     // --8<-- [start:clock]
     #[tokio::test]
     async fn a_large_image_is_made_a_minute_later() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_testing_clock").await?;
+        let (url, _pool, _keeper) = database("manual_guide_testing_clock").await?;
         // The queue reads "now" from this clock, and the database calls run off it. A paused
         // clock takes the single-threaded runtime `#[tokio::test]` starts.
         tokio::time::pause();
-        let tb = TestApp::start(service(pool)).await?;
+        let tb = TestApp::start(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&Image {
                 path: "panorama.png".to_owned(),
@@ -286,8 +299,7 @@ mod tests {
         let Some(db) = live::postgres::database().await else {
             return Ok(());
         };
-        sqlx::raw_sql(POSTGRES_SCHEMA).execute(&db.pool).await?;
-        let tb = TestApp::start_live(service_on_postgres(db.pool.clone())).await?;
+        let tb = TestApp::start_live(service_on_postgres(&db.url())).await?;
         a_small_image_is_made_at_once(tb.broker::<SqlxBroker<Postgres>>()).await?;
 
         tb.shutdown().await?;

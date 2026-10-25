@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example guide_ordering --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
@@ -33,7 +31,9 @@ CREATE TABLE IF NOT EXISTS ledger_jobs (
 
 // --8<-- [start:fifo]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::Connection;
+use sqlx::Sqlite;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `crm_jobs`; each group holds the changes bound for one system, in order.
 #[derive(Inbox, sqlx::FromRow)]
@@ -85,28 +85,35 @@ async fn post(posting: &Posting) -> HandlerOutcome {
 // --8<-- [end:keyed]
 
 // --8<-- [start:app]
-fn service(pool: SqlitePool) -> RustStream {
-    let broker = SqlxBroker::new(pool)
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    let broker = broker
         .route::<CrmChange>("crm")
         .route::<LedgerPosting>("postings");
-    RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(broker, |b| {
-        // A change the CRM refuses three times moves out of the group, which then moves on.
-        b.include(sync)
-            .max_attempts(nonzero!(3u32))
-            .dead_letter("crm.parked");
-        // Four workers, and the postings of one account on one of them, one after another.
-        b.include(post.workers_by_key(nonzero!(4)));
-    })
+    RustStream::new(AppInfo::new("accounts", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            // A change the CRM refuses three times moves out of the group, which then moves on.
+            b.include(sync)
+                .max_attempts(nonzero!(3u32))
+                .dead_letter("crm.parked");
+            // Four workers, and the postings of one account on one of them, one after another.
+            b.include(post.workers_by_key(nonzero!(4)));
+        })
 }
 // --8<-- [end:app]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:accounts.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:accounts.db?mode=rwc")
 }
 
 /// A publish to `crm` writes a row into that group.
@@ -178,9 +185,11 @@ mod tests {
 
     // A database in memory that every connection naming it shares, alive while one of them is
     // open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -188,7 +197,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     fn contact(id: u64, email: &str) -> Contact {
@@ -203,8 +212,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_refused_change_is_parked_and_the_group_moves_on() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_ordering_parked").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("guide_ordering_parked").await?;
+        let tb = TestApp::start(service(&url)).await?;
         for change in [contact(1, ""), contact(2, "ada@example.com")] {
             tb.broker::<SqlxBroker<Sqlite>>()
                 .message(&change)
@@ -237,7 +246,7 @@ mod tests {
     // rows wake no subscription, so the test runs on the real clock past the poll interval.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_change_in_work_elsewhere_holds_its_group() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_ordering_held").await?;
+        let (url, pool, _keeper) = database("guide_ordering_held").await?;
         let leased = Utc::now() + TimeDelta::hours(1);
         for (change, locked_until) in [
             (contact(1, "ada@example.com"), Some(leased)),
@@ -251,7 +260,7 @@ mod tests {
             .execute(&pool)
             .await?;
         }
-        let tb = TestApp::start_live(service(pool)).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(POLL).await?;
 
         tb.broker::<SqlxBroker<Sqlite>>()
@@ -264,7 +273,7 @@ mod tests {
     // so the test runs on the real clock past the poll interval.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_postings_of_an_account_apply_in_order() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_ordering_postings").await?;
+        let (url, pool, _keeper) = database("guide_ordering_postings").await?;
         let written = [("a", 1), ("b", 1), ("a", 2), ("b", 2), ("a", 3)];
         for (account, n) in written {
             let posting = Posting {
@@ -277,7 +286,7 @@ mod tests {
                 .execute(&pool)
                 .await?;
         }
-        let tb = TestApp::start_live(service(pool)).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(POLL).await?;
 
         let posted = tb

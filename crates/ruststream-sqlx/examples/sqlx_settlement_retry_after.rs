@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example sqlx_settlement_retry_after --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -15,7 +14,8 @@ use sqlx::{Sqlite, SqliteConnection};
 
 // --8<-- [start:retry_after]
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `webhook_jobs`: a claim takes it only once its `retry_after` has come.
 #[derive(Inbox, sqlx::FromRow)]
@@ -43,13 +43,21 @@ async fn notify(call: &Call, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("webhooks", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<Webhook>("webhooks"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("webhooks", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<Webhook>("webhooks"), |b| {
             b.include(notify);
-        },
-    )
+        })
 }
 // --8<-- [end:retry_after]
 
@@ -75,13 +83,9 @@ async fn post(call: &Call, attempt: Option<u64>) -> Answer {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:webhooks.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:webhooks.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS webhook_jobs (
@@ -123,10 +127,12 @@ mod tests {
     use super::{Call, RETRY_AFTER, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -134,14 +140,14 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // The test runs on the real clock and lets the endpoint's second pass.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_rate_limited_call_comes_back_when_its_wait_is_over() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_settlement_retry_after").await?;
-        let tb = TestApp::start_live(service(pool)).await?;
+        let (url, _pool, _keeper) = database("sqlx_settlement_retry_after").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         let call = Call {
             url: "https://hooks.example.com/orders".to_owned(),
         };

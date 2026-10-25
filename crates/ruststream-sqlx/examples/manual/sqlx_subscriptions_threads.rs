@@ -5,22 +5,22 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_subscriptions_threads --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
+use std::process::ExitCode;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
+use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::keys::PoolContext;
 use ruststream_sqlx::spec::{Lease, Payload};
 use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
 use serde::{Deserialize, Serialize};
-use sqlx::SqliteConnection;
-use sqlx::sqlite::SqlitePoolOptions;
 
 // --8<-- [start:on_threads]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Connection, Sqlite, SqliteConnection};
 
 /// One row of `scan_jobs`, claimed under a lease.
 #[derive(sqlx::FromRow)]
@@ -75,17 +75,26 @@ impl Handle<Upload, (), (), PoolContext<Sqlite>> for Scan {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
+/// The service on the database `url` names, with a pool of `pool`'s size.
+fn service(url: &str, pool: SqlitePoolOptions) -> RustStream {
+    let schema_url = url.to_owned();
     // The service's pool and the threads' 4 x 1 connections, within a limit of 12.
-    let broker = SqlxBroker::new(pool)
+    let broker = SqlxBroker::from_url(url, pool)
         .route::<ScanJob>("scans")
         .connection_limit(nonzero!(12u32));
-    RustStream::new(AppInfo::new("scanner", "0.1.0")).with_broker(broker, |b| {
-        let scan = subscriber("scans", Scan)
-            .map_source(|_| InboxQueue::<ScanJob>::new("scans"))
-            .on_threads(InboxThreads::new(nonzero!(4)));
-        b.include(scan.build());
-    })
+    RustStream::new(AppInfo::new("scanner", "0.1.0"))
+        // The tables, created before the subscription checks them.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            let scan = subscriber("scans", Scan)
+                .map_source(|_| InboxQueue::<ScanJob>::new("scans"))
+                .on_threads(InboxThreads::new(nonzero!(4)));
+            b.include(scan.build());
+        })
 }
 // --8<-- [end:on_threads]
 
@@ -95,16 +104,13 @@ fn looks_clean(upload: &Upload) -> bool {
     !upload.path.contains("eicar")
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(8)
-        .connect("sqlite:scanner.db?mode=rwc")
-        .await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+fn main() -> ExitCode {
+    run_main(|| {
+        service(
+            "sqlite:scanner.db?mode=rwc",
+            SqlitePoolOptions::new().max_connections(8),
+        )
+    })
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS scan_jobs (
@@ -149,28 +155,26 @@ mod tests {
     use super::{SCHEMA, Upload, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool, of `size` connections.
+    // the test holds one beside the pool it reads the tables through.
     async fn database(
         name: &str,
-        size: u32,
-    ) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
-            .max_connections(size)
             .min_connections(1)
             .idle_timeout(None)
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_scan_on_a_thread_writes_its_verdict() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_subscriptions_threads", 8).await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_subscriptions_threads").await?;
+        let tb = TestApp::start(service(&url, SqlitePoolOptions::new().max_connections(8))).await?;
         let upload = Upload {
             path: "inbox/eicar.com".to_owned(),
         };
@@ -194,8 +198,10 @@ mod tests {
     // Ten connections of the pool and four of the threads pass the limit of twelve.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_pool_too_large_for_the_limit_stops_the_service() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_subscriptions_threads_limit", 10).await?;
-        let Err(error) = TestApp::start(service(pool)).await else {
+        let (url, _pool, _keeper) = database("manual_sqlx_subscriptions_threads_limit").await?;
+        let Err(error) =
+            TestApp::start(service(&url, SqlitePoolOptions::new().max_connections(10))).await
+        else {
             panic!("the service started past its connection limit");
         };
         assert!(

@@ -9,15 +9,16 @@
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
-use std::error::Error;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, SqliteConnection, SqlitePool};
+use sqlx::{Sqlite, SqliteConnection};
 
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `thumbnail_jobs`, claimed under a lease, with a time it is due.
 #[derive(Inbox, sqlx::FromRow)]
@@ -45,22 +46,26 @@ async fn thumbnail(image: &Image, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOu
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("thumbnails", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             b.include(thumbnail);
-        },
-    )
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:thumbnails.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:thumbnails.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS thumbnail_jobs (
@@ -106,9 +111,11 @@ mod tests {
     // --8<-- [start:testapp]
     /// A database in memory that every connection naming it shares, alive while one of them is
     /// open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -116,13 +123,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_image_is_put_off_once() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_testing").await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("sqlx_testing").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let image = Image {
             path: "cat.png".to_owned(),
         };
@@ -144,11 +151,11 @@ mod tests {
     // --8<-- [start:clock]
     #[tokio::test]
     async fn a_minute_later_the_thumbnail_is_made() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_testing_clock").await?;
+        let (url, _pool, _keeper) = database("sqlx_testing_clock").await?;
         // The queue reads "now" from this clock, and the database calls run off it. A paused
         // clock takes the single-threaded runtime `#[tokio::test]` starts.
         tokio::time::pause();
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let tb = TestApp::start(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&Image {
                 path: "cat.png".to_owned(),

@@ -157,6 +157,8 @@ fn service(broker: SqlxBroker<Sqlite, Audited>) -> RustStream {
     })
 }
 
+// The broker on a dialect of the service's own takes a pool the service builds, so `main` builds
+// it inside the runtime and closes it after the app.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let pool = SqlitePool::connect("sqlite:mail.db?mode=rwc").await?;

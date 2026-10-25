@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example sqlx_time --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection};
@@ -16,7 +14,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `invoice_jobs`. No `clock = ..`: the table reads `SystemClock`.
 #[derive(Inbox, sqlx::FromRow)]
@@ -44,13 +43,21 @@ async fn send(invoice: &Invoice) -> HandlerOutcome {
     HandlerOutcome::retry_after(Duration::from_hours(1))
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendInvoice>("invoices"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<SendInvoice>("invoices"), |b| {
             b.include(send);
-        },
-    )
+        })
 }
 // --8<-- [end:time]
 
@@ -61,13 +68,9 @@ async fn deliver(invoice: &Invoice) -> bool {
     !invoice.to.is_empty()
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:billing.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:billing.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS invoice_jobs (
@@ -112,10 +115,12 @@ mod tests {
     use super::{Invoice, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -123,16 +128,16 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // In process the queue's "now" is the tokio clock, anchored to the system clock when the
     // broker connected: two hours on a paused clock are two hours for the queue.
     #[tokio::test]
     async fn in_process_the_queue_marks_rows_on_the_tokio_clock() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_time").await?;
+        let (url, pool, _keeper) = database("sqlx_time").await?;
         tokio::time::pause();
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let tb = TestApp::start(service(&url)).await?;
         tb.advance(Duration::from_hours(2)).await?;
         let invoice = Invoice {
             number: "2026-1042".to_owned(),

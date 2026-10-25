@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ruststream_sqlx::{Insert, dialect};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgRow};
-use sqlx::{AssertSqlSafe, Connection, FromRow, PgConnection, PgPool, Postgres};
+use sqlx::{AssertSqlSafe, ConnectOptions, Connection, FromRow, PgConnection, PgPool, Postgres};
 
 use super::{Database, url};
 
@@ -92,6 +92,17 @@ pub(crate) async fn database() -> Option<Database<Db>> {
 }
 
 impl Database<Db> {
+    /// The URL of the test's database, for a service whose broker builds its own pool.
+    pub(crate) fn url(&self) -> String {
+        self.pool.connect_options().to_url_lossy().into()
+    }
+
+    /// The connect options of the test's database, for a service whose broker builds its own
+    /// pool.
+    pub(crate) fn options(&self) -> PgConnectOptions {
+        self.pool.connect_options().as_ref().clone()
+    }
+
     /// Closes the pool and drops the database.
     pub(crate) async fn finish(self) {
         self.pool.close().await;

@@ -8,15 +8,16 @@
 //! cargo run -p ruststream-sqlx --example sqlx_wake_notify --features inbox,postgres,chrono,testing
 //! ```
 
-use std::error::Error;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, Postgres};
+use sqlx::postgres::{PgConnectOptions, PgConnection, Postgres};
 
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::postgres::PgPoolOptions;
 
 /// One row of `signup_jobs`; the group is the name a signup was published to.
 #[derive(Inbox, sqlx::FromRow)]
@@ -39,16 +40,28 @@ async fn welcome(signup: &Signup) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn service(pool: PgPool) -> RustStream {
+/// The service on the database `options` reach.
+fn service(options: PgConnectOptions) -> RustStream {
+    let schema = options.clone();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
     // A notification wakes the subscription; the poll each minute reaches a row whose
     // notification was lost.
-    let broker = SqlxBroker::new(pool)
+    let broker = broker
         .poll_interval(Duration::from_secs(60))
         .listen_notify()
         .route::<SignupJob>("signups");
-    RustStream::new(AppInfo::new("signup", "0.1.0")).with_broker(broker, |b| {
-        b.include(welcome);
-    })
+    RustStream::new(AppInfo::new("signup", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = PgConnection::connect_with(&schema).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            sqlx::raw_sql(ANNOUNCE).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            b.include(welcome);
+        })
 }
 
 /// The trigger announces every row another program inserts: the channel is the table, the
@@ -66,14 +79,10 @@ CREATE OR REPLACE TRIGGER signup_announced AFTER INSERT ON signup_jobs
 ";
 // --8<-- [end:service]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    sqlx::raw_sql(ANNOUNCE).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    // The options read the `PG*` environment variables.
+    service(PgConnectOptions::new())
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS signup_jobs (
@@ -128,7 +137,7 @@ mod tests {
         };
         sqlx::raw_sql(SCHEMA).execute(&db.pool).await?;
         sqlx::raw_sql(ANNOUNCE).execute(&db.pool).await?;
-        let tb = TestApp::start_live(service(db.pool.clone())).await?;
+        let tb = TestApp::start_live(service(db.options())).await?;
         // The subscription's first claim finds the table empty: it then waits its minute.
         tb.advance(Duration::from_millis(200)).await?;
         let signup = Signup {

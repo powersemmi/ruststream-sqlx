@@ -8,13 +8,14 @@
 //! ```
 
 use std::env;
-use std::error::Error;
 use std::future::{Future, ready};
+use std::process::ExitCode;
 
+use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use ruststream_sqlx::PayloadRow;
 use serde::Deserialize;
-use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::postgres::{PgPoolOptions, Postgres};
 
 use ruststream_sqlx::prelude::*;
 
@@ -151,17 +152,18 @@ impl Handle<Mail> for Postman {
 // --8<-- [end:rows]
 
 // --8<-- [start:server]
-/// The pool on the database a deployment configures; it connects on first use.
-fn pool(url: &str) -> Result<PgPool, sqlx::Error> {
-    PgPoolOptions::new().max_connections(8).connect_lazy(url)
+/// The broker on the database a deployment configures; it builds its pool when the service
+/// starts.
+fn broker(url: &str) -> SqlxBroker<Postgres> {
+    SqlxBroker::from_url(url, PgPoolOptions::new().max_connections(8))
 }
 // --8<-- [end:server]
 
 // --8<-- [start:app]
-fn service(pool: PgPool) -> RustStream {
+fn service(url: &str) -> RustStream {
     RustStream::new(AppInfo::new("office", "0.1.0")).with_broker_labeled(
         "postgres",
-        SqlxBroker::new(pool),
+        broker(url),
         |b| {
             let email =
                 subscriber("emails", Mailer).map_source(|_| InboxQueue::<SendEmail>::new("emails"));
@@ -175,12 +177,9 @@ fn service(pool: PgPool) -> RustStream {
     )
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = pool(&env::var("DATABASE_URL")?)?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+fn main() -> ExitCode {
+    let url = env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/office".to_owned());
+    run_main(|| service(&url))
 }
 // --8<-- [end:app]
 
@@ -203,17 +202,15 @@ mod tests {
     use ruststream::asyncapi::build_spec;
     use serde_json::{Value, json};
 
-    use super::{pool, service};
+    use super::service;
 
     const PASSWORD: &str = "hunter2";
 
-    /// The document of the service on the pool a deployment configures, built with no I/O.
+    /// The document of the service on the database a deployment configures, built with no I/O.
     fn document() -> Result<Value, Box<dyn Error>> {
-        let pool = pool(&format!(
-            "postgres://office:{PASSWORD}@db.internal:5432/office"
-        ))?;
+        let url = format!("postgres://office:{PASSWORD}@db.internal:5432/office");
         Ok(serde_json::from_str(
-            &build_spec(&service(pool)).to_json()?,
+            &build_spec(&service(&url)).to_json()?,
         )?)
     }
 

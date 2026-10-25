@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example guide_claim_forms --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -24,7 +23,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS report_jobs (
 
 // --8<-- [start:lease]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::Connection;
+use sqlx::Sqlite;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `report_jobs`: `locked_until` claims it under a lease.
 #[derive(Inbox, sqlx::FromRow)]
@@ -53,23 +54,27 @@ async fn render(report: &Report, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOut
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<RenderReport>("reports"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("reports", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<RenderReport>("reports"), |b| {
             b.include(render);
-        },
-    )
+        })
 }
 // --8<-- [end:lease]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:reports.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:reports.db?mode=rwc")
 }
 
 /// A publish to `reports` writes a row with the service's own statement.
@@ -113,9 +118,11 @@ mod tests {
 
     // A database in memory that every connection naming it shares, alive while one of them is
     // open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -123,16 +130,16 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // The clock is paused, so five minutes of rendering pass at once, and the lease's extensions
     // run as the clock reaches them.
     #[tokio::test]
     async fn a_report_rendered_past_its_lease_is_delivered_once() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_claim_forms_long").await?;
+        let (url, pool, _keeper) = database("guide_claim_forms_long").await?;
         tokio::time::pause();
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let tb = TestApp::start(service(&url)).await?;
         let report = Report { id: 7, pages: 30 };
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&report)
@@ -160,7 +167,7 @@ mod tests {
     // clock past the poll interval.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_crashed_claim_comes_back_once_its_lease_runs_out() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_claim_forms_crash").await?;
+        let (url, pool, _keeper) = database("guide_claim_forms_crash").await?;
         let now = Utc::now();
         for (id, locked_until) in [
             (1, now - TimeDelta::seconds(1)),
@@ -174,7 +181,7 @@ mod tests {
             .execute(&pool)
             .await?;
         }
-        let tb = TestApp::start_live(service(pool)).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(Duration::from_secs(2)).await?;
 
         tb.broker::<SqlxBroker<Sqlite>>()

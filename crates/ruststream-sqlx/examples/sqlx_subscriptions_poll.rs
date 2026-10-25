@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example sqlx_subscriptions_poll --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Connection, SqliteConnection};
 
 /// One row of `export_jobs`, which the warehouse's nightly job inserts with its own SQL.
 #[derive(Inbox, sqlx::FromRow)]
@@ -35,22 +34,29 @@ async fn upload(file: &ExportFile) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
     // Every other subscription of the broker waits five seconds after a claim that came back short.
-    let broker = SqlxBroker::new(pool).poll_interval(Duration::from_secs(5));
-    RustStream::new(AppInfo::new("exports", "0.1.0")).with_broker(broker, |b| {
-        b.include(upload);
-    })
+    let broker = broker.poll_interval(Duration::from_secs(5));
+    RustStream::new(AppInfo::new("exports", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            b.include(upload);
+        })
 }
 // --8<-- [end:poll_interval]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:exports.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:exports.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS export_jobs (
@@ -77,10 +83,12 @@ mod tests {
     use super::{ExportFile, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -88,7 +96,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // A row written with plain SQL reaches the subscription only through a claim at its poll
@@ -96,8 +104,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_row_written_by_another_system_is_claimed_at_the_poll_interval()
     -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_subscriptions_poll").await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("sqlx_subscriptions_poll").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         // The subscription's first claim finds the table empty; then it waits its interval.
         tb.advance(Duration::from_millis(300)).await?;
         let file = ExportFile {

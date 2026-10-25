@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_time_clock --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 
 use ruststream::OutgoingMessage;
@@ -22,7 +21,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
 use ruststream_sqlx::prelude::*;
 use ruststream_sqlx::{Clock, SystemClock, spec};
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// The host's time in whole seconds.
 struct WholeSeconds;
@@ -85,25 +85,29 @@ impl Handle<Note> for RemindHandler {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("reminders", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<Remind>("reminders"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("reminders", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<Remind>("reminders"), |b| {
             let remind = subscriber("reminders", RemindHandler)
                 .map_source(|_| InboxQueue::<Remind>::new("reminders"));
             b.include(remind.build());
-        },
-    )
+        })
 }
 // --8<-- [end:clock]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:reminders.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:reminders.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS reminder_jobs (
@@ -146,10 +150,12 @@ mod tests {
     use super::{Note, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -157,15 +163,15 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // The service's clock is the subject, so the test runs on the real clock, where the queue
     // reads the table's own.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_mark_takes_the_time_of_the_services_clock() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_time_clock").await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_time_clock").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         let note = Note {
             text: "Renew the certificate".to_owned(),
         };
