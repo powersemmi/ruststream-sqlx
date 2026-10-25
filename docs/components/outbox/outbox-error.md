@@ -1,7 +1,7 @@
 ---
 sidebar_position: 10
 title: OutboxError
-description: "OutboxError names what the outbox could not do: record a publish, read the unprocessed records, or republish one, a publish with no pool yet, and a record a handler's own SQLite transaction locks out."
+description: "OutboxError names what the outbox could not do: record, read or republish a publish, publish with no pool, or write past a SQLite write lock."
 ---
 
 import Tabs from '@theme/Tabs';
