@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_guide_getting_started --features inbox,sqlite,chrono,testing,asyncapi
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use ruststream::schemars::JsonSchema;
@@ -28,7 +26,9 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS thumbnail_jobs (
 
 // --8<-- [start:service]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::Connection;
+use sqlx::Sqlite;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `thumbnail_jobs`.
 #[derive(sqlx::FromRow)]
@@ -117,26 +117,30 @@ impl Handle<Image, (), (), InboxContext> for Thumbnail {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("thumbnails", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
             b.include(thumbnail.build());
-        },
-    )
+        })
 }
 // --8<-- [end:service]
 
 // --8<-- [start:main]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:thumbnails.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:thumbnails.db?mode=rwc")
 }
 // --8<-- [end:main]
 
@@ -153,9 +157,11 @@ mod tests {
 
     // A database in memory that every connection naming it shares, alive while one of them is
     // open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -163,13 +169,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_image_is_made_into_a_thumbnail_and_its_row_deleted() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_getting_started_made").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_guide_getting_started_made").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let image = Image {
             path: "cat.png".to_owned(),
         };
@@ -192,8 +198,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_image_without_a_path_is_dropped() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_guide_getting_started_dropped").await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("manual_guide_getting_started_dropped").await?;
+        let tb = TestApp::start(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&Image {
                 path: String::new(),

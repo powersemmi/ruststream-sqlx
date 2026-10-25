@@ -18,7 +18,7 @@ Everything comes from the service's own declarations: the pool's options, the ta
 
 A message a handler decodes is documented by its type's `JsonSchema`, as on every broker.
 A handler in [row mode](../messages/rows.md) takes the row itself, so the row's `JsonSchema` documents the message: the derive names `schemars` through the core, `#[schemars(crate = "ruststream::schemars")]`.
-A pool built with `connect_lazy` builds the document with no database in reach, inside a Tokio runtime.
+A broker made with [`from_url`](api:ruststream_sqlx::SqlxBroker::from_url) builds the document with no database in reach and no runtime.
 
 ## Example
 

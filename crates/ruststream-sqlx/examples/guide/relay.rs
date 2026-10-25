@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS order_events (
 
 // --8<-- [start:write]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqliteConnection, SqlitePool};
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Sqlite, SqliteConnection};
 
 /// One row of `order_events`: an event waiting for the relay, keyed by its order.
 #[derive(Inbox, sqlx::FromRow)]
@@ -91,12 +93,22 @@ async fn relay(event: &OrderPlaced) -> OrderPlaced {
     event.clone()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
     // The target broker is wrapped first, so its publish token exists before the scopes.
     let bus = MemoryBroker::new().bindable();
     let to_bus = bus.bind(MemoryPublish);
     RustStream::new(AppInfo::new("shop", "0.1.0"))
-        .with_broker(SqlxBroker::new(pool).route::<Checkout>("checkouts"), |b| {
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<Checkout>("checkouts"), |b| {
             b.include(checkout.transactional());
             b.include(relay.workers_by_key(nonzero!(4)))
                 .out_reply(to_bus);
@@ -105,13 +117,9 @@ fn service(pool: SqlitePool) -> RustStream {
 }
 // --8<-- [end:relay]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:shop.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:shop.db?mode=rwc")
 }
 
 /// The checkouts the shop's front end queues.
@@ -170,9 +178,11 @@ mod tests {
 
     // A database in memory that every connection naming it shares, alive while one of them is
     // open: the test holds that one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -180,7 +190,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     fn order(id: i64) -> Order {
@@ -196,8 +206,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_placed_order_reaches_the_bus_once() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_relay_placed").await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("guide_relay_placed").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&order(7))
             .publish()
@@ -220,8 +230,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_order_that_fails_publishes_nothing() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("guide_relay_failed").await?;
-        let tb = TestApp::start_live(service(pool)).await?;
+        let (url, _pool, _keeper) = database("guide_relay_failed").await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         // The same order twice: the second insert fails, and its event rolls back with it.
         for _ in 0..2 {
             tb.broker::<SqlxBroker<Sqlite>>()

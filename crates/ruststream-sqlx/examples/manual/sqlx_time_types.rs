@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_time_types --features inbox,sqlite,time,testing
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 
 use ruststream::OutgoingMessage;
@@ -18,7 +17,8 @@ use sqlx::{Sqlite, SqliteConnection};
 
 // --8<-- [start:queue_time]
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 use time::OffsetDateTime;
 
 /// One row of `backup_jobs`, with its times in the `time` crate's type.
@@ -63,25 +63,29 @@ impl Handle<Volume> for BackUp {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("backups", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<Backup>("backups"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("backups", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<Backup>("backups"), |b| {
             let back_up =
                 subscriber("backups", BackUp).map_source(|_| InboxQueue::<Backup>::new("backups"));
             b.include(back_up.build());
-        },
-    )
+        })
 }
 // --8<-- [end:queue_time]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:backups.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:backups.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS backup_jobs (
@@ -123,10 +127,12 @@ mod tests {
     use super::{SCHEMA, Volume, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -134,13 +140,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_mark_is_written_as_the_time_crate_writes_it() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_time_types").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_time_types").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let volume = Volume {
             name: "db-primary".to_owned(),
         };

@@ -1,6 +1,6 @@
 ---
 title: Databases
-description: "SqlxBroker::new takes the dialect built in for its pool's database; statements are built once when a subscription opens, the insert at compile time."
+description: "SqlxBroker takes the dialect built in for its database; statements are built once when a subscription opens, the insert at compile time."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -8,7 +8,7 @@ import TabItem from '@theme/TabItem';
 
 # Databases
 
-[`SqlxBroker::new`](api:ruststream_sqlx::SqlxBroker::new) takes the dialect built in for its pool's database; statements are built once when a subscription opens, the insert at compile time.
+[`SqlxBroker`](api:ruststream_sqlx::SqlxBroker) takes the dialect built in for its database; statements are built once when a subscription opens, the insert at compile time.
 
 A dialect builds the SQL of a broker's tables from their descriptions.
 The built-in one, [`BuiltIn<DB>`](api:ruststream_sqlx::BuiltIn), is the broker's default second type parameter: `SqlxBroker<Sqlite>` and `SqlxBroker<Sqlite, BuiltIn<Sqlite>>` name the same type.
@@ -17,7 +17,7 @@ Each database has a feature that adds its dialect and its sqlx driver: [`postgre
 A database without a built-in dialect is served by a [dialect of the service's own](./dialect.md).
 
 One struct describes a queue table on every database.
-The broker takes the dialect of its pool, which builds the claims and settlements of each subscription once, when it opens, so a message costs the same on every database.
+The broker takes the dialect of its database, which builds the claims and settlements of each subscription once, when it opens, so a message costs the same on every database.
 The derive renders the insert of every enabled dialect at compile time.
 The service writes its [`Publish`](../publishing/index.md) per database, because that statement is its own SQL.
 
@@ -36,7 +36,7 @@ The connections a subscription holds depend on its form and on transactional mod
 
 ## Example
 
-The broker's type names the built-in SQLite dialect, the default of `SqlxBroker::new`.
+The broker's type names the built-in SQLite dialect, the default of `SqlxBroker::from_url`.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">

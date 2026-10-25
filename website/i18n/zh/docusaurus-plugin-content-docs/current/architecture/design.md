@@ -23,7 +23,7 @@ export const words = {
   "dialect": ["Dialect", "每种数据库的 SQL"],
   "outbox": ["Outbox", "中间件，任意 Broker"],
   "sqlx": "sqlx",
-  "pool": ["Pool<DB>", "服务自己的连接池"],
+  "pool": ["Pool<DB>", "连接时构建"],
   "database": ["PostgreSQL、MySQL、MariaDB", "或 SQLite"],
   "inProcess": ["在 testing 特性下，TestApp 在进程内连接：", "同一个连接池和数据库，使用测试的时钟"],
   "mounted": "挂载到",
@@ -39,7 +39,7 @@ export const words = {
 
 本 crate 在 [sqlx](https://docs.rs/sqlx/0.9/sqlx/) 之上实现核心的 Broker trait。它上面的运行时对每个 Broker 都相同。SQL 特有的一切都在本 crate 里：[`InboxQueue`](api:ruststream_sqlx::InboxQueue) 描述符、领取循环、三种领取方式、每种结果写入什么，以及每种数据库的 SQL。本 crate 支持按描述符和按名称订阅，可以领取批，把行本身交给行模式的处理器，把分区键交给按键分发，向表中发布，并在生成的文档中描述它的服务器。它不提供请求-应答，也不提供事务发布者：[事务模式](queues/transactions.md)是订阅的一个步骤，处理器通过投递的事务写入数据。
 
-Broker 接收服务的连接池，并且从不关闭它。连接池始终属于服务：它的大小、选项和迁移都由服务决定。[`SqlxBroker::new`](api:ruststream_sqlx::SqlxBroker::new) 接收一个连接池，而 sqlx 只能在 Tokio 运行时内构建连接池。因此服务在 `main` 中构建连接池，再把它传给构建应用的函数。
+连接池的设置属于服务：它的大小、选项和迁移都由服务决定。[`SqlxBroker::from_url`](api:ruststream_sqlx::SqlxBroker::from_url) 不做 I/O 地记录这些设置，所以应用在运行时启动之前就能构建；Broker 在连接时构建连接池，在 shutdown 时关闭它。与自己的代码共用一个连接池的服务，在 `main` 中、在运行时内构建它，再交给 [`SqlxBroker::new`](api:ruststream_sqlx::SqlxBroker::new)，后者从不关闭它。
 
 ## SQL {/* #the-sql */}
 
@@ -58,7 +58,7 @@ Broker 接收服务的连接池，并且从不关闭它。连接池始终属于�
 
 ## 进程内模式 {/* #in-process-mode */}
 
-在 `testing` 特性下，`TestApp::start` 在进程内连接 Broker。连接池以下的部分都不替换：进程内的 Broker 连接测试的连接池所指向的数据库，执行服务的 SQL、表结构和领取方式，并在数据库返回错误的地方返回错误。内存中的 SQLite 可以在没有服务器的情况下服务一个测试。变化的是时间。Broker 从 tokio 时钟读取“现在”，并在连接时以挂钟时间为基准，因此在暂停的时钟上，测试用 `tb.advance(..)` 推动队列的时间：测试推进过 `retry_after` 之后，该行就到期了。每次数据库调用都脱离这个时钟运行，所以在数据库的应答尚未返回时，暂停的时钟不会跳到下一个计时器。测试时钟只替代 [`SystemClock`](api:ruststream_sqlx::SystemClock)：使用 `DatabaseClock` 的表读取数据库的时钟，服务自己的时钟也照常生效，与生产环境一样。
+在 `testing` 特性下，`TestApp::start` 在进程内连接 Broker。连接池以下的部分都不替换：进程内的 Broker 连接测试指定的数据库，执行服务的 SQL、表结构和领取方式，并在数据库返回错误的地方返回错误。内存中的 SQLite 可以在没有服务器的情况下服务一个测试。变化的是时间。Broker 从 tokio 时钟读取“现在”，并在连接时以挂钟时间为基准，因此在暂停的时钟上，测试用 `tb.advance(..)` 推动队列的时间：测试推进过 `retry_after` 之后，该行就到期了。每次数据库调用都脱离这个时钟运行，所以在数据库的应答尚未返回时，暂停的时钟不会跳到下一个计时器。测试时钟只替代 [`SystemClock`](api:ruststream_sqlx::SystemClock)：使用 `DatabaseClock` 的表读取数据库的时钟，服务自己的时钟也照常生效，与生产环境一样。
 
 测试框架通过 Broker 的计数等待数据库的工作。消息落入测试中某个订阅读取的队列时计一次，重试把行放回队列时再计一次，因此每个到达队列的行都投递并结算之后，`tb.settle()` 才返回。
 

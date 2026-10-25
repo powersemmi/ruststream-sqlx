@@ -6,14 +6,14 @@
 //! cargo run -p ruststream-sqlx --example sqlx_forms_lock --features inbox,sqlite,testing
 //! ```
 
-use std::error::Error;
-
 use serde::{Deserialize, Serialize};
 
 // --8<-- [start:lock]
 use ruststream_sqlx::prelude::*;
 use ruststream_sqlx::{Lock, Unlock};
-use sqlx::{Sqlite, SqliteConnection, SqlitePool};
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Sqlite, SqliteConnection};
 
 /// One row of `payouts`, held by the key of its account.
 #[derive(Inbox, sqlx::FromRow)]
@@ -58,20 +58,27 @@ async fn pay(transfer: &Transfer) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-        b.include(pay);
-    })
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("payouts", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            b.include(pay);
+        })
 }
 // --8<-- [end:lock]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:payouts.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:payouts.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS payouts (
@@ -99,10 +106,12 @@ mod tests {
     use super::{SCHEMA, Transfer, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -110,7 +119,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // The payout and the billing run are written with plain SQL, as the billing system writes
@@ -118,7 +127,7 @@ mod tests {
     // real clock and lets the claims happen.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_payout_waits_for_the_billing_run_of_its_account() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_forms_lock").await?;
+        let (url, pool, _keeper) = database("sqlx_forms_lock").await?;
         sqlx::query("INSERT INTO held_keys (key) VALUES ('accounts-7')")
             .execute(&pool)
             .await?;
@@ -127,7 +136,7 @@ mod tests {
             .bind(serde_json::to_vec(&transfer)?)
             .execute(&pool)
             .await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(Duration::from_millis(500)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .subscriber("payouts")

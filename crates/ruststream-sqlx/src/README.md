@@ -21,7 +21,8 @@ use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use ruststream_sqlx::prelude::*;
 use serde::Deserialize;
-use sqlx::{PgConnection, PgPool, Postgres};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{PgConnection, Postgres};
 
 // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, retry_after TIMESTAMPTZ DEFAULT now(),
 // attempt SMALLINT DEFAULT 1, processed_at TIMESTAMPTZ, payload BYTEA
@@ -71,9 +72,12 @@ async fn send(email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome
     HandlerOutcome::retry_after(Duration::from_secs(60 * attempt.unwrap_or(1)))
 }
 
-pub fn app(pool: PgPool) -> RustStream {
+#[ruststream::app]
+fn app() -> impl App {
+    // The options read the `PG*` environment variables.
+    let broker = SqlxBroker::from_connect_options(PgConnectOptions::new(), PgPoolOptions::new());
     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendEmail>("emails"),
+        broker.route::<SendEmail>("emails"),
         |b| {
             b.include(send);
         },
@@ -83,8 +87,10 @@ pub fn app(pool: PgPool) -> RustStream {
 # fn main() {}
 ```
 
-[`SqlxBroker::new`] only records the pool, which stays the service's. The runtime connects the
-broker at startup and shuts it down when the service stops.
+[`SqlxBroker::from_connect_options`] only records the pool's settings, so the app's builder runs
+before the runtime starts. The runtime connects the broker at startup, which builds the pool then,
+and shuts it down when the service stops, which closes it. [`SqlxBroker::new`] takes a pool the
+service shares with code of its own and leaves it open.
 
 # Where things are
 

@@ -6,8 +6,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_context_pool --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use ruststream::schemars::JsonSchema;
@@ -20,7 +18,9 @@ use sqlx::SqliteConnection;
 
 // --8<-- [start:pool]
 use ruststream_sqlx::prelude::*;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::Connection;
+use sqlx::Sqlite;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `sms_jobs`.
 #[derive(sqlx::FromRow)]
@@ -85,15 +85,23 @@ impl Handle<Sms, (), (), PoolContext<Sqlite>> for SendText {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("sms", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendSms>("sms"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("sms", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<SendSms>("sms"), |b| {
             let send =
                 subscriber("sms", SendText).map_source(|_| InboxQueue::<SendSms>::new("sms"));
             b.include(send.build());
-        },
-    )
+        })
 }
 // --8<-- [end:pool]
 
@@ -104,13 +112,9 @@ async fn deliver(sms: &Sms, attempt: Option<u64>) -> bool {
     attempt != Some(1)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:sms.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:sms.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS sms_jobs (
@@ -153,10 +157,12 @@ mod tests {
     use super::{SCHEMA, Sms, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -164,13 +170,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_log_keeps_the_attempt_the_retry_answered() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_context_pool").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_context_pool").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let sms = Sms {
             phone: "+15550100".to_owned(),
         };

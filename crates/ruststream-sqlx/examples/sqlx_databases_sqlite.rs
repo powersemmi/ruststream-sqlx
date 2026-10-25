@@ -5,15 +5,14 @@
 //! cargo run -p ruststream-sqlx --example sqlx_databases_sqlite --features inbox,sqlite,testing
 //! ```
 
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection};
 
 // --8<-- [start:service]
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `thumbnail_jobs`, held by the lock on its key while a handler runs.
 #[derive(Inbox, sqlx::FromRow)]
@@ -34,22 +33,26 @@ async fn thumbnail(image: &Image) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("thumbnails", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             b.include(thumbnail.workers(nonzero!(2)));
-        },
-    )
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:thumbnails.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:thumbnails.db?mode=rwc")
 }
 // --8<-- [end:service]
 
@@ -91,10 +94,12 @@ mod tests {
     use super::{Image, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -102,13 +107,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_published_image_is_claimed_and_its_row_deleted() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_databases_sqlite").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("sqlx_databases_sqlite").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let image = Image {
             path: "cat.png".to_owned(),
         };

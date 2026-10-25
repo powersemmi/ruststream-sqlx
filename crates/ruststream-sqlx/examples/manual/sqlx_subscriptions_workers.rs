@@ -6,7 +6,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_subscriptions_workers --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 
 use chrono::{DateTime, Utc};
@@ -20,7 +19,8 @@ use sqlx::{Sqlite, SqliteConnection};
 
 // --8<-- [start:workers]
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `image_jobs`: images resize in any order.
 #[derive(sqlx::FromRow)]
@@ -114,32 +114,37 @@ impl Handle<Posting> for PostEntry {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    let broker = SqlxBroker::new(pool)
-        .route::<Resize>("images")
-        .route::<Post>("postings");
-    RustStream::new(AppInfo::new("back-office", "0.1.0")).with_broker(broker, |b| {
-        // Up to four images in work at once.
-        let resize = subscriber("images", ResizeImage)
-            .map_source(|_| InboxQueue::<Resize>::new("images"))
-            .workers(nonzero!(4));
-        b.include(resize.build());
-        // Four workers, and the postings of one account on one of them, one after another.
-        let post = subscriber("postings", PostEntry)
-            .map_source(|_| InboxQueue::<Post>::new("postings"))
-            .workers_by_key(nonzero!(4));
-        b.include(post.build());
-    })
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    let broker = broker.route::<Resize>("images").route::<Post>("postings");
+    RustStream::new(AppInfo::new("back-office", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            // Up to four images in work at once.
+            let resize = subscriber("images", ResizeImage)
+                .map_source(|_| InboxQueue::<Resize>::new("images"))
+                .workers(nonzero!(4));
+            b.include(resize.build());
+            // Four workers, and the postings of one account on one of them, one after another.
+            let post = subscriber("postings", PostEntry)
+                .map_source(|_| InboxQueue::<Post>::new("postings"))
+                .workers_by_key(nonzero!(4));
+            b.include(post.build());
+        })
 }
 // --8<-- [end:workers]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:back-office.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:back-office.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS image_jobs (
@@ -212,10 +217,12 @@ mod tests {
     use super::{Image, Posting, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -223,13 +230,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_image_is_resized_once() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_subscriptions_workers_images").await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("manual_sqlx_subscriptions_workers_images").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let images: Vec<Image> = (1..=6)
             .map(|n| Image {
                 path: format!("upload/{n}.png"),
@@ -246,8 +253,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_accounts_postings_keep_their_order() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_subscriptions_workers_postings").await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("manual_sqlx_subscriptions_workers_postings").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let postings: Vec<Posting> = (1..=8)
             .map(|n| Posting {
                 account: if n % 2 == 0 { "acme" } else { "globex" }.to_owned(),

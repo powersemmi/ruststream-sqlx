@@ -523,9 +523,11 @@ impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
     /// Connects to the database the test's pool reaches, as [`connect`](ruststream::Broker::connect)
     /// does, with every database call of the connection kept off a paused clock.
     async fn connect_in_process(self) -> Result<ConnectedSqlxBroker<DB, D>, SqlxBrokerError> {
-        let (pool, choice) = (self.pool.clone(), self.dialect.clone());
+        let (pool, owner) = self.pool.open()?;
+        let choice = self.dialect.clone();
+        let checked = pool.clone();
         let dialect = off_clock(async move {
-            let conn = pool
+            let conn = checked
                 .acquire()
                 .await
                 .map_err(|source| SqlxBrokerError::Connect { source })?;
@@ -538,18 +540,16 @@ impl<DB: QueueDatabase, D: Dialect + 'static> InProcess for SqlxBroker<DB, D> {
             })
         })?;
         let listening = match self.listen {
-            Some(start) => {
-                let pool = self.pool.clone();
-                Some(
-                    off_clock(start(pool))
-                        .await
-                        .unwrap_or_else(|| Err(cancelled()))
-                        .map_err(|source| SqlxBrokerError::Connect { source })?,
-                )
-            }
+            Some(start) => Some(
+                off_clock(start(pool.clone()))
+                    .await
+                    .unwrap_or_else(|| Err(cancelled()))
+                    .map_err(|source| SqlxBrokerError::Connect { source })?,
+            ),
             None => None,
         };
-        let connected = ConnectedSqlxBroker::new(self, dialect, Handle::current(), listening);
+        let connected =
+            ConnectedSqlxBroker::new(self, (pool, owner), dialect, Handle::current(), listening);
         let _ = connected.shared.harness.clock.set(TestClock::start());
         connected.shared.closing.run_in_process();
         Ok(connected)

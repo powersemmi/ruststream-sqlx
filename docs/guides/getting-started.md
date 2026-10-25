@@ -80,6 +80,10 @@ In the manual form, [`InboxSpec`](../components/tables/inbox-spec.md) says the s
 What the handler returns settles the row: `ack()` deletes it, and `drop()` finishes it the same way without a thumbnail.
 [`Ctx<keys::Attempt>`](../components/context/attempt.md) reads which delivery of the row this is.
 
+`service` takes the database's URL.
+[`SqlxBroker::from_url`](../components/broker/index.md) records it with the pool's options and connects nothing, so the app is built before the runtime starts.
+`on_startup` creates the table before the subscription checks it.
+
 A publish to `thumbnails` writes a row.
 [`route`](../components/publishing/route.md) leads the name to `MakeThumbnail`, and the service's own [`Publish`](../components/publishing/index.md) statement inserts it.
 A handler's reply or a test publishes the same way.
@@ -102,8 +106,8 @@ Code outside a handler, such as an HTTP endpoint, writes the row with the derive
 </TabItem>
 </Tabs>
 
-`main` starts the Tokio runtime itself, because sqlx builds a pool only inside one.
-[`SqlxBroker::new`](../components/broker/index.md) takes that pool, and the pool stays the service's.
+`#[ruststream::app]` generates `main`, which builds the app and runs it.
+The broker builds its pool when the service starts, and closes it when the service stops.
 
 ```bash
 cargo run
@@ -116,7 +120,7 @@ A row another program inserts is seen within the [poll interval](../components/s
 ## The first test
 
 The example file also holds two tests.
-Each builds a SQLite database in memory, creates the table and starts the same `service` with `TestApp::start`.
+Each opens a SQLite database in memory and starts the same `service` on it with `TestApp::start`.
 A test publishes an image through the route, as production does, and checks how `thumbnail` settled it and what is left in the table:
 
 ```bash

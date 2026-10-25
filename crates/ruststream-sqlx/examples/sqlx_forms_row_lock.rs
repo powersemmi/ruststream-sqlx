@@ -9,8 +9,6 @@
 //! cargo run -p ruststream-sqlx --example sqlx_forms_row_lock --features inbox,postgres,testing
 //! ```
 
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgConnectOptions;
@@ -18,7 +16,8 @@ use sqlx::{PgConnection, Postgres};
 
 // --8<-- [start:row_lock]
 use ruststream_sqlx::prelude::*;
-use sqlx::PgPool;
+use sqlx::Connection;
+use sqlx::postgres::PgPoolOptions;
 
 /// One row of `invoice_jobs`. No `locked_until` and no `advisory_lock`: the row lock form.
 #[derive(Inbox, sqlx::FromRow)]
@@ -38,24 +37,29 @@ async fn issue(invoice: &Invoice) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn service(pool: PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<IssueInvoice>("invoices"),
-        |b| {
+/// The service on the database `options` reach.
+fn service(options: PgConnectOptions) -> RustStream {
+    let schema = options.clone();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = PgConnection::connect_with(&schema).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<IssueInvoice>("invoices"), |b| {
             // Each of the four workers holds a connection while its invoice is in work.
             b.include(issue.workers(nonzero!(4)));
-        },
-    )
+        })
 }
 // --8<-- [end:row_lock]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    // The options read the `PG*` environment variables.
+    service(PgConnectOptions::new())
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS invoice_jobs (
@@ -104,7 +108,7 @@ mod tests {
             return Ok(());
         };
         sqlx::raw_sql(SCHEMA).execute(&db.pool).await?;
-        let tb = TestApp::start(service(db.pool.clone())).await?;
+        let tb = TestApp::start(service(db.options())).await?;
         let invoice = Invoice { number: 1042 };
         tb.broker::<SqlxBroker<Postgres>>()
             .message(&invoice)

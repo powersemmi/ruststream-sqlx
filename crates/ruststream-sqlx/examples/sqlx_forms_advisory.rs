@@ -5,15 +5,14 @@
 //! cargo run -p ruststream-sqlx --example sqlx_forms_advisory --features inbox,sqlite,testing
 //! ```
 
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqliteConnection};
 
 // --8<-- [start:advisory]
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 /// One row of `video_jobs`, held by a lock on its channel's key while it is in work.
 #[derive(Inbox, sqlx::FromRow)]
@@ -38,13 +37,21 @@ async fn transcode(video: &Video, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOu
     HandlerOutcome::retry()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<Transcode>("videos"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("transcoder", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<Transcode>("videos"), |b| {
             b.include(transcode);
-        },
-    )
+        })
 }
 // --8<-- [end:advisory]
 
@@ -55,13 +62,9 @@ async fn encode(video: &Video, attempt: Option<u64>) -> bool {
     attempt != Some(1)
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:transcoder.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:transcoder.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS video_jobs (
@@ -108,10 +111,12 @@ mod tests {
     use super::{SCHEMA, Video, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -119,13 +124,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_video_returns_after_its_retry_and_is_encoded() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_forms_advisory").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("sqlx_forms_advisory").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let videos: Vec<Video> = ["intro.mp4", "talk.mp4"]
             .into_iter()
             .map(|path| Video {

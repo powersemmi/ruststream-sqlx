@@ -49,7 +49,7 @@ The check is the derive's: a table described by hand keeps the startup check alo
 Every subscription also [prepares its statements at startup](../components/broker/startup.md).
 A table or column the database lacks stops the service with `SqlxBrokerError::Schema`, which names the subscription, the table and the statement.
 A mount that declares a cap without its dead letter, or the reverse, stops it too.
-So `main` runs the migrations before the app, and the checks see the schema the release reads.
+So `on_startup` runs the migrations before the subscriptions open, and the checks see the schema the release reads.
 
 ## The pool
 
@@ -73,6 +73,7 @@ A subscription never holds more than the pool's size less one, and leaves that o
 So the pool is sized for every subscription of the service: `n` for each `workers(n)`, one more, and the connections the handlers take for their own work ([Connections](../components/broker/connections.md)).
 A [lease](claim-forms.md) table holds a connection only for each statement, and suits a pool that cannot spare one per job.
 On Postgres, [notifications](scaling.md) keep one more connection for the broker's life.
+`pool` returns the pool's options, and the broker builds the pool from them when the service starts.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">
@@ -109,15 +110,15 @@ At shutdown the runtime stops the subscriptions, lets the handlers in work finis
 A row lock delivery holds its transaction until it settles; one still unsettled when the process exits rolls back with its connection, and its row returns.
 A lease delivery keeps its lease and settles if it can, or its row returns when the lease runs out.
 The broker releases the advisory locks of the deliveries in work.
-The pool stays the service's, and `main` closes it after `run` returns.
+The broker closes the pool it built last; a connection a delivery in work still holds closes when it comes back.
 
 ## The AsyncAPI document
 
 With the `asyncapi` feature, the generated [AsyncAPI document](../components/asyncapi/index.md) describes the server and each subscription's table and group.
-The label of `with_broker_labeled` names the server, and the server entry holds the pool's host and port, never its user or password: the document is published and shared.
+The label of `with_broker_labeled` names the server, and the server entry holds the database's host and port, never its user or password: the document is published and shared.
 
 ## Testing
 
-One test in the example file builds the document from a lazy pool on a URL with a password, with no I/O, and finds the host and port in it and the password nowhere.
-Two more run against a Postgres database of their own: a database without the table stops the startup with an error that names it, and the checked statements serve the queue.
+One test in the example file builds the document of the service on a URL with a password, with no I/O, and finds the host and port in it and the password nowhere.
+Two more run against a Postgres database of their own: a table of an older release, without a column the struct names, stops the startup with an error that names it, and the checked statements serve the queue.
 They read the server's address from `POSTGRES_TEST_URL` and skip without it ([Testing a service on SQL](testing.md)).

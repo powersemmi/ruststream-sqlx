@@ -4,12 +4,11 @@
 //! cargo run -p ruststream-sqlx --example sqlx_headers_fetch --features inbox,sqlite,chrono,json,testing
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
-use sqlx::SqlitePool;
 
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
 #[inbox(table = "mail_jobs")]
@@ -63,20 +62,27 @@ async fn send_receipt(mail: &OrderMail) -> HandlerOutcome {
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-        // A job whose order is gone joins no row: the default decode policy drops it.
-        b.include(send_receipt);
-    })
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("shop", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            // A job whose order is gone joins no row: the default decode policy drops it.
+            b.include(send_receipt);
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:shop.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:shop.db?mode=rwc")
 }
 
 const SCHEMA: &str = "
@@ -105,10 +111,12 @@ mod tests {
     use super::{OrderMail, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -116,7 +124,7 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // A row the service writes itself reaches the harness's books once a claim takes it, so the
@@ -124,14 +132,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_handler_takes_the_joined_row_and_a_job_without_its_order_drops()
     -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_headers_fetch").await?;
+        let (url, pool, _keeper) = database("sqlx_headers_fetch").await?;
         sqlx::raw_sql(
             "INSERT INTO orders (id, customer, total) VALUES (7, 'ada', 1200); \
              INSERT INTO mail_jobs (order_id) VALUES (7);",
         )
         .execute(&pool)
         .await?;
-        let tb = TestApp::start_live(service(pool.clone())).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(Duration::from_millis(500)).await?;
         let lent = tb
             .broker::<SqlxBroker<Sqlite>>()

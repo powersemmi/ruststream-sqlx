@@ -5,7 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_tables_spec --features inbox,sqlite,chrono,testing,asyncapi
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 
 use chrono::{DateTime, Utc};
@@ -15,9 +14,11 @@ use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::spec::{Attempt, Lease, Payload};
 use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable, PayloadRow};
 use serde::{Deserialize, Serialize};
-use sqlx::{Sqlite, SqliteConnection, SqlitePool};
+use sqlx::{Sqlite, SqliteConnection};
 
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 // --8<-- [start:table]
 #[derive(sqlx::FromRow)]
@@ -72,27 +73,34 @@ impl Handle<Email> for Mailer {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    let broker = SqlxBroker::new(pool)
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    let broker = broker
         .route::<Reminder>("welcomes")
         .route::<Reminder>("reminders");
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-        for group in ["welcomes", "reminders"] {
-            let send =
-                subscriber(group, Mailer).map_source(move |_| InboxQueue::<Reminder>::new(group));
-            b.include(send.build());
-        }
-    })
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            for group in ["welcomes", "reminders"] {
+                let send = subscriber(group, Mailer)
+                    .map_source(move |_| InboxQueue::<Reminder>::new(group));
+                b.include(send.build());
+            }
+        })
 }
 // --8<-- [end:table]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:mailer.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:mailer.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS email_jobs (
@@ -142,10 +150,12 @@ mod tests {
     use super::{Email, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -153,13 +163,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn each_group_of_the_table_reaches_its_subscription() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_tables_spec").await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("manual_sqlx_tables_spec").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let welcome = Email {
             to: "new@example.com".to_owned(),
         };

@@ -18,7 +18,7 @@
   ],
   "rules": [
     "Describe a queue table with `#[derive(Inbox)]` on a sqlx struct (`#[inbox(table = \"..\")]`, a `#[field(id)]` and the roles it needs), or by hand with `impl InboxTable` and a `const` `InboxSpec` chain, which builds the same statements.",
-    "Import `ruststream_sqlx::prelude::*`; build the sqlx pool in `main`, since sqlx builds one only inside a Tokio runtime, and hand it to `SqlxBroker::new(pool)`. The pool stays the service's, which closes it.",
+    "Import `ruststream_sqlx::prelude::*`; build the broker in the `#[ruststream::app]` builder with `SqlxBroker::from_url(url, pool_options)` or `SqlxBroker::from_connect_options(options, pool_options)`, which build the pool at connect and close it at shutdown; `SqlxBroker::new(pool)` takes a pool the service shares with code of its own, builds in its `main` and closes itself.",
     "Subscribe with `InboxQueue::<Row>::new(\"name\")`, a group where the table has a `group` column; write tasks through the row's `Publish` with `Repository<Row>` or `.route::<Row>(\"name\")`, or with `Insert::insert` in the service's own transaction.",
     "Pick the claim form by the work: the row lock (default) holds a connection per message in work, `#[field(locked_until)]` (lease) suits long handlers and small pools, `advisory_lock = \"..\"` serializes by key. SQLite takes lease or advisory.",
     "Size the pool at n connections for each `workers(n)` subscription in the row lock or advisory lock form or transactional mode, plus one, plus what the handlers take; a subscription never takes the pool's last connection.",

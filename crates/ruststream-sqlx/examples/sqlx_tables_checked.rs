@@ -17,13 +17,12 @@
 //! cargo run -p ruststream-sqlx --example sqlx_tables_checked --features inbox,postgres,testing
 //! ```
 
-use std::error::Error;
-
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgPool, Postgres};
+use sqlx::postgres::{PgConnectOptions, PgConnection, Postgres};
 
 use ruststream_sqlx::prelude::*;
+use sqlx::postgres::PgPoolOptions;
 
 // --8<-- [start:table]
 /// Every statement this struct determines goes through sqlx's compile-time check.
@@ -67,22 +66,22 @@ async fn send(email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome
     HandlerOutcome::ack()
 }
 
-fn service(pool: PgPool) -> RustStream {
+/// The service on the database `options` reach.
+fn service(options: PgConnectOptions) -> RustStream {
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendEmail>("emails"),
+        broker.route::<SendEmail>("emails"),
         |b| {
             b.include(send);
         },
     )
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // The pool reads its settings from the `PG*` environment variables.
-    let pool = PgPool::connect_with(PgConnectOptions::new()).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    // The options read the `PG*` environment variables.
+    service(PgConnectOptions::new())
 }
 
 // The live suites' gate: the test runs on the Postgres stand `POSTGRES_TEST_URL` names, whose
@@ -106,7 +105,7 @@ mod tests {
         let Some(db) = live::postgres::database().await else {
             return Ok(());
         };
-        let tb = TestApp::start(service(db.pool.clone())).await?;
+        let tb = TestApp::start(service(db.options())).await?;
         let email = Email {
             to: "ops@example.com".to_owned(),
         };

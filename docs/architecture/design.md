@@ -23,7 +23,7 @@ export const words = {
   "dialect": ["Dialect", "SQL per database"],
   "outbox": ["Outbox", "layers, any broker"],
   "sqlx": "sqlx",
-  "pool": ["Pool<DB>", "the service's own"],
+  "pool": ["Pool<DB>", "built at connect"],
   "database": ["PostgreSQL, MySQL, MariaDB", "or SQLite"],
   "inProcess": ["Under the testing feature, TestApp connects in process:", "the same pool and database, on the test's clock"],
   "mounted": "mounted",
@@ -47,10 +47,12 @@ dispatch, publishes into tables, and describes its server in the generated docum
 request-reply and no transactional publisher: [transactional mode](queues/transactions.md) is a
 step of a subscription, where a handler writes through its delivery's transaction.
 
-The broker takes the service's pool and never closes it. The pool stays the service's: its size,
-its options and its migrations. [`SqlxBroker::new`](api:ruststream_sqlx::SqlxBroker::new) takes a
-pool, and sqlx builds a pool only inside a Tokio runtime, so a service builds the pool in its
-`main` and passes it to the function that builds the app.
+The pool's settings are the service's: its size, its options and its migrations.
+[`SqlxBroker::from_url`](api:ruststream_sqlx::SqlxBroker::from_url) records them without I/O, so the
+app is built before the runtime starts; the broker builds the pool when it connects and closes it
+at shutdown. A service that shares one pool with code of its own builds it in its `main`, inside
+the runtime, and hands it to [`SqlxBroker::new`](api:ruststream_sqlx::SqlxBroker::new), which
+never closes it.
 
 ## The SQL
 
@@ -87,7 +89,7 @@ What remains per message is stated by the crate and measured on
 ## In-process mode
 
 Under the `testing` feature, `TestApp::start` connects the broker in process. Nothing below the
-pool is replaced: the in-process broker reaches the database the test's pool names, runs the
+pool is replaced: the in-process broker reaches the database the test names, runs the
 service's SQL, its schema and its claim forms, and fails where the database fails. SQLite in
 memory serves a test with no server. What changes is time. The broker reads "now" from the tokio
 clock, anchored at the wall clock when it connected, so a test on a paused clock moves the queue's

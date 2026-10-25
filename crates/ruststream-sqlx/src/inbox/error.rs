@@ -58,6 +58,14 @@ pub enum SqlxBrokerError {
         #[source]
         source: sqlx::Error,
     },
+    /// `connect` could not read the URL of a broker made with
+    /// [`SqlxBroker::from_url`](crate::SqlxBroker::from_url).
+    #[error("the inbox broker could not read its database URL: {source}")]
+    Url {
+        /// The driver's error.
+        #[source]
+        source: sqlx::Error,
+    },
     /// `connect` found the pool on a database no built-in dialect serves: an `AnyPool`'s backend
     /// whose feature is off.
     #[error(

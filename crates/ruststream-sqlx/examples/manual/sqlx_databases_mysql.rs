@@ -7,17 +7,19 @@
 //! ```
 
 use std::env;
-use std::error::Error;
 use std::future::{Future, ready};
+use std::process::ExitCode;
 
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
+use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::spec::{Lease, Payload};
 use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
 use serde::{Deserialize, Serialize};
-use sqlx::mysql::{MySql, MySqlConnection, MySqlPool};
+use sqlx::Connection;
+use sqlx::mysql::{MySql, MySqlConnection, MySqlPoolOptions};
 
 use ruststream_sqlx::prelude::*;
 
@@ -74,27 +76,33 @@ impl Handle<Email> for Mail {
     }
 }
 
-fn service(pool: MySqlPool) -> RustStream {
-    let broker = SqlxBroker::new(pool)
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, MySqlPoolOptions::new())
         .route::<SendEmail>("welcome")
         .route::<SendEmail>("receipts");
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-        for group in ["welcome", "receipts"] {
-            let mail =
-                subscriber(group, Mail).map_source(move |_| InboxQueue::<SendEmail>::new(group));
-            b.include(mail.build());
-        }
-    })
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        // The table, created before the subscriptions check it.
+        .on_startup(async move |()| {
+            let mut conn = MySqlConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            for group in ["welcome", "receipts"] {
+                let mail = subscriber(group, Mail)
+                    .map_source(move |_| InboxQueue::<SendEmail>::new(group));
+                b.include(mail.build());
+            }
+        })
 }
 // --8<-- [end:service]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = MySqlPool::connect(&env::var("DATABASE_URL")?).await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+fn main() -> ExitCode {
+    let url = env::var("DATABASE_URL").unwrap_or_else(|_| "mysql://localhost/mail".to_owned());
+    run_main(|| service(&url))
 }
 
 /// A publish writes a row into the group it names.
@@ -138,7 +146,7 @@ mod tests {
     /// The body both stands run: an email reaches the subscription of its group alone.
     async fn an_email_reaches_its_group(db: Database<MySql>) -> Result<(), Box<dyn Error>> {
         sqlx::raw_sql(SCHEMA).execute(&db.pool).await?;
-        let tb = TestApp::start(service(db.pool.clone())).await?;
+        let tb = TestApp::start(service(&db.url())).await?;
         let email = Email {
             to: "ada@example.com".to_owned(),
         };

@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example sqlx_broker_startup --features inbox,sqlite,chrono,testing
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use serde::{Deserialize, Serialize};
@@ -14,7 +12,8 @@ use sqlx::{Sqlite, SqliteConnection};
 
 // --8<-- [start:service]
 use ruststream_sqlx::prelude::*;
-use sqlx::SqlitePool;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 #[derive(Inbox, sqlx::FromRow)]
 #[inbox(table = "invoice_jobs")]
@@ -36,23 +35,26 @@ async fn send(invoice: &Invoice, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOut
     HandlerOutcome::ack()
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendInvoice>("invoices"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("billing", "0.1.0"))
+        // The schema this release reads, applied before the subscriptions check it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<SendInvoice>("invoices"), |b| {
             b.include(send);
-        },
-    )
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:billing.db?mode=rwc").await?;
-    // The schema this release reads, applied before the subscriptions check it.
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:billing.db?mode=rwc")
 }
 // --8<-- [end:service]
 
@@ -102,13 +104,13 @@ mod tests {
     )";
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
+    // the test holds one beside the pool it reads the table through.
     async fn database(
         name: &str,
         schema: &'static str,
-    ) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -116,13 +118,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(schema).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_migrated_table_starts_and_counts_the_attempt() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_broker_startup_migrated", SCHEMA).await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("sqlx_broker_startup_migrated", SCHEMA).await?;
+        let tb = TestApp::start(service(&url)).await?;
         tb.broker::<SqlxBroker<Sqlite>>()
             .message(&Invoice { number: 7 })
             .publish()
@@ -138,8 +140,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_table_without_the_column_stops_startup() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("sqlx_broker_startup_previous", PREVIOUS).await?;
-        let failed = TestApp::start(service(pool)).await.err();
+        let (url, _pool, _keeper) = database("sqlx_broker_startup_previous", PREVIOUS).await?;
+        let failed = TestApp::start(service(&url)).await.err();
 
         let mut cause: Option<&(dyn Error + 'static)> = failed.as_ref().map(|err| err as _);
         while let Some(err) = cause {

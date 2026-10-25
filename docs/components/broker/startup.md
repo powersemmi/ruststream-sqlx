@@ -31,7 +31,7 @@ The service runs its migrations before the app starts, and the checks then see t
 
 ## Example
 
-A release adds an `attempt` column to the queue; `main` applies the schema before the app starts, and a table without the column stops startup with `SqlxBrokerError::Schema`.
+A release adds an `attempt` column to the queue; `on_startup` applies the schema before the subscriptions open, and a table without the column stops startup with `SqlxBrokerError::Schema`.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">

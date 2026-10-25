@@ -8,9 +8,10 @@
 //! ```
 
 use std::env;
-use std::error::Error;
 use std::future::{Future, ready};
+use std::process::ExitCode;
 
+use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sqlx::any::install_default_drivers;
@@ -22,7 +23,8 @@ use ruststream::OutgoingMessage;
 use ruststream_sqlx::dialect::{Column, KeyPart};
 use ruststream_sqlx::spec::{Advisory, Attempt, Payload};
 use ruststream_sqlx::{AttemptRow, InboxSpec, InboxTable, PayloadRow};
-use sqlx::{Any, AnyConnection, AnyPool, Database, Postgres};
+use sqlx::any::AnyPoolOptions;
+use sqlx::{Any, AnyConnection, Connection, Database, Postgres};
 
 /// One row of `email_jobs` in the advisory lock form: integers, text and bytes, no time.
 #[derive(sqlx::FromRow)]
@@ -97,26 +99,30 @@ impl Handle<Email> for Mailer {
     }
 }
 
-fn service(pool: AnyPool) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<SendEmail>("emails"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::<Any>::from_url(url, AnyPoolOptions::new());
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = AnyConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<SendEmail>("emails"), |b| {
             let send =
                 subscriber("emails", Mailer).map_source(|_| InboxQueue::<SendEmail>::new("emails"));
             b.include(send.build());
-        },
-    )
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> ExitCode {
     // An `AnyPool` reaches its driver by the URL's scheme.
     install_default_drivers();
-    let pool = AnyPool::connect(&env::var("DATABASE_URL")?).await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+    let url = env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:mail.db?mode=rwc".to_owned());
+    run_main(|| service(&url))
 }
 // --8<-- [end:service]
 
@@ -147,19 +153,19 @@ mod tests {
 
     // An in-memory SQLite database every connection naming it shares, alive while one of them is
     // open: the test holds one beside the pool, and the pool reaches it through `sqlx::Any`.
-    async fn database(name: &str) -> Result<(AnyPool, SqliteConnection), Box<dyn Error>> {
+    async fn database(name: &str) -> Result<(String, AnyPool, SqliteConnection), Box<dyn Error>> {
         let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
         let keeper = SqliteConnection::connect(&url).await?;
         install_default_drivers();
         let pool = AnyPool::connect(&url).await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_any_pool_on_sqlite_sends_the_email() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_databases_any").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_databases_any").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let email = Email {
             to: "ops@example.com".to_owned(),
         };

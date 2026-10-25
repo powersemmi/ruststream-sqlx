@@ -5,14 +5,14 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_headers_layout --features inbox,sqlite,chrono,testing,asyncapi
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 
 use chrono::{DateTime, Utc};
 use ruststream::schemars::JsonSchema;
-use sqlx::SqlitePool;
 
 use ruststream_sqlx::prelude::*;
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Connection, SqliteConnection};
 
 // --8<-- [start:layout]
 use ruststream::HeaderMap;
@@ -99,21 +99,28 @@ impl Handle<OrderJob> for Packer {
 }
 // --8<-- [end:layout]
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-        let pack =
-            subscriber("packing", Packer).map_source(|_| InboxQueue::<OrderJob>::new("packing"));
-        b.include(pack.build());
-    })
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    RustStream::new(AppInfo::new("shop", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            let pack = subscriber("packing", Packer)
+                .map_source(|_| InboxQueue::<OrderJob>::new("packing"));
+            b.include(pack.build());
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:shop.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:shop.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS order_jobs (
@@ -150,13 +157,13 @@ mod tests {
     )";
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
+    // the test holds one beside the pool it reads the table through.
     async fn database(
         name: &str,
         schema: &'static str,
-    ) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -164,21 +171,21 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(schema).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     // A row the service writes itself reaches the harness's books once a claim takes it, so the
     // test runs on the real clock and lets the claim happen.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_handler_takes_the_job_with_its_note() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_headers_layout_packed", SCHEMA).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_headers_layout_packed", SCHEMA).await?;
         sqlx::query("INSERT INTO order_jobs (tenant, order_id, note) VALUES (?, ?, ?)")
             .bind("acme")
             .bind(42_i64)
             .bind("fragile")
             .execute(&pool)
             .await?;
-        let tb = TestApp::start_live(service(pool)).await?;
+        let tb = TestApp::start_live(service(&url)).await?;
         tb.advance(Duration::from_millis(500)).await?;
 
         let lent = tb
@@ -197,8 +204,9 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_message_column_the_table_lacks_stops_startup() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_headers_layout_previous", PREVIOUS).await?;
-        let failed: Option<TestError> = TestApp::start(service(pool)).await.err();
+        let (url, _pool, _keeper) =
+            database("manual_sqlx_headers_layout_previous", PREVIOUS).await?;
+        let failed: Option<TestError> = TestApp::start(service(&url)).await.err();
 
         let mut cause: Option<&(dyn Error + 'static)> = failed.as_ref().map(|err| err as _);
         while let Some(err) = cause {

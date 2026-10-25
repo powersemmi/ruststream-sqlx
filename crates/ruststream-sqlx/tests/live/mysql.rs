@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ruststream_sqlx::{Insert, dialect};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlRow};
-use sqlx::{AssertSqlSafe, Connection, FromRow, MySql, MySqlConnection, MySqlPool};
+use sqlx::{AssertSqlSafe, ConnectOptions, Connection, FromRow, MySql, MySqlConnection, MySqlPool};
 
 use super::{Database, url};
 
@@ -93,6 +93,11 @@ pub(crate) async fn database_on(variable: &str) -> Option<Database<Db>> {
 }
 
 impl Database<Db> {
+    /// The URL of the test's database, for a service whose broker builds its own pool.
+    pub(crate) fn url(&self) -> String {
+        self.pool.connect_options().to_url_lossy().into()
+    }
+
     /// Closes the pool and drops the database.
     pub(crate) async fn finish(self) {
         self.pool.close().await;

@@ -5,8 +5,6 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_broker_connections --features inbox,sqlite,chrono,testing,asyncapi
 //! ```
 
-use std::error::Error;
-
 use chrono::{DateTime, Utc};
 use ruststream::OutgoingMessage;
 use ruststream::schemars::JsonSchema;
@@ -15,8 +13,8 @@ use ruststream_sqlx::keys::PoolContext;
 use ruststream_sqlx::spec::{Lease, Payload};
 use ruststream_sqlx::{InboxSpec, InboxTable, PayloadRow};
 use serde::{Deserialize, Serialize};
+use sqlx::SqliteConnection;
 use sqlx::sqlite::SqlitePoolOptions;
-use sqlx::{SqliteConnection, SqlitePool};
 
 #[derive(sqlx::FromRow)]
 struct ResizeImage {
@@ -46,6 +44,7 @@ impl PayloadRow for ResizeImage {
 
 // --8<-- [start:service]
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
 use sqlx::Sqlite;
 
 struct Resize;
@@ -70,30 +69,31 @@ impl Handle<Image, (), (), PoolContext<Sqlite>> for Resize {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    RustStream::new(AppInfo::new("resizer", "0.1.0")).with_broker(
-        SqlxBroker::new(pool).route::<ResizeImage>("resizes"),
-        |b| {
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Four workers, one connection the subscription always leaves free, and one for the
+    // handlers' own writes and the publishes.
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new().max_connections(6));
+    RustStream::new(AppInfo::new("resizer", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker.route::<ResizeImage>("resizes"), |b| {
             let resize = subscriber("resizes", Resize)
                 .map_source(|_| InboxQueue::<ResizeImage>::new("resizes"))
                 .workers(nonzero!(4));
             b.include(resize.build());
-        },
-    )
+        })
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    // Four workers, one connection the subscription always leaves free, and one for the
-    // handlers' own writes and the publishes.
-    let pool = SqlitePoolOptions::new()
-        .max_connections(6)
-        .connect("sqlite:resizes.db?mode=rwc")
-        .await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:resizes.db?mode=rwc")
 }
 // --8<-- [end:service]
 
@@ -138,10 +138,12 @@ mod tests {
     use super::{Image, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .max_connections(6)
@@ -150,13 +152,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn every_handler_writes_through_the_pool() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_broker_connections").await?;
-        let tb = TestApp::start(service(pool.clone())).await?;
+        let (url, pool, _keeper) = database("manual_sqlx_broker_connections").await?;
+        let tb = TestApp::start(service(&url)).await?;
         for path in ["a.png", "b.png", "c.png", "d.png"] {
             tb.broker::<SqlxBroker<Sqlite>>()
                 .message(&Image {

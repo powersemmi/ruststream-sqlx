@@ -64,7 +64,7 @@ In the manual form, the service writes that insert itself, as an [`Insert`](../c
 `place_order` opens one sqlx transaction and writes three rows in it: the order, the confirmation and the reminder.
 The derive's [`insert`](../components/tables/insert.md) takes any connection of the table's database, so `&mut *tx` puts the jobs in the order's transaction.
 They commit together, or roll back together: an order whose insert fails leaves no email in the table.
-An HTTP endpoint that places orders calls the same function with the service's pool.
+An HTTP endpoint that places orders calls the same function with a pool of the service's own; a service that shares one pool between its endpoints and its queues hands it to [`SqlxBroker::new`](../components/broker/index.md).
 
 The confirmation is due now and urgent.
 The reminder is due in three days, and nothing claims it until then.

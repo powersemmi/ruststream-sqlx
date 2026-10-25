@@ -5,9 +5,10 @@
 //! cargo run -p ruststream-sqlx --example manual_guide_production --features inbox,postgres,testing,asyncapi
 //! ```
 
-use std::error::Error;
+use std::process::ExitCode;
 
 use ruststream::OutgoingMessage;
+use ruststream::runtime::cli::run_main;
 use ruststream::schemars::JsonSchema;
 use ruststream_sqlx::dialect::Column;
 use ruststream_sqlx::keys::InboxContext;
@@ -77,18 +78,18 @@ impl PayloadRow for SendEmail {
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
+use sqlx::Connection;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 /// The emails in work at once; each holds its row's lock and a connection until it settles.
 const WORKERS: NonZeroUsize = nonzero!(8);
 
 /// A connection for each worker, and one the subscription leaves to settlements and publishes.
-fn pool(options: PgConnectOptions) -> PgPool {
+fn pool() -> PgPoolOptions {
     let size = u32::try_from(WORKERS.get() + 1).unwrap_or(u32::MAX);
     PgPoolOptions::new()
         .max_connections(size)
         .acquire_timeout(Duration::from_secs(5))
-        .connect_lazy_with(options)
 }
 
 struct Mailer;
@@ -106,33 +107,34 @@ impl Handle<Email, (), (), InboxContext> for Mailer {
     }
 }
 
-fn service(pool: PgPool) -> RustStream {
-    // The label names the server in the generated AsyncAPI document.
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker_labeled(
-        "postgres",
-        SqlxBroker::new(pool).route::<SendEmail>("emails"),
-        |b| {
+/// The service on the database `options` reach.
+fn service(options: PgConnectOptions) -> RustStream {
+    let migrate = options.clone();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_connect_options(options, pool()).route::<SendEmail>("emails");
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        // The schema the release reads exists before any subscription prepares its statements.
+        .on_startup(async move |()| {
+            let mut conn = PgConnection::connect_with(&migrate).await?;
+            sqlx::raw_sql(MIGRATION).execute(&mut conn).await?;
+            conn.close().await
+        })
+        // The label names the server in the generated AsyncAPI document.
+        .with_broker_labeled("postgres", broker, |b| {
             let send = subscriber("emails", Mailer)
                 .map_source(|_| InboxQueue::<SendEmail>::new("emails"))
                 .workers(WORKERS);
             b.include(send.build())
                 .max_attempts(nonzero!(5u32))
                 .dead_letter("emails.dead");
-        },
-    )
+        })
 }
 // --8<-- [end:service]
 
 // --8<-- [start:main]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> ExitCode {
     // The connection's settings come from the `PG*` environment variables.
-    let pool = pool(PgConnectOptions::new());
-    // The schema the release reads exists before any subscription prepares its statements.
-    sqlx::raw_sql(MIGRATION).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+    run_main(|| service(PgConnectOptions::new()))
 }
 // --8<-- [end:main]
 
@@ -180,16 +182,16 @@ mod tests {
     use sqlx::Postgres;
     use sqlx::postgres::PgConnectOptions;
 
-    use super::{Email, MIGRATION, live, pool, service};
+    use super::{Email, live, service};
 
     const PASSWORD: &str = "hunter2";
 
-    // The document is built with no I/O: the pool is lazy and nothing connects.
+    // The document is built with no I/O: nothing connects before the service starts.
     #[tokio::test]
     async fn the_document_names_the_server_and_never_its_password() -> Result<(), Box<dyn Error>> {
         let options: PgConnectOptions =
             format!("postgres://mailer:{PASSWORD}@db.internal:5432/mail").parse()?;
-        let document = build_spec(&service(pool(options))).to_json()?;
+        let document = build_spec(&service(options)).to_json()?;
 
         assert!(document.contains("db.internal:5432"), "{document}");
         assert!(!document.contains(PASSWORD), "{document}");
@@ -198,15 +200,16 @@ mod tests {
 
     // Postgres only: skips without `POSTGRES_TEST_URL`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_database_without_the_table_stops_the_startup() -> Result<(), Box<dyn Error>> {
+    async fn a_table_of_an_older_release_stops_the_startup() -> Result<(), Box<dyn Error>> {
         let Some(db) = live::postgres::database().await else {
             return Ok(());
         };
-        // The test database comes with the suites' tables: this one goes before the start.
-        sqlx::raw_sql("DROP TABLE email_jobs CASCADE")
+        // The test database comes with the suites' `email_jobs`, which the migration leaves as it
+        // is: without `attempt`, it is the table of a release before this one.
+        sqlx::raw_sql("ALTER TABLE email_jobs DROP COLUMN attempt")
             .execute(&db.pool)
             .await?;
-        let started = TestApp::start_live(service(db.pool.clone())).await;
+        let started = TestApp::start_live(service(db.options())).await;
 
         let error = started
             .err()
@@ -223,8 +226,7 @@ mod tests {
         let Some(db) = live::postgres::database().await else {
             return Ok(());
         };
-        sqlx::raw_sql(MIGRATION).execute(&db.pool).await?;
-        let tb = TestApp::start_live(service(db.pool.clone())).await?;
+        let tb = TestApp::start_live(service(db.options())).await?;
         let email = Email {
             to: "ops@example.com".to_owned(),
         };

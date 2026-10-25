@@ -5,15 +5,16 @@
 //! cargo run -p ruststream-sqlx --example manual_sqlx_tables_inbox --features inbox,sqlite,chrono,testing,asyncapi
 //! ```
 
-use std::error::Error;
 use std::future::{Future, ready};
 
 use ruststream::OutgoingMessage;
 use ruststream::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqliteConnection;
 
 use ruststream_sqlx::prelude::*;
+use sqlx::Connection;
+use sqlx::sqlite::SqlitePoolOptions;
 
 // --8<-- [start:table]
 use chrono::{DateTime, Utc};
@@ -75,27 +76,34 @@ impl Handle<Note> for Deliver {
     }
 }
 
-fn service(pool: SqlitePool) -> RustStream {
-    let broker = SqlxBroker::new(pool)
+/// The service on the database `url` names.
+fn service(url: &str) -> RustStream {
+    let schema_url = url.to_owned();
+    // Nothing connects here: the broker builds its pool when the service starts.
+    let broker = SqlxBroker::from_url(url, SqlitePoolOptions::new());
+    let broker = broker
         .route::<Notification>("email")
         .route::<Notification>("sms");
-    RustStream::new(AppInfo::new("notifier", "0.1.0")).with_broker(broker, |b| {
-        for channel in ["email", "sms"] {
-            let deliver = subscriber(channel, Deliver)
-                .map_source(move |_| InboxQueue::<Notification>::new(channel));
-            b.include(deliver.build());
-        }
-    })
+    RustStream::new(AppInfo::new("notifier", "0.1.0"))
+        // The table, created before the subscription checks it.
+        .on_startup(async move |()| {
+            let mut conn = SqliteConnection::connect(&schema_url).await?;
+            sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
+            conn.close().await
+        })
+        .with_broker(broker, |b| {
+            for channel in ["email", "sms"] {
+                let deliver = subscriber(channel, Deliver)
+                    .map_source(move |_| InboxQueue::<Notification>::new(channel));
+                b.include(deliver.build());
+            }
+        })
 }
 // --8<-- [end:table]
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let pool = SqlitePool::connect("sqlite:notifications.db?mode=rwc").await?;
-    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-    service(pool.clone()).run().await?;
-    pool.close().await;
-    Ok(())
+#[ruststream::app]
+fn app() -> impl App {
+    service("sqlite:notifications.db?mode=rwc")
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS notifications (
@@ -140,10 +148,12 @@ mod tests {
     use super::{Note, SCHEMA, service};
 
     // An in-memory database every connection naming it shares, alive while one of them is open:
-    // the test holds one beside the pool.
-    async fn database(name: &str) -> Result<(SqlitePool, SqliteConnection), Box<dyn Error>> {
-        let options: SqliteConnectOptions =
-            format!("sqlite:file:{name}?mode=memory&cache=shared").parse()?;
+    // the test holds one beside the pool it reads the table through.
+    async fn database(
+        name: &str,
+    ) -> Result<(String, SqlitePool, SqliteConnection), Box<dyn Error>> {
+        let url = format!("sqlite:file:{name}?mode=memory&cache=shared");
+        let options: SqliteConnectOptions = url.parse()?;
         let keeper = SqliteConnection::connect_with(&options).await?;
         let pool = SqlitePoolOptions::new()
             .min_connections(1)
@@ -151,13 +161,13 @@ mod tests {
             .connect_with(options)
             .await?;
         sqlx::raw_sql(SCHEMA).execute(&pool).await?;
-        Ok((pool, keeper))
+        Ok((url, pool, keeper))
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_note_reaches_the_subscription_of_its_group() -> Result<(), Box<dyn Error>> {
-        let (pool, _keeper) = database("manual_sqlx_tables_inbox").await?;
-        let tb = TestApp::start(service(pool)).await?;
+        let (url, _pool, _keeper) = database("manual_sqlx_tables_inbox").await?;
+        let tb = TestApp::start(service(&url)).await?;
         let note = Note {
             to: "ops@example.com".to_owned(),
             text: "disk full".to_owned(),
