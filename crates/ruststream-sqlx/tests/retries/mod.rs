@@ -9,8 +9,7 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
+use crate::live;
 
 mod in_process;
 

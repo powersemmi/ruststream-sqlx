@@ -11,6 +11,9 @@ authors.workspace = true
 readme = "README.md"
 keywords = ["sql", "dialect", "postgres", "mysql", "sqlite"]
 categories = ["database"]
+# Every file and directory under `tests/` is a module of one test binary: one link instead of one
+# per file.
+autotests = false
 
 [lints]
 workspace = true
@@ -29,3 +32,7 @@ sqlite = []
 
 [dependencies]
 thiserror.workspace = true
+
+[[test]]
+name = "suite"
+path = "tests/main.rs"
