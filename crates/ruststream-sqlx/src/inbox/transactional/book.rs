@@ -3,7 +3,7 @@
 
 use std::fmt;
 use std::mem::{self, ManuallyDrop};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 use sqlx::Database;
 
@@ -27,6 +27,9 @@ pub(crate) struct TxSlot {
 /// the subscription has more deliveries in work than ever before.
 pub(crate) struct TxBook<DB: Database> {
     slots: Mutex<TxSlots<DB>>,
+    /// The database the subscription reads, as the process tells databases apart: learnt at the
+    /// first lend where a tracked publish may need it.
+    database: OnceLock<u64>,
 }
 
 /// Every slot the book has held, and which of them are free.
@@ -70,7 +73,20 @@ impl<DB: Database> TxBook<DB> {
                 entries: Vec::new(),
                 free: Vec::new(),
             }),
+            database: OnceLock::new(),
         }))
+    }
+
+    /// Whether the delivery `slot` names is still in work: its transaction held or lent.
+    pub(super) fn in_work(&self, slot: TxSlot) -> bool {
+        self.slots().entries.get(slot.index).is_some_and(|entry| {
+            entry.generation == slot.generation && !matches!(entry.standing, TxStanding::Free)
+        })
+    }
+
+    /// The database the subscription reads, learnt from `learn` the first time.
+    pub(super) fn database(&self, learn: impl FnOnce() -> u64) -> u64 {
+        *self.database.get_or_init(learn)
     }
 
     /// Records a delivery's transaction `tx` until the delivery settles.

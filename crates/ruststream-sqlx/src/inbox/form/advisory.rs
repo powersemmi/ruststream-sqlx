@@ -508,8 +508,7 @@ mod tests {
 }
 
 pub(crate) use hold::{LockHold, Locked, Unlent};
-use process::database_of;
-pub(crate) use process::{ProcessKey, ProcessLocks};
+pub(crate) use process::{ProcessKey, ProcessLocks, database_of};
 
 /// The deliveries of one advisory subscription in work, each with its key and its session.
 ///
@@ -785,6 +784,24 @@ impl<DB: Database> LockBook<DB> {
     /// The closes of the broker's sessions.
     pub(crate) const fn closing(&self) -> &'static Closing {
         self.closing
+    }
+
+    /// The statement that begins a handler's transaction on a session, `None` for `BEGIN`.
+    pub(crate) const fn begin_work(&self) -> Option<&'static str> {
+        self.queue.prepared.begin_work
+    }
+
+    /// The database the subscription reads, as the process tells databases apart.
+    pub(crate) const fn database(&self) -> u64 {
+        self.database
+    }
+
+    /// Whether the delivery `slot` names is still in work: its session held or lent.
+    pub(crate) fn in_work(&self, slot: LockSlot) -> bool {
+        self.slots().entries.get(slot.index).is_some_and(|entry| {
+            entry.generation == slot.generation
+                && matches!(entry.standing, Standing::Held(_) | Standing::Lent(_))
+        })
     }
 
     /// Whether the process keeps the keys in work, rather than the database.

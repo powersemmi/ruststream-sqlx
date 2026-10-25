@@ -3,13 +3,16 @@
 
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use sqlx::Database;
 
 use super::book::{TxBook, TxSlot};
+use super::writers::{self, InWork, Slot};
 use crate::inbox::database::QueueDatabase;
-use crate::inbox::form::advisory::{LockBook, LockSlot, Locked};
+use crate::inbox::form::advisory::{LockBook, LockSlot, Locked, database_of};
+use crate::inbox::pools::ServicePool;
 use crate::inbox::tx::PoolTx;
 
 /// The delivery's transaction, lent to the handler: it dereferences to the connection the
@@ -81,14 +84,33 @@ use crate::inbox::tx::PoolTx;
 pub struct Tx<DB: QueueDatabase> {
     /// The transaction, until `Tx` drops and gives it back.
     lent: Option<Lent<DB>>,
+    /// What the handler's first statement through `Tx` sets on SQLite, in a process that tracks
+    /// publishes: from then on the transaction may hold the write lock a tracked publish needs.
+    first_statement: Option<&'static AtomicBool>,
 }
 
 impl<DB: QueueDatabase> Tx<DB> {
     /// The transaction `lender` lends, out of its book until the handler ends; `None` when the book
     /// does not hold it for the delivery, as once it is lent.
-    pub(crate) fn lent_by(lender: Lender<DB>) -> Option<Self> {
+    pub(crate) fn lent_by(lender: Lender<DB>, pool: &'static ServicePool<DB>) -> Option<Self> {
+        let lent = lender.lend()?;
+        // One writer at a time on SQLite: a tracked publish of this task learns whether the
+        // transaction may hold the write lock before it waits for it.
+        let first_statement = if writers::watched::<DB>(lent.conn()) {
+            let locked = writers::locks_at_begin(lent.opened_with());
+            let (database, delivery): (u64, (&'static dyn InWork, Slot)) = match lender {
+                Lender::Tx(book, slot) => {
+                    (book.database(|| database_of(pool)), (book, Slot::Tx(slot)))
+                }
+                Lender::Lock(book, slot) => (book.database(), (book, Slot::Lock(slot))),
+            };
+            writers::enlist(locked, database, delivery).filter(|_| !locked)
+        } else {
+            None
+        };
         Some(Self {
-            lent: Some(lender.lend()?),
+            lent: Some(lent),
+            first_statement,
         })
     }
 
@@ -125,6 +147,9 @@ impl<DB: QueueDatabase> DerefMut for Tx<DB> {
     ///
     /// Never: `Tx` holds the transaction until it drops.
     fn deref_mut(&mut self) -> &mut DB::Connection {
+        if let Some(flag) = self.first_statement.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
         self.lent_mut().conn_mut()
     }
 }
@@ -171,6 +196,14 @@ pub(crate) enum Lent<DB: Database> {
 }
 
 impl<DB: Database> Lent<DB> {
+    /// The statement that began the transaction, `None` for `BEGIN`.
+    fn opened_with(&self) -> Option<&'static str> {
+        match self {
+            Self::Tx { tx, .. } => tx.opened_with(),
+            Self::Session { book, .. } => book.begin_work(),
+        }
+    }
+
     fn conn(&self) -> &DB::Connection {
         match self {
             Self::Tx { tx, .. } => tx,
@@ -194,6 +227,18 @@ impl<DB: Database> Lent<DB> {
             Self::Tx { book, slot, tx } => book.give_back(slot, tx, panicked),
             Self::Session { book, slot, locked } => book.give_back(slot, locked, panicked),
         }
+    }
+}
+
+impl<DB: Database> InWork for TxBook<DB> {
+    fn in_work(&self, slot: Slot) -> bool {
+        matches!(slot, Slot::Tx(slot) if Self::in_work(self, slot))
+    }
+}
+
+impl<DB: Database> InWork for LockBook<DB> {
+    fn in_work(&self, slot: Slot) -> bool {
+        matches!(slot, Slot::Lock(slot) if Self::in_work(self, slot))
     }
 }
 

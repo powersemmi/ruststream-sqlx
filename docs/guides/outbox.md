@@ -104,7 +104,7 @@ Two instances that start together may both send the same record again, so a cons
 
 The record is written on a connection of its own and commits at once.
 It does not join a transaction of the service: a [transactional](transactional.md) inbox handler that is retried discards its own writes and keeps the record of what it published.
-On SQLite such a handler publishes before its first write through its transaction, because the record's insert waits for that transaction's write lock otherwise ([Interplay](../components/outbox/interplay.md)).
+On SQLite such a handler publishes before its first write through its transaction, because the record's insert needs that transaction's write lock; a publish after that write fails with `OutboxError::WriteLockHeld` ([Interplay](../components/outbox/interplay.md)).
 An event that must commit with the business rows is a row of the business transaction, relayed afterwards: [Relaying events to another broker](relay.md).
 
 A publish outside a handler, an HTTP endpoint for one, takes the running app's publisher and [`wrap`](../components/outbox/wrap.md)s it in the registry, so it is tracked the same way.

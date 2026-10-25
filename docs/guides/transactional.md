@@ -80,7 +80,8 @@ Every effect outside the database stays at least once in the same way: an email,
 On SQLite a delivery's transaction takes the database's write lock at its first write and holds it until the delivery settles, keeping every other writer out, claims included.
 Here the processor's call runs after the two inserts, so the database stays locked for other writers while it runs.
 A server locks only the rows the transaction wrote.
-A handler that publishes a message the [outbox](outbox.md) tracks publishes it before its first write through `tx` on SQLite: the record is written on a connection of its own, which waits for the delivery's write lock otherwise.
+A handler that publishes a message the [outbox](outbox.md) tracks publishes it before its first write through `tx` on SQLite: the record is written on a connection of its own, which needs the delivery's write lock.
+A tracked publish after that write fails with [`OutboxError::WriteLockHeld`](../components/outbox/outbox-error.md), and the message is not sent.
 
 ## Isolation
 

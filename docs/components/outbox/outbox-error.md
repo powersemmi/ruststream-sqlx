@@ -1,7 +1,7 @@
 ---
 sidebar_position: 10
 title: OutboxError
-description: "OutboxError names what the outbox could not do: record a publish, read the unprocessed records, or republish one, and a publish with no pool yet."
+description: "OutboxError names what the outbox could not do: record a publish, read the unprocessed records, or republish one, a publish with no pool yet, and a record a handler's own SQLite transaction locks out."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # OutboxError
 
-[`OutboxError`](api:ruststream_sqlx::outbox::OutboxError) names what the outbox could not do: record a publish, read the unprocessed records, or republish one, and a publish with no pool yet.
+[`OutboxError`](api:ruststream_sqlx::outbox::OutboxError) names what the outbox could not do: record a publish, read the unprocessed records, or republish one, a publish with no pool yet, and a record a handler's own SQLite transaction locks out.
 
 Each variant names the registered name, and the record type where one is involved:
 
@@ -17,10 +17,11 @@ Each variant names the registered name, and the record type where one is involve
 | --- | --- | --- |
 | `NoPool` | a message under a registered name was published before the registry had a pool | the message is not sent |
 | `Record` | the record's `Publish` failed; its source is the database's error | the message is not sent |
+| `WriteLockHeld` | on SQLite, a [transactional](../transactions/index.md) handler published after its first write through `Tx`, and its own delivery transaction holds the write lock the record needs ([Interplay](./interplay.md)) | the message is not sent |
 | `Recover` | the startup republish could not read a name's unprocessed records | startup fails |
 | `Republish` | the startup republish could not send a record; it names the record's id | startup fails |
 
-A publish through the publish middleware fails with `NoPool` or `Record`, as the error of the publisher a handler holds.
+A publish through the publish middleware fails with `NoPool`, `Record` or `WriteLockHeld`, as the error of the publisher a handler holds.
 A publish through [`wrap`](./wrap.md) fails with [`TrackedPublishError`](api:ruststream_sqlx::outbox::TrackedPublishError): `Outbox` carries the `OutboxError`, and `Publish` the wrapped publisher's own error after the record was written, which leaves the record for the next startup.
 The publish builder wraps either in its own `PublishError::Publish`.
 [`PoolAlreadySet`](api:ruststream_sqlx::outbox::PoolAlreadySet) is what a second [`set_pool`](./set-pool.md) returns.

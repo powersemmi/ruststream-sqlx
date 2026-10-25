@@ -1,6 +1,8 @@
 //! The publish middleware: a message published under a registered name is recorded before it is
 //! sent, and carries its record's id.
 
+#[cfg(feature = "inbox")]
+use std::any::Any as Dynamic;
 use std::any::type_name;
 use std::error::Error as StdError;
 use std::fmt::{self, Display};
@@ -12,12 +14,28 @@ use std::sync::Arc;
 use ruststream::runtime::{Outgoing, PublishLayer, PublishNext, PublishPipeline};
 use ruststream::{Bytes, HeaderMap, OutgoingMessage, Publisher};
 use sqlx::Database;
+#[cfg(feature = "inbox")]
+use sqlx::any::AnyConnectOptions;
+#[cfg(feature = "inbox")]
+use sqlx::error::DatabaseError;
+#[cfg(all(feature = "inbox", feature = "sqlite"))]
+use sqlx::sqlite::SqliteConnectOptions;
+#[cfg(feature = "inbox")]
+use sqlx::{Pool, SqlStr};
+#[cfg(feature = "inbox")]
+use sqlx_core::transaction::TransactionManager;
+#[cfg(feature = "inbox")]
+use tokio::time::{error::Elapsed, timeout};
 
 use super::OUTBOX_ID_HEADER;
 use super::error::OutboxError;
 use super::events::Publish;
 use super::registry::RecordList;
 use super::switch::enabled;
+#[cfg(feature = "inbox")]
+use crate::inbox::form::advisory::database_of;
+#[cfg(feature = "inbox")]
+use crate::inbox::writers::{self, Holding};
 use crate::outbox::store::Store;
 
 /// The publish middleware of an [`Outbox`](super::Outbox), from
@@ -89,9 +107,118 @@ pub(super) async fn record<DB: Database, Record: Publish<DB>>(
         record: type_name::<Record>(),
         source,
     };
+    // One load while no task holds a SQLite delivery transaction.
+    #[cfg(feature = "inbox")]
+    if writers::any_held()
+        && let Some(database) = store.one_writer(|| one_writer(pool))
+    {
+        match writers::holding(database) {
+            Holding::Nothing => {}
+            Holding::HoldsWriteLock => {
+                return Err(OutboxError::WriteLockHeld {
+                    name,
+                    record: type_name::<Record>(),
+                });
+            }
+            Holding::MayHoldWriteLock => {
+                return record_alone::<DB, Record>(name, store, pool, msg).await;
+            }
+        }
+    }
     let mut conn = store.acquire(pool).await.map_err(failed)?;
     let id = Record::publish(&mut conn, msg).await.map_err(failed)?;
     Ok(id_value(&id))
+}
+
+/// The database `pool` reaches, as the process tells databases apart, where it takes one writer at
+/// a time: SQLite, through its own driver or `Any`.
+#[cfg(feature = "inbox")]
+fn one_writer<DB: Database>(pool: &Pool<DB>) -> Option<u64> {
+    let options = pool.connect_options();
+    let options: &dyn Dynamic = &*options;
+    #[cfg(feature = "sqlite")]
+    let sqlite = options.is::<SqliteConnectOptions>();
+    #[cfg(not(feature = "sqlite"))]
+    let sqlite = false;
+    let sqlite = sqlite
+        || options
+            .downcast_ref::<AnyConnectOptions>()
+            .is_some_and(|any| any.database_url.scheme() == "sqlite");
+    sqlite.then(|| database_of(pool))
+}
+
+/// Records `msg` with `Record` on SQLite for a handler whose own delivery transaction may hold the
+/// write lock: the record takes the lock first, for at most the pool's acquire timeout, and fails
+/// naming the lock instead of waiting for the handler that waits for it.
+///
+/// Why a bound and not a check: whether the handler's transaction wrote is the database's to know,
+/// and SQLite tells it only by the wait. Why the lock is taken on its own: a statement that waits
+/// out the bound still runs once the lock is free, and a lock taken alone writes nothing then.
+#[cfg(feature = "inbox")]
+async fn record_alone<DB: Database, Record: Publish<DB>>(
+    name: &'static str,
+    store: &Store<DB>,
+    pool: &Pool<DB>,
+    msg: &OutgoingMessage<'_>,
+) -> Result<Bytes, OutboxError> {
+    let record = type_name::<Record>();
+    let failed = |source| OutboxError::Record {
+        name,
+        record,
+        source,
+    };
+    let waited = pool.options().get_acquire_timeout();
+    let held = || OutboxError::WriteLockHeld { name, record };
+    let mut conn = store.acquire(pool).await.map_err(failed)?;
+    let begin = DB::TransactionManager::begin(&mut conn, Some(SqlStr::from_static(TAKE_LOCK)));
+    match timeout(waited, begin).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) if locked(&error) => return Err(held()),
+        Ok(Err(error)) => {
+            conn.close_on_drop();
+            return Err(failed(error));
+        }
+        Err(Elapsed { .. }) => {
+            // The begin still waits on the connection: it closes, and its transaction with it.
+            conn.close_on_drop();
+            return Err(held());
+        }
+    }
+    let written = match Record::publish(&mut conn, msg).await {
+        Ok(id) => DB::TransactionManager::commit(&mut conn).await.map(|()| id),
+        Err(error) => Err(error),
+    };
+    match written {
+        Ok(id) => Ok(id_value(&id)),
+        Err(error) => {
+            // A transaction left open closes with its connection, which then leaves the pool.
+            if DB::TransactionManager::rollback(&mut conn).await.is_err() {
+                conn.close_on_drop();
+            }
+            Err(if locked(&error) {
+                held()
+            } else {
+                failed(error)
+            })
+        }
+    }
+}
+
+/// How the record takes SQLite's write lock before it writes.
+#[cfg(feature = "inbox")]
+const TAKE_LOCK: &str = "BEGIN IMMEDIATE";
+
+/// Whether SQLite refused `error`'s statement because another connection holds a lock it needs:
+/// `SQLITE_BUSY` or `SQLITE_LOCKED`, in any of their extended codes.
+#[cfg(feature = "inbox")]
+fn locked(error: &sqlx::Error) -> bool {
+    const SQLITE_BUSY: i32 = 5;
+    const SQLITE_LOCKED: i32 = 6;
+    error
+        .as_database_error()
+        .and_then(DatabaseError::code)
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| matches!(code & 0xff, SQLITE_BUSY | SQLITE_LOCKED))
 }
 
 /// The longest id text [`id_value`] formats on the stack: a UUID's 36 characters fit.

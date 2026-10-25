@@ -55,6 +55,8 @@ pub use spec::builder::{InboxSpec, InboxTable};
 pub use subscriber::InboxSubscriber;
 pub use threads::{InboxThreads, ThreadsStep};
 pub use time::{Clock, DatabaseClock, LeaseRow, QueueTime, SystemClock, TimeColumn, TimeSource};
+#[cfg(feature = "outbox")]
+pub(crate) use transactional::writers;
 pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, TransactionalStep, Tx};
 
 /// A struct that describes a queue table; `#[derive(Inbox)]` implements it.
