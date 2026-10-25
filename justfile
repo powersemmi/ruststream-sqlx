@@ -27,7 +27,11 @@ check:
     RUN_UI_TESTS=1 REQUIRE_UI_TESTS=1 cargo test -p ruststream-sqlx --all-features --test ui
 
 test:
-    cargo test --workspace --all-features
+    # The examples' tests are modules of one test binary, so `--tests` builds none per example;
+    # `check` compiles every example on its own. `--tests` leaves the doc examples out, so they
+    # run on their own line.
+    cargo test --workspace --all-features --tests
+    cargo test --workspace --all-features --doc
     # Both feature edges: an all-features run hides a doc example that names a feature-gated
     # item without gating itself.
     cargo test --workspace --no-default-features
@@ -55,7 +59,7 @@ test-brokers: brokers-up
     MARIADB_TEST_URL=mysql://root:ruststream@127.0.0.1:53307 \
     RUSTSTREAM_REQUIRE_LIVE=1 \
     RUSTSTREAM_SQLX_OUTBOX=on \
-        cargo test -p ruststream-sqlx --all-features --no-fail-fast
+        cargo test -p ruststream-sqlx --all-features --no-fail-fast --tests
 
 # The three published crates packaged and verified together, as the release publishes them:
 # the dialect, then the macros, then the crate. Nothing is uploaded.

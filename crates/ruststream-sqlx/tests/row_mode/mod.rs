@@ -10,9 +10,6 @@
     feature = "testing"
 ))]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod batch;
 mod publish;
 mod refused;
