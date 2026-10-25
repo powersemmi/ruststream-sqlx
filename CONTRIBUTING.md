@@ -86,7 +86,7 @@ just brokers-up
 POSTGRES_TEST_URL=postgres://ruststream:ruststream@127.0.0.1:55432/ruststream \
 MYSQL_TEST_URL=mysql://root:ruststream@127.0.0.1:53306 \
 MARIADB_TEST_URL=mysql://root:ruststream@127.0.0.1:53307 \
-    cargo test -p ruststream-sqlx --all-features --test conformance
+    cargo test -p ruststream-sqlx --all-features --test conformance conformance::
 just brokers-down
 ```
 

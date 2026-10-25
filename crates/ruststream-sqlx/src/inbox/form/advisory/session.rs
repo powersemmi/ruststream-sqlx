@@ -9,6 +9,7 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use sqlx::pool::PoolConnection;
 use sqlx::{Connection, Database, Error, Pool};
+use sqlx_core::transaction::TransactionManager;
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 
@@ -52,6 +53,10 @@ pub(crate) struct Session<DB: Database> {
     /// Whether the session may hold an open transaction: set before the transaction begins,
     /// cleared once it ended.
     open: bool,
+    /// Whether a claim's statement may be in flight on the session: set before it leaves, cleared
+    /// once the claim read its end. Dropped then, the claim was cut short, and the session drains
+    /// through the broker's closes instead of going back to the pool.
+    busy: bool,
     /// The key the process keeps for the session, where the dialect leaves its locks to the
     /// process.
     process: Option<ProcessKey>,
@@ -82,6 +87,7 @@ impl<DB: Database> Session<DB> {
             conn: Some(conn),
             locked: false,
             open: false,
+            busy: false,
             process: None,
             closing,
             #[cfg(feature = "testing")]
@@ -132,6 +138,11 @@ impl<DB: Database> Session<DB> {
         self.open = open;
     }
 
+    /// Records whether a claim's statement may be in flight on the session.
+    pub(crate) const fn set_busy(&mut self, busy: bool) {
+        self.busy = busy;
+    }
+
     /// Takes `key` of the database `database` names in the process's registry for the session:
     /// `false` while a key of its hash is in work.
     pub(crate) fn take_in_process(&mut self, database: u64, key: &str) -> bool {
@@ -169,6 +180,8 @@ impl<DB: Database> Session<DB> {
         if self.locked || self.open {
             self.closing
                 .close(conn, self.locked, unlocking.filter(|_| self.locked));
+        } else if self.busy {
+            self.closing.drain(conn, false);
         } else {
             drop(conn);
         }
@@ -181,8 +194,9 @@ impl<DB: Database> Drop for Session<DB> {
     }
 }
 
-/// The sessions of one broker being closed: `shutdown` waits until none is, and counts the closes
-/// of sessions that held a lock it waited for.
+/// The sessions of one broker being closed, and the connections of claims cut short draining:
+/// `shutdown` waits until none is, and counts the closes of sessions that held a lock it waited
+/// for.
 pub(crate) struct Closing {
     /// The closes started and not yet ended; in process, also the sessions of claims the book
     /// does not hold yet.
@@ -283,6 +297,42 @@ impl Closing {
             };
             let _ = tokio::time::timeout(CLOSE_TIMEOUT, closed).await;
         };
+        self.run(work);
+    }
+
+    /// Ends `conn`, which a claim cut short left with a statement in flight: detached from its
+    /// pool, it waits on the broker's runtime for the server to end that statement, rolls back the
+    /// claim's transaction where `open` says it may hold one, and closes. Counted until it ends,
+    /// so `shutdown`, which follows the claims the runtime cut short as it stopped the
+    /// subscriptions, returns once the server holds nothing of them. The close timeout bounds it;
+    /// past it the connection drops, which closes its socket.
+    pub(crate) fn drain<DB: Database>(&'static self, conn: PoolConnection<DB>, open: bool) {
+        // A pool connection that leaves its pool spawns the pool's upkeep, which needs a runtime,
+        // and a claim may be dropped where none runs.
+        let _entered = self.runtime.enter();
+        let mut raw = conn.detach();
+        let counted = Counted::new(self, false);
+        let work = async move {
+            let _counted = counted;
+            let drained = async move {
+                // The ping reads the reply of the statement in flight before its own: once it
+                // returns, the server has ended that statement, and an autocommit one has
+                // released what it locked.
+                raw.ping().await?;
+                if open {
+                    DB::TransactionManager::rollback(&mut raw).await?;
+                }
+                raw.close().await
+            };
+            // A drain that fails drops the connection, which closes its socket.
+            let _ = tokio::time::timeout(CLOSE_TIMEOUT, drained).await;
+        };
+        self.run(work);
+    }
+
+    /// Runs `work`, a close counted while it lives, on the broker's runtime; with that runtime
+    /// gone the task drops unrun, and what it holds drops with it.
+    fn run(&'static self, work: impl Future<Output = ()> + Send + 'static) {
         // In process the close runs off a paused clock: its timeout runs out on the test's clock,
         // which stands still while the database answers.
         #[cfg(feature = "testing")]

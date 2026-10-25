@@ -85,7 +85,7 @@ fn a_subscription_documents_its_table_and_group() {
     let queue = InboxQueue::<SendEmail>::new("emails");
     let bindings = SubscriptionSource::<Connected<SqlxBroker<Postgres>>>::channel_bindings(&queue);
     let rendered = format!("{bindings:?}");
-    assert!(rendered.contains("x-sqlx"), "{rendered}");
+    assert!(rendered.contains("x-ruststream-sqlx"), "{rendered}");
     assert!(rendered.contains("app.email_jobs"), "{rendered}");
     assert!(rendered.contains("emails"), "{rendered}");
     let _ = |row: SendEmail| (row.job_id, row.name, row.payload);
