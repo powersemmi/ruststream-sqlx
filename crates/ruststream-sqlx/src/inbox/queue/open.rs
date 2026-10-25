@@ -218,7 +218,7 @@ where
             Holding::Advisory(LockBook::leak::<Row>(shared, queue)),
             None,
         ),
-        None => (Holding::Transaction, None),
+        None => (Holding::Transaction(shared.closing), None),
     };
     // The subscription's own handle on the pool, which each delivery copies for the handler's
     // context instead of counting a reference.

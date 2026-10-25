@@ -14,6 +14,7 @@ use crate::inbox::broker::Shared;
 use crate::inbox::database::QueueDatabase;
 use crate::inbox::delivery::settle::{Step, run_step};
 use crate::inbox::engine::{Claimed, Claiming, Events, Savepoint, Settled, Settling};
+use crate::inbox::form::advisory::session::Closing;
 use crate::inbox::queue::Queue;
 use crate::inbox::subscriber::{Failed, InboxSubscriber, Taken, begin, take_group};
 #[cfg(feature = "testing")]
@@ -47,6 +48,7 @@ where
 /// it returns open: the transaction holds the rows until they settle.
 pub(crate) async fn claim_locked<DB, Row>(
     pool: &Pool<DB>,
+    closing: &'static Closing,
     cx: &Claiming,
     ids: &mut Row::Ids,
     rows: &mut Vec<Claimed<Row>>,
@@ -60,7 +62,7 @@ where
         let statement = queue.prepared.claim.map_or("claim", |claim| claim.sql);
         (statement, source)
     };
-    let mut tx = begin(pool, queue).await?;
+    let mut tx = begin(pool, queue, closing).await?;
     let claimed = async {
         // The transaction keeps the group until the delivery settles. A claim that finds
         // it kept takes nothing, and the claim loop ends its transaction.
@@ -82,7 +84,10 @@ where
     }
     .await;
     match claimed {
-        Ok(()) => Ok(tx),
+        Ok(()) => {
+            tx.claimed();
+            Ok(tx)
+        }
         Err(failed) => {
             // A rollback that fails leaves the transaction to its drop, which closes the
             // connection.

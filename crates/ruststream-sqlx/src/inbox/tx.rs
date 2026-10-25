@@ -7,10 +7,13 @@ use sqlx::pool::PoolConnection;
 use sqlx::{Database, Error, Pool, SqlStr};
 use sqlx_core::transaction::TransactionManager;
 
+use crate::inbox::form::advisory::session::Closing;
+
 /// A transaction on a connection of the pool: a claim's, a batch's, or a settlement's of its own.
 ///
 /// It ends with [`commit`](Self::commit) or [`rollback`](Self::rollback). Dropped while open, it
-/// closes its connection, and the server rolls the transaction back.
+/// closes its connection, and the server rolls the transaction back; a claim's transaction drains
+/// instead, so `shutdown` waits for the server to end it (see [`begin_claim`](Self::begin_claim)).
 ///
 /// Why not sqlx's `Transaction`: dropped while open, that one queues a rollback and returns its
 /// connection to the pool. A transaction drops while open when the future that ran its statement
@@ -24,10 +27,14 @@ use sqlx_core::transaction::TransactionManager;
 // can go: claims and settlements open `sqlx::Transaction`s with `Pool::begin_with`, and the direct
 // `sqlx-core` dependency, kept for `TransactionManager`, goes with it.
 pub(crate) struct PoolTx<DB: Database> {
-    conn: PoolConnection<DB>,
+    /// The connection, until the transaction drops.
+    conn: Option<PoolConnection<DB>>,
     /// Whether the server may hold the transaction open: from the begin statement until a commit
     /// or a rollback finished.
     open: bool,
+    /// The closes of the broker whose claim runs in the transaction: dropped open, the claim was
+    /// cut short, and its connection drains there instead of closing at once.
+    claim: Option<&'static Closing>,
 }
 
 impl<DB: Database> PoolTx<DB> {
@@ -52,11 +59,44 @@ impl<DB: Database> PoolTx<DB> {
     ) -> Result<Self, Error> {
         // Open before the statement leaves: a begin dropped midway may have started the
         // transaction already.
-        let mut tx = Self { conn, open: true };
+        let mut tx = Self {
+            conn: Some(conn),
+            open: true,
+            claim: None,
+        };
         // Why sqlx's transaction manager: it counts the transaction on the connection, so the
         // service's own SQL inside it nests a savepoint where it begins one.
-        DB::TransactionManager::begin(&mut tx.conn, statement.map(SqlStr::from_static)).await?;
+        DB::TransactionManager::begin(&mut *tx, statement.map(SqlStr::from_static)).await?;
         Ok(tx)
+    }
+
+    /// Opens a claim's transaction on a connection of `pool`, as [`begin`](Self::begin) does,
+    /// until [`claimed`](Self::claimed). Dropped open before that, as a subscription's stream
+    /// drops its claim in flight at shutdown, it drains through `closing`: the server ends the
+    /// statement in flight and rolls the transaction back before `shutdown` returns.
+    ///
+    /// # Errors
+    ///
+    /// As [`begin`](Self::begin).
+    pub(crate) async fn begin_claim(
+        pool: &Pool<DB>,
+        statement: Option<&'static str>,
+        closing: &'static Closing,
+    ) -> Result<Self, Error> {
+        let conn = pool.acquire().await?;
+        let mut tx = Self {
+            conn: Some(conn),
+            open: true,
+            claim: Some(closing),
+        };
+        DB::TransactionManager::begin(&mut *tx, statement.map(SqlStr::from_static)).await?;
+        Ok(tx)
+    }
+
+    /// The claim ended: the transaction goes on as one a delivery holds, and dropped open it
+    /// closes its connection.
+    pub(crate) fn claimed(&mut self) {
+        self.claim = None;
     }
 
     /// Commits the transaction.
@@ -65,7 +105,7 @@ impl<DB: Database> PoolTx<DB> {
     ///
     /// The database's error; the connection then closes when the transaction drops.
     pub(crate) async fn commit(mut self) -> Result<(), Error> {
-        DB::TransactionManager::commit(&mut self.conn).await?;
+        DB::TransactionManager::commit(&mut *self).await?;
         self.open = false;
         Ok(())
     }
@@ -76,7 +116,7 @@ impl<DB: Database> PoolTx<DB> {
     ///
     /// The database's error; the connection then closes when the transaction drops.
     pub(crate) async fn rollback(mut self) -> Result<(), Error> {
-        DB::TransactionManager::rollback(&mut self.conn).await?;
+        DB::TransactionManager::rollback(&mut *self).await?;
         self.open = false;
         Ok(())
     }
@@ -86,20 +126,31 @@ impl<DB: Database> Deref for PoolTx<DB> {
     type Target = DB::Connection;
 
     fn deref(&self) -> &Self::Target {
-        &self.conn
+        self.conn
+            .as_ref()
+            .expect("a transaction holds its connection until it drops")
     }
 }
 
 impl<DB: Database> DerefMut for PoolTx<DB> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.conn
+        self.conn
+            .as_mut()
+            .expect("a transaction holds its connection until it drops")
     }
 }
 
 impl<DB: Database> Drop for PoolTx<DB> {
     fn drop(&mut self) {
-        if self.open {
-            self.conn.close_on_drop();
+        if !self.open {
+            return;
+        }
+        let Some(mut conn) = self.conn.take() else {
+            return;
+        };
+        match self.claim {
+            Some(closing) => closing.drain(conn, true),
+            None => conn.close_on_drop(),
         }
     }
 }
