@@ -17,11 +17,14 @@
 //! the tables in its own SQL; a row module holds the queue rows of one form under the names every
 //! form shares.
 
-// Each test target is its own binary and uses the part of this module its suites need, so what
-// one of them leaves alone, a macro included, is not dead code.
+// The suite and the allocation counts each use the part of this module their features turn on, so
+// what one of them leaves alone, a macro included, is not dead code.
 #![allow(dead_code, unused_macros)]
 
 use std::future::Future;
+use std::process;
+use std::ptr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sqlx::{Database as Backend, Pool};
 
@@ -94,6 +97,39 @@ pub(crate) async fn unpaused<T>(read: impl Future<Output = T>) -> T {
     let value = read.await;
     tokio::time::pause();
     value
+}
+
+/// The name of a fresh test database, one no other test on the stand holds.
+///
+/// The process id tells the test processes on one stand apart. The examples' tests share one
+/// process, and every example that includes this module holds a counter of its own, so the name
+/// also carries the counter's address: its low 32 bits are enough, as every counter lies in the
+/// one binary, less than 4 GiB from any other. Each part is written in base 36, so the name stays
+/// within 21 characters and a MySQL lock name built on it keeps room for a long key.
+pub(crate) fn database_name() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let address = u64::try_from(ptr::from_ref(&NEXT).addr()).map_or(0, |addr| addr & 0xffff_ffff);
+    format!(
+        "sqlx_{}_{}_{}",
+        base36(u64::from(process::id())),
+        base36(address),
+        base36(NEXT.fetch_add(1, Ordering::Relaxed))
+    )
+}
+
+/// `value` in base 36, lowercase.
+fn base36(mut value: u64) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut digits = Vec::new();
+    loop {
+        digits.push(DIGITS[usize::try_from(value % 36).expect("a digit fits a usize")]);
+        value /= 36;
+        if value == 0 {
+            break;
+        }
+    }
+    digits.reverse();
+    String::from_utf8(digits).expect("the digits are ASCII")
 }
 
 /// A database of the test's own on a stand, with the stand's schema applied.

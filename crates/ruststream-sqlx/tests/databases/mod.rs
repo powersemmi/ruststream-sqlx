@@ -3,9 +3,6 @@
 
 #![cfg(feature = "inbox")]
 
-#[path = "../live/mod.rs"]
-mod live;
-
 mod any_pool;
 mod mysql_family;
 mod own_dialect;
