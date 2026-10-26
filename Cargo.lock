@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-sqlx"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "dhat",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "ruststream-sqlx-bench"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "chrono",
  "futures",
@@ -1471,14 +1471,14 @@ dependencies = [
 
 [[package]]
 name = "ruststream-sqlx-dialect"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "ruststream-sqlx-macros"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "heck",
  "proc-macro2",
