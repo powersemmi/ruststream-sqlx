@@ -1,5 +1,6 @@
 //! `InboxSubscriber`: the claim loop a subscription's stream runs.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::future::{Future, poll_fn};
 use std::marker::PhantomData;
@@ -18,7 +19,7 @@ use tokio_util::sync::DropGuard;
 
 use super::batch::{BatchClaim, BatchLane};
 use super::broker::Shared;
-use super::claims::{Claims, Flow, InWork, Settled};
+use super::claims::{Claims, Flow, InWork, Settled, Spread};
 use super::database::QueueDatabase;
 use super::delivery::InboxDelivery;
 use super::engine::{self, Claimed, Claiming, Events, Leasing, Now};
@@ -50,7 +51,9 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// for the handlers. It keeps one claim in flight on SQLite, which takes one writer at a time, and
 /// on a table whose groups keep their order or that has a `partition_key` column, whose order claims
 /// that run at once could break, and where a lease claim stamps its rows in a transaction, as on
-/// MySQL and MariaDB. After a claim that filled its limit the next one runs at once;
+/// MySQL and MariaDB. On SQLite a lease claim takes a row for every worker the subscription has
+/// seen, and the rows past the free workers wait in the subscription for the next free worker.
+/// After a claim that filled its limit the next one runs at once;
 /// after one that found fewer rows it waits the poll interval, or until a publisher of the same
 /// broker writes a row of its table and group (a row the service writes through its own SQL or a
 /// handler's transaction waits for the interval). A write that lands while the subscription
@@ -67,7 +70,9 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// or alone, takes a connection only while it settles, and its settlement takes effect on its own;
 /// in transactional mode a delivery holds its transaction's connection until it settles.
 /// A task on the runtime the broker connected on extends the lease of every delivery in work each
-/// half lease, on one connection, until the subscriber drops or the broker shuts down.
+/// half lease, on one connection, until the subscriber drops or the broker shuts down; a delivery
+/// that waits in the subscription for a worker counts as in work there. A subscriber dropped with
+/// deliveries waiting returns their rows at once.
 ///
 /// In the advisory lock form each message in work holds a connection of its own, in a batch too,
 /// and its session holds the lock on the row's key: outside transactional mode no transaction
@@ -208,6 +213,9 @@ pub struct InboxSubscriber<DB: QueueDatabase, Row: Events<DB>, Mode = Plain> {
     made: usize,
     /// The deliveries of single claims settled or dropped so far.
     settled: &'static Settled,
+    /// The deliveries a claim for every worker took past the first, oldest first, each holding its
+    /// lease, waiting for the next free worker. Dropped, each returns its row at once.
+    ahead: VecDeque<InboxDelivery<DB, Row, Mode>>,
     /// What the connection's publishers wake the subscription with after they write a row of its
     /// table and group.
     wake: &'static Notify,
@@ -338,12 +346,13 @@ where
                 opened.pool.options().get_max_connections(),
                 !matches!(opened.holding, Holding::Leases(_))
                     || opened.queue.prepared.transactional,
-                one_claim(opened.queue),
+                spread(opened.queue, matches!(opened.holding, Holding::Leases(_))),
             ),
             made: 0,
             // Once per subscription, as its queue and books are: deliveries outlive the borrow of
             // the subscriber.
             settled: Box::leak(Box::default()),
+            ahead: VecDeque::new(),
             wake: opened.wake,
             _registration: opened.registration,
             _keeper: opened.keeper,
@@ -486,6 +495,7 @@ where
             queue: self.queue,
             holding: self.holding,
             beside: running,
+            limit: self.flow.claim_limit(self.in_work()),
             #[cfg(feature = "testing")]
             in_process: self
                 .shared
@@ -507,6 +517,15 @@ where
         Fut: Future<Output = OneClaimed<DB, Row>>,
     {
         self.flow.polled(self.in_work());
+        if !self.ahead.is_empty() {
+            if self.shared.is_closed() {
+                return None;
+            }
+            return self
+                .ahead
+                .pop_front()
+                .map(|delivery| Ok(self.hand_out(delivery)));
+        }
         loop {
             if claims.running() == 0 {
                 match self.wait.take() {
@@ -598,7 +617,9 @@ where
         claims.poll_any(cx)
     }
 
-    /// The delivery of the row a single claim took into `buffers`.
+    /// The delivery of the first row a single claim took into `buffers`. The rows past it, which
+    /// only a lease claim for every worker takes, wait ahead in the subscription as deliveries that
+    /// hold their leases.
     fn deliver(
         &mut self,
         taken: Taken<DB, Row>,
@@ -615,14 +636,16 @@ where
                 }
             }
             Taken::Leased(book, lease) => {
+                // Built newest first, each in front of the ones after it, so the deliveries wait
+                // oldest first.
+                while buffers.rows.len() > 1 {
+                    let claimed = buffers.rows.pop()?;
+                    let ahead = self.leased(claimed, book, lease, buffers);
+                    self.ahead.push_front(ahead);
+                }
                 let claimed = buffers.rows.pop()?;
-                // In transactional mode the delivery's own transaction waits in the book for the
-                // handler to borrow it.
-                let lent = self
-                    .lending
-                    .zip(buffers.transactions.get_mut().pop())
-                    .map(|(lending, tx)| lending.enter(tx));
-                InboxDelivery::leased(claimed, book, lease, lent, queue, pool)
+                let delivery = self.leased(claimed, book, lease, buffers);
+                return Some(self.hand_out(delivery));
             }
             Taken::Advised => {
                 let claimed = buffers.rows.pop()?;
@@ -630,11 +653,36 @@ where
                 InboxDelivery::advised(claimed, hold, queue, pool)
             }
         };
-        self.made = self.made.wrapping_add(1);
-        let delivery = delivery.counted(InWork::new(self.settled));
         #[cfg(feature = "testing")]
         let delivery = delivery.on(&self.shared);
-        Some(delivery)
+        Some(self.hand_out(delivery))
+    }
+
+    /// The delivery of a row a lease claim took, entered in the lease book, which extends its
+    /// lease from now on; in transactional mode with a transaction of the claim's.
+    fn leased(
+        &self,
+        claimed: Claimed<Row>,
+        book: &'static LeaseBook<DB, Row>,
+        lease: Row::Token,
+        buffers: &mut ClaimBuffers<DB, Row>,
+    ) -> InboxDelivery<DB, Row, Mode> {
+        // In transactional mode the delivery's own transaction waits in the book for the handler
+        // to borrow it.
+        let lent = self
+            .lending
+            .zip(buffers.transactions.get_mut().pop())
+            .map(|(lending, tx)| lending.enter(tx));
+        let delivery = InboxDelivery::leased(claimed, book, lease, lent, self.queue, self.pool);
+        #[cfg(feature = "testing")]
+        let delivery = delivery.on(&self.shared);
+        delivery
+    }
+
+    /// `delivery`, handed to a worker: from now on it counts as in work.
+    fn hand_out(&mut self, delivery: InboxDelivery<DB, Row, Mode>) -> InboxDelivery<DB, Row, Mode> {
+        self.made = self.made.wrapping_add(1);
+        delivery.counted(InWork::new(self.settled))
     }
 
     /// The subscription's deliveries, as a stream that owns it.
@@ -657,6 +705,8 @@ pub(crate) struct ClaimOne<DB: QueueDatabase, Row: Events<DB>> {
     holding: Holding<DB, Row>,
     /// The other claims of the subscription in flight.
     beside: usize,
+    /// The rows the claim takes.
+    limit: usize,
     /// The connection, where it runs in process.
     #[cfg(feature = "testing")]
     in_process: Option<Arc<Shared<DB>>>,
@@ -665,7 +715,7 @@ pub(crate) struct ClaimOne<DB: QueueDatabase, Row: Events<DB>> {
 /// What a single claim ends with: its outcome, and the buffers it hands back.
 pub(crate) type OneClaimed<DB, Row> = (Result<Taken<DB, Row>, Failed>, ClaimBuffers<DB, Row>);
 
-/// Claims one row with `one`, into `buffers` it owns while it runs, so several run at once.
+/// Claims the rows `one` asks for, into `buffers` it owns while it runs, so several run at once.
 async fn claim_one<DB, Row>(
     one: ClaimOne<DB, Row>,
     mut buffers: ClaimBuffers<DB, Row>,
@@ -679,6 +729,7 @@ where
         queue,
         holding,
         beside,
+        limit,
         ..
     } = one;
     // In process the claim runs on the test's clock, off a paused one, and in the harness's books.
@@ -686,7 +737,7 @@ where
     if let Some(shared) = one.in_process {
         let now = shared.harness.now();
         let (claimed, buffers) = off_clock(async move {
-            let claimed = claim_rows(pool, queue, holding, 1, beside, now, &mut buffers).await;
+            let claimed = claim_rows(pool, queue, holding, limit, beside, now, &mut buffers).await;
             (claimed, buffers)
         })
         .await
@@ -702,7 +753,7 @@ where
         pool,
         queue,
         holding,
-        1,
+        limit,
         beside,
         Now::default(),
         &mut buffers,
@@ -711,16 +762,24 @@ where
     (claimed, buffers)
 }
 
-/// Whether a subscription to `queue` keeps one claim in flight: claims that run at once may
-/// finish out of their claim order, which a table whose groups keep their order and a keyed table
-/// read their order from; on a database of one writer they only collide; and a lease claim that
-/// stamps its rows in a transaction of several statements locks the rows it reads, leases in work
-/// included, until it commits, so a claim nobody polls would hold up their settlements.
-fn one_claim(queue: &Queue) -> bool {
-    queue.prepared.fifo_guard.is_some()
-        || queue.spec.column(Role::PartitionKey).is_some()
-        || queue.one_writer
-        || queue.prepared.stamps
+/// How a subscription to `queue`, in the lease form where `leased`, claims for its workers.
+///
+/// It keeps one claim in flight where claims that run at once may finish out of their claim order,
+/// which a table whose groups keep their order and a keyed table read their order from; on a
+/// database of one writer, where they only collide; and where a lease claim stamps its rows in a
+/// transaction of several statements, which locks the rows it reads, leases in work included,
+/// until it commits, so a claim nobody polls would hold up their settlements. On a database of one
+/// writer a lease claim takes a row for every worker: it writes their leases in one statement.
+fn spread(queue: &Queue, leased: bool) -> Spread {
+    if queue.prepared.fifo_guard.is_some() || queue.spec.column(Role::PartitionKey).is_some() {
+        Spread::One
+    } else if queue.one_writer && leased {
+        Spread::OneForAll
+    } else if queue.one_writer || queue.prepared.stamps {
+        Spread::One
+    } else {
+        Spread::PerWorker
+    }
 }
 
 /// The connections `pool` can lend at once: its idle ones, and room for new ones.
@@ -877,7 +936,8 @@ mod tests {
 
     use ruststream_sqlx_dialect::{Column, Form, TableSpec};
 
-    use super::one_claim;
+    use super::spread;
+    use crate::inbox::claims::Spread;
     use crate::inbox::engine::{IdAt, Prepared};
     use crate::inbox::queue::Queue;
 
@@ -904,24 +964,34 @@ mod tests {
 
     #[test]
     fn a_plain_table_on_a_server_claims_for_every_free_worker() {
-        assert!(!one_claim(&queue(&PLAIN, false)));
+        assert_eq!(spread(&queue(&PLAIN, false), false), Spread::PerWorker);
+        assert_eq!(spread(&queue(&PLAIN, false), true), Spread::PerWorker);
     }
 
     #[test]
     fn a_keyed_table_keeps_its_claim_order() {
         let keyed = PLAIN.partition_key(Column::new("customer"));
-        assert!(one_claim(&queue(&keyed, false)));
+        assert_eq!(spread(&queue(&keyed, false), false), Spread::One);
+        assert_eq!(spread(&queue(&keyed, true), true), Spread::One);
     }
 
     #[test]
     fn a_lease_claim_that_stamps_in_a_transaction_keeps_one_claim() {
         let mut stamping = queue(&PLAIN, false);
         stamping.prepared.stamps = true;
-        assert!(one_claim(&stamping));
+        assert_eq!(spread(&stamping, true), Spread::One);
     }
 
     #[test]
     fn a_database_of_one_writer_keeps_one_claim() {
-        assert!(one_claim(&queue(&PLAIN, true)));
+        assert_eq!(spread(&queue(&PLAIN, true), false), Spread::One);
+    }
+
+    #[test]
+    fn a_lease_claim_on_a_database_of_one_writer_takes_a_row_for_every_worker() {
+        assert_eq!(spread(&queue(&PLAIN, true), true), Spread::OneForAll);
+        let mut stamping = queue(&PLAIN, true);
+        stamping.prepared.stamps = true;
+        assert_eq!(spread(&stamping, true), Spread::OneForAll);
     }
 }

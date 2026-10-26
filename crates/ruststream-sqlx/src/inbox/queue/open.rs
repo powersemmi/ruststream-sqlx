@@ -59,7 +59,8 @@ pub struct Queue {
     /// less.
     pub counted_attempt: bool,
     /// Whether the database takes one writer at a time, so the subscription keeps one claim in
-    /// flight: a second one would only wait for the first and for the settlements.
+    /// flight, a lease claim taking a row for every worker: a second one would only wait for the
+    /// first and for the settlements.
     pub one_writer: bool,
     /// How long the claim loop waits after a claim that found the queue short.
     pub poll_interval: Duration,

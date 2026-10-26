@@ -37,11 +37,10 @@ to the service at four and eight workers is how one subscription claims, not the
 takes up to its size per claim, so one claim serves that many deliveries, and the three loops stay
 close.
 
-On SQLite a subscription keeps one claim in flight, because SQLite takes one writer at a time.
-The raw loop's n claimers on one SQLite file are a shape one subscription does not take, and the
-SQLite rows at four and eight workers show the price of that choice: there the service drains at a
-fraction of the raw loop, and below its own rate with one worker. Single deliveries on SQLite gain
-nothing from `workers(n)`; batches do, as the batch rows show.
+On SQLite a subscription keeps one claim in flight, because SQLite takes one writer at a time,
+and that claim takes a row for every worker. The raw loop's n claimers on one SQLite file each
+claim one row at a time instead, so at four and eight workers the service claims fewer times than
+the raw loop for the same rows.
 
 ## The cost of the code
 

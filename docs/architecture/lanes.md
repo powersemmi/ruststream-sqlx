@@ -51,6 +51,13 @@ MySQL and MariaDB a lease claim stamps its rows in a transaction of several stat
 the rows it reads, leases in work included, until it commits. The workers still run side by side;
 only the claims take turns.
 
+On SQLite a lease claim takes a row for every worker the subscription has seen, in one statement.
+SQLite's busy handler does not queue a writer that finds the write lock taken: it sleeps a
+millisecond or more and tries again. A claim of one row per delivery would meet the workers'
+settlements at the write lock once per delivery and starve every worker while it slept. The rows
+past the free workers wait in the subscription for the next free worker, entered in the lease book,
+so their leases are extended while they wait, and a subscription that stops returns them at once.
+
 `workers_by_key(n)` runs n lanes, and a row goes to the lane its `partition_key` hashes to. The
 rows of one key never spread over two lanes, so they run in claim order. A FIFO group goes
 further: one row of a group is in work at a time, across every broker and instance that reads it,

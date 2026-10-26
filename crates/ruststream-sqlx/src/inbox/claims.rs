@@ -4,7 +4,8 @@
 //! workers it has. The subscription counts its deliveries in work instead: each poll shows one more
 //! worker free than that count, so the largest such count it has seen is its estimate of the
 //! workers, and the estimate less the deliveries in work is its free workers. It keeps a claim in
-//! flight for each, within the connections it may hold.
+//! flight for each, within the connections it may hold; or, where claims that run at once only
+//! collide, one claim that takes a row for every worker.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -13,6 +14,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
 use tokio::sync::Notify;
+
+/// How a subscription of single deliveries claims for its workers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Spread {
+    /// A claim of one row in flight for each free worker.
+    PerWorker,
+    /// One claim of one row in flight: on a table whose groups keep their order, where a second
+    /// claim of the group takes nothing while the first holds it, and wherever claims that run at
+    /// once could break an order or hold up settlements.
+    One,
+    /// One claim in flight that takes a row for every worker, the rows past the first waiting in
+    /// the subscription for a worker: a lease claim on a database that takes one writer at a time.
+    /// There claims that run at once only wait for each other, and a claim of several rows writes
+    /// their leases in one statement where one claim per row would meet the settlements of the
+    /// workers at the write lock once per row.
+    OneForAll,
+}
 
 /// What a subscription of single deliveries knows of its workers and its connections, from poll to
 /// poll.
@@ -24,10 +42,8 @@ pub(crate) struct Flow {
     /// After a claim that took nothing, one claim at a time until one takes a row: an empty table
     /// sees one claim per wait, not one per worker.
     probing: bool,
-    /// Whether the subscription keeps one claim in flight: on a table whose groups keep their
-    /// order, where a second claim of the group takes nothing while the first holds it, and on a
-    /// database that takes one writer at a time.
-    one_claim: bool,
+    /// How the subscription claims for its workers.
+    spread: Spread,
     /// The connections the subscription holds at most: the pool's size less one, which it leaves
     /// to the handlers' own queries, their publishes and the settlements that take one.
     budget: usize,
@@ -38,14 +54,14 @@ pub(crate) struct Flow {
 
 impl Flow {
     /// The flow of a subscription on a pool of `max_connections`, whose deliveries hold a
-    /// connection each where `holds`, with one claim in flight where `one_claim`.
-    pub(crate) fn new(max_connections: u32, holds: bool, one_claim: bool) -> Self {
+    /// connection each where `holds`, claiming for its workers as `spread` says.
+    pub(crate) fn new(max_connections: u32, holds: bool, spread: Spread) -> Self {
         let size = usize::try_from(max_connections).unwrap_or(usize::MAX);
         let budget = size.saturating_sub(1).max(1);
         Self {
             workers: 1,
             probing: true,
-            one_claim,
+            spread,
             budget,
             holds,
         }
@@ -76,9 +92,29 @@ impl Flow {
         if self.probing {
             return 1;
         }
-        self.workers
-            .saturating_sub(in_work)
-            .clamp(1, if self.one_claim { 1 } else { self.budget })
+        self.workers.saturating_sub(in_work).clamp(
+            1,
+            if self.spread == Spread::PerWorker {
+                self.budget
+            } else {
+                1
+            },
+        )
+    }
+
+    /// The rows the next claim takes beside `in_work` deliveries: one for every worker the
+    /// subscription has seen where it claims for all of them at once, within the connections it
+    /// may hold where each delivery holds one; one row otherwise.
+    pub(crate) fn claim_limit(&self, in_work: usize) -> usize {
+        if self.spread != Spread::OneForAll {
+            return 1;
+        }
+        let room = if self.holds {
+            self.budget.saturating_sub(in_work)
+        } else {
+            usize::MAX
+        };
+        self.workers.min(room).max(1)
     }
 
     /// Whether the subscription, with `running` claims and `in_work` deliveries, holds all it may
@@ -276,13 +312,13 @@ mod tests {
     use std::pin::pin;
     use std::time::Duration;
 
-    use super::{Claims, Flow, InWork, Settled};
+    use super::{Claims, Flow, InWork, Settled, Spread};
 
     /// A pool of eight with every connection to spare.
     const ROOMY: fn() -> usize = || 8;
 
     fn row_lock() -> Flow {
-        Flow::new(8, true, false)
+        Flow::new(8, true, Spread::PerWorker)
     }
 
     /// The claims a flow starts at once, beside `in_work` deliveries, with `spare` connections in
@@ -336,13 +372,55 @@ mod tests {
 
     #[test]
     fn a_table_in_order_or_a_database_of_one_writer_keeps_one_claim() {
-        let mut flow = Flow::new(8, true, true);
+        let mut flow = Flow::new(8, true, Spread::One);
         for in_work in 0..4 {
             flow.polled(in_work);
             flow.took();
         }
         flow.polled(0);
         assert_eq!(burst(&flow, 0, 8), 1);
+    }
+
+    /// A flow that has seen `workers` workers in work at once.
+    fn seen(mut flow: Flow, workers: usize) -> Flow {
+        for in_work in 0..workers {
+            flow.polled(in_work);
+            flow.took();
+        }
+        flow
+    }
+
+    #[test]
+    fn a_claim_for_every_worker_takes_a_row_for_each_in_one_claim() {
+        let flow = seen(Flow::new(8, false, Spread::OneForAll), 4);
+        assert_eq!(burst(&flow, 0, 8), 1, "one claim in flight");
+        assert_eq!(flow.claim_limit(0), 4);
+        // Workers in work hold no connection in the lease form: the claim still takes four, the
+        // rows past the free workers waiting for the next one free.
+        assert_eq!(flow.claim_limit(3), 4);
+    }
+
+    #[test]
+    fn a_plain_mount_claims_one_row_at_a_time() {
+        let flow = seen(Flow::new(8, false, Spread::OneForAll), 1);
+        assert_eq!(flow.claim_limit(0), 1);
+    }
+
+    #[test]
+    fn rows_claimed_ahead_in_transactions_fit_the_connections_left() {
+        // Each row's delivery holds its transaction's connection: of a pool of four, the
+        // subscription holds three, one of them a delivery in work.
+        let flow = seen(Flow::new(4, true, Spread::OneForAll), 4);
+        assert_eq!(flow.claim_limit(1), 2);
+        assert_eq!(flow.claim_limit(3), 1, "a claim takes one row at least");
+    }
+
+    #[test]
+    fn claims_of_one_row_each_take_one_row() {
+        for spread in [Spread::PerWorker, Spread::One] {
+            let flow = seen(Flow::new(8, false, spread), 4);
+            assert_eq!(flow.claim_limit(0), 1, "{spread:?}");
+        }
     }
 
     #[test]
@@ -361,7 +439,7 @@ mod tests {
 
     #[test]
     fn a_lease_counts_its_claims_alone() {
-        let mut flow = Flow::new(8, false, false);
+        let mut flow = Flow::new(8, false, Spread::PerWorker);
         for in_work in 0..12 {
             flow.polled(in_work);
             flow.took();
@@ -389,7 +467,7 @@ mod tests {
 
     #[test]
     fn a_pool_of_one_serves_one_delivery() {
-        let mut flow = Flow::new(1, true, false);
+        let mut flow = Flow::new(1, true, Spread::PerWorker);
         flow.polled(0);
         flow.took();
         assert!(flow.may_start(0, 0, || 1));

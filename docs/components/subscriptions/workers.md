@@ -19,7 +19,15 @@ On SQLite, which takes one writer at a time, they only collide.
 On a table whose [groups keep their order](./fifo.md), or with a `partition_key` column, they could finish out of claim order.
 On MySQL and MariaDB a lease claim locks the rows it reads, leases in work included, until it commits.
 One claim in flight still feeds every worker: the next claim starts as soon as the last one returns.
+On SQLite a [lease](../forms/lease.md) claim takes a row for every worker in one statement.
+The rows past the free workers wait in the subscription for the next free worker, and their leases are extended while they wait.
 Two claims never take the same row.
+
+How many workers a SQLite queue uses depends on what its handlers write.
+In the lease and advisory lock forms the throughput grows with the workers.
+In [transactional mode](../transactions/index.md) a handler's first write takes the database's write lock, and the lock stays until the delivery settles.
+Every other writer then waits in SQLite's busy handler, which sleeps a millisecond or more instead of queueing it.
+A transactional subscription on SQLite whose handlers write gains little from a second worker in the lease form, and loses most of its throughput to these waits in the advisory lock form: it runs one worker there.
 
 A `#[field(partition_key)]` column holds each row's key: text or bytes, optional or not ([`KeyColumn`](api:ruststream_sqlx::KeyColumn)).
 `workers_by_key(n)` sends the deliveries of one key to one worker, so the rows of a key are handled in the order they were claimed, and different keys run side by side.

@@ -15,6 +15,9 @@ SQLite locks the whole database for a writer, so no claim can hold rows for a ha
 Its dialect implements no row lock form, and a subscription to a table without `locked_until` or `advisory_lock` does not compile.
 A [lease](../forms/lease.md) claim is one `UPDATE .. RETURNING` that leases its rows, and one writer at a time keeps two claims apart.
 The rows of one lease claim come in no particular order.
+A subscription mounted with [`workers(n)`](../subscriptions/workers.md) claims a row for every worker in that one statement.
+A writer that finds the write lock taken waits in SQLite's busy handler, which sleeps a millisecond or more instead of queueing it.
+So a [transactional](../transactions/index.md) subscription whose handlers write runs one worker in the advisory lock form, where its deliveries' transactions would mostly wait for each other ([Workers](../subscriptions/workers.md)).
 A claim of the service's own opens its transaction with `BEGIN IMMEDIATE` and comes with a [`Fetch`](../headers/fetch.md) of its own.
 
 The [advisory lock form](../forms/advisory.md) keeps its keys in the process, beside the pool.

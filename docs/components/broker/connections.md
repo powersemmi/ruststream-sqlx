@@ -15,6 +15,7 @@ A subscription mounted with `workers(n)` keeps a claim in flight for each free w
 It never holds more than the pool's size less one connection, so the pool always keeps one for the handlers' own queries, their publishes and the settlements that take one.
 A second claim starts only while the pool has a connection to spare, so subscriptions that share a pool leave each other room, and a pool short of room runs fewer deliveries at once.
 A subscription keeps one claim in flight on SQLite, which takes one writer at a time, on a table whose [groups keep their order](../subscriptions/fifo.md), and with a `partition_key` column under `workers_by_key(n)`.
+On SQLite that one claim takes a row for every worker in the lease form; in transactional mode each of those rows holds its transaction's connection while it waits for a worker, within the connections the subscription may hold.
 
 What a delivery holds depends on the form:
 
