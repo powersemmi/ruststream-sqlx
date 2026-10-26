@@ -1,0 +1,1210 @@
+{
+  "schema": 3,
+  "crate": "ruststream-sqlx",
+  "crate_version": "0.7.0",
+  "core_version": "0.7.1",
+  "measured_at": "2026-10-18",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7900X 12-Core Processor",
+    "architecture": "x86_64",
+    "cpu_frequency": "427-5912 MHz",
+    "cores": "12 physical, 24 logical",
+    "memory": "62.4 GiB",
+    "memory_speed": "unknown",
+    "os": "Linux 7.2.11-x64v3-xanmod1-1",
+    "broker": "postgres:17-alpine, mysql:8.0, redis:7-alpine in Docker on the host network, without durability; SQLite bundled with sqlx, on a local file in WAL mode; the outbox over MemoryBroker in the code table and over Redis Pub/Sub in the wall clock",
+    "round_trip": "17.4 us (median of 2000 `SELECT 1` round trips on one Postgres connection)",
+    "rustc": "1.99.0",
+    "sqlx": "0.9.0",
+    "profile": "bench, inheriting release (opt-level = 3, lto = fat, codegen-units = 16, debug = line-tables-only)",
+    "features": "ruststream-sqlx inbox,outbox,postgres,mysql,sqlite,chrono; ruststream macros,json,memory; ruststream-fred default",
+    "rustflags": "none (the recipe clears RUSTFLAGS, so the numbers are not tied to this CPU)",
+    "valgrind": "3.25.1"
+  },
+  "scenarios": [
+    {
+      "name": "row lock claim, JSON decode into a small struct, delete each",
+      "unit": "msg/s",
+      "messages": 42309,
+      "pairs": 3,
+      "raw": {
+        "best": 6149.0,
+        "median": 6103.0,
+        "worst": 6055.0
+      },
+      "adapter": {
+        "best": 6136.0,
+        "median": 5986.0,
+        "worst": 5937.0
+      },
+      "framework": {
+        "best": 6018.0,
+        "median": 5996.0,
+        "worst": 5933.0
+      },
+      "overhead_percent": 2.1,
+      "verdict": "measured",
+      "adapter_overhead_percent": 0.2,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "row lock claim, reply inserted through this crate's default publisher, delete each",
+      "unit": "msg/s",
+      "messages": 29554,
+      "pairs": 3,
+      "raw": {
+        "best": 5150.0,
+        "median": 4984.0,
+        "worst": 4970.0
+      },
+      "adapter": {
+        "best": 5103.0,
+        "median": 5092.0,
+        "worst": 5030.0
+      },
+      "framework": {
+        "best": 5007.0,
+        "median": 4937.0,
+        "worst": 4928.0
+      },
+      "overhead_percent": 2.8,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.9,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "row lock claim in batches of 64, delete each",
+      "unit": "msg/s",
+      "messages": 195460,
+      "pairs": 3,
+      "raw": {
+        "best": 29198.0,
+        "median": 29006.0,
+        "worst": 28923.0
+      },
+      "adapter": {
+        "best": 29043.0,
+        "median": 28629.0,
+        "worst": 28555.0
+      },
+      "framework": {
+        "best": 28724.0,
+        "median": 28676.0,
+        "worst": 28150.0
+      },
+      "overhead_percent": 1.6,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.5,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "lease claim, JSON decode into a small struct, delete each",
+      "unit": "msg/s",
+      "messages": 20911,
+      "pairs": 3,
+      "raw": {
+        "best": 3125.0,
+        "median": 3098.0,
+        "worst": 3090.0
+      },
+      "adapter": {
+        "best": 3219.0,
+        "median": 3193.0,
+        "worst": 3186.0
+      },
+      "framework": {
+        "best": 3202.0,
+        "median": 3177.0,
+        "worst": 3138.0
+      },
+      "overhead_percent": -2.5,
+      "verdict": "measured",
+      "adapter_overhead_percent": -3.0,
+      "adapter_verdict": "measured",
+      "broker_bound": false
+    },
+    {
+      "name": "advisory lock claim, JSON decode into a small struct, delete each",
+      "unit": "msg/s",
+      "messages": 30825,
+      "pairs": 3,
+      "raw": {
+        "best": 4611.0,
+        "median": 4572.0,
+        "worst": 4364.0
+      },
+      "adapter": {
+        "best": 4558.0,
+        "median": 4462.0,
+        "worst": 4231.0
+      },
+      "framework": {
+        "best": 4565.0,
+        "median": 4295.0,
+        "worst": 4246.0
+      },
+      "overhead_percent": 1.0,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 1.1,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "by-name subscription, row lock claim, delete each",
+      "unit": "msg/s",
+      "messages": 37128,
+      "pairs": 3,
+      "raw": {
+        "best": 6089.0,
+        "median": 5910.0,
+        "worst": 5845.0
+      },
+      "adapter": {
+        "best": 6025.0,
+        "median": 5773.0,
+        "worst": 5700.0
+      },
+      "framework": {
+        "best": 5980.0,
+        "median": 5784.0,
+        "worst": 5646.0
+      },
+      "overhead_percent": 1.8,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 1.1,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "row mode, the row decoded by the driver, delete each",
+      "unit": "msg/s",
+      "messages": 39775,
+      "pairs": 3,
+      "raw": {
+        "best": 5805.0,
+        "median": 5771.0,
+        "worst": 5645.0
+      },
+      "adapter": {
+        "best": 5769.0,
+        "median": 5662.0,
+        "worst": 5646.0
+      },
+      "framework": {
+        "best": 5759.0,
+        "median": 5742.0,
+        "worst": 5668.0
+      },
+      "overhead_percent": 0.8,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 0.6,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "repository publish, one insert each",
+      "unit": "msg/s",
+      "messages": 145329,
+      "pairs": 3,
+      "raw": {
+        "best": 26723.0,
+        "median": 26721.0,
+        "worst": 25101.0
+      },
+      "adapter": {
+        "best": 27814.0,
+        "median": 27485.0,
+        "worst": 25926.0
+      },
+      "framework": {
+        "best": 27640.0,
+        "median": 26771.0,
+        "worst": 25843.0
+      },
+      "overhead_percent": -3.4,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": -4.1,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "routed publish, one insert each",
+      "unit": "msg/s",
+      "messages": 179535,
+      "pairs": 3,
+      "raw": {
+        "best": 29182.0,
+        "median": 27701.0,
+        "worst": 26780.0
+      },
+      "adapter": {
+        "best": 27947.0,
+        "median": 26567.0,
+        "worst": 26216.0
+      },
+      "framework": {
+        "best": 27295.0,
+        "median": 26896.0,
+        "worst": 25982.0
+      },
+      "overhead_percent": 6.5,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 4.2,
+      "adapter_verdict": "indistinguishable",
+      "broker_bound": true
+    },
+    {
+      "name": "outbox plugin, an untracked message through both layers",
+      "unit": "msg/s",
+      "plugin": "outbox",
+      "messages": 318923,
+      "pairs": 3,
+      "raw": {
+        "best": 53058.0,
+        "median": 52720.0,
+        "worst": 52381.0
+      },
+      "framework": {
+        "best": 53160.0,
+        "median": 52178.0,
+        "worst": 51690.0
+      },
+      "overhead_percent": -0.2,
+      "verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "outbox plugin, a tracked publish from outside a handler",
+      "unit": "msg/s",
+      "plugin": "outbox",
+      "messages": 406991,
+      "pairs": 3,
+      "raw": {
+        "best": 66275.0,
+        "median": 66203.0,
+        "worst": 65260.0
+      },
+      "adapter": {
+        "best": 15761.0,
+        "median": 15425.0,
+        "worst": 15216.0
+      },
+      "framework": {
+        "best": 15961.0,
+        "median": 15395.0,
+        "worst": 15391.0
+      },
+      "overhead_percent": 75.9,
+      "verdict": "measured",
+      "adapter_overhead_percent": 76.2,
+      "adapter_verdict": "measured",
+      "plugin_overhead_percent": -1.3,
+      "plugin_verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "outbox plugin, a tracked delivery fetched and marked",
+      "unit": "msg/s",
+      "plugin": "outbox",
+      "messages": 373400,
+      "pairs": 3,
+      "raw": {
+        "best": 64200.0,
+        "median": 61442.0,
+        "worst": 60070.0
+      },
+      "adapter": {
+        "best": 8821.0,
+        "median": 8600.0,
+        "worst": 8440.0
+      },
+      "framework": {
+        "best": 8682.0,
+        "median": 8635.0,
+        "worst": 8435.0
+      },
+      "overhead_percent": 86.5,
+      "verdict": "measured",
+      "adapter_overhead_percent": 86.3,
+      "adapter_verdict": "measured",
+      "plugin_overhead_percent": 1.6,
+      "plugin_verdict": "indistinguishable",
+      "broker_bound": false
+    },
+    {
+      "name": "outbox plugin, a tracked round trip: recorded, delivered, fetched and marked",
+      "unit": "msg/s",
+      "plugin": "outbox",
+      "messages": 334393,
+      "pairs": 3,
+      "raw": {
+        "best": 54357.0,
+        "median": 53776.0,
+        "worst": 53284.0
+      },
+      "adapter": {
+        "best": 8191.0,
+        "median": 8143.0,
+        "worst": 8034.0
+      },
+      "framework": {
+        "best": 8044.0,
+        "median": 8025.0,
+        "worst": 7882.0
+      },
+      "overhead_percent": 85.2,
+      "verdict": "measured",
+      "adapter_overhead_percent": 84.9,
+      "adapter_verdict": "measured",
+      "plugin_overhead_percent": 1.8,
+      "plugin_verdict": "indistinguishable",
+      "broker_bound": false
+    }
+  ],
+  "code": [
+    {
+      "name": "row lock claim, JSON decode into a small struct, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 44796.1,
+        "allocations": 32.0
+      },
+      "cold": {
+        "instructions": 334632,
+        "allocations": 355
+      },
+      "raw": {
+        "instructions": 40310.6,
+        "allocations": 33.0
+      },
+      "gated": true
+    },
+    {
+      "name": "row lock claim, reply inserted through this crate's default publisher, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 66613.4,
+        "allocations": 44.0
+      },
+      "cold": {
+        "instructions": 337677,
+        "allocations": 353
+      },
+      "raw": {
+        "instructions": 60551.5,
+        "allocations": 45.0
+      },
+      "gated": true
+    },
+    {
+      "name": "row lock claim in batches of 64, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 14281.5,
+        "allocations": 12.6
+      },
+      "cold": {
+        "instructions": 334178,
+        "allocations": 358
+      },
+      "raw": {
+        "instructions": 12300.7,
+        "allocations": 12.4
+      },
+      "gated": true
+    },
+    {
+      "name": "lease claim, JSON decode into a small struct, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 51541.4,
+        "allocations": 28.0
+      },
+      "cold": {
+        "instructions": 397875,
+        "allocations": 393
+      },
+      "raw": {
+        "instructions": 47133.0,
+        "allocations": 28.0
+      },
+      "gated": true
+    },
+    {
+      "name": "advisory lock claim, JSON decode into a small struct, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 66800.8,
+        "allocations": 47.1
+      },
+      "cold": {
+        "instructions": 421572,
+        "allocations": 494
+      },
+      "raw": {
+        "instructions": 58844.8,
+        "allocations": 47.1
+      },
+      "gated": true
+    },
+    {
+      "name": "by-name subscription, row lock claim, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 47474.3,
+        "allocations": 32.0
+      },
+      "cold": {
+        "instructions": 356127,
+        "allocations": 359
+      },
+      "raw": {
+        "instructions": 40384.5,
+        "allocations": 33.0
+      },
+      "gated": true
+    },
+    {
+      "name": "row mode, the row decoded by the driver, delete each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 43674.9,
+        "allocations": 32.0
+      },
+      "cold": {
+        "instructions": 338529,
+        "allocations": 364
+      },
+      "raw": {
+        "instructions": 39836.3,
+        "allocations": 33.0
+      },
+      "gated": true
+    },
+    {
+      "name": "repository publish, one insert each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 23890.9,
+        "allocations": 15.0
+      },
+      "cold": {
+        "instructions": 144459,
+        "allocations": 128
+      },
+      "raw": {
+        "instructions": 20830.8,
+        "allocations": 12.0
+      },
+      "gated": true
+    },
+    {
+      "name": "routed publish, one insert each",
+      "messages": 1000,
+      "framework": {
+        "instructions": 23429.0,
+        "allocations": 15.0
+      },
+      "cold": {
+        "instructions": 145266,
+        "allocations": 129
+      },
+      "raw": {
+        "instructions": 20830.8,
+        "allocations": 12.0
+      },
+      "gated": true
+    },
+    {
+      "name": "outbox plugin, an untracked message through both layers",
+      "messages": 1000,
+      "plugin": "outbox",
+      "framework": {
+        "instructions": 7238.2,
+        "allocations": 6.0
+      },
+      "cold": {
+        "instructions": 251239,
+        "allocations": 250
+      },
+      "raw": {
+        "instructions": 6788.2,
+        "allocations": 6.0
+      },
+      "gated": true
+    },
+    {
+      "name": "outbox plugin, a tracked publish from outside a handler",
+      "messages": 1000,
+      "plugin": "outbox",
+      "framework": {
+        "instructions": 23232.9,
+        "allocations": 15.0
+      },
+      "cold": {
+        "instructions": 183040,
+        "allocations": 161
+      },
+      "adapter": {
+        "instructions": 22349.9,
+        "allocations": 16.0
+      },
+      "raw": {
+        "instructions": 742.2,
+        "allocations": 2.0
+      },
+      "gated": true
+    },
+    {
+      "name": "outbox plugin, a tracked delivery fetched and marked",
+      "messages": 1000,
+      "plugin": "outbox",
+      "framework": {
+        "instructions": 51016.7,
+        "allocations": 30.0
+      },
+      "cold": {
+        "instructions": 280164,
+        "allocations": 271
+      },
+      "adapter": {
+        "instructions": 47021.6,
+        "allocations": 30.0
+      },
+      "raw": {
+        "instructions": 4877.7,
+        "allocations": 7.0
+      },
+      "gated": true
+    },
+    {
+      "name": "outbox plugin, a tracked round trip: recorded, delivered, fetched and marked",
+      "messages": 1000,
+      "plugin": "outbox",
+      "framework": {
+        "instructions": 75639.3,
+        "allocations": 42.1
+      },
+      "cold": {
+        "instructions": 328380,
+        "allocations": 311
+      },
+      "adapter": {
+        "instructions": 68347.8,
+        "allocations": 39.0
+      },
+      "raw": {
+        "instructions": 6821.3,
+        "allocations": 6.0
+      },
+      "gated": true
+    }
+  ],
+  "code_measured": {
+    "crate_version": "0.7.0",
+    "core_version": "0.7.1",
+    "measured_at": "2026-10-18"
+  },
+  "throughput": [
+    {
+      "database": "Postgres",
+      "form": "row lock",
+      "batch": null,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 6606.0,
+        "median": 6534.0,
+        "worst": 6484.0
+      },
+      "adapter": {
+        "best": 6498.0,
+        "median": 6345.0,
+        "worst": 6297.0
+      },
+      "framework": {
+        "best": 6519.0,
+        "median": 6489.0,
+        "worst": 6461.0
+      },
+      "overhead_percent": 1.3,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 1.6,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "row lock",
+      "batch": null,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 21422.0,
+        "median": 20667.0,
+        "worst": 20232.0
+      },
+      "adapter": {
+        "best": 20365.0,
+        "median": 20352.0,
+        "worst": 20309.0
+      },
+      "framework": {
+        "best": 17465.0,
+        "median": 16553.0,
+        "worst": 16483.0
+      },
+      "overhead_percent": 18.5,
+      "verdict": "measured",
+      "adapter_overhead_percent": 4.9,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "row lock",
+      "batch": null,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 35388.0,
+        "median": 35358.0,
+        "worst": 35191.0
+      },
+      "adapter": {
+        "best": 35013.0,
+        "median": 34770.0,
+        "worst": 33943.0
+      },
+      "framework": {
+        "best": 28664.0,
+        "median": 28526.0,
+        "worst": 27572.0
+      },
+      "overhead_percent": 19.0,
+      "verdict": "measured",
+      "adapter_overhead_percent": 1.1,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "row lock",
+      "batch": 64,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 31095.0,
+        "median": 30671.0,
+        "worst": 28839.0
+      },
+      "adapter": {
+        "best": 30127.0,
+        "median": 30047.0,
+        "worst": 29963.0
+      },
+      "framework": {
+        "best": 29910.0,
+        "median": 29658.0,
+        "worst": 27769.0
+      },
+      "overhead_percent": 3.8,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 3.1,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "row lock",
+      "batch": 64,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 100358.0,
+        "median": 94995.0,
+        "worst": 89018.0
+      },
+      "adapter": {
+        "best": 96291.0,
+        "median": 93160.0,
+        "worst": 88265.0
+      },
+      "framework": {
+        "best": 94292.0,
+        "median": 93376.0,
+        "worst": 91641.0
+      },
+      "overhead_percent": 6.0,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 4.1,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "row lock",
+      "batch": 64,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 154114.0,
+        "median": 153177.0,
+        "worst": 152888.0
+      },
+      "adapter": {
+        "best": 154622.0,
+        "median": 151889.0,
+        "worst": 142136.0
+      },
+      "framework": {
+        "best": 120889.0,
+        "median": 119422.0,
+        "worst": 117026.0
+      },
+      "overhead_percent": 21.6,
+      "verdict": "measured",
+      "adapter_overhead_percent": -0.3,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "MySQL",
+      "form": "row lock",
+      "batch": null,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 7626.0,
+        "median": 7409.0,
+        "worst": 6805.0
+      },
+      "adapter": {
+        "best": 6791.0,
+        "median": 6498.0,
+        "worst": 5632.0
+      },
+      "framework": {
+        "best": 6376.0,
+        "median": 6329.0,
+        "worst": 6300.0
+      },
+      "overhead_percent": 16.4,
+      "verdict": "measured",
+      "adapter_overhead_percent": 10.9,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "MySQL",
+      "form": "row lock",
+      "batch": null,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 17830.0,
+        "median": 16166.0,
+        "worst": 14621.0
+      },
+      "adapter": {
+        "best": 16316.0,
+        "median": 15688.0,
+        "worst": 15506.0
+      },
+      "framework": {
+        "best": 13281.0,
+        "median": 13131.0,
+        "worst": 12403.0
+      },
+      "overhead_percent": 25.5,
+      "verdict": "measured",
+      "adapter_overhead_percent": 8.5,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "MySQL",
+      "form": "row lock",
+      "batch": null,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 21885.0,
+        "median": 21792.0,
+        "worst": 19526.0
+      },
+      "adapter": {
+        "best": 19070.0,
+        "median": 15962.0,
+        "worst": 15711.0
+      },
+      "framework": {
+        "best": 17994.0,
+        "median": 17839.0,
+        "worst": 17458.0
+      },
+      "overhead_percent": 17.8,
+      "verdict": "measured",
+      "adapter_overhead_percent": 12.9,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "MySQL",
+      "form": "row lock",
+      "batch": 64,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 36152.0,
+        "median": 35674.0,
+        "worst": 34905.0
+      },
+      "adapter": {
+        "best": 35752.0,
+        "median": 34773.0,
+        "worst": 33654.0
+      },
+      "framework": {
+        "best": 35228.0,
+        "median": 35088.0,
+        "worst": 34105.0
+      },
+      "overhead_percent": 2.6,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 1.1,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "MySQL",
+      "form": "row lock",
+      "batch": 64,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 107344.0,
+        "median": 107082.0,
+        "worst": 104772.0
+      },
+      "adapter": {
+        "best": 102923.0,
+        "median": 86929.0,
+        "worst": 71302.0
+      },
+      "framework": {
+        "best": 99924.0,
+        "median": 95386.0,
+        "worst": 86790.0
+      },
+      "overhead_percent": 6.9,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 4.1,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "MySQL",
+      "form": "row lock",
+      "batch": 64,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 158847.0,
+        "median": 132613.0,
+        "worst": 128779.0
+      },
+      "adapter": {
+        "best": 147257.0,
+        "median": 139066.0,
+        "worst": 133204.0
+      },
+      "framework": {
+        "best": 143767.0,
+        "median": 120226.0,
+        "worst": 116682.0
+      },
+      "overhead_percent": 9.5,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 7.3,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "SQLite",
+      "form": "lease",
+      "batch": null,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 14073.0,
+        "median": 13850.0,
+        "worst": 13827.0
+      },
+      "adapter": {
+        "best": 13609.0,
+        "median": 13565.0,
+        "worst": 13550.0
+      },
+      "framework": {
+        "best": 13611.0,
+        "median": 13599.0,
+        "worst": 13556.0
+      },
+      "overhead_percent": 3.3,
+      "verdict": "measured",
+      "adapter_overhead_percent": 3.3,
+      "adapter_verdict": "measured"
+    },
+    {
+      "database": "SQLite",
+      "form": "lease",
+      "batch": null,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 14453.0,
+        "median": 14266.0,
+        "worst": 14164.0
+      },
+      "adapter": {
+        "best": 13846.0,
+        "median": 13728.0,
+        "worst": 13622.0
+      },
+      "framework": {
+        "best": 5218.0,
+        "median": 4723.0,
+        "worst": 4537.0
+      },
+      "overhead_percent": 63.9,
+      "verdict": "measured",
+      "adapter_overhead_percent": 4.2,
+      "adapter_verdict": "measured"
+    },
+    {
+      "database": "SQLite",
+      "form": "lease",
+      "batch": null,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 14244.0,
+        "median": 14181.0,
+        "worst": 14153.0
+      },
+      "adapter": {
+        "best": 13814.0,
+        "median": 13733.0,
+        "worst": 13652.0
+      },
+      "framework": {
+        "best": 4916.0,
+        "median": 4754.0,
+        "worst": 4734.0
+      },
+      "overhead_percent": 65.5,
+      "verdict": "measured",
+      "adapter_overhead_percent": 3.0,
+      "adapter_verdict": "measured"
+    },
+    {
+      "database": "SQLite",
+      "form": "lease",
+      "batch": 64,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 33167.0,
+        "median": 33147.0,
+        "worst": 32566.0
+      },
+      "adapter": {
+        "best": 31521.0,
+        "median": 31281.0,
+        "worst": 30955.0
+      },
+      "framework": {
+        "best": 33092.0,
+        "median": 31648.0,
+        "worst": 31546.0
+      },
+      "overhead_percent": 0.2,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 5.0,
+      "adapter_verdict": "measured"
+    },
+    {
+      "database": "SQLite",
+      "form": "lease",
+      "batch": 64,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 34067.0,
+        "median": 33800.0,
+        "worst": 33067.0
+      },
+      "adapter": {
+        "best": 35105.0,
+        "median": 33255.0,
+        "worst": 32939.0
+      },
+      "framework": {
+        "best": 34839.0,
+        "median": 33646.0,
+        "worst": 33207.0
+      },
+      "overhead_percent": -2.3,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": -3.0,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "SQLite",
+      "form": "lease",
+      "batch": 64,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 35446.0,
+        "median": 34634.0,
+        "worst": 33496.0
+      },
+      "adapter": {
+        "best": 34829.0,
+        "median": 33519.0,
+        "worst": 32787.0
+      },
+      "framework": {
+        "best": 35544.0,
+        "median": 35537.0,
+        "worst": 33784.0
+      },
+      "overhead_percent": -0.3,
+      "verdict": "indistinguishable",
+      "adapter_overhead_percent": 1.7,
+      "adapter_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "outbox round trip over Redis Pub/Sub",
+      "plugin": "outbox",
+      "batch": null,
+      "workers": 1,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 54941.0,
+        "median": 52927.0,
+        "worst": 47766.0
+      },
+      "adapter": {
+        "best": 8128.0,
+        "median": 8097.0,
+        "worst": 8080.0
+      },
+      "framework": {
+        "best": 7826.0,
+        "median": 7663.0,
+        "worst": 7658.0
+      },
+      "overhead_percent": 85.8,
+      "verdict": "measured",
+      "adapter_overhead_percent": 85.2,
+      "adapter_verdict": "measured",
+      "plugin_overhead_percent": 3.7,
+      "plugin_verdict": "measured"
+    },
+    {
+      "database": "Postgres",
+      "form": "outbox round trip over Redis Pub/Sub",
+      "plugin": "outbox",
+      "batch": null,
+      "workers": 4,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 51743.0,
+        "median": 51332.0,
+        "worst": 49912.0
+      },
+      "adapter": {
+        "best": 25440.0,
+        "median": 25275.0,
+        "worst": 24447.0
+      },
+      "framework": {
+        "best": 24866.0,
+        "median": 24810.0,
+        "worst": 24773.0
+      },
+      "overhead_percent": 51.9,
+      "verdict": "measured",
+      "adapter_overhead_percent": 50.8,
+      "adapter_verdict": "measured",
+      "plugin_overhead_percent": 2.3,
+      "plugin_verdict": "indistinguishable"
+    },
+    {
+      "database": "Postgres",
+      "form": "outbox round trip over Redis Pub/Sub",
+      "plugin": "outbox",
+      "batch": null,
+      "workers": 8,
+      "pool": 16,
+      "rows": 20000,
+      "rounds": 3,
+      "raw": {
+        "best": 50650.0,
+        "median": 45681.0,
+        "worst": 43311.0
+      },
+      "adapter": {
+        "best": 31813.0,
+        "median": 31242.0,
+        "worst": 30843.0
+      },
+      "framework": {
+        "best": 30560.0,
+        "median": 29582.0,
+        "worst": 29360.0
+      },
+      "overhead_percent": 39.7,
+      "verdict": "measured",
+      "adapter_overhead_percent": 37.2,
+      "adapter_verdict": "measured",
+      "plugin_overhead_percent": 3.9,
+      "plugin_verdict": "measured"
+    }
+  ]
+}

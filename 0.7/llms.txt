@@ -1,0 +1,65 @@
+# ruststream-sqlx
+
+> `ruststream-sqlx` brings SQL databases into RustStream, a Rust framework for services that subscribe to message brokers and publish to them, through `sqlx`: task queues in the service's own Postgres, MySQL/MariaDB and SQLite tables, served as a RustStream broker, and a transactional outbox over any RustStream broker.
+
+A queue table is described by a struct: `#[derive(Inbox)]` with `#[inbox(..)]` and `#[field(..)]` roles, or `InboxTable` with the typed builder `InboxSpec` by hand. `SqlxBroker::from_url(url, pool_options)` serves the tables of the service's database through a pool it builds when the service starts (`SqlxBroker::new(pool)` takes a pool the service shares), `InboxQueue::<Row>::new("name")` is a subscription, and a table takes its rows by row lock, by lease or by advisory lock. The outbox is `#[derive(Outbox)]`, `outbox!` and two middlewares. A service imports `ruststream_sqlx::prelude::*`, and tests run the production app on `TestApp::start` over a real database, SQLite in memory needing no server.
+
+This site holds the guides, one page per component and the architecture of the crate; the API reference is on docs.rs, and the framework itself is documented on the RustStream site.
+
+## Guides
+
+- [Guides](https://powersemmi.github.io/ruststream-sqlx/latest/): building a service on SQL databases with the crate, the inbox and the outbox
+- [Getting started](https://powersemmi.github.io/ruststream-sqlx/latest/guides/getting-started/): the features, a queue table, a first handler and its test on SQLite with no server
+- [Enqueueing jobs](https://powersemmi.github.io/ruststream-sqlx/latest/guides/enqueueing/): a task written in the transaction of the data it serves, later, or by priority
+- [Retries and dead letters](https://powersemmi.github.io/ruststream-sqlx/latest/guides/retries/): a retry now or later, a backoff the handler computes, the attempt cap and the dead letter
+- [Long jobs and the claim form](https://powersemmi.github.io/ruststream-sqlx/latest/guides/claim-forms/): the row lock, the lease and the advisory lock, and what each does after a crash
+- [Ordering](https://powersemmi.github.io/ruststream-sqlx/latest/guides/ordering/): FIFO groups and partition keys
+- [Transactional handlers](https://powersemmi.github.io/ruststream-sqlx/latest/guides/transactional/): a handler that writes through its delivery's transaction, committed with the acknowledgement
+- [Several instances](https://powersemmi.github.io/ruststream-sqlx/latest/guides/scaling/): several processes on one table, workers, the pool they need, and waking on a publish
+- [Relaying to another broker](https://powersemmi.github.io/ruststream-sqlx/latest/guides/relay/): an event row committed with the business data, and an inbox handler that publishes it to another RustStream broker
+- [The outbox](https://powersemmi.github.io/ruststream-sqlx/latest/guides/outbox/): tracking what a service publishes until a consumer has processed it
+- [Testing](https://powersemmi.github.io/ruststream-sqlx/latest/guides/testing/): `TestApp::start` on the production app over a real database, with a paused clock
+- [Running in production](https://powersemmi.github.io/ruststream-sqlx/latest/guides/production/): the schema, the pool and the database server
+
+## Components
+
+- [Components](https://powersemmi.github.io/ruststream-sqlx/latest/components/): the parts of the crate a service uses, one page each
+- [SqlxBroker](https://powersemmi.github.io/ruststream-sqlx/latest/components/broker/): the broker over the service's pool, its connections, startup, shutdown, prelude and errors
+- [Inbox](https://powersemmi.github.io/ruststream-sqlx/latest/components/tables/): `#[derive(Inbox)]`, the column roles, `InboxSpec` by hand, the insert, events of the service's own and the checked mode
+- [Payload](https://powersemmi.github.io/ruststream-sqlx/latest/components/messages/): payload mode, row mode, and a row that does not decode
+- [Headers](https://powersemmi.github.io/ruststream-sqlx/latest/components/headers/): a headers column, `HeaderColumn`, the headers layout with `InboxHeaders`, `HeaderField` and a fetch over a join
+- [InboxQueue](https://powersemmi.github.io/ruststream-sqlx/latest/components/subscriptions/): a subscription to one queue: the poll interval, workers, batches, FIFO groups, dedicated threads and subscriptions by name
+- [Forms](https://powersemmi.github.io/ruststream-sqlx/latest/components/forms/): the row lock, the lease and the advisory lock forms, and a lock of the service's own
+- [Outcomes](https://powersemmi.github.io/ruststream-sqlx/latest/components/settlement/): what each handler outcome does to a row, `retry_after` and the dead letter
+- [Transactional](https://powersemmi.github.io/ruststream-sqlx/latest/components/transactions/): `.transactional()` and `Ctx<keys::Tx<DB>>`, and the isolation level or SQLite mode
+- [Context](https://powersemmi.github.io/ruststream-sqlx/latest/components/context/): `Ctx<keys::..>`: the transaction, the pool and the attempt
+- [Time](https://powersemmi.github.io/ruststream-sqlx/latest/components/time/): "now" from the host, the database or a clock of the service's own, and the time types
+- [Repository](https://powersemmi.github.io/ruststream-sqlx/latest/components/publishing/): a publish written into a table through the service's own `Publish`, and routes
+- [Wake](https://powersemmi.github.io/ruststream-sqlx/latest/components/wake/): a publish that wakes its subscriptions, and `LISTEN/NOTIFY` on Postgres
+- [Databases](https://powersemmi.github.io/ruststream-sqlx/latest/components/databases/): Postgres, MySQL and MariaDB, SQLite, an `AnyPool`, and a dialect of the service's own
+- [AsyncAPI](https://powersemmi.github.io/ruststream-sqlx/latest/components/asyncapi/): the server and the channels the generated document names, behind the `asyncapi` feature
+- [Testing](https://powersemmi.github.io/ruststream-sqlx/latest/components/testing/): `TestApp::start` over a real database behind the `testing` feature, and the same body live
+- [Transactional outbox](https://powersemmi.github.io/ruststream-sqlx/latest/components/outbox/): the record, the registry, the middlewares, the republish, `wrap`, the pool and the test switch
+
+## Architecture
+
+- [Architecture](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/): how a queue in a SQL table works, where the crate sits between the database and the RustStream runtime, and what that costs
+- [Tables](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/queues/): a row is a message, a group is a queue, and the columns' roles decide when a row is due
+- [Claims](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/queues/claims/): the row lock, the lease and the advisory lock, each priced in connections
+- [Transactions](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/queues/transactions/): the transactions the crate opens for a delivery, and the one a transactional handler writes through
+- [Waking](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/queues/waking/): the poll interval, and a publish or a notification that cuts it short
+- [Outbox](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/outbox/): the record of each publish, its mark on acknowledgement, and the republish at startup
+- [Design](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/design/): between the RustStream runtime and the service's pool, with SQL built once per subscription
+- [Lifecycle](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/lifecycle/): `new`, `connect`, the statements prepared at startup, and `shutdown`
+- [Path](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/path/): one row from the claim through the handler and the reply to its settlement
+- [Settlement](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/settlement/): what each outcome writes into a queue table in each claim form
+- [Lanes](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/lanes/): a claim in flight per free worker within the pool, and `workers_by_key(n)` lanes
+- [Benchmarks](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/benchmarks/): throughput against a raw sqlx loop, the outbox's cost to an app, and the instructions and allocations of the crate's code
+- [Benchmarks: Numbers](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/benchmarks/numbers/): what each published number measures, and what it does not allow you to conclude
+- [Benchmarks: Methodology](https://powersemmi.github.io/ruststream-sqlx/latest/architecture/benchmarks/methodology/): the three loops, the run on a real database, the throughput grid and the code count
+
+## Optional
+
+- [API reference](https://docs.rs/ruststream-sqlx): the full rustdoc of the crate, whose overview maps each topic to its page here
+- [RustStream llms.txt](https://powersemmi.github.io/ruststream/llms.txt): the index of the framework's own documentation
+- [Source](https://github.com/powersemmi/ruststream-sqlx): the crate's repository

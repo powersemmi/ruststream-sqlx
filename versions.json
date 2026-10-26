@@ -1,0 +1,14 @@
+[
+  {
+    "version": "next",
+    "title": "next (unreleased)",
+    "aliases": []
+  },
+  {
+    "version": "0.7",
+    "title": "0.7",
+    "aliases": [
+      "latest"
+    ]
+  }
+]
