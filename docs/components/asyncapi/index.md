@@ -25,7 +25,7 @@ A broker made with [`from_url`](api:ruststream_sqlx::SqlxBroker::from_url) build
 The dependency line:
 
 ```toml
-ruststream-sqlx = { version = "0.7", features = ["inbox", "postgres", "asyncapi"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "postgres", "asyncapi"] }
 ```
 
 The service registers its broker under the label `postgres`, the key of its server in the document.

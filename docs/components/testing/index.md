@@ -40,7 +40,7 @@ The dependency line:
 
 ```toml
 [dev-dependencies]
-ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono", "testing"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "sqlite", "chrono", "testing"] }
 ```
 
 The first test publishes an image and reads how the handler settled it: the first attempt puts it off for a minute.

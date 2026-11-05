@@ -14,6 +14,7 @@ A table without a payload column is in row mode: a handler takes the struct itse
 A struct without a `#[field(payload)]` field, or a description without `.payload(..)`, is in row mode.
 Its handler takes `&Row`, lent by the delivery with no codec and no copy.
 A [batch](../subscriptions/batches.md) handler takes `&[Row]`, the rows of one claim in claim order, as a [`RowBatch`](api:ruststream_sqlx::RowBatch).
+The runtime allocates one batch per worker with room for `batch(n)` and every claim fills it again, so a batch allocates nothing after startup.
 The struct derives `Clone`, because the test harness keeps a copy of each value, and does not derive `Deserialize`: a type that deserializes rides the codec.
 Either mistake is a compile error.
 

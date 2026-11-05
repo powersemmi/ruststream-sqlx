@@ -15,8 +15,8 @@ import TabItem from '@theme/TabItem';
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json", "logging"] }
-ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono"] }
+ruststream = { version = "0.8", features = ["macros", "json", "logging"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "sqlite", "chrono"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "derive", "chrono"] }
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 
 [dev-dependencies]
-ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono", "testing"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "sqlite", "chrono", "testing"] }
 ```
 
 `ruststream` 是框架本身：`macros` 提供属性宏，`json` 提供默认编解码器，`logging` 把服务的日志打印到终端。`ruststream-sqlx` 为队列提供服务，`sqlx` 是服务访问自己数据库时已经在用的客户端。`testing` feature 加入测试所运行的[进程内模式](../components/testing/index.md)。

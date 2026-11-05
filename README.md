@@ -65,15 +65,15 @@ middlewares wrap inbox handlers as they wrap any other.
 
 ```toml
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json"] }
-ruststream-sqlx = { version = "0.7", features = ["inbox", "outbox", "postgres"] }
+ruststream = { version = "0.8", features = ["macros", "json"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "outbox", "postgres"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "derive", "chrono"] }
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
-ruststream-sqlx = { version = "0.7", features = ["testing"] }
+ruststream-sqlx = { version = "0.8", features = ["testing"] }
 ```
 
 `inbox` and `outbox` turn the components on, each independently of the other. A driver feature
@@ -128,12 +128,9 @@ async fn send(email: &Email) -> HandlerOutcome {
 
 fn service(options: PgConnectOptions) -> RustStream {
     let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        broker.route::<SendEmail>("emails"),
-        |b| {
-            b.include(send);
-        },
-    )
+    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker.route::<SendEmail>("emails"), |b| {
+        b.include(send)
+    })
 }
 
 #[ruststream::app]
@@ -227,9 +224,10 @@ fn app() -> impl App {
             Ok::<_, Infallible>(())
         })
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(place).out_reply(Publish);
-            b.include(fulfil);
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(place)
+                .out_reply(Publish)
+                .include(fulfil)
         })
 }
 ```
