@@ -11,8 +11,8 @@
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "order_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
 /// pub struct OrderJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -23,12 +23,12 @@
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Order {
 ///     id: u64,
 /// }
 ///
-/// # [subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
 /// async fn fulfil(order: &Order) -> HandlerOutcome {
 ///     tracing::info!(order.id, "fulfilling");
 ///     HandlerOutcome::ack()
@@ -80,8 +80,8 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "charge_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "charge_jobs")]
 /// pub struct ChargeJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -92,13 +92,13 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Charge {
 ///     order: u64,
 /// }
 ///
 /// # async fn try_charge(_: &Charge) -> bool { true }
-/// # [subscriber(InboxQueue::<ChargeJob>::new("charges"))]
+/// #[subscriber(InboxQueue::<ChargeJob>::new("charges"))]
 /// async fn charge(request: &Charge, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
 ///     tracing::info!(request.order, ?attempt, "charging");
 ///     if try_charge(request).await { HandlerOutcome::ack() } else { HandlerOutcome::retry() }

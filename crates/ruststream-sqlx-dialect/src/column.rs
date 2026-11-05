@@ -13,7 +13,7 @@
 ///
 /// /// SQL Server, a database without a built-in dialect, recording when a handler last extended
 /// /// its lease: every lease table of the service has a `seen_at` column.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Lease for Mssql {
@@ -134,7 +134,7 @@ impl<'a> Column<'a> {
     ///
     /// /// SQL Server, a database without a built-in dialect; the service's tables take their rows
     /// /// by row lock.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -192,7 +192,7 @@ impl<'a> Column<'a> {
     /// use ruststream_sqlx_dialect::{Dialect, Param, Statement, StatementError, TableSpec};
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {

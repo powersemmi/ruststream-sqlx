@@ -126,8 +126,8 @@ impl<DB: Database> Shared<DB> {
 /// use serde::Serialize;
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "cleanup_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "cleanup_jobs")]
 /// pub struct Cleanup {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -148,8 +148,8 @@ impl<DB: Database> Shared<DB> {
 ///     }
 /// }
 ///
-/// # [derive(Serialize, Outgoing)]
-/// # [outgoing(name = "cleanup")]
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "cleanup")]
 /// struct Sweep {
 ///     older_than_days: u32,
 /// }

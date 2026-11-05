@@ -113,8 +113,8 @@ where
 /// use serde::Deserialize;
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -138,13 +138,13 @@ where
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
 /// // `emails` is a name: its route leads it to `email_jobs`, and each delivery settles there.
-/// # [subscriber("emails")]
+/// #[subscriber("emails")]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     if email.to.is_empty() {
 ///         return HandlerOutcome::drop();
@@ -341,8 +341,8 @@ pub(crate) type ErasedStream =
 /// use serde::Deserialize;
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "report_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "report_jobs")]
 /// pub struct Report {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -366,20 +366,20 @@ pub(crate) type ErasedStream =
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Request {
 ///     day: String,
 /// }
 ///
 /// // Each by-name mount opens a `NamedSubscriber`; the route's prefix leads both names into
 /// // `report_jobs`, and each reads its own group.
-/// # [subscriber("reports.daily")]
+/// #[subscriber("reports.daily")]
 /// async fn daily(request: &Request) -> HandlerOutcome {
 ///     tracing::info!(day = %request.day, "daily report");
 ///     HandlerOutcome::ack()
 /// }
 ///
-/// # [subscriber("reports.weekly")]
+/// #[subscriber("reports.weekly")]
 /// async fn weekly(request: &Request) -> HandlerOutcome {
 ///     tracing::info!(day = %request.day, "weekly report");
 ///     HandlerOutcome::ack()

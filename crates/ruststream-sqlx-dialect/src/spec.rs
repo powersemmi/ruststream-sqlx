@@ -44,7 +44,7 @@ enum Grouping<'a> {
 ///
 /// /// SQL Server, a database without a built-in dialect, keeping the finished rows of a table with
 /// /// groups in its `done` group.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {

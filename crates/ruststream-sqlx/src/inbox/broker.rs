@@ -117,8 +117,8 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -142,18 +142,18 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
 /// }
 ///
-/// # [ruststream::app]
+/// #[ruststream::app]
 /// fn app() -> impl App {
 ///     // The options read the `PG*` environment variables; the broker builds the pool when the
 ///     // service starts and closes it when the service stops.
@@ -197,8 +197,8 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 /// use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 /// use sqlx::{Connection, Sqlite, SqliteConnection, SqlitePool};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "thumbnail_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "thumbnail_jobs")]
 /// pub struct MakeThumbnail {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -223,12 +223,12 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///     }
 /// }
 ///
-/// # [derive(Serialize, Deserialize, Outgoing)]
+/// #[derive(Serialize, Deserialize, Outgoing)]
 /// pub struct Image {
 ///     path: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<MakeThumbnail>::new("thumbnails"))]
+/// #[subscriber(InboxQueue::<MakeThumbnail>::new("thumbnails"))]
 /// async fn thumbnail(image: &Image) -> HandlerOutcome {
 ///     tracing::info!(path = %image.path, "making a thumbnail");
 ///     HandlerOutcome::ack()
@@ -324,8 +324,8 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     /// use serde::Deserialize;
     /// use sqlx::postgres::PgPoolOptions;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -335,18 +335,18 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()
     /// }
     ///
-    /// # [ruststream::app]
+    /// #[ruststream::app]
     /// fn app() -> impl App {
     ///     let url = env::var("DATABASE_URL").unwrap_or_else(|_| "postgres://localhost/mail".into());
     ///     // Nothing connects here: the broker builds the pool when the service starts.
@@ -384,8 +384,8 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     /// use serde::Deserialize;
     /// use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -395,18 +395,18 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()
     /// }
     ///
-    /// # [ruststream::app]
+    /// #[ruststream::app]
     /// fn app() -> impl App {
     ///     // The options read the `PG*` environment variables; the application name is the
     ///     // service's own.
@@ -451,8 +451,8 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     /// use serde::Deserialize;
     /// use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -462,12 +462,12 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()
@@ -481,7 +481,7 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///
     /// // The service shares the pool with code of its own, so it builds the pool in its `main`,
     /// // inside the runtime, and closes it after the app.
-    /// # [tokio::main]
+    /// #[tokio::main]
     /// pub async fn main() -> Result<(), Box<dyn Error>> {
     ///     // A lazy pool: nothing connects before the service starts. The options read the
     ///     // `PG*` environment variables.
@@ -539,7 +539,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use sqlx::PgPool;
     ///
     /// /// Postgres with statements of the service's own.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Audited;
     /// # impl Dialect for Audited {
     /// #     fn name(&self) -> &'static str { "audited" }
@@ -560,8 +560,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// #     fn lock_claim(&self, spec: &TableSpec<'_>, shape: ClaimShape) -> Result<Statement, StatementError> { dialect::Postgres.lock_claim(spec, shape) }
     /// # }
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -571,12 +571,12 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()
@@ -635,8 +635,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use serde::{Deserialize, Serialize};
     /// use sqlx::{PgConnection, PgPool, Postgres};
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "report_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "report_jobs")]
     /// pub struct Report {
     ///     #[field(id, generated)]
     ///     id: i64,
@@ -660,19 +660,19 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     }
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Daily {
     ///     day: u32,
     /// }
     ///
-    /// # [derive(Serialize, Outgoing)]
-    /// # [outgoing(name = "reports.weekly")]
+    /// #[derive(Serialize, Outgoing)]
+    /// #[outgoing(name = "reports.weekly")]
     /// struct Weekly {
     ///     week: u32,
     /// }
     ///
     /// // Read by name from `report_jobs`, answered with a row of `report_jobs` in group `reports.weekly`.
-    /// # [subscriber("reports.daily", reply)]
+    /// #[subscriber("reports.daily", reply)]
     /// async fn roll_up(daily: &Daily) -> Weekly {
     ///     Weekly { week: daily.day / 7 }
     /// }
@@ -716,8 +716,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -727,12 +727,12 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()
@@ -779,8 +779,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "video_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "video_jobs")]
     /// pub struct Transcode {
     ///     #[field(id, generated)]
     ///     id: i64,
@@ -790,12 +790,12 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Video {
     ///     path: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<Transcode>::new("videos"))]
+    /// #[subscriber(InboxQueue::<Transcode>::new("videos"))]
     /// async fn transcode(video: &Video) -> HandlerOutcome {
     ///     tracing::info!(path = %video.path, "transcoding");
     ///     HandlerOutcome::ack()
@@ -840,7 +840,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// # #[derive(serde::Deserialize)]
     /// # struct Image { path: String }
     ///
-    /// # [subscriber(InboxQueue::<ScanJob>::new("scans"))]
+    /// #[subscriber(InboxQueue::<ScanJob>::new("scans"))]
     /// async fn scan(image: &Image, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
     ///     let noted = sqlx::query("INSERT INTO scanned (path) VALUES ($1)")
     ///         .bind(&image.path)
@@ -900,8 +900,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -911,12 +911,12 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()

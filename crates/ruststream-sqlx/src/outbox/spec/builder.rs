@@ -35,7 +35,7 @@ use super::{Declaration, Headers, OwnEvent, ProcessedAt, Push};
 /// use ruststream_sqlx::outbox::{self, Outbox, OutboxSpec, OutboxTable, TrackedName};
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(sqlx::FromRow)]
+/// #[derive(sqlx::FromRow)]
 /// pub struct OrderEvent {
 ///     id: i64,
 ///     name: String,
@@ -426,7 +426,7 @@ impl<Settings> OutboxSpec<Settings> {
     /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
     /// use sqlx::{PgConnection, Postgres};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct OrderEvent {
     ///     id: i64,
     ///     name: String,

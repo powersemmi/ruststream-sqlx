@@ -111,8 +111,8 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// use sqlx::PgPool;
 ///
 /// /// Changes to push to a CRM, one group per customer, each group in order.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "crm_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "crm_jobs")]
 /// pub struct SyncChange {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -122,13 +122,13 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Change {
 ///     field: String,
 /// }
 ///
 /// // The mount's subscription is an `InboxSubscriber<Postgres, SyncChange>` reading group `acme`.
-/// # [subscriber(InboxQueue::<SyncChange>::new("acme"))]
+/// #[subscriber(InboxQueue::<SyncChange>::new("acme"))]
 /// async fn push(change: &Change) -> HandlerOutcome {
 ///     tracing::info!(field = %change.field, "pushing");
 ///     HandlerOutcome::ack()
@@ -154,8 +154,8 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -165,14 +165,14 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Email {
 ///     to: String,
 /// }
 ///
 /// # async fn deliver(email: &Email) -> bool { !email.to.is_empty() }
 /// // One claim is the batch, and each email settles its own row.
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send_all(emails: &[Email]) -> Vec<HandlerOutcome> {
 ///     let mut outcomes = Vec::with_capacity(emails.len());
 ///     for email in emails {

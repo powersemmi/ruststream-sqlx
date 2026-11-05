@@ -104,8 +104,8 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -113,7 +113,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
@@ -122,7 +122,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// # async fn deliver(_: &Email) -> Sent { Sent::Yes }
 /// // Each claimed row reaches `send` as an `InboxDelivery<Postgres, SendEmail>`, and what the
 /// // handler returns settles it.
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     match deliver(email).await {
 ///         Sent::Yes => HandlerOutcome::ack(),
@@ -152,8 +152,8 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// use sqlx::PgPool;
 ///
 /// /// A mail to send: the table has no payload column, so a handler takes the row itself.
-/// # [derive(Inbox, sqlx::FromRow, Clone)]
-/// # [inbox(table = "mail_jobs")]
+/// #[derive(Inbox, sqlx::FromRow, Clone)]
+/// #[inbox(table = "mail_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -164,7 +164,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///
 /// # async fn deliver(_: &str) -> bool { true }
 /// // The delivery lends `send` its row and reports the attempt the table counted.
-/// # [subscriber(InboxQueue::<SendEmail>::new("mail"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("mail"))]
 /// async fn send(email: &SendEmail, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
 ///     if deliver(&email.to).await {
 ///         HandlerOutcome::ack()
@@ -197,8 +197,8 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -210,12 +210,12 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Email {
 ///     to: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()

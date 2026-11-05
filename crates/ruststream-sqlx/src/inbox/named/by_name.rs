@@ -80,7 +80,7 @@ use crate::inbox::BuiltIn;
 /// use sqlx::{PgPool, Postgres};
 ///
 /// /// A dialect of the service's own over Postgres.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Audited;
 /// # impl Dialect for Audited {
 /// #     fn name(&self) -> &'static str { "audited" }
@@ -113,8 +113,8 @@ use crate::inbox::BuiltIn;
 ///     }
 /// }
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -127,12 +127,12 @@ use crate::inbox::BuiltIn;
 /// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
 /// # }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// # [subscriber("emails")]
+/// #[subscriber("emails")]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()

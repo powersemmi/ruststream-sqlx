@@ -37,7 +37,7 @@ setting!(
     /// use sqlx::types::Json;
     /// use sqlx::{PgConnection, PgPool, Postgres};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct OrderEvent {
     ///     id: i64,
     ///     name: String,
@@ -115,7 +115,7 @@ setting!(
     /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
     /// use sqlx::{PgConnection, PgPool, Postgres};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct OrderEvent {
     ///     id: i64,
     ///     name: String,
@@ -191,7 +191,7 @@ pub mod own {
         /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
         /// use sqlx::{PgConnection, PgPool, Postgres};
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct OrderEvent {
         ///     id: i64,
         ///     name: String,
@@ -267,7 +267,7 @@ pub mod own {
         /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
         /// use sqlx::{PgConnection, PgPool, Postgres};
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct OrderEvent {
         ///     id: i64,
         ///     name: String,
@@ -347,7 +347,7 @@ pub mod own {
         /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
         /// use sqlx::{PgConnection, PgPool, Postgres};
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct OrderEvent {
         ///     id: i64,
         ///     name: String,
@@ -424,7 +424,7 @@ pub mod own {
         /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
         /// use sqlx::{PgConnection, PgPool, Postgres};
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct OrderEvent {
         ///     id: i64,
         ///     name: String,
@@ -505,7 +505,7 @@ pub mod own {
         /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
         /// use sqlx::{PgConnection, PgPool, Postgres};
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct OrderEvent {
         ///     id: i64,
         ///     name: String,

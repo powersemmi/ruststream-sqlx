@@ -133,8 +133,8 @@ impl Defaults {
 /// use sqlx::{PgConnection, Postgres};
 ///
 /// // outbox: id BIGSERIAL PRIMARY KEY, name TEXT, payload BYTEA; a processed record is deleted
-/// # [derive(Outbox, sqlx::FromRow)]
-/// # [outbox(table = "outbox")]
+/// #[derive(Outbox, sqlx::FromRow)]
+/// #[outbox(table = "outbox")]
 /// pub struct OrderEvent {
 ///     #[field(id)]
 ///     id: i64,

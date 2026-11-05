@@ -31,8 +31,8 @@ pub use tx::Tx;
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "report_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "report_jobs")]
 /// pub struct Report {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -42,14 +42,14 @@ pub use tx::Tx;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Request {
 ///     format: String,
 /// }
 ///
 /// // `InboxQueue::<Report>::new(..)` is an `InboxQueue<Report, Plain>`: the claim settles the row,
 /// // and the handler writes through connections of its own.
-/// # [subscriber(InboxQueue::<Report>::new("2026-10"))]
+/// #[subscriber(InboxQueue::<Report>::new("2026-10"))]
 /// async fn render(request: &Request) -> HandlerOutcome {
 ///     tracing::info!(format = %request.format, "rendering October");
 ///     HandlerOutcome::ack()
@@ -80,8 +80,8 @@ pub struct Plain;
 /// use ruststream_sqlx::prelude::*;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "signup_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "signup_jobs")]
 /// pub struct Signup {
 ///     #[field(id)]
 ///     id: i64,
@@ -89,12 +89,12 @@ pub struct Plain;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize)]
 /// struct Account {
 ///     email: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<Signup>::new("signups"))]
+/// #[subscriber(InboxQueue::<Signup>::new("signups"))]
 /// async fn open_account(account: &Account, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let opened = sqlx::query("INSERT INTO accounts (email) VALUES ($1)")
 ///         .bind(&account.email)
@@ -152,8 +152,8 @@ impl InboxMode for Transactional {
 /// use ruststream_sqlx::prelude::*;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "invoice_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "invoice_jobs")]
 /// pub struct InvoiceJob {
 ///     #[field(id)]
 ///     id: i64,
@@ -161,12 +161,12 @@ impl InboxMode for Transactional {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize)]
 /// struct Invoice {
 ///     number: i64,
 /// }
 ///
-/// # [subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
+/// #[subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
 /// async fn book(invoice: &Invoice, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let booked = sqlx::query("INSERT INTO booked (number) VALUES ($1)")
 ///         .bind(invoice.number)
@@ -224,8 +224,8 @@ pub trait InboxSettings<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// use ruststream_sqlx::prelude::*;
     /// use sqlx::{PgPool, Postgres};
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "stock_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "stock_jobs")]
     /// pub struct StockJob {
     ///     #[field(id)]
     ///     id: i64,
@@ -233,13 +233,13 @@ pub trait InboxSettings<Mk = AsDeclared>: IntoDeclared<Mk> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize)]
     /// struct Restock {
     ///     sku: String,
     ///     count: i32,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<StockJob>::new("restocks"))]
+    /// #[subscriber(InboxQueue::<StockJob>::new("restocks"))]
     /// async fn restock(order: &Restock, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
     ///     let raised = sqlx::query("UPDATE stock SET count = count + $1 WHERE sku = $2")
     ///         .bind(order.count)
@@ -284,8 +284,8 @@ pub trait InboxSettings<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// use ruststream_sqlx::prelude::*;
     /// use sqlx::{PgPool, Postgres};
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "scan_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "scan_jobs")]
     /// pub struct ScanJob {
     ///     #[field(id)]
     ///     id: i64,
@@ -293,12 +293,12 @@ pub trait InboxSettings<Mk = AsDeclared>: IntoDeclared<Mk> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(serde::Deserialize)]
+    /// #[derive(serde::Deserialize)]
     /// struct Image {
     ///     path: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<ScanJob>::new("scans"))]
+    /// #[subscriber(InboxQueue::<ScanJob>::new("scans"))]
     /// async fn scan(image: &Image, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
     ///     let noted = sqlx::query("INSERT INTO scanned (path) VALUES ($1)")
     ///         .bind(&image.path)

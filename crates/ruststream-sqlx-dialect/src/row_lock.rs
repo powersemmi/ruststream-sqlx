@@ -25,7 +25,7 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// // A table without `locked_until` or `advisory_lock` mounts on `Mssql`. The claim holds an
@@ -103,7 +103,7 @@ pub trait RowLock: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl RowLock for Mssql {

@@ -31,8 +31,8 @@ use super::time::LeaseRow;
 /// use ruststream_sqlx::{Claim, Inbox};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs", custom(claim))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", custom(claim))]
 /// pub struct Job {
 ///     #[field(id)]
 ///     id: i64,
@@ -96,8 +96,8 @@ pub trait Claim<DB: Database>: InboxRow {
 /// use sqlx::{PgConnection, Postgres};
 ///
 /// /// A job whose message is the body of the order it refers to.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs", custom(fetch))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", custom(fetch))]
 /// pub struct Job {
 ///     #[field(id)]
 ///     id: i64,
@@ -137,8 +137,8 @@ pub trait Claim<DB: Database>: InboxRow {
 /// // orders: id BIGINT PRIMARY KEY, customer TEXT, total BIGINT
 /// /// The queue table: the columns that run the queue, and the headers `tenant`, `trace` and
 /// /// `order_id`.
-/// # [derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
-/// # [inbox(table = "order_jobs")]
+/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
 /// pub struct OrderHeaders {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -152,7 +152,7 @@ pub trait Claim<DB: Database>: InboxRow {
 /// }
 ///
 /// /// A job and its note, read from the queue table by the default fetch.
-/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
 /// pub struct OrderJob {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -161,8 +161,8 @@ pub trait Claim<DB: Database>: InboxRow {
 /// }
 ///
 /// /// A job and the order it is for, read by the service's own fetch over a join.
-/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
-/// # [inbox(custom(fetch))]
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// #[inbox(custom(fetch))]
 /// pub struct OrderMail {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -185,20 +185,20 @@ pub trait Claim<DB: Database>: InboxRow {
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Tenant {
 ///     tenant: String,
 ///     trace: Option<String>,
 /// }
 ///
-/// # [subscriber(InboxQueue::<OrderJob>::new("packing"))]
+/// #[subscriber(InboxQueue::<OrderJob>::new("packing"))]
 /// async fn pack(job: &OrderJob) -> HandlerOutcome {
 ///     tracing::info!(attempt = job.headers.attempt, note = ?job.note, "packing");
 ///     HandlerOutcome::ack()
 /// }
 ///
 /// // The header map is built from `OrderHeaders` on its first read, here by `Headers<Tenant>`.
-/// # [subscriber(InboxQueue::<OrderMail>::new("receipts"))]
+/// #[subscriber(InboxQueue::<OrderMail>::new("receipts"))]
 /// async fn send_receipt(mail: &OrderMail, Headers(tenant): Headers<Tenant>) -> HandlerOutcome {
 ///     tracing::info!(
 ///         tenant = %tenant.tenant,
@@ -418,8 +418,8 @@ settle_event!(
 /// use ruststream_sqlx::{Extend, Inbox};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs", custom(extend))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", custom(extend))]
 /// pub struct Job {
 ///     #[field(id)]
 ///     id: i64,
@@ -497,8 +497,8 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// use ruststream_sqlx::{Inbox, Lock, Unlock};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
 /// pub struct Job {
 ///     #[field(id)]
 ///     id: i64,
@@ -541,8 +541,8 @@ pub trait Extend<DB: Database>: LeaseRow {
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
 /// // payouts: id BIGSERIAL PRIMARY KEY, account_id BIGINT NOT NULL, payload BYTEA NOT NULL
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "payouts", advisory_lock = "{account_id}", custom(lock, unlock))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "payouts", advisory_lock = "{account_id}", custom(lock, unlock))]
 /// pub struct Payout {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -571,13 +571,13 @@ pub trait Extend<DB: Database>: LeaseRow {
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Transfer {
 ///     cents: i64,
 /// }
 ///
 /// # async fn transfer_to_bank(transfer: &Transfer) { let _ = transfer.cents; }
-/// # [subscriber(InboxQueue::<Payout>::new("payouts"))]
+/// #[subscriber(InboxQueue::<Payout>::new("payouts"))]
 /// async fn pay(transfer: &Transfer) -> HandlerOutcome {
 ///     transfer_to_bank(transfer).await;
 ///     HandlerOutcome::ack()
@@ -627,8 +627,8 @@ pub trait Lock<DB: Database>: InboxRow {
 /// use ruststream_sqlx::{Inbox, Lock, Unlock};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", advisory_lock = "jobs-{id}", custom(lock, unlock))]
 /// pub struct Job {
 ///     #[field(id)]
 ///     id: i64,
@@ -693,8 +693,8 @@ pub trait Unlock<DB: Database>: InboxRow {
 /// use ruststream_sqlx::{Inbox, Publish};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -759,8 +759,8 @@ pub trait Publish<DB: Database>: InboxRow {
 /// use ruststream_sqlx::{Inbox, Insert, Publish};
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -803,7 +803,7 @@ pub trait Publish<DB: Database>: InboxRow {
 /// use serde::{Deserialize, Serialize};
 /// use sqlx::{PgConnection, PgPool};
 ///
-/// # [derive(sqlx::FromRow, Clone)]
+/// #[derive(sqlx::FromRow, Clone)]
 /// pub struct SendEmail {
 ///     job_id: i64,
 ///     name: String,
@@ -814,7 +814,7 @@ pub trait Publish<DB: Database>: InboxRow {
 ///     attachments: Vec<Attachment>,
 /// }
 ///
-/// # [derive(Clone, Serialize, Deserialize)]
+/// #[derive(Clone, Serialize, Deserialize)]
 /// pub struct Attachment {
 ///     file: String,
 /// }
@@ -896,8 +896,8 @@ pub trait Insert<Connection>: Sync {
     /// use serde::Deserialize;
     /// use sqlx::{PgPool, Postgres};
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "signup_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "signup_jobs")]
     /// pub struct Signup {
     ///     #[field(id, generated)]
     ///     id: i64,
@@ -906,21 +906,21 @@ pub trait Insert<Connection>: Sync {
     /// }
     ///
     /// /// A welcome mail to send, in row mode: the handler of `welcome_jobs` takes the row itself.
-    /// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "welcome_jobs")]
+    /// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "welcome_jobs")]
     /// pub struct Welcome {
     ///     #[field(id, generated)]
     ///     id: i64,
     ///     email: String,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Account {
     ///     email: String,
     /// }
     ///
     /// // The welcome row commits with the signup's acknowledgement, or neither does.
-    /// # [subscriber(InboxQueue::<Signup>::new("signups"))]
+    /// #[subscriber(InboxQueue::<Signup>::new("signups"))]
     /// async fn open_account(account: &Account, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
     ///     let welcome = Welcome { id: 0, email: account.email.clone() };
     ///     match welcome.insert(&mut *tx).await {

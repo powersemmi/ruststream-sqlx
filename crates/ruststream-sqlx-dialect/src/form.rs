@@ -21,7 +21,7 @@ use crate::column::Column;
 ///
 /// /// SQL Server, a database without a built-in dialect; the service's advisory tables keep no
 /// /// groups, no claim order, no delays and no finished rows.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Advisory for Mssql {
@@ -103,7 +103,7 @@ pub enum KeyPart<'a> {
 /// use ruststream_sqlx_dialect::{Dialect, Form, Param, Statement, StatementError, TableSpec};
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -162,7 +162,7 @@ impl Form<'_> {
     /// use ruststream_sqlx_dialect::{Dialect, Form, Param, Statement, StatementError, TableSpec};
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {

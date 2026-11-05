@@ -86,8 +86,8 @@ pub(crate) use open::{Registration, open};
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -101,12 +101,12 @@ pub(crate) use open::{Registration, open};
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -131,8 +131,8 @@ pub(crate) use open::{Registration, open};
 /// use sqlx::PgPool;
 ///
 /// /// A page to send to the engineer on call: the row itself is the task.
-/// # [derive(Inbox, sqlx::FromRow, Clone)]
-/// # [inbox(table = "page_jobs")]
+/// #[derive(Inbox, sqlx::FromRow, Clone)]
+/// #[inbox(table = "page_jobs")]
 /// pub struct Page {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -145,7 +145,7 @@ pub(crate) use open::{Registration, open};
 /// }
 ///
 /// # async fn send_page(_: &str, _: &str) -> bool { true }
-/// # [subscriber(InboxQueue::<Page>::new("pages"))]
+/// #[subscriber(InboxQueue::<Page>::new("pages"))]
 /// async fn notify(page: &Page) -> HandlerOutcome {
 ///     if send_page(&page.on_call, &page.text).await {
 ///         HandlerOutcome::ack()
@@ -187,8 +187,8 @@ impl<Row> InboxQueue<Row> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "email_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "email_jobs")]
     /// pub struct SendEmail {
     ///     #[field(id, generated)]
     ///     job_id: i64,
@@ -198,14 +198,14 @@ impl<Row> InboxQueue<Row> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Email {
     ///     to: String,
     /// }
     ///
     /// // `emails` selects the rows of group `emails`; a table without a group column would deliver all
     /// // its rows here.
-    /// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+    /// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
     /// async fn send(email: &Email) -> HandlerOutcome {
     ///     tracing::info!(to = %email.to, "sending");
     ///     HandlerOutcome::ack()
@@ -247,8 +247,8 @@ impl<Row> InboxQueue<Row> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "alert_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "alert_jobs")]
     /// pub struct Alert {
     ///     #[field(id, generated)]
     ///     id: i64,
@@ -256,13 +256,13 @@ impl<Row> InboxQueue<Row> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Page {
     ///     on_call: String,
     /// }
     ///
     /// // An urgent queue looks again every 50 ms when it runs dry; the broker's other queues keep theirs.
-    /// # [subscriber(InboxQueue::<Alert>::new("alerts").poll_interval(Duration::from_millis(50)))]
+    /// #[subscriber(InboxQueue::<Alert>::new("alerts").poll_interval(Duration::from_millis(50)))]
     /// async fn notify(page: &Page) -> HandlerOutcome {
     ///     tracing::warn!(on_call = %page.on_call, "paging");
     ///     HandlerOutcome::ack()
@@ -306,8 +306,8 @@ impl<Row> InboxQueue<Row> {
     /// use serde::Deserialize;
     /// use sqlx::PgPool;
     ///
-    /// # [derive(Inbox, sqlx::FromRow)]
-    /// # [inbox(table = "report_jobs")]
+    /// #[derive(Inbox, sqlx::FromRow)]
+    /// #[inbox(table = "report_jobs")]
     /// pub struct Report {
     ///     #[field(id, generated)]
     ///     id: i64,
@@ -317,14 +317,14 @@ impl<Row> InboxQueue<Row> {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Request {
     ///     month: u32,
     /// }
     ///
     /// // The report of a renderer that crashed waits out a two-minute lease before another
     /// // process takes it.
-    /// # [subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(120)))]
+    /// #[subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(120)))]
     /// async fn render(request: &Request) -> HandlerOutcome {
     ///     tracing::info!(month = request.month, "rendering");
     ///     HandlerOutcome::ack()

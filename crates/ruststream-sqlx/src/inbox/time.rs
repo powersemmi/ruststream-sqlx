@@ -31,8 +31,8 @@ use super::InboxRow;
 ///
 /// // `retry_after` holds a `DateTime<Utc>`: the crate writes a delayed retry in that type, as the
 /// // service's own inserts write the column.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "webhook_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "webhook_jobs")]
 /// pub struct Webhook {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -42,13 +42,13 @@ use super::InboxRow;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Call {
 ///     url: String,
 /// }
 ///
 /// # async fn post(_: &str) -> bool { true }
-/// # [subscriber(InboxQueue::<Webhook>::new("webhooks"))]
+/// #[subscriber(InboxQueue::<Webhook>::new("webhooks"))]
 /// async fn notify(call: &Call) -> HandlerOutcome {
 ///     if post(&call.url).await {
 ///         return HandlerOutcome::ack();
@@ -140,8 +140,8 @@ impl QueueTime for time::OffsetDateTime {
 ///
 /// // `processed_at` is empty until the row is finished; an acknowledgement writes a
 /// // `DateTime<Utc>` into it and the row stays in the table.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "invoice_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "invoice_jobs")]
 /// pub struct InvoiceJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -151,12 +151,12 @@ impl QueueTime for time::OffsetDateTime {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Invoice {
 ///     number: u64,
 /// }
 ///
-/// # [subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
+/// #[subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
 /// async fn issue(invoice: &Invoice) -> HandlerOutcome {
 ///     tracing::info!(invoice.number, "issued");
 ///     HandlerOutcome::ack()
@@ -207,8 +207,8 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 /// use sqlx::PgPool;
 ///
 /// // `locked_until` makes `Report` a lease row: a claim writes the lease's expiry there and commits.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "report_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "report_jobs")]
 /// pub struct Report {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -218,14 +218,14 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Request {
 ///     month: u32,
 /// }
 ///
 /// // A lease row's subscription sets its own lease; the handler may run for minutes without a
 /// // transaction open.
-/// # [subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(300)))]
+/// #[subscriber(InboxQueue::<Report>::new("reports").lease(Duration::from_secs(300)))]
 /// async fn render(request: &Request) -> HandlerOutcome {
 ///     tracing::info!(month = request.month, "rendering");
 ///     HandlerOutcome::ack()
@@ -279,8 +279,8 @@ pub trait LeaseRow: InboxRow {
 ///     }
 /// }
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "reminder_jobs", clock = WholeSeconds)]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "reminder_jobs", clock = WholeSeconds)]
 /// pub struct Reminder {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -290,12 +290,12 @@ pub trait LeaseRow: InboxRow {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Note {
 ///     text: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<Reminder>::new("reminders"))]
+/// #[subscriber(InboxQueue::<Reminder>::new("reminders"))]
 /// async fn remind(note: &Note) -> HandlerOutcome {
 ///     tracing::info!(text = %note.text, "reminding");
 ///     // Back in an hour, counted from `WholeSeconds`.
@@ -332,8 +332,8 @@ pub trait Clock: Send + Sync + 'static {
 ///
 /// // Each table names where it reads "now": `Charge` the host's clock, the default, and
 /// // `MonthlyStatement` the database's.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "charge_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "charge_jobs")]
 /// pub struct Charge {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -343,8 +343,8 @@ pub trait Clock: Send + Sync + 'static {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "statement_jobs", clock = DatabaseClock)]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "statement_jobs", clock = DatabaseClock)]
 /// pub struct MonthlyStatement {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -354,18 +354,18 @@ pub trait Clock: Send + Sync + 'static {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Account {
 ///     id: u64,
 /// }
 ///
-/// # [subscriber(InboxQueue::<Charge>::new("charges"))]
+/// #[subscriber(InboxQueue::<Charge>::new("charges"))]
 /// async fn charge(account: &Account) -> HandlerOutcome {
 ///     tracing::info!(account.id, "charging");
 ///     HandlerOutcome::retry_after(Duration::from_secs(60))
 /// }
 ///
-/// # [subscriber(InboxQueue::<MonthlyStatement>::new("statements"))]
+/// #[subscriber(InboxQueue::<MonthlyStatement>::new("statements"))]
 /// async fn send_statement(account: &Account) -> HandlerOutcome {
 ///     tracing::info!(account.id, "sending the statement");
 ///     HandlerOutcome::retry_after(Duration::from_secs(60))
@@ -422,8 +422,8 @@ impl<C: Clock> TimeSource for C {
 ///     }
 /// }
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "replay_jobs", clock = Ahead)]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "replay_jobs", clock = Ahead)]
 /// pub struct Replay {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -433,12 +433,12 @@ impl<C: Clock> TimeSource for C {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Task {
 ///     n: u32,
 /// }
 ///
-/// # [subscriber(InboxQueue::<Replay>::new("replays"))]
+/// #[subscriber(InboxQueue::<Replay>::new("replays"))]
 /// async fn replay(task: &Task) -> HandlerOutcome {
 ///     tracing::info!(task.n, "replaying");
 ///     HandlerOutcome::ack()
@@ -483,8 +483,8 @@ impl Clock for SystemClock {
 /// use sqlx::PgPool;
 ///
 /// /// Tasks written by hosts whose clocks drift: every claim and every delay reads one clock.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "sync_jobs", clock = DatabaseClock)]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "sync_jobs", clock = DatabaseClock)]
 /// pub struct SyncJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -494,13 +494,13 @@ impl Clock for SystemClock {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Change {
 ///     record: u64,
 /// }
 ///
 /// # async fn push(_: &Change) -> bool { true }
-/// # [subscriber(InboxQueue::<SyncJob>::new("sync"))]
+/// #[subscriber(InboxQueue::<SyncJob>::new("sync"))]
 /// async fn sync(change: &Change) -> HandlerOutcome {
 ///     if push(change).await {
 ///         return HandlerOutcome::ack();

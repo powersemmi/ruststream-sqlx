@@ -40,8 +40,8 @@ use crate::inbox::tx::PoolTx;
 /// use ruststream_sqlx::prelude::*;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "payment_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "payment_jobs")]
 /// pub struct PaymentJob {
 ///     #[field(id)]
 ///     id: i64,
@@ -49,13 +49,13 @@ use crate::inbox::tx::PoolTx;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(serde::Deserialize)]
+/// #[derive(serde::Deserialize)]
 /// struct Payment {
 ///     account: String,
 ///     cents: i64,
 /// }
 ///
-/// # [subscriber(InboxQueue::<PaymentJob>::new("payments"))]
+/// #[subscriber(InboxQueue::<PaymentJob>::new("payments"))]
 /// async fn post(payment: &Payment, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let posted = sqlx::query("INSERT INTO ledger (account, cents) VALUES ($1, $2)")
 ///         .bind(&payment.account)

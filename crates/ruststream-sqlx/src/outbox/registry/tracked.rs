@@ -45,8 +45,8 @@ use crate::outbox::store::Store;
 ///     const NAME: &'static str = "orders";
 /// }
 ///
-/// # [derive(Serialize, Deserialize, Outgoing)]
-/// # [outgoing(name = "orders")]
+/// #[derive(Serialize, Deserialize, Outgoing)]
+/// #[outgoing(name = "orders")]
 /// pub struct OrderPlaced {
 ///     id: u64,
 /// }

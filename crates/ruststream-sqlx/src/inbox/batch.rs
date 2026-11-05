@@ -265,8 +265,8 @@ where
 /// use sqlx::PgPool;
 ///
 /// /// A mail to send: the table has no payload column, so a handler takes the rows themselves.
-/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
-/// # [inbox(table = "mail_jobs")]
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// #[inbox(table = "mail_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id)]
 ///     job_id: i64,
@@ -275,7 +275,7 @@ where
 ///
 /// # async fn deliver(_: &str) -> bool { true }
 /// /// Each claim of up to 50 rows reaches the handler as one slice; each mail settles on its own.
-/// # [subscriber(InboxQueue::<SendEmail>::new("mail"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("mail"))]
 /// async fn send(mails: &[SendEmail]) -> Vec<HandlerOutcome> {
 ///     let mut outcomes = Vec::with_capacity(mails.len());
 ///     for mail in mails {

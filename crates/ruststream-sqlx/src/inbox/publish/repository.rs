@@ -36,8 +36,8 @@ use crate::inbox::events::Publish;
 /// use serde::{Deserialize, Serialize};
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs")]
 /// pub struct Job {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -61,18 +61,18 @@ use crate::inbox::events::Publish;
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Signup {
 ///     email: String,
 /// }
 ///
-/// # [derive(Serialize, Outgoing)]
-/// # [outgoing(name = "welcome")]
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "welcome")]
 /// struct Welcome {
 ///     email: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<Job>::new("signups"), reply)]
+/// #[subscriber(InboxQueue::<Job>::new("signups"), reply)]
 /// async fn greet(signup: &Signup) -> Welcome {
 ///     Welcome { email: signup.email.clone() }
 /// }
@@ -142,8 +142,8 @@ where
 /// use serde::Serialize;
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "report_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "report_jobs")]
 /// pub struct ReportJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -164,8 +164,8 @@ where
 ///     }
 /// }
 ///
-/// # [derive(Serialize, Outgoing)]
-/// # [outgoing(name = "reports")]
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "reports")]
 /// pub struct Report {
 ///     month: u32,
 /// }

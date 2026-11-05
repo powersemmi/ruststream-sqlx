@@ -40,7 +40,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{Sqlite, SqlitePool};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct ScanJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -96,7 +96,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{MySql, MySqlPool};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct FirmwareUpdate {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -151,7 +151,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct OrderEvent {
     ///     id: i64,
     ///     body: Vec<u8>,
@@ -209,7 +209,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct MeterReading {
     ///     id: i64,
     ///     meter: Option<String>,
@@ -273,7 +273,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{MySql, MySqlPool};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct CallbackJob {
     ///     id: i64,
     ///     attempt: i16,
@@ -350,7 +350,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{Sqlite, SqlitePool};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Relay {
     ///     id: i64,
     ///     headers: Json<BTreeMap<String, String>>,
@@ -418,7 +418,7 @@ setting!(
     /// # use ruststream_sqlx::prelude::*;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Signal {
     ///     id: i64,
     ///     trace: Option<String>,
@@ -485,7 +485,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{MySql, MySqlPool};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Delivery {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -543,7 +543,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Import {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -599,7 +599,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Migration {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -669,7 +669,7 @@ setting!(
     ///     }
     /// }
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Digest {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -728,7 +728,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{Sqlite, SqlitePool};
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct PrintJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -793,7 +793,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct Callout {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -868,7 +868,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct RenderJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -937,7 +937,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct UploadJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1008,7 +1008,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct CrawlJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1078,7 +1078,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct QuoteJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1154,7 +1154,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct Comment {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1224,7 +1224,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct Charge {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1301,7 +1301,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct Transcode {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1381,7 +1381,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct Booking {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1459,7 +1459,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// # [derive(sqlx::FromRow)]
+        /// #[derive(sqlx::FromRow)]
         /// pub struct Rebalance {
         ///     id: i64,
         ///     payload: Vec<u8>,

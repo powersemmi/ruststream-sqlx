@@ -8,8 +8,8 @@
 //! use ruststream_sqlx::prelude::*;
 //! use sqlx::PgPool;
 //!
-//! # [derive(Inbox, sqlx::FromRow)]
-//! # [inbox(table = "jobs")]
+//! #[derive(Inbox, sqlx::FromRow)]
+//! #[inbox(table = "jobs")]
 //! pub struct Job {
 //!     #[field(id)]
 //!     id: i64,
@@ -19,12 +19,12 @@
 //!     payload: Vec<u8>,
 //! }
 //!
-//! # [derive(serde::Deserialize)]
+//! #[derive(serde::Deserialize)]
 //! struct Task {
 //!     n: u32,
 //! }
 //!
-//! # [subscriber(InboxQueue::<Job>::new("tasks"))]
+//! #[subscriber(InboxQueue::<Job>::new("tasks"))]
 //! async fn run(task: &Task, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
 //!     tracing::info!(task.n, ?attempt, "running");
 //!     HandlerOutcome::ack()

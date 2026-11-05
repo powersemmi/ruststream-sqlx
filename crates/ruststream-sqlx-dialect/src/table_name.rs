@@ -16,7 +16,7 @@ use thiserror::Error;
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -133,7 +133,7 @@ impl<'a> TableName<'a> {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -210,7 +210,7 @@ impl<'a> TableName<'a> {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {

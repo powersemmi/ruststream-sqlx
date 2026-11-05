@@ -20,7 +20,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -66,7 +66,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -112,7 +112,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -161,7 +161,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -207,7 +207,7 @@ pub trait Dialect: Debug + Send + Sync {
     ///
     /// /// SQL Server, a database without a built-in dialect; the service's tables take their rows
     /// /// by row lock.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -273,7 +273,7 @@ pub trait Dialect: Debug + Send + Sync {
     ///
     /// /// SQL Server, a database without a built-in dialect; the service's tables take their rows
     /// /// by row lock.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -329,7 +329,7 @@ pub trait Dialect: Debug + Send + Sync {
     ///
     /// /// SQL Server, a database without a built-in dialect; the service's tables take their rows
     /// /// by row lock.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -385,7 +385,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -432,7 +432,7 @@ pub trait Dialect: Debug + Send + Sync {
     ///
     /// /// SQL Server, a database without a built-in dialect; the service's tables take their rows
     /// /// by row lock.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -500,7 +500,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -567,7 +567,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -613,7 +613,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -675,7 +675,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -748,7 +748,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -810,7 +810,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::{Statement, StatementError, TableName, TableSpec};
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -857,7 +857,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::{Statement, StatementError, TableName, TableSpec};
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -929,7 +929,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -1007,7 +1007,7 @@ pub trait Dialect: Debug + Send + Sync {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {

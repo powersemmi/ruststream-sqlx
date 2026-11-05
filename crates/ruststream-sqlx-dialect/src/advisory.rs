@@ -36,7 +36,7 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// // A table with `advisory_lock` mounts on `Mssql`.
@@ -136,7 +136,7 @@ pub trait Advisory: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Advisory for Mssql {
@@ -186,7 +186,7 @@ pub trait Advisory: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Advisory for Mssql {
@@ -234,7 +234,7 @@ pub trait Advisory: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Advisory for Mssql {
@@ -293,7 +293,7 @@ pub trait Advisory: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// # [derive(Debug)]
+    /// #[derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Advisory for Mssql {

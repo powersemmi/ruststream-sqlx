@@ -33,7 +33,7 @@ use crate::TimeSource;
 /// use serde::Deserialize;
 /// use sqlx::{Sqlite, SqlitePool};
 ///
-/// # [derive(sqlx::FromRow)]
+/// #[derive(sqlx::FromRow)]
 /// pub struct EmailJob {
 ///     job_id: i64,
 ///     attempt: i16,
@@ -78,13 +78,13 @@ use crate::TimeSource;
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
 /// // An address the mail server refuses comes back a minute later.
-/// # [subscriber(InboxQueue::<EmailJob>::new("emails"))]
+/// #[subscriber(InboxQueue::<EmailJob>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     if email.to.ends_with("@example.com") {
 ///         HandlerOutcome::ack()
@@ -140,7 +140,7 @@ pub trait InboxTable: Sized + Send + Sync + 'static {
 /// use serde::Deserialize;
 /// use sqlx::{Sqlite, SqlitePool};
 ///
-/// # [derive(sqlx::FromRow)]
+/// #[derive(sqlx::FromRow)]
 /// pub struct SyncJob {
 ///     id: i64,
 ///     payload: Vec<u8>,
@@ -175,13 +175,13 @@ pub trait InboxTable: Sized + Send + Sync + 'static {
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Sync {
 ///     tenant: String,
 /// }
 ///
 /// // One tenant syncs at a time: the lock key holds the tenant.
-/// # [subscriber(InboxQueue::<SyncJob>::new("sync"))]
+/// #[subscriber(InboxQueue::<SyncJob>::new("sync"))]
 /// async fn sync(job: &Sync) -> HandlerOutcome {
 ///     tracing::info!(tenant = %job.tenant, "syncing");
 ///     HandlerOutcome::ack()
@@ -247,7 +247,7 @@ impl InboxSpec {
     /// # use sqlx::PgPool;
     ///
     /// // webhooks: id BIGSERIAL PRIMARY KEY, body BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Webhook {
     ///     id: i64,
     ///     body: Vec<u8>,
@@ -313,7 +313,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct ReceiptJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -385,7 +385,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct InvoiceJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -448,7 +448,7 @@ impl<Settings> InboxSpec<Settings> {
     /// use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct MediaJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -475,18 +475,18 @@ impl<Settings> InboxSpec<Settings> {
     ///     }
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Upload {
     ///     file: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<MediaJob>::new("thumbnails"))]
+    /// #[subscriber(InboxQueue::<MediaJob>::new("thumbnails"))]
     /// async fn thumbnail(upload: &Upload) -> HandlerOutcome {
     ///     tracing::info!(file = %upload.file, "drawing a thumbnail");
     ///     HandlerOutcome::ack()
     /// }
     ///
-    /// # [subscriber(InboxQueue::<MediaJob>::new("transcodes"))]
+    /// #[subscriber(InboxQueue::<MediaJob>::new("transcodes"))]
     /// async fn transcode(upload: &Upload) -> HandlerOutcome {
     ///     tracing::info!(file = %upload.file, "transcoding");
     ///     HandlerOutcome::ack()
@@ -523,7 +523,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // tickets: id BIGSERIAL PRIMARY KEY, severity SMALLINT NOT NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Ticket {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -587,7 +587,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // shipments: id BIGSERIAL PRIMARY KEY, carrier TEXT NOT NULL, tracking TEXT NOT NULL
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Shipment {
     ///     id: i64,
     ///     carrier: String,
@@ -610,7 +610,7 @@ impl<Settings> InboxSpec<Settings> {
     ///     type Axis = SoloCarried<Self>;
     /// }
     ///
-    /// # [subscriber(InboxQueue::<Shipment>::new("shipments"))]
+    /// #[subscriber(InboxQueue::<Shipment>::new("shipments"))]
     /// async fn track(shipment: &Shipment) -> HandlerOutcome {
     ///     tracing::info!(carrier = %shipment.carrier, tracking = %shipment.tracking, "tracking");
     ///     HandlerOutcome::ack()
@@ -648,14 +648,14 @@ impl<Settings> InboxSpec<Settings> {
     /// # use ruststream_sqlx::prelude::*;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct RefundHeaders {
     ///     id: i64,
     ///     tenant: String,
     ///     order_id: i64,
     /// }
     ///
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Refund {
     ///     #[sqlx(flatten)]
     ///     headers: RefundHeaders,
@@ -727,13 +727,13 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// /// The address type the service shares with its other tables.
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Address {
     ///     street: String,
     ///     city: String,
     /// }
     ///
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Parcel {
     ///     id: i64,
     ///     #[sqlx(flatten)]
@@ -794,7 +794,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // report_jobs: id BIGSERIAL PRIMARY KEY, locked_until TIMESTAMPTZ NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct ReportJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -863,7 +863,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // postings: id BIGSERIAL PRIMARY KEY, account TEXT NOT NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Posting {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -931,7 +931,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::{MySql, MySqlPool};
     ///
     /// // audit_events: id BIGINT AUTO_INCREMENT PRIMARY KEY, body TEXT NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct AuditEvent {
     ///     id: i64,
     ///     body: String,
@@ -1001,7 +1001,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // export_jobs: id BIGSERIAL PRIMARY KEY, customer TEXT NOT NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct ExportJob {
     ///     id: i64,
     ///     customer: String,
@@ -1078,7 +1078,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // downloads: id BIGSERIAL PRIMARY KEY, tries INT NOT NULL DEFAULT 1, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Download {
     ///     id: i64,
     ///     tries: i32,
@@ -1114,14 +1114,14 @@ impl<Settings> InboxSpec<Settings> {
     ///     }
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Image {
     ///     url: String,
     /// }
     ///
     /// # async fn fetch(_: &str) -> bool { true }
     /// // An image the fifth attempt cannot fetch is given up.
-    /// # [subscriber(InboxQueue::<Download>::new("images"))]
+    /// #[subscriber(InboxQueue::<Download>::new("images"))]
     /// async fn download(image: &Image, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
     ///     if fetch(&image.url).await {
     ///         HandlerOutcome::ack()
@@ -1185,7 +1185,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // pushes: id BIGSERIAL PRIMARY KEY, meta JSONB NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct PushJob {
     ///     id: i64,
     ///     meta: Option<Json<BTreeMap<String, String>>>,
@@ -1221,12 +1221,12 @@ impl<Settings> InboxSpec<Settings> {
     ///     }
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Notification {
     ///     title: String,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<PushJob>::new("pushes"))]
+    /// #[subscriber(InboxQueue::<PushJob>::new("pushes"))]
     /// async fn push(note: &Notification, ctx: &mut Context<'_>) -> HandlerOutcome {
     ///     let device = ctx.headers().get_str("device").unwrap_or("all");
     ///     tracing::info!(title = %note.title, device, "pushing");
@@ -1270,7 +1270,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // sms_jobs: id BIGSERIAL PRIMARY KEY, phone TEXT NOT NULL, locale TEXT NOT NULL, text TEXT NOT NULL
-    /// # [derive(Debug, Clone, sqlx::FromRow)]
+    /// #[derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Sms {
     ///     id: i64,
     ///     phone: String,
@@ -1305,7 +1305,7 @@ impl<Settings> InboxSpec<Settings> {
     ///     }
     /// }
     ///
-    /// # [subscriber(InboxQueue::<Sms>::new("sms"))]
+    /// #[subscriber(InboxQueue::<Sms>::new("sms"))]
     /// async fn send(sms: &Sms, ctx: &mut Context<'_>) -> HandlerOutcome {
     ///     let locale = ctx.headers().get_str("locale").unwrap_or("en");
     ///     tracing::info!(phone = %sms.phone, locale, len = sms.text.len(), "sending");
@@ -1348,7 +1348,7 @@ impl<Settings> InboxSpec<Settings> {
     ///
     /// // crm_pushes: id BIGSERIAL PRIMARY KEY, due TIMESTAMPTZ NOT NULL DEFAULT now(),
     /// // payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct CrmPush {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -1375,13 +1375,13 @@ impl<Settings> InboxSpec<Settings> {
     ///     }
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Contact {
     ///     email: String,
     /// }
     ///
     /// # async fn upsert(_: &str) -> Result<(), Duration> { Ok(()) }
-    /// # [subscriber(InboxQueue::<CrmPush>::new("crm"))]
+    /// #[subscriber(InboxQueue::<CrmPush>::new("crm"))]
     /// async fn sync(contact: &Contact) -> HandlerOutcome {
     ///     match upsert(&contact.email).await {
     ///         Ok(()) => HandlerOutcome::ack(),
@@ -1426,7 +1426,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // payments: id BIGSERIAL PRIMARY KEY, processed_at TIMESTAMPTZ NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct PaymentJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -1495,7 +1495,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // stock_updates: id BIGSERIAL PRIMARY KEY, warehouse TEXT NOT NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct StockUpdate {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -1522,13 +1522,13 @@ impl<Settings> InboxSpec<Settings> {
     ///     }
     /// }
     ///
-    /// # [derive(Deserialize)]
+    /// #[derive(Deserialize)]
     /// struct Level {
     ///     sku: String,
     ///     count: i64,
     /// }
     ///
-    /// # [subscriber(InboxQueue::<StockUpdate>::new("berlin"))]
+    /// #[subscriber(InboxQueue::<StockUpdate>::new("berlin"))]
     /// async fn berlin(level: &Level) -> HandlerOutcome {
     ///     tracing::info!(sku = %level.sku, level.count, "berlin stock");
     ///     HandlerOutcome::ack()
@@ -1573,7 +1573,7 @@ impl<Settings> InboxSpec<Settings> {
     ///
     /// // reminders: id BIGSERIAL PRIMARY KEY, retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
     /// // payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Reminder {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -1645,7 +1645,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct PayoutJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -1714,7 +1714,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # use sqlx::PgPool;
     ///
     /// // signups: id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL
-    /// # [derive(sqlx::FromRow)]
+    /// #[derive(sqlx::FromRow)]
     /// pub struct Signup {
     ///     id: i64,
     ///     payload: Vec<u8>,

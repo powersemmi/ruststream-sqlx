@@ -111,8 +111,8 @@ pub mod __private {
 ///
 /// // app.email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, attempt SMALLINT DEFAULT 1,
 /// // payload BYTEA
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs", schema = "app")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs", schema = "app")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -124,14 +124,14 @@ pub mod __private {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
 /// // The subscription claims the rows of group `emails`, oldest first, and skips the rows
 /// // another worker holds.
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -171,8 +171,8 @@ pub mod __private {
 ///
 /// // jobs: job_id BIGSERIAL PRIMARY KEY, attempt SMALLINT NOT NULL DEFAULT 1,
 /// // payload BYTEA NOT NULL
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs", advisory_lock = "jobs-{job_id}")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs", advisory_lock = "jobs-{job_id}")]
 /// pub struct Transcode {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -182,7 +182,7 @@ pub mod __private {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Video {
 ///     path: String,
 /// }
@@ -191,7 +191,7 @@ pub mod __private {
 /// // A video takes minutes to encode. The delivery's connection keeps the job's lock while the
 /// // handler runs, with no transaction open. If the process dies, the database ends that session,
 /// // and the job returns.
-/// # [subscriber(InboxQueue::<Transcode>::new("videos"))]
+/// #[subscriber(InboxQueue::<Transcode>::new("videos"))]
 /// async fn transcode(video: &Video) -> HandlerOutcome {
 ///     if encode(video).await {
 ///         return HandlerOutcome::ack();
@@ -224,8 +224,8 @@ pub mod __private {
 /// use serde::Deserialize;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "ledger_jobs", advisory_lock = "ledger-{id}", isolation = repeatable_read)]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "ledger_jobs", advisory_lock = "ledger-{id}", isolation = repeatable_read)]
 /// pub struct Posting {
 ///     #[field(id)]
 ///     id: i64,
@@ -233,7 +233,7 @@ pub mod __private {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Entry {
 ///     account: String,
 ///     cents: i64,
@@ -241,7 +241,7 @@ pub mod __private {
 ///
 /// // The handler's transaction opens with `BEGIN ISOLATION LEVEL REPEATABLE READ`: the balance it
 /// // checks stays as its first statement read it.
-/// # [subscriber(InboxQueue::<Posting>::new("postings"))]
+/// #[subscriber(InboxQueue::<Posting>::new("postings"))]
 /// async fn post(entry: &Entry, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let posted = sqlx::query(
 ///         "INSERT INTO ledger (account, cents) SELECT $1, $2 \
@@ -310,8 +310,8 @@ pub mod __private {
 /// // support_tickets: id BIGSERIAL PRIMARY KEY, queue TEXT NOT NULL, urgency SMALLINT NOT NULL,
 /// // customer TEXT NOT NULL, retry_after TIMESTAMPTZ NOT NULL DEFAULT now(),
 /// // attempt SMALLINT NOT NULL DEFAULT 1, processed_at TIMESTAMPTZ, payload BYTEA NOT NULL
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "support_tickets")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "support_tickets")]
 /// pub struct Ticket {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -331,13 +331,13 @@ pub mod __private {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Question {
 ///     text: String,
 /// }
 ///
 /// # async fn answer(_: &Question) -> bool { true }
-/// # [subscriber(InboxQueue::<Ticket>::new("billing"))]
+/// #[subscriber(InboxQueue::<Ticket>::new("billing"))]
 /// async fn triage(question: &Question) -> HandlerOutcome {
 ///     if answer(question).await {
 ///         return HandlerOutcome::ack();
@@ -370,8 +370,8 @@ pub mod __private {
 /// // sync_jobs: id BIGSERIAL PRIMARY KEY, target TEXT NOT NULL,
 /// // retry_after TIMESTAMPTZ NOT NULL DEFAULT now(), payload BYTEA NOT NULL
 /// // Each group holds the changes bound for one system.
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "sync_jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "sync_jobs")]
 /// pub struct SyncChange {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -383,14 +383,14 @@ pub mod __private {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Change {
 ///     record: String,
 /// }
 ///
 /// # async fn push(change: &Change) -> bool { !change.record.is_empty() }
 /// // The CRM receives its changes one at a time, in the order they were queued.
-/// # [subscriber(InboxQueue::<SyncChange>::new("crm"))]
+/// #[subscriber(InboxQueue::<SyncChange>::new("crm"))]
 /// async fn sync(change: &Change) -> HandlerOutcome {
 ///     if push(change).await {
 ///         return HandlerOutcome::ack();
@@ -428,8 +428,8 @@ pub mod __private {
 ///
 /// // order_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT, attempt SMALLINT DEFAULT 1,
 /// // tenant TEXT, note TEXT
-/// # [derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
-/// # [inbox(table = "order_jobs")]
+/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
 /// pub struct OrderHeaders {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -440,7 +440,7 @@ pub mod __private {
 ///     tenant: String,
 /// }
 ///
-/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
 /// pub struct OrderJob {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -449,7 +449,7 @@ pub mod __private {
 /// }
 ///
 /// // The header `tenant` comes from the headers struct, the note from the message's own column.
-/// # [subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
 /// async fn ship(job: &OrderJob, ctx: &mut Context<'_>) -> HandlerOutcome {
 ///     let tenant = ctx.headers().get_str("tenant").unwrap_or_default();
 ///     tracing::info!(tenant, attempt = job.headers.attempt, note = ?job.note, "shipping");
@@ -491,8 +491,8 @@ pub mod __private {
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
 /// // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs", custom(ack))]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs", custom(ack))]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -513,12 +513,12 @@ pub mod __private {
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// pub struct Email {
 ///     to: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -563,8 +563,8 @@ pub mod __private {
 ///
 /// // email_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL,
 /// // attempt SMALLINT NOT NULL DEFAULT 1, payload BYTEA NOT NULL
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "email_jobs", checked, db = postgres)]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "email_jobs", checked, db = postgres)]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -576,12 +576,12 @@ pub mod __private {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -614,8 +614,8 @@ pub mod __private {
 /// ```compile_fail,E0277
 /// use ruststream_sqlx::Inbox;
 ///
-/// # [derive(Inbox)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox)]
+/// #[inbox(table = "email_jobs")]
 /// struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -631,8 +631,8 @@ pub mod __private {
 /// use ruststream_sqlx::Inbox;
 /// use serde::Deserialize;
 ///
-/// # [derive(Inbox, Clone, Deserialize)]
-/// # [inbox(table = "email_jobs")]
+/// #[derive(Inbox, Clone, Deserialize)]
+/// #[inbox(table = "email_jobs")]
 /// struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -667,8 +667,8 @@ pub use ruststream_sqlx_macros::Inbox;
 /// use ruststream_sqlx::prelude::*;
 /// use sqlx::PgPool;
 ///
-/// # [derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
-/// # [inbox(table = "order_jobs")]
+/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// #[inbox(table = "order_jobs")]
 /// pub struct OrderHeaders {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -677,7 +677,7 @@ pub use ruststream_sqlx_macros::Inbox;
 ///     tenant: String,
 /// }
 ///
-/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
 /// pub struct OrderJob {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -685,7 +685,7 @@ pub use ruststream_sqlx_macros::Inbox;
 ///     note: Option<String>,
 /// }
 ///
-/// # [subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
 /// async fn ship(job: &OrderJob) -> HandlerOutcome {
 ///     tracing::info!(tenant = %job.headers.tenant, note = ?job.note, "shipping");
 ///     HandlerOutcome::ack()
@@ -713,8 +713,8 @@ pub use ruststream_sqlx_macros::Inbox;
 ///
 /// // order_jobs: job_id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, processed_at TIMESTAMPTZ,
 /// // trace TEXT, total BIGINT NOT NULL
-/// # [derive(Debug, Clone, InboxHeaders, FromRow)]
-/// # [inbox(table = "order_jobs", checked, db = postgres)]
+/// #[derive(Debug, Clone, InboxHeaders, FromRow)]
+/// #[inbox(table = "order_jobs", checked, db = postgres)]
 /// pub struct OrderHeaders {
 ///     #[field(id, generated)]
 ///     pub job_id: i64,
@@ -725,8 +725,8 @@ pub use ruststream_sqlx_macros::Inbox;
 ///     pub trace: Option<String>,
 /// }
 ///
-/// # [derive(Debug, Clone, Inbox, FromRow)]
-/// # [inbox(custom(fetch))]
+/// #[derive(Debug, Clone, Inbox, FromRow)]
+/// #[inbox(custom(fetch))]
 /// pub struct Order {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -786,8 +786,8 @@ pub use ruststream_sqlx_macros::InboxHeaders;
 ///
 /// // app.outbox: id BIGSERIAL PRIMARY KEY, name TEXT, payload BYTEA, headers JSONB,
 /// // processed_at TIMESTAMPTZ
-/// # [derive(Outbox, sqlx::FromRow)]
-/// # [outbox(table = "outbox", schema = "app")]
+/// #[derive(Outbox, sqlx::FromRow)]
+/// #[outbox(table = "outbox", schema = "app")]
 /// pub struct OrderEvent {
 ///     #[field(id)]
 ///     id: i64,

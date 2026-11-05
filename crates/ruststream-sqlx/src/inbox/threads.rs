@@ -31,7 +31,7 @@ use super::queue::InboxQueue;
 /// # #[derive(serde::Deserialize)]
 /// # struct Entry { amount: i64 }
 ///
-/// # [subscriber(InboxQueue::<LedgerJob>::new("entries"))]
+/// #[subscriber(InboxQueue::<LedgerJob>::new("entries"))]
 /// async fn post(entry: &Entry, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
 ///     let posted = sqlx::query("INSERT INTO postings (amount) VALUES ($1)")
 ///         .bind(entry.amount)

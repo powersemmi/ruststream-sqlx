@@ -11,7 +11,7 @@
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -64,7 +64,7 @@ pub struct ReadUncommitted;
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -114,7 +114,7 @@ pub struct ReadCommitted;
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -167,7 +167,7 @@ pub struct RepeatableRead;
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -220,7 +220,7 @@ pub struct Serializable;
 /// };
 ///
 /// /// libSQL, a fork of SQLite served over the network, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Libsql;
 ///
 /// impl Dialect for Libsql {
@@ -269,7 +269,7 @@ pub struct Deferred;
 /// };
 ///
 /// /// libSQL, a fork of SQLite served over the network, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Libsql;
 ///
 /// impl Dialect for Libsql {
@@ -318,7 +318,7 @@ pub struct Immediate;
 /// };
 ///
 /// /// libSQL, a fork of SQLite served over the network, a database without a built-in dialect.
-/// # [derive(Debug)]
+/// #[derive(Debug)]
 /// pub struct Libsql;
 ///
 /// impl Dialect for Libsql {

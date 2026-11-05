@@ -40,8 +40,8 @@ use crate::inbox::testing::QueueAt;
 /// use serde::{Deserialize, Serialize};
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs")]
 /// pub struct Job {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -65,18 +65,18 @@ use crate::inbox::testing::QueueAt;
 ///     }
 /// }
 ///
-/// # [derive(Deserialize)]
+/// #[derive(Deserialize)]
 /// struct Order {
 ///     id: u64,
 /// }
 ///
-/// # [derive(Serialize, Outgoing)]
-/// # [outgoing(name = "invoices")]
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "invoices")]
 /// struct Invoice {
 ///     order: u64,
 /// }
 ///
-/// # [subscriber(InboxQueue::<Job>::new("orders"), reply)]
+/// #[subscriber(InboxQueue::<Job>::new("orders"), reply)]
 /// async fn bill(order: &Order) -> Invoice {
 ///     Invoice { order: order.id }
 /// }
@@ -122,8 +122,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> DefaultPublish for ConnectedSqlxBr
 /// use serde::Serialize;
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// # [derive(Inbox, sqlx::FromRow)]
-/// # [inbox(table = "jobs")]
+/// #[derive(Inbox, sqlx::FromRow)]
+/// #[inbox(table = "jobs")]
 /// pub struct Job {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -147,8 +147,8 @@ impl<DB: QueueDatabase, D: Dialect + 'static> DefaultPublish for ConnectedSqlxBr
 ///     }
 /// }
 ///
-/// # [derive(Serialize, Outgoing)]
-/// # [outgoing(name = "orders")]
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "orders")]
 /// pub struct Order {
 ///     id: u64,
 /// }
