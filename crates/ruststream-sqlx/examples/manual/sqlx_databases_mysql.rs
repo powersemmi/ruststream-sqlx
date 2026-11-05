@@ -91,11 +91,16 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            for group in ["welcome", "receipts"] {
-                let mail = subscriber(group, Mail)
-                    .map_source(move |_| InboxQueue::<SendEmail>::new(group));
-                b.include(mail.build());
-            }
+            b.include(
+                subscriber("welcome", Mail)
+                    .map_source(|_| InboxQueue::<SendEmail>::new("welcome"))
+                    .build(),
+            )
+            .include(
+                subscriber("receipts", Mail)
+                    .map_source(|_| InboxQueue::<SendEmail>::new("receipts"))
+                    .build(),
+            )
         })
 }
 // --8<-- [end:service]
