@@ -57,6 +57,9 @@ serde_json = "1.0.135"
 # `Routed` publishes keep the route's future in place: a slot of fixed size, one function pointer
 # per poll, a box only for a future larger than the slot.
 stackfuture = "0.3.1"
+# A batch subscription keeps its claim in flight in place, between the polls that fill the slot the
+# runtime lends. Already in the tree behind tokio and futures.
+pin-project-lite = "0.2.16"
 # The route table's hasher: already in the tree behind sqlx's hash maps.
 foldhash = { version = "0.2", default-features = false }
 # The allocation pin: counts every allocation of its test process.

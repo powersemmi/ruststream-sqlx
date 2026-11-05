@@ -1,17 +1,23 @@
 //! What a batch handler is handed: a payload-mode table's deliveries, or a row-mode table's rows
 //! as one slice ([`RowBatch`]), chosen by the table's lane.
 
-use std::fmt;
+use std::future::Future;
+use std::num::NonZeroUsize;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::vec;
+use std::task::{Context, Poll};
+use std::{fmt, mem, vec};
 
-use ruststream::CarriesBatch;
+use futures::ready;
+use pin_project_lite::pin_project;
+use ruststream::{BatchSlot, BatchStream, CarriesBatch};
 
 #[cfg(feature = "testing")]
 use super::broker::Shared;
 use super::database::QueueDatabase;
 use super::delivery::{Hold, InboxDelivery};
 use super::engine::{Claimed, Events};
+use super::error::SqlxBrokerError;
 use super::form::advisory::LockHold;
 use super::form::lease::{LeaseBook, Slot};
 use super::form::row_lock::BatchTx;
@@ -21,15 +27,16 @@ use super::subscriber::{InboxSubscriber, Taken};
 use super::{Lane, PayloadLane, PayloadRow, QueueRow, RowLane};
 use crate::inbox::pools::ServicePool;
 
-/// How a table's lane hands a batch handler what one claim took. Machinery: a subscription in the
-/// plain mode builds its batches through it, so a table's mode picks its batch type.
+/// How a table's lane fills a batch handler's slot with what one claim took. Machinery: a
+/// subscription in the plain mode fills its batches through it, so a table's mode picks its batch
+/// type.
 #[doc(hidden)]
 pub trait BatchLane<DB: QueueDatabase, Row: Events<DB>>: Lane<Row> {
-    /// The batch a subscription to the table yields.
-    type Batch: IntoIterator<Item = InboxDelivery<DB, Row>> + Send;
+    /// The slot a subscription to the table fills, which the runtime lends and reuses.
+    type Batch: BatchSlot<Message = InboxDelivery<DB, Row>> + Send;
 
-    /// The batch of what `claim` took.
-    fn batch(claim: BatchClaim<'_, DB, Row>) -> Self::Batch;
+    /// Moves what `claim` took into the empty `slot`.
+    fn fill(claim: BatchClaim<'_, DB, Row>, slot: &mut Self::Batch);
 }
 
 /// What one claim of a batch subscription took, and the subscription it took it for. Machinery.
@@ -64,6 +71,109 @@ impl<DB: QueueDatabase, Row: Events<DB>> fmt::Debug for BatchClaim<'_, DB, Row> 
     }
 }
 
+pin_project! {
+    /// The batches of a subscription in the plain mode: each claim fills the slot the runtime lent,
+    /// and the claim in flight lives here between polls. Machinery.
+    #[doc(hidden)]
+    pub struct Batches<'s, DB, Row, Start, Claim>
+    where
+        DB: QueueDatabase,
+        Row: Events<DB>,
+    {
+        // The subscription while no claim runs; the claim in flight holds it otherwise, and it
+        // is gone once the broker shut down.
+        idle: Option<&'s mut InboxSubscriber<DB, Row>>,
+        #[pin]
+        claim: Option<Claim>,
+        start: Start,
+        size: NonZeroUsize,
+    }
+}
+
+/// The batches of at most `size` rows `subscriber` claims.
+pub(crate) fn batches<DB, Row>(
+    subscriber: &mut InboxSubscriber<DB, Row>,
+    size: NonZeroUsize,
+) -> impl BatchStream<<Row::Lane as BatchLane<DB, Row>>::Batch, Error = SqlxBrokerError> + Send + '_
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+    Row::Lane: BatchLane<DB, Row>,
+{
+    Batches {
+        idle: Some(subscriber),
+        claim: None,
+        start: claim_batch::<DB, Row>,
+        size,
+    }
+}
+
+/// One claim of up to `size` rows; the claim hands the subscription back beside what it took, so
+/// the batch is filled from the subscription's buffers.
+async fn claim_batch<DB: QueueDatabase, Row: Events<DB>>(
+    subscriber: &mut InboxSubscriber<DB, Row>,
+    size: NonZeroUsize,
+) -> (
+    &mut InboxSubscriber<DB, Row>,
+    Option<Result<(Taken<DB, Row>, usize), SqlxBrokerError>>,
+) {
+    let claimed = subscriber.claim(size.get()).await;
+    (subscriber, claimed)
+}
+
+impl<'s, DB, Row, Start, Claim> BatchStream<<Row::Lane as BatchLane<DB, Row>>::Batch>
+    for Batches<'s, DB, Row, Start, Claim>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+    Row::Lane: BatchLane<DB, Row>,
+    Start: FnMut(&'s mut InboxSubscriber<DB, Row>, NonZeroUsize) -> Claim,
+    Claim: Future<Output = ClaimOutcome<'s, DB, Row>>,
+{
+    type Error = SqlxBrokerError;
+
+    fn poll_fill(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        slot: &mut <Row::Lane as BatchLane<DB, Row>>::Batch,
+    ) -> Poll<Option<Result<(), Self::Error>>> {
+        let mut this = self.project();
+        loop {
+            if let Some(claim) = this.claim.as_mut().as_pin_mut() {
+                let (subscriber, claimed) = ready!(claim.poll(cx));
+                this.claim.set(None);
+                return Poll::Ready(match claimed {
+                    // The broker shut down: the subscription stays gone.
+                    None => None,
+                    Some(Err(error)) => {
+                        *this.idle = Some(subscriber);
+                        Some(Err(error))
+                    }
+                    Some(Ok((taken, count))) => {
+                        <Row::Lane as BatchLane<DB, Row>>::fill(
+                            BatchClaim::new(subscriber, taken, count),
+                            slot,
+                        );
+                        *this.idle = Some(subscriber);
+                        Some(Ok(()))
+                    }
+                });
+            }
+            let Some(subscriber) = this.idle.take() else {
+                return Poll::Ready(None);
+            };
+            let claim = (this.start)(subscriber, *this.size);
+            this.claim.set(Some(claim));
+        }
+    }
+}
+
+/// What [`claim_batch`] resolves to.
+type ClaimOutcome<'s, DB, Row> = (
+    &'s mut InboxSubscriber<DB, Row>,
+    Option<Result<(Taken<DB, Row>, usize), SqlxBrokerError>>,
+);
+
 /// A payload-mode batch is its deliveries, each holding its row, as a codec decodes them.
 impl<DB, Row> BatchLane<DB, Row> for PayloadLane
 where
@@ -72,7 +182,7 @@ where
 {
     type Batch = Vec<InboxDelivery<DB, Row>>;
 
-    fn batch(claim: BatchClaim<'_, DB, Row>) -> Self::Batch {
+    fn fill(claim: BatchClaim<'_, DB, Row>, slot: &mut Self::Batch) {
         let BatchClaim {
             subscriber,
             taken,
@@ -91,32 +201,27 @@ where
                 let batch = BatchTx::new(tx, count);
                 #[cfg(feature = "testing")]
                 batch.watch(&shared);
-                subscriber
-                    .take_rows()
-                    .map(|claimed| {
-                        on(InboxDelivery::batched(
-                            claimed,
-                            Arc::clone(&batch),
-                            queue,
-                            pool,
-                        ))
-                    })
-                    .collect()
+                slot.extend(subscriber.take_rows().map(|claimed| {
+                    on(InboxDelivery::batched(
+                        claimed,
+                        Arc::clone(&batch),
+                        queue,
+                        pool,
+                    ))
+                }));
             }
             // Each delivery of a leased batch holds its own lease and settles on its own.
-            Taken::Leased(book, lease) => subscriber
-                .take_rows()
-                .map(|claimed| {
-                    on(InboxDelivery::leased(
-                        claimed, book, lease, None, queue, pool,
-                    ))
-                })
-                .collect(),
+            Taken::Leased(book, lease) => slot.extend(subscriber.take_rows().map(|claimed| {
+                on(InboxDelivery::leased(
+                    claimed, book, lease, None, queue, pool,
+                ))
+            })),
             // Each delivery of an advisory batch holds its own session and settles on its own.
-            Taken::Advised => subscriber
-                .take_advised()
-                .map(|(claimed, hold)| on(InboxDelivery::advised(claimed, hold, queue, pool)))
-                .collect(),
+            Taken::Advised => slot.extend(
+                subscriber
+                    .take_advised()
+                    .map(|(claimed, hold)| on(InboxDelivery::advised(claimed, hold, queue, pool))),
+            ),
         }
     }
 }
@@ -129,8 +234,8 @@ where
 {
     type Batch = RowBatch<DB, Row>;
 
-    fn batch(claim: BatchClaim<'_, DB, Row>) -> Self::Batch {
-        RowBatch::new(claim)
+    fn fill(claim: BatchClaim<'_, DB, Row>, slot: &mut Self::Batch) {
+        slot.fill(claim);
     }
 }
 
@@ -160,8 +265,8 @@ where
 /// use sqlx::PgPool;
 ///
 /// /// A mail to send: the table has no payload column, so a handler takes the rows themselves.
-/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
-/// #[inbox(table = "mail_jobs")]
+/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// # [inbox(table = "mail_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id)]
 ///     job_id: i64,
@@ -170,7 +275,7 @@ where
 ///
 /// # async fn deliver(_: &str) -> bool { true }
 /// /// Each claim of up to 50 rows reaches the handler as one slice; each mail settles on its own.
-/// #[subscriber(InboxQueue::<SendEmail>::new("mail"))]
+/// # [subscriber(InboxQueue::<SendEmail>::new("mail"))]
 /// async fn send(mails: &[SendEmail]) -> Vec<HandlerOutcome> {
 ///     let mut outcomes = Vec::with_capacity(mails.len());
 ///     for mail in mails {
@@ -185,7 +290,7 @@ where
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send.batch(nonzero!(50)));
+///         b.include(send.batch(nonzero!(50)))
 ///     })
 /// }
 /// # }
@@ -196,31 +301,30 @@ where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
 {
-    deliveries: RowDeliveries<DB, Row>,
-}
-
-/// The deliveries of a [`RowBatch`], built as the runtime takes them: the rows' first, in claim
-/// order, then those of the ids without a row and the rows the driver could not read. Machinery.
-///
-/// Dropped before it yielded them all, it builds and drops the rest, which returns their rows as
-/// dropped deliveries return theirs.
-#[doc(hidden)]
-pub struct RowDeliveries<DB, Row>
-where
-    DB: QueueDatabase,
-    Row: Events<DB> + QueueRow<Lane = RowLane>,
-{
     /// The rows the handler borrows, in claim order.
-    rows: vec::IntoIter<Row>,
+    rows: Vec<Row>,
     /// The headers taken from the rows, beside them; empty and unallocated while every row's are
     /// unset (a message assembled from a headers struct builds its own on the first read), and
     /// shorter than the rows when the last rows' are.
-    headers: vec::IntoIter<Row::Headers>,
-    /// What holds the rows, beside them.
+    headers: Vec<Row::Headers>,
+    /// What holds the rows, by the table's form.
     claims: Claims<DB, Row>,
-    /// The deliveries with no row to lend, in claim order; empty and unallocated when every row
+    /// Each row's place in the lease book, beside the rows, in the lease form.
+    slots: Vec<Slot>,
+    /// Each row's place in the book whose session holds its key, beside the rows, in the advisory
+    /// lock form.
+    holds: Vec<LockHold<DB>>,
+    /// The deliveries with no row to lend, in claim order; empty and unallocated while every row
     /// was read.
-    gone: vec::IntoIter<InboxDelivery<DB, Row>>,
+    gone: Vec<InboxDelivery<DB, Row>>,
+    /// The subscription the rows were claimed for; set by the first claim.
+    from: Option<Origin<DB>>,
+    /// The batch size the runtime allocated the slot for.
+    room: NonZeroUsize,
+}
+
+/// The subscription a [`RowBatch`] was filled for.
+struct Origin<DB: QueueDatabase> {
     queue: &'static Queue,
     pool: &'static ServicePool<DB>,
     /// The connection the batch was claimed on: a delivery claimed in process keeps the harness's
@@ -231,13 +335,35 @@ where
 
 /// What holds a row-mode batch's rows, by the table's form.
 enum Claims<DB: QueueDatabase, Row: Events<DB>> {
+    /// The slot holds no rows.
+    Empty,
     /// The claim's transaction, which every delivery of the batch shares.
     Locked(Arc<BatchTx<DB>>),
-    /// The book that keeps each row's lease, and each row's place in it, entered when the batch
-    /// was built so the keeper extends the leases while the handler runs.
-    Leased(&'static LeaseBook<DB, Row>, vec::IntoIter<Slot>),
-    /// The place of each row in the book whose session holds the row's key.
-    Advised(vec::IntoIter<LockHold<DB>>),
+    /// The book that keeps each row's lease, entered when the batch was filled so the keeper
+    /// extends the leases while the handler runs.
+    Leased(&'static LeaseBook<DB, Row>),
+    /// The book whose sessions hold the rows' keys.
+    Advised,
+}
+
+/// The deliveries a [`RowBatch`] yields as the runtime drains it: the rows' first, in claim order,
+/// then those of the ids without a row and the rows the driver could not read. Machinery.
+///
+/// Dropped before it yielded them all, it builds and drops the rest, which returns their rows as
+/// dropped deliveries return theirs. The batch keeps its storage for the next claim.
+#[doc(hidden)]
+pub struct RowDeliveries<'b, DB, Row>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
+{
+    rows: vec::Drain<'b, Row>,
+    headers: vec::Drain<'b, Row::Headers>,
+    claims: Claims<DB, Row>,
+    slots: vec::Drain<'b, Slot>,
+    holds: vec::Drain<'b, LockHold<DB>>,
+    gone: vec::Drain<'b, InboxDelivery<DB, Row>>,
+    from: Option<&'b Origin<DB>>,
 }
 
 impl<DB, Row> RowBatch<DB, Row>
@@ -245,33 +371,38 @@ where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
 {
-    /// Moves what `claim` took into the batch: each row once, into the slice, its headers out of
-    /// it, and its claim beside it.
-    fn new(claim: BatchClaim<'_, DB, Row>) -> Self {
+    /// Moves what `claim` took into the empty batch: each row once, into the slice, its headers out
+    /// of it, and its claim beside it.
+    fn fill(&mut self, claim: BatchClaim<'_, DB, Row>) {
         let BatchClaim {
             subscriber,
             taken,
             count,
         } = claim;
         let (queue, pool) = (subscriber.queue(), subscriber.pool());
+        let from = self.from.get_or_insert_with(|| Origin {
+            queue,
+            pool,
+            #[cfg(feature = "testing")]
+            shared: Arc::clone(&subscriber.shared),
+        });
         #[cfg(feature = "testing")]
-        let shared = Arc::clone(&subscriber.shared);
+        let shared = &from.shared;
         let on = |delivery: InboxDelivery<DB, Row>| {
             #[cfg(feature = "testing")]
-            let delivery = delivery.on(&shared);
+            let delivery = delivery.on(shared);
             delivery
         };
-        let mut rows = Vec::with_capacity(count);
-        let mut headers = Vec::new();
-        let mut gone = Vec::new();
-        let claims = match taken {
+        let room = self.room.get();
+        let (rows, headers, gone) = (&mut self.rows, &mut self.headers, &mut self.gone);
+        self.claims = match taken {
             Taken::Locked(tx) => {
                 let batch = BatchTx::new(tx, count);
                 #[cfg(feature = "testing")]
-                batch.watch(&shared);
+                batch.watch(shared);
                 for claimed in subscriber.take_rows() {
                     match claimed {
-                        Claimed::Row(row) => take(row, &mut rows, &mut headers, count),
+                        Claimed::Row(row) => take(row, rows, headers, room),
                         claimed => gone.push(on(InboxDelivery::batched(
                             claimed,
                             Arc::clone(&batch),
@@ -283,63 +414,51 @@ where
                 Claims::Locked(batch)
             }
             Taken::Leased(book, lease) => {
-                let mut slots = Vec::with_capacity(count);
+                self.slots.reserve_exact(room);
                 for claimed in subscriber.take_rows() {
                     match claimed {
                         Claimed::Row(row) => {
-                            slots.push(book.enter(Row::id(&row), lease));
-                            take(row, &mut rows, &mut headers, count);
+                            self.slots.push(book.enter(Row::id(&row), lease));
+                            take(row, rows, headers, room);
                         }
                         claimed => gone.push(on(InboxDelivery::leased(
                             claimed, book, lease, None, queue, pool,
                         ))),
                     }
                 }
-                Claims::Leased(book, slots.into_iter())
+                Claims::Leased(book)
             }
             Taken::Advised => {
-                let mut holds = Vec::with_capacity(count);
+                self.holds.reserve_exact(room);
                 for (claimed, hold) in subscriber.take_advised() {
                     match claimed {
                         Claimed::Row(row) => {
-                            holds.push(hold);
-                            take(row, &mut rows, &mut headers, count);
+                            self.holds.push(hold);
+                            take(row, rows, headers, room);
                         }
                         claimed => {
                             gone.push(on(InboxDelivery::advised(claimed, hold, queue, pool)));
                         }
                     }
                 }
-                Claims::Advised(holds.into_iter())
+                Claims::Advised
             }
         };
-        Self {
-            deliveries: RowDeliveries {
-                rows: rows.into_iter(),
-                headers: headers.into_iter(),
-                claims,
-                gone: gone.into_iter(),
-                queue,
-                pool,
-                #[cfg(feature = "testing")]
-                shared,
-            },
-        }
     }
 }
 
 /// Moves `row` into `rows` and its headers into `headers`, which allocates for the first row that
-/// carries any, room for all `count` rows of the claim.
+/// carries any, room for a whole batch of `room` rows.
 fn take<DB: QueueDatabase, Row: Events<DB>>(
     mut row: Row,
     rows: &mut Vec<Row>,
     headers: &mut Vec<Row::Headers>,
-    count: usize,
+    room: usize,
 ) {
     let taken = Row::Headers::take(&mut row);
     if !headers.is_empty() || !taken.is_unset() {
         if headers.is_empty() {
-            headers.reserve_exact(count);
+            headers.reserve_exact(room);
             headers.resize_with(rows.len(), Row::Headers::default);
         }
         headers.push(taken);
@@ -347,30 +466,55 @@ fn take<DB: QueueDatabase, Row: Events<DB>>(
     rows.push(row);
 }
 
+/// The runtime allocates one batch per worker with room for the registration's `batch(n)`, and
+/// every claim of the worker fills it again: a batch allocates no storage of its own after the
+/// first claim of each form.
+impl<DB, Row> BatchSlot for RowBatch<DB, Row>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
+{
+    type Message = InboxDelivery<DB, Row>;
+
+    fn with_capacity(size: NonZeroUsize) -> Self {
+        Self {
+            rows: Vec::with_capacity(size.get()),
+            headers: Vec::new(),
+            claims: Claims::Empty,
+            slots: Vec::new(),
+            holds: Vec::new(),
+            gone: Vec::new(),
+            from: None,
+            room: size,
+        }
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = Self::Message> + '_ {
+        RowDeliveries {
+            rows: self.rows.drain(..),
+            headers: self.headers.drain(..),
+            claims: mem::replace(&mut self.claims, Claims::Empty),
+            slots: self.slots.drain(..),
+            holds: self.holds.drain(..),
+            gone: self.gone.drain(..),
+            from: self.from.as_ref(),
+        }
+    }
+}
+
 impl<DB, Row> CarriesBatch<Row> for RowBatch<DB, Row>
 where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
 {
+    type Item = Row;
+
     fn carried(&self) -> &[Row] {
-        self.deliveries.rows.as_slice()
+        &self.rows
     }
 }
 
-impl<DB, Row> IntoIterator for RowBatch<DB, Row>
-where
-    DB: QueueDatabase,
-    Row: Events<DB> + QueueRow<Lane = RowLane>,
-{
-    type Item = InboxDelivery<DB, Row>;
-    type IntoIter = RowDeliveries<DB, Row>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.deliveries
-    }
-}
-
-impl<DB, Row> Iterator for RowDeliveries<DB, Row>
+impl<DB, Row> Iterator for RowDeliveries<'_, DB, Row>
 where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
@@ -381,21 +525,24 @@ where
         if self.rows.len() == 0 {
             return self.gone.next();
         }
-        let hold = match &mut self.claims {
+        // A batch that holds rows was filled, so it knows its subscription.
+        let from = self.from?;
+        let hold = match &self.claims {
             Claims::Locked(batch) => Hold::Batch(Arc::clone(batch)),
-            Claims::Leased(book, slots) => Hold::Lease {
+            Claims::Leased(book) => Hold::Lease {
                 book: *book,
-                slot: slots.next()?,
+                slot: self.slots.next()?,
                 tx: None,
             },
-            Claims::Advised(holds) => Hold::Advisory(holds.next()?),
+            Claims::Advised => Hold::Advisory(self.holds.next()?),
+            Claims::Empty => return None,
         };
-        // The batch built one claim per row, so a row is here whenever its claim is.
+        // The batch filled one claim per row, so a row is here whenever its claim is.
         let row = self.rows.next()?;
         let headers = self.headers.next().unwrap_or_default();
-        let delivery = InboxDelivery::of_batch(row, headers, hold, self.queue, self.pool);
+        let delivery = InboxDelivery::of_batch(row, headers, hold, from.queue, from.pool);
         #[cfg(feature = "testing")]
-        let delivery = delivery.on(&self.shared);
+        let delivery = delivery.on(&from.shared);
         Some(delivery)
     }
 
@@ -405,14 +552,14 @@ where
     }
 }
 
-impl<DB, Row> ExactSizeIterator for RowDeliveries<DB, Row>
+impl<DB, Row> ExactSizeIterator for RowDeliveries<'_, DB, Row>
 where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
 {
 }
 
-impl<DB, Row> Drop for RowDeliveries<DB, Row>
+impl<DB, Row> Drop for RowDeliveries<'_, DB, Row>
 where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
@@ -424,6 +571,18 @@ where
     }
 }
 
+/// A batch the runtime drops with rows still in it (the subscription ended mid-batch) returns them
+/// as its deliveries would.
+impl<DB, Row> Drop for RowBatch<DB, Row>
+where
+    DB: QueueDatabase,
+    Row: Events<DB> + QueueRow<Lane = RowLane>,
+{
+    fn drop(&mut self) {
+        self.drain().for_each(drop);
+    }
+}
+
 impl<DB, Row> fmt::Debug for RowBatch<DB, Row>
 where
     DB: QueueDatabase,
@@ -431,21 +590,24 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RowBatch")
-            .field("subscription", &self.deliveries.queue.name)
-            .field("rows", &self.deliveries.rows.len())
-            .field("gone", &self.deliveries.gone.len())
+            .field(
+                "subscription",
+                &self.from.as_ref().map(|from| from.queue.name),
+            )
+            .field("rows", &self.rows.len())
+            .field("gone", &self.gone.len())
             .finish_non_exhaustive()
     }
 }
 
-impl<DB, Row> fmt::Debug for RowDeliveries<DB, Row>
+impl<DB, Row> fmt::Debug for RowDeliveries<'_, DB, Row>
 where
     DB: QueueDatabase,
     Row: Events<DB> + QueueRow<Lane = RowLane>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RowDeliveries")
-            .field("subscription", &self.queue.name)
+            .field("subscription", &self.from.map(|from| from.queue.name))
             .field("left", &self.len())
             .finish_non_exhaustive()
     }
