@@ -380,6 +380,8 @@ where
             count,
         } = claim;
         let (queue, pool) = (subscriber.queue(), subscriber.pool());
+        // Only the harness's books read the connection the batch was claimed on.
+        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
         let from = self.from.get_or_insert_with(|| Origin {
             queue,
             pool,
