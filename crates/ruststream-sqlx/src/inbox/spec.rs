@@ -40,7 +40,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{Sqlite, SqlitePool};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct ScanJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -72,7 +72,7 @@ setting!(
     /// # pub fn app(pool: SqlitePool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("scanner", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<Sqlite>::new(pool), |b| {
-    /// #             b.include(scan);
+    /// #             b.include(scan)
     /// #         })
     /// # }
     /// # }
@@ -96,7 +96,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{MySql, MySqlPool};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct FirmwareUpdate {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -128,7 +128,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("devices", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(flash);
+    /// #             b.include(flash)
     /// #         })
     /// # }
     /// # }
@@ -151,7 +151,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct OrderEvent {
     ///     id: i64,
     ///     body: Vec<u8>,
@@ -185,7 +185,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("orders", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(placed);
+    /// #         b.include(placed)
     /// #     })
     /// # }
     /// # }
@@ -209,7 +209,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct MeterReading {
     ///     id: i64,
     ///     meter: Option<String>,
@@ -249,7 +249,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("metering", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(bill);
+    /// #         b.include(bill)
     /// #     })
     /// # }
     /// # }
@@ -273,7 +273,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{MySql, MySqlPool};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct CallbackJob {
     ///     id: i64,
     ///     attempt: i16,
@@ -314,7 +314,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("callbacks", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(call);
+    /// #             b.include(call)
     /// #         })
     /// # }
     /// # }
@@ -350,7 +350,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{Sqlite, SqlitePool};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct Relay {
     ///     id: i64,
     ///     headers: Json<BTreeMap<String, String>>,
@@ -393,7 +393,7 @@ setting!(
     /// # pub fn app(pool: SqlitePool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("relay", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<Sqlite>::new(pool), |b| {
-    /// #             b.include(forward);
+    /// #             b.include(forward)
     /// #         })
     /// # }
     /// # }
@@ -418,7 +418,7 @@ setting!(
     /// # use ruststream_sqlx::prelude::*;
     /// # use sqlx::PgPool;
     ///
-    /// #[derive(Debug, Clone, sqlx::FromRow)]
+    /// # [derive(Debug, Clone, sqlx::FromRow)]
     /// pub struct Signal {
     ///     id: i64,
     ///     trace: Option<String>,
@@ -458,7 +458,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("sensors", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(record);
+    /// #         b.include(record)
     /// #     })
     /// # }
     /// # }
@@ -485,7 +485,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{MySql, MySqlPool};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct Delivery {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -517,7 +517,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("webhooks", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(deliver);
+    /// #             b.include(deliver)
     /// #         })
     /// # }
     /// # }
@@ -543,7 +543,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct Import {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -574,7 +574,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("imports", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(import);
+    /// #         b.include(import)
     /// #     })
     /// # }
     /// # }
@@ -599,7 +599,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::PgPool;
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct Migration {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -631,7 +631,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("tenants", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(migrate);
+    /// #         b.include(migrate)
     /// #     })
     /// # }
     /// # }
@@ -669,7 +669,7 @@ setting!(
     ///     }
     /// }
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct Digest {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -702,7 +702,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("digests", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(digest);
+    /// #             b.include(digest)
     /// #         })
     /// # }
     /// # }
@@ -728,7 +728,7 @@ setting!(
     /// # use serde::Deserialize;
     /// # use sqlx::{Sqlite, SqlitePool};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct PrintJob {
     ///     id: i64,
     ///     payload: Vec<u8>,
@@ -761,7 +761,7 @@ setting!(
     /// # pub fn app(pool: SqlitePool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("printing", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<Sqlite>::new(pool), |b| {
-    /// #             b.include(print);
+    /// #             b.include(print)
     /// #         })
     /// # }
     /// # }
@@ -793,7 +793,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct Callout {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -842,7 +842,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("callouts", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(dial);
+        /// #         b.include(dial)
         /// #     })
         /// # }
         /// # }
@@ -868,7 +868,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct RenderJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -911,7 +911,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("documents", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(render);
+        /// #         b.include(render)
         /// #     })
         /// # }
         /// # }
@@ -937,7 +937,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct UploadJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -982,7 +982,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("uploads", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(store);
+        /// #         b.include(store)
         /// #     })
         /// # }
         /// # }
@@ -1008,7 +1008,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct CrawlJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1049,7 +1049,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("crawler", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(crawl);
+        /// #         b.include(crawl)
         /// #     })
         /// # }
         /// # }
@@ -1078,7 +1078,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct QuoteJob {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1128,7 +1128,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("quotes", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(quote);
+        /// #         b.include(quote)
         /// #     })
         /// # }
         /// # }
@@ -1154,7 +1154,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct Comment {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1198,7 +1198,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("comments", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(moderate);
+        /// #         b.include(moderate)
         /// #     })
         /// # }
         /// # }
@@ -1224,7 +1224,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct Charge {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1274,7 +1274,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("charges", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(charge);
+        /// #         b.include(charge)
         /// #     })
         /// # }
         /// # }
@@ -1301,7 +1301,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct Transcode {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1353,7 +1353,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("video", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(transcode);
+        /// #         b.include(transcode)
         /// #     })
         /// # }
         /// # }
@@ -1381,7 +1381,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct Booking {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1431,7 +1431,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("hotel", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(book);
+        /// #         b.include(book)
         /// #     })
         /// # }
         /// # }
@@ -1459,7 +1459,7 @@ pub mod own {
         /// # use serde::Deserialize;
         /// # use sqlx::PgPool;
         ///
-        /// #[derive(sqlx::FromRow)]
+        /// # [derive(sqlx::FromRow)]
         /// pub struct Rebalance {
         ///     id: i64,
         ///     payload: Vec<u8>,
@@ -1509,7 +1509,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("portfolios", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(rebalance);
+        /// #         b.include(rebalance)
         /// #     })
         /// # }
         /// # }

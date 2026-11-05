@@ -94,7 +94,7 @@ live::row_lock_stands! {
             .poll_interval(POLL)
             .route::<Serializable>("plain");
         let app = RustStream::new(AppInfo::new("openings", "0.0.0")).with_broker(broker, |b| {
-            b.include(serializable);
+            b.include(serializable)
         });
         claimed_and_settled(app, &db).await;
         db.finish().await;
@@ -107,7 +107,7 @@ live::row_lock_stands! {
             .poll_interval(POLL)
             .route::<RepeatableRead>("plain");
         let app = RustStream::new(AppInfo::new("openings", "0.0.0")).with_broker(broker, |b| {
-            b.include(repeatable_read);
+            b.include(repeatable_read)
         });
         claimed_and_settled(app, &db).await;
         db.finish().await;
@@ -256,9 +256,8 @@ mod seen {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<SeenRepeatableRead>("plain");
-        let app = RustStream::new(AppInfo::new("openings", "0.0.0")).with_broker(broker, |b| {
-            b.include(repeatable_read);
-        });
+        let app = RustStream::new(AppInfo::new("openings", "0.0.0"))
+            .with_broker(broker, |b| b.include(repeatable_read));
         assert_eq!(levels(app, &db).await, ["repeatable read"]);
         db.finish().await;
     }
@@ -269,9 +268,8 @@ mod seen {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<SeenSerializable>("plain");
-        let app = RustStream::new(AppInfo::new("openings", "0.0.0")).with_broker(broker, |b| {
-            b.include(serializable);
-        });
+        let app = RustStream::new(AppInfo::new("openings", "0.0.0"))
+            .with_broker(broker, |b| b.include(serializable));
         assert_eq!(levels(app, &db).await, ["serializable"]);
         db.finish().await;
     }
@@ -282,9 +280,8 @@ mod seen {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<SeenDefault>("plain");
-        let app = RustStream::new(AppInfo::new("openings", "0.0.0")).with_broker(broker, |b| {
-            b.include(default);
-        });
+        let app = RustStream::new(AppInfo::new("openings", "0.0.0"))
+            .with_broker(broker, |b| b.include(default));
         assert_eq!(levels(app, &db).await, ["read committed"]);
         db.finish().await;
     }

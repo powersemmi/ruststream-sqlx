@@ -37,12 +37,14 @@ A release adds an `attempt` column to the queue; `on_startup` applies the schema
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker_startup.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker_startup.rs#service"
+
 ```
 
 </TabItem>

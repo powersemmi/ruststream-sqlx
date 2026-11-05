@@ -29,12 +29,14 @@ The value `on_startup` returns becomes the app's state, and `after_shutdown` rec
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_pool.rs#pool"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_pool.rs#pool"
+
 ```
 
 </TabItem>

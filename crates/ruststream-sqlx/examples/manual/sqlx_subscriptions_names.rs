@@ -94,8 +94,8 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            b.include(subscriber("signups", Greet).reply().build());
-            b.include(subscriber("welcome", SendWelcome).build());
+            b.include(subscriber("signups", Greet).reply().build())
+                .include(subscriber("welcome", SendWelcome).build())
         })
 }
 // --8<-- [end:names]

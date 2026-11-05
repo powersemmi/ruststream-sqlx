@@ -21,18 +21,21 @@ A refund writes its record and a receipt job for the mailer, and calls the card 
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/transactional.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/transactional.rs#tables"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/transactional.rs#tables"
+
 ```
 
 </TabItem>
@@ -47,12 +50,14 @@ A refund writes its record and a receipt job for the mailer, and calls the card 
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/transactional.rs#handler"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/transactional.rs#handler"
+
 ```
 
 </TabItem>

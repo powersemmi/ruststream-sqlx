@@ -40,7 +40,7 @@ use thiserror::Error;
 ///     let egress = broker.bind(Publish);
 ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(broker, |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 ///         .start()
 ///         .await?;
@@ -175,7 +175,7 @@ pub enum OutboxError {
 ///         })
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
+///             b.include(place).out_reply(Publish)
 ///         })
 /// }
 /// # }
@@ -221,7 +221,7 @@ pub struct PoolAlreadySet;
 ///     let egress = broker.bind(Publish);
 ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(broker, |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 ///         .start()
 ///         .await?;

@@ -85,7 +85,7 @@
 //!
 //! /// SQL Server: bracket-quoted names, `@p1` placeholders, rows claimed under an update lock that
 //! /// skips the rows another claim holds.
-//! #[derive(Debug)]
+//! # [derive(Debug)]
 //! pub struct Mssql;
 //!
 //! impl Dialect for Mssql {

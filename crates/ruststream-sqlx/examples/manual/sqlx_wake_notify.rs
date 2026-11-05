@@ -89,7 +89,7 @@ fn service(options: PgConnectOptions) -> RustStream {
         .with_broker(broker, |b| {
             let welcome = subscriber("signups", Welcome)
                 .map_source(|_| InboxQueue::<SignupJob>::new("signups"));
-            b.include(welcome.build());
+            b.include(welcome.build())
         })
 }
 

@@ -76,7 +76,7 @@ fn service(url: &str) -> RustStream {
         })
         .with_broker(broker, |b| {
             // A job whose order is gone joins no row: the default decode policy drops it.
-            b.include(send_receipt);
+            b.include(send_receipt)
         })
 }
 

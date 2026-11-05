@@ -29,12 +29,14 @@ A payment the card network keeps declining is tried three times, then moves to t
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_settlement_dead_letter.rs#dead_letter"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_settlement_dead_letter.rs#dead_letter"
+
 ```
 
 </TabItem>

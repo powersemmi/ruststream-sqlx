@@ -52,8 +52,8 @@ live::matrix! {
         RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker(pool), |b| {
             b.include(unanswered)
                 .max_attempts(attempts)
-                .dead_letter("emails.dead");
-            b.include(review);
+                .dead_letter("emails.dead")
+                .include(review)
         })
     }
 
@@ -158,8 +158,8 @@ mod into_a_table {
             RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
                 b.include(plain_unanswered)
                     .max_attempts(nonzero!(1u32))
-                    .dead_letter("plain_jobs_dead");
-                b.include(plain_review);
+                    .dead_letter("plain_jobs_dead")
+                    .include(plain_review)
             })
         }
 

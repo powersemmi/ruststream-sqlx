@@ -66,7 +66,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(audited.transactional());
+                b.include(audited.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "plain").await;
@@ -87,7 +87,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(audited.transactional());
+                b.include(audited.transactional())
             });
         let tb = TestApp::start(app).await.expect("the app starts");
         published(&tb, "plain").await;
@@ -124,7 +124,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(noted.transactional());
+                b.include(noted.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "emails").await;
@@ -172,8 +172,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(scheduling.transactional());
-                b.include(followed);
+                b.include(scheduling.transactional())
+                    .include(followed)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "emails").await;
@@ -236,7 +236,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(twice_noted.transactional());
+                b.include(twice_noted.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "emails").await;
@@ -271,7 +271,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(counted.transactional());
+                b.include(counted.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "emails").await;
@@ -311,7 +311,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(pooled);
+                b.include(pooled)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "plain").await;
@@ -356,7 +356,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(referenced.transactional());
+                b.include(referenced.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "fragile").await;
@@ -392,7 +392,7 @@ live::matrix! {
         let skip = FailurePolicies::default().with_panic(FailurePolicy::Skip);
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(half_done.transactional().on_failure(skip));
+                b.include(half_done.transactional().on_failure(skip))
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "plain").await;
@@ -446,7 +446,7 @@ live::matrix! {
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .on_startup(async move |()| Ok::<_, Infallible>(state))
             .with_broker(broker(&db.pool), |b| {
-                b.include(keeping.transactional());
+                b.include(keeping.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         published(&tb, "plain").await;

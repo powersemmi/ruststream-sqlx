@@ -112,7 +112,7 @@ fn service(url: &str) -> RustStream {
             let triage = subscriber("billing", Triage)
                 .map_source(|_| InboxQueue::<Ticket>::new("billing"))
                 .workers_by_key(nonzero!(4));
-            b.include(triage.build());
+            b.include(triage.build())
         })
 }
 // --8<-- [end:table]

@@ -23,12 +23,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/scaling.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/scaling.rs#service"
+
 ```
 
 </TabItem>
@@ -56,12 +58,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/scaling.rs#notify"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/scaling.rs#notify"
+
 ```
 
 </TabItem>

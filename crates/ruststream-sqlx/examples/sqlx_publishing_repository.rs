@@ -70,8 +70,9 @@ fn service(url: &str) -> RustStream {
         })
         .with_broker(broker.route::<Job>("orders"), |b| {
             // The confirmation becomes a row of `jobs` in the group `emails`.
-            b.include(confirm).out_reply(Repository::<Job>::default());
-            b.include(email);
+            b.include(confirm)
+                .out_reply(Repository::<Job>::default())
+                .include(email)
         })
 }
 // --8<-- [end:service]

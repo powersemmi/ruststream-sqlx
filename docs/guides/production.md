@@ -16,6 +16,7 @@ The service is a mailer with eight workers, a cap of five attempts and a dead-le
 
 {/* single-form: the migration is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/production.rs#migration"
+
 ```
 
 The crate creates no table: the schema is the service's, and its migrations create it, as `sqlx::migrate!` runs them in [`examples/outbox`](https://github.com/powersemmi/ruststream-sqlx/tree/main/examples/outbox).
@@ -29,12 +30,14 @@ In a table with [FIFO groups](ordering.md) the same index keeps the claim's read
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#table"
+
 ```
 
 </TabItem>
@@ -57,12 +60,14 @@ So `on_startup` runs the migrations before the subscriptions open, and the check
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#service"
+
 ```
 
 </TabItem>
@@ -79,12 +84,14 @@ On Postgres, [notifications](scaling.md) keep one more connection for the broker
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#main"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#main"
+
 ```
 
 </TabItem>

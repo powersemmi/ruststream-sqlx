@@ -20,6 +20,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#schema"
+
 ```
 
 `name` - это [группа](../components/tables/roles.md), в которой ждёт строка: подписка на `emails` читает строки, у которых `name` равно `emails`.
@@ -37,12 +38,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#send"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#send"
+
 ```
 
 </TabItem>
@@ -61,12 +64,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#app"
+
 ```
 
 </TabItem>
@@ -86,12 +91,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>

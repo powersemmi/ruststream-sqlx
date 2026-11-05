@@ -37,12 +37,14 @@ The reply names no policy, so it goes through the routes.
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_publishing_route.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_publishing_route.rs#service"
+
 ```
 
 </TabItem>

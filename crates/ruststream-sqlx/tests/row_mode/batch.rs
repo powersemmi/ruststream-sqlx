@@ -93,7 +93,7 @@ live::matrix! {
         db.mail(&[Mail::queued("mail", "b@example.com", None)]).await;
         let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(send.batch(nonzero!(4)));
+                b.include(send.batch(nonzero!(4)))
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("the batches settle");
@@ -124,7 +124,7 @@ live::matrix! {
         db.unreadable_mail("mail").await;
         let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(send.batch(nonzero!(4)));
+                b.include(send.batch(nonzero!(4)))
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("the rows settle");

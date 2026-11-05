@@ -30,12 +30,14 @@ A row that does not decode stays in the table and comes back every ten minutes, 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_messages_decoding.rs#policy"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_messages_decoding.rs#policy"
+
 ```
 
 </TabItem>

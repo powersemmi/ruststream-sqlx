@@ -152,9 +152,7 @@ async fn send(email: &Email) -> HandlerOutcome {
 }
 
 fn service(broker: SqlxBroker<Sqlite, Audited>) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-        b.include(send);
-    })
+    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| b.include(send))
 }
 
 // The broker on a dialect of the service's own takes a pool the service builds, so `main` builds

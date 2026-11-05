@@ -47,7 +47,7 @@ async fn serve(pool: SqlitePool, orders: &[u64]) -> Result<Vec<u16>, Box<dyn Err
     let egress = broker.bind(Publish);
     let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
         .publish_layer(tracking.publish_layer())
-        .with_broker(broker, |_b| {});
+        .with_broker(broker, |b| b);
     let running = app.start().await?;
     let publisher = tracking.wrap(running.publisher(egress).await?);
     let mut answers = Vec::with_capacity(orders.len());

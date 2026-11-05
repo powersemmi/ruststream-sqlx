@@ -89,7 +89,7 @@ fn service(url: &str) -> RustStream {
             let send_all = subscriber("newsletter", SendAll)
                 .map_source(|_| InboxQueue::<SendNewsletter>::new("newsletter"))
                 .batch(nonzero!(50));
-            b.include(send_all.build());
+            b.include(send_all.build())
         })
 }
 // --8<-- [end:batches]

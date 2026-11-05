@@ -171,14 +171,14 @@ fn service(url: &str) -> RustStream {
             // A change the CRM refuses three times moves out of the group, which then moves on.
             let sync =
                 subscriber("crm", PushToCrm).map_source(|_| InboxQueue::<CrmChange>::new("crm"));
-            b.include(sync.build())
-                .max_attempts(nonzero!(3u32))
-                .dead_letter("crm.parked");
             // Four workers, and the postings of one account on one of them, one after another.
             let post = subscriber("postings", Post)
                 .map_source(|_| InboxQueue::<LedgerPosting>::new("postings"))
                 .workers_by_key(nonzero!(4));
-            b.include(post.build());
+            b.include(sync.build())
+                .max_attempts(nonzero!(3u32))
+                .dead_letter("crm.parked")
+                .include(post.build())
         })
 }
 // --8<-- [end:app]

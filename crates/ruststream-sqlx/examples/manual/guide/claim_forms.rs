@@ -106,7 +106,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<RenderReport>("reports"), |b| {
             let render = subscriber("reports", Render)
                 .map_source(|_| InboxQueue::<RenderReport>::new("reports").lease(LEASE));
-            b.include(render.build());
+            b.include(render.build())
         })
 }
 // --8<-- [end:lease]

@@ -36,12 +36,14 @@ A dropped order leaves no row in `orders`, and its receipt is still recorded, de
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_interplay.rs#interplay"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_interplay.rs#interplay"
+
 ```
 
 </TabItem>

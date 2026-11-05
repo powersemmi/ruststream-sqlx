@@ -40,12 +40,14 @@ A video takes minutes to encode, and the videos of one channel go into work one 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_forms_advisory.rs#advisory"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_forms_advisory.rs#advisory"
+
 ```
 
 </TabItem>

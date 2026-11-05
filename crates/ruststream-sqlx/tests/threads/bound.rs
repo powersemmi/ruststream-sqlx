@@ -43,7 +43,7 @@ live::matrix! {
         let app = RustStream::new(AppInfo::new("threads", "0.0.0"))
             .on_startup(async move |()| Ok::<_, Infallible>(state))
             .with_broker(SqlxBroker::new(pool.clone()).poll_interval(POLL), |b| {
-                b.include(held);
+                b.include(held)
             });
         let running = tokio::time::timeout(GUARD, app.start())
             .await

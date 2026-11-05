@@ -191,10 +191,9 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<CheckoutJob>("checkouts"), |b| {
             let checkout = subscriber("checkouts", Checkout)
                 .map_source(|_| InboxQueue::<CheckoutJob>::new("checkouts"));
-            b.include(checkout.build());
             let send =
                 subscriber("emails", Sender).map_source(|_| InboxQueue::<SendEmail>::new("emails"));
-            b.include(send.build());
+            b.include(checkout.build()).include(send.build())
         })
 }
 // --8<-- [end:service]

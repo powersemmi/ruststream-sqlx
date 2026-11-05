@@ -19,6 +19,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#schema"
+
 ```
 
 `name` 是一行所在的[组](../components/tables/roles.md)：对 `emails` 的订阅读取 `name` 为 `emails` 的行。`attempt` 统计一行的投递次数，包括第一次。`retry_after` 是一行到期的时间；它的默认值让新行立即到期。
@@ -31,12 +32,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#send"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#send"
+
 ```
 
 </TabItem>
@@ -50,12 +53,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#app"
+
 ```
 
 </TabItem>
@@ -71,12 +76,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>

@@ -37,12 +37,14 @@ A shipment's headers are a carrier of the service's own type, an order number, a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_headers_field.rs#fields"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_headers_field.rs#fields"
+
 ```
 
 </TabItem>

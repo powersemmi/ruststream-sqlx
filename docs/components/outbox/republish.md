@@ -31,12 +31,14 @@ The broker's `after_startup` republishes the unprocessed records of `orders` thr
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_republish.rs#republish"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_republish.rs#republish"
+
 ```
 
 </TabItem>

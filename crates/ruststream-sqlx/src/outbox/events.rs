@@ -34,8 +34,8 @@ use super::spec::{Declaration, OutboxTable};
 /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
 /// use ruststream_sqlx::{Outbox, outbox};
 ///
-/// #[derive(Outbox, sqlx::FromRow)]
-/// #[outbox(table = "outbox")]
+/// # [derive(Outbox, sqlx::FromRow)]
+/// # [outbox(table = "outbox")]
 /// pub struct OrderOutbox {
 ///     #[field(id)]
 ///     id: i64,
@@ -63,9 +63,9 @@ use super::spec::{Declaration, OutboxTable};
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }
@@ -109,8 +109,8 @@ pub trait Publish<DB: Database>: OutboxRow {
 /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
 /// use ruststream_sqlx::{Outbox, outbox};
 ///
-/// #[derive(Outbox, sqlx::FromRow)]
-/// #[outbox(table = "outbox", custom(fetch))]
+/// # [derive(Outbox, sqlx::FromRow)]
+/// # [outbox(table = "outbox", custom(fetch))]
 /// pub struct OrderOutbox {
 ///     #[field(id)]
 ///     id: i64,
@@ -147,9 +147,9 @@ pub trait Publish<DB: Database>: OutboxRow {
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }
@@ -219,8 +219,8 @@ outcome_event!(
     /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
     /// use ruststream_sqlx::{Outbox, outbox};
     ///
-    /// #[derive(Outbox, sqlx::FromRow)]
-    /// #[outbox(table = "outbox", custom(ack))]
+    /// # [derive(Outbox, sqlx::FromRow)]
+    /// # [outbox(table = "outbox", custom(ack))]
     /// pub struct OrderOutbox {
     ///     #[field(id)]
     ///     id: i64,
@@ -258,9 +258,9 @@ outcome_event!(
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     /// }
     /// # }
@@ -293,8 +293,8 @@ outcome_event!(
     /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
     /// use ruststream_sqlx::{Outbox, outbox};
     ///
-    /// #[derive(Outbox, sqlx::FromRow)]
-    /// #[outbox(table = "outbox", custom(retry))]
+    /// # [derive(Outbox, sqlx::FromRow)]
+    /// # [outbox(table = "outbox", custom(retry))]
     /// pub struct OrderOutbox {
     ///     #[field(id)]
     ///     id: i64,
@@ -329,9 +329,9 @@ outcome_event!(
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     /// }
     /// # }
@@ -364,8 +364,8 @@ outcome_event!(
     /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
     /// use ruststream_sqlx::{Outbox, outbox};
     ///
-    /// #[derive(Outbox, sqlx::FromRow)]
-    /// #[outbox(table = "outbox", custom(discard))]
+    /// # [derive(Outbox, sqlx::FromRow)]
+    /// # [outbox(table = "outbox", custom(discard))]
     /// pub struct OrderOutbox {
     ///     #[field(id)]
     ///     id: i64,
@@ -400,9 +400,9 @@ outcome_event!(
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     /// }
     /// # }
@@ -434,8 +434,8 @@ outcome_event!(
 /// # #[subscriber("orders")] async fn fulfil(_: &OrderPlaced) -> HandlerOutcome { HandlerOutcome::ack() }
 /// use ruststream_sqlx::{Outbox, outbox};
 ///
-/// #[derive(Outbox, sqlx::FromRow)]
-/// #[outbox(table = "outbox", custom(recover))]
+/// # [derive(Outbox, sqlx::FromRow)]
+/// # [outbox(table = "outbox", custom(recover))]
 /// pub struct OrderOutbox {
 ///     #[field(id)]
 ///     id: i64,
@@ -472,9 +472,9 @@ outcome_event!(
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }

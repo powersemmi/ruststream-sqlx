@@ -56,12 +56,8 @@ async fn send(mail: &Mail) -> HandlerOutcome {
 
 /// The mailer as `main` builds it, on a pool that does no I/O until it is used.
 fn mailer(pool: PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(
-        SqlxBroker::<Postgres>::new(pool),
-        |b| {
-            b.include(send);
-        },
-    )
+    RustStream::new(AppInfo::new("mailer", "0.0.0"))
+        .with_broker(SqlxBroker::<Postgres>::new(pool), |b| b.include(send))
 }
 
 #[tokio::test]

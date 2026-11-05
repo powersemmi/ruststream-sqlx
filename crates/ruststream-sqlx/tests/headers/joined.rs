@@ -95,7 +95,7 @@ live::matrix! {
         write(&db, &[8], &[]).await;
         let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(take);
+                b.include(take)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("the job settles");

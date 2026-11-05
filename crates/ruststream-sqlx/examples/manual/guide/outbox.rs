@@ -143,11 +143,11 @@ fn service(url: String) -> impl App {
             Ok::<_, Infallible>(())
         })
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(subscriber("checkout", TakePayment).reply().build())
-                .out_reply(Publish);
-            b.include(subscriber("payments", Ship).build());
             // Once the subscriptions are open, the unprocessed records are sent again.
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(subscriber("checkout", TakePayment).reply().build())
+                .out_reply(Publish)
+                .include(subscriber("payments", Ship).build())
         })
 }
 

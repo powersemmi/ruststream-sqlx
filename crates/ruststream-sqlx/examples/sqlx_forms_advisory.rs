@@ -50,7 +50,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<Transcode>("videos"), |b| {
-            b.include(transcode);
+            b.include(transcode)
         })
 }
 // --8<-- [end:advisory]

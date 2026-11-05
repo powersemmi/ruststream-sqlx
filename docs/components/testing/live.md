@@ -32,12 +32,14 @@ The two tests share one body: one in process on a paused clock, one on the real 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_testing_live.rs#start-live"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_testing_live.rs#start-live"
+
 ```
 
 </TabItem>

@@ -21,7 +21,7 @@ use crate::role::Role;
 /// # use ruststream_sqlx_dialect::TableName;
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Mssql {
@@ -99,7 +99,7 @@ impl Display for NameLimit {
 /// # use ruststream_sqlx_dialect::TableName;
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl RowLock for Mssql {

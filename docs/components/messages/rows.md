@@ -35,12 +35,14 @@ The mail queue has no payload column: the handler takes the `Mail` row, its reci
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_messages_rows.rs#rows"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_messages_rows.rs#rows"
+
 ```
 
 </TabItem>

@@ -28,12 +28,14 @@ An invoice the mail server cannot take returns in an hour by the host's clock, a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_time.rs#time"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_time.rs#time"
+
 ```
 
 </TabItem>

@@ -11,8 +11,8 @@
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "order_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "order_jobs")]
 /// pub struct OrderJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -23,12 +23,12 @@
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Order {
 ///     id: u64,
 /// }
 ///
-/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// # [subscriber(InboxQueue::<OrderJob>::new("orders"))]
 /// async fn fulfil(order: &Order) -> HandlerOutcome {
 ///     tracing::info!(order.id, "fulfilling");
 ///     HandlerOutcome::ack()
@@ -37,7 +37,7 @@
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Four workers, and the orders of one customer keep their order on one of them.
-///         b.include(fulfil.workers_by_key(nonzero!(4)));
+///         b.include(fulfil.workers_by_key(nonzero!(4)))
 ///     })
 /// }
 /// # }
@@ -80,8 +80,8 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "charge_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "charge_jobs")]
 /// pub struct ChargeJob {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -92,13 +92,13 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Charge {
 ///     order: u64,
 /// }
 ///
 /// # async fn try_charge(_: &Charge) -> bool { true }
-/// #[subscriber(InboxQueue::<ChargeJob>::new("charges"))]
+/// # [subscriber(InboxQueue::<ChargeJob>::new("charges"))]
 /// async fn charge(request: &Charge, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
 ///     tracing::info!(request.order, ?attempt, "charging");
 ///     if try_charge(request).await { HandlerOutcome::ack() } else { HandlerOutcome::retry() }
@@ -108,7 +108,7 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 ///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The attempt counts the deliveries: the fifth failure moves the row into
 ///         // `failed_charge_jobs`, a table with the same columns.
-///         b.include(charge).max_attempts(nonzero!(5u32)).dead_letter("failed_charge_jobs");
+///         b.include(charge).max_attempts(nonzero!(5u32)).dead_letter("failed_charge_jobs")
 ///     })
 /// }
 /// # }

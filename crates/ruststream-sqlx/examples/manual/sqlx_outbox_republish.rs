@@ -28,11 +28,11 @@ fn service(pool: SqlitePool) -> impl App {
         .layer(tracking.layer())
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(subscriber("checkout", Place).reply().build())
-                .out_reply(Publish);
-            b.include(subscriber("orders", Fulfil).build());
             // Runs once the subscriptions are open, through this broker's publisher.
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(subscriber("checkout", Place).reply().build())
+                .out_reply(Publish)
+                .include(subscriber("orders", Fulfil).build())
         })
 }
 // --8<-- [end:republish]

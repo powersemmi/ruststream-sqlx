@@ -66,7 +66,7 @@ live::lease_stands! {
         let app = RustStream::new(AppInfo::new("shop", "0.0.0")).with_broker(broker, |b| {
             // A second worker claims whatever is claimable: it would take the row if the lease
             // lapsed.
-            b.include(longer_than_the_lease.workers(nonzero!(2)));
+            b.include(longer_than_the_lease.workers(nonzero!(2)))
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(Duration::from_secs(3))

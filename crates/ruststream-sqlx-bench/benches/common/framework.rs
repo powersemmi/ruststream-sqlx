@@ -153,9 +153,7 @@ pub fn postgres_reply(pool: PgPool, latch: Latch) -> impl App {
     service!(
         SqlxBroker::new(pool).route::<ReplyJob>(REPLIES),
         latch,
-        |b| {
-            b.include(confirm);
-        }
+        |b| { b.include(confirm) }
     )
 }
 
@@ -175,23 +173,19 @@ pub fn sqlite_lease(pool: Pool<Sqlite>, latch: Latch, how: Mount) -> impl App {
 
 /// The advisory lock form on Postgres.
 pub fn postgres_advisory(pool: PgPool, latch: Latch) -> impl App {
-    service!(SqlxBroker::new(pool), latch, |b| {
-        b.include(advisory);
-    })
+    service!(SqlxBroker::new(pool), latch, |b| { b.include(advisory) })
 }
 
 /// A by-name subscription on Postgres: the route leads `jobs` into [`NamedJob`]'s table.
 pub fn postgres_by_name(pool: PgPool, latch: Latch) -> impl App {
     service!(SqlxBroker::new(pool).route::<NamedJob>(JOBS), latch, |b| {
-        b.include(by_name);
+        b.include(by_name)
     })
 }
 
 /// Row mode in the row lock form on Postgres.
 pub fn postgres_row_mode(pool: PgPool, latch: Latch) -> impl App {
-    service!(SqlxBroker::new(pool), latch, |b| {
-        b.include(row_mode);
-    })
+    service!(SqlxBroker::new(pool), latch, |b| { b.include(row_mode) })
 }
 
 /// A service that publishes from outside a handler through a `Repository` of [`NamedJob`], and
@@ -201,7 +195,7 @@ pub fn postgres_repository(
 ) -> (impl App, Bound<SqlxBroker<Postgres>, Repository<NamedJob>>) {
     let broker = SqlxBroker::new(pool).bindable();
     let egress = broker.bind(Repository::<NamedJob>::default());
-    let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |_b| {});
+    let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |b| b);
     (app, egress)
 }
 
@@ -211,6 +205,6 @@ pub fn postgres_routed(pool: PgPool) -> (impl App, Bound<SqlxBroker<Postgres>, R
         .route::<NamedJob>(super::ORDERS)
         .bindable();
     let egress = broker.bind(Routed);
-    let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |_b| {});
+    let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |b| b);
     (app, egress)
 }

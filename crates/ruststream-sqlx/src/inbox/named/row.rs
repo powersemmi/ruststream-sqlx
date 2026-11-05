@@ -220,7 +220,7 @@ impl NamedBytes {
 /// use sqlx::{Arguments, PgPool, Postgres};
 ///
 /// /// A dialect of the service's own over Postgres, whose tables keep `chrono` times.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Audited;
 /// # impl Dialect for Audited {
 /// #     fn name(&self) -> &'static str { "audited" }
@@ -254,8 +254,8 @@ impl NamedBytes {
 ///     }
 /// }
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "email_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -268,12 +268,12 @@ impl NamedBytes {
 /// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
 /// # }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// #[subscriber("emails")]
+/// # [subscriber("emails")]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -282,7 +282,7 @@ impl NamedBytes {
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     let broker = SqlxBroker::with_dialect(pool, Audited).route::<SendEmail>("emails");
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }

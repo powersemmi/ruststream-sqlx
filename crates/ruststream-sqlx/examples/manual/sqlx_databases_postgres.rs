@@ -90,7 +90,7 @@ fn service(options: PgConnectOptions) -> RustStream {
             // Four claims in flight: each holds a connection of the pool while its handler runs.
             let send = subscriber("invoices", SendInvoices)
                 .map_source(|_| InboxQueue::<SendInvoice>::new("invoices"));
-            b.include(send.workers(nonzero!(4)).build());
+            b.include(send.workers(nonzero!(4)).build())
         })
 }
 // --8<-- [end:service]

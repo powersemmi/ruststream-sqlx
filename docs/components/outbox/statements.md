@@ -38,12 +38,14 @@ The repository's [`examples/outbox`](https://github.com/powersemmi/ruststream-sq
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_statements.rs#statements"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_statements.rs#statements"
+
 ```
 
 </TabItem>

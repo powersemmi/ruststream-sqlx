@@ -132,8 +132,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<Checkout>("checkouts"), |b| {
-            b.include(checkout);
-            b.include(send);
+            b.include(checkout).include(send)
         })
 }
 // --8<-- [end:service]

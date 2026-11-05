@@ -28,12 +28,14 @@ The test drives the service of the [Transactional outbox](./index.md) page over 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_switch.rs#switch"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_switch.rs#switch"
+
 ```
 
 </TabItem>

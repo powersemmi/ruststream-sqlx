@@ -21,6 +21,7 @@ The example takes payments at checkout and ships the paid orders, over the in-me
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#schema"
+
 ```
 
 The table is the service's: it creates it, with its own migrations in production.
@@ -32,12 +33,14 @@ The table is the service's: it creates it, with its own migrations in production
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#record"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/outbox.rs#record"
+
 ```
 
 </TabItem>
@@ -53,12 +56,14 @@ In the manual form, `OutboxSpec` says the same, and a `TrackedName` type names w
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#handlers"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/outbox.rs#handlers"
+
 ```
 
 </TabItem>
@@ -72,12 +77,14 @@ The handlers know nothing of the outbox: the middlewares of the app do the track
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/outbox.rs#app"
+
 ```
 
 </TabItem>

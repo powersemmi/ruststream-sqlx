@@ -100,7 +100,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("ledger", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(post.workers(nonzero!(4)));
+                b.include(post.workers(nonzero!(4)))
             });
         let tb = TestApp::start(app).await.expect("the app starts");
         let postings: Vec<Posting> = (1..=8).map(|n| Posting { n }).collect();
@@ -138,7 +138,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("ledger", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(deferred);
+                b.include(deferred)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         // Each publish returns once its posting was handled: the first one retried, the next two

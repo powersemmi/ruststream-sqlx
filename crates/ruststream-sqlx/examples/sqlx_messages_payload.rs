@@ -48,9 +48,7 @@ fn service(url: &str) -> RustStream {
             sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker.route::<EventJob>("signups"), |b| {
-            b.include(welcome);
-        })
+        .with_broker(broker.route::<EventJob>("signups"), |b| b.include(welcome))
 }
 
 #[ruststream::app]

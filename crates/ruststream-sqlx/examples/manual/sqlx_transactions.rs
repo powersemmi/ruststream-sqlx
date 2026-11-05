@@ -115,7 +115,7 @@ fn service(url: &str) -> RustStream {
             let open_account = subscriber("signups", OpenAccountHandler)
                 .map_source(|_| InboxQueue::<OpenAccount>::new("signups"))
                 .transactional();
-            b.include(open_account.build());
+            b.include(open_account.build())
         })
 }
 // --8<-- [end:transactional]

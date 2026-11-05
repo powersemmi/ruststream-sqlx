@@ -54,7 +54,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(send);
+                b.include(send)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -93,8 +93,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let broker = broker(&db.pool).route::<SendEmail>("receipts");
         let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker, |b| {
-            b.include(answer);
-            b.include(file);
+            b.include(answer)
+                .include(file)
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -136,7 +136,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(retry_once);
+                b.include(retry_once)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -169,7 +169,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(bill);
+                b.include(bill)
             });
         let refused = TestApp::start_live(app).await.map(|_| ());
         let message = refused
@@ -187,7 +187,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(send)
                     .max_attempts(nonzero!(3u32))
-                    .dead_letter("emails.dead");
+                    .dead_letter("emails.dead")
             });
         let refused = TestApp::start_live(app).await.map(|_| ());
         let message = format!(
@@ -264,7 +264,7 @@ mod other_column_types {
                 .poll_interval(Duration::from_millis(20))
                 .route::<TextJob>("texts");
             let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker, |b| {
-                b.include(retry_once);
+                b.include(retry_once)
             });
             let tb = TestApp::start_live(app).await.expect("the app starts");
             tb.broker::<SqlxBroker<Db>>()

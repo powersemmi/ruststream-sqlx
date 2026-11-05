@@ -30,12 +30,14 @@ Four threads scan uploads, each writing its verdict through a pool of its own, a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_threads.rs#on_threads"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_threads.rs#on_threads"
+
 ```
 
 </TabItem>

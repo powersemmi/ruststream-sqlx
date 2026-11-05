@@ -35,12 +35,14 @@ Four workers issue invoices on Postgres; each holds its row's lock and a connect
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_forms_row_lock.rs#row_lock"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_forms_row_lock.rs#row_lock"
+
 ```
 
 </TabItem>

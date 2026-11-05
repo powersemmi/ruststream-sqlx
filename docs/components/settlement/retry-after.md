@@ -28,12 +28,14 @@ An endpoint that answered "too many requests" is called again a minute later.
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_settlement_retry_after.rs#retry_after"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_settlement_retry_after.rs#retry_after"
+
 ```
 
 </TabItem>

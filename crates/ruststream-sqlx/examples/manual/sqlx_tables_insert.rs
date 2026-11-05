@@ -130,10 +130,9 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<CheckoutJob>("checkouts"), |b| {
             let checkout = subscriber("checkouts", Checkout)
                 .map_source(|_| InboxQueue::<CheckoutJob>::new("checkouts"));
-            b.include(checkout.build());
             let send = subscriber("receipts", Sender)
                 .map_source(|_| InboxQueue::<SendReceipt>::new("receipts"));
-            b.include(send.build());
+            b.include(checkout.build()).include(send.build())
         })
 }
 

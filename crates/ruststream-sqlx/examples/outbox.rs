@@ -101,10 +101,11 @@ fn app() -> impl App {
             Ok::<_, Infallible>(())
         })
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(place).out_reply(Publish);
-            b.include(fulfil);
             // Once the subscriptions are open, the unprocessed records are sent again.
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(place)
+                .out_reply(Publish)
+                .include(fulfil)
         })
 }
 // --8<-- [end:service]

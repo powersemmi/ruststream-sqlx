@@ -42,8 +42,8 @@ pub use notify::Notifies;
 /// use serde::Deserialize;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "email_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -53,12 +53,12 @@ pub use notify::Notifies;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -71,7 +71,7 @@ pub use notify::Notifies;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }

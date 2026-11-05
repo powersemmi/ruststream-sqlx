@@ -49,12 +49,14 @@ An invoice the database refuses to write is logged with its cause, and the payme
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker_errors.rs#handler"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker_errors.rs#handler"
+
 ```
 
 </TabItem>

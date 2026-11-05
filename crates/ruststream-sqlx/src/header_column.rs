@@ -28,8 +28,8 @@ use sqlx::types::Json;
 /// use sqlx::PgPool;
 ///
 /// /// Headers stored one per line, `name: value`, in a `TEXT` column.
-/// #[derive(sqlx::Type)]
-/// #[sqlx(transparent)]
+/// # [derive(sqlx::Type)]
+/// # [sqlx(transparent)]
 /// pub struct Lines(String);
 ///
 /// impl HeaderColumn for Lines {
@@ -62,8 +62,8 @@ use sqlx::types::Json;
 ///     }
 /// }
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "jobs")]
 /// pub struct Job {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -73,14 +73,14 @@ use sqlx::types::Json;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Task {
 ///     n: u32,
 /// }
 ///
 /// // The delivery's headers come from `headers`, so the service's middleware reads `x-tenant`
 /// // there as on any broker.
-/// #[subscriber(InboxQueue::<Job>::new("tasks"))]
+/// # [subscriber(InboxQueue::<Job>::new("tasks"))]
 /// async fn run(task: &Task) -> HandlerOutcome {
 ///     tracing::info!(task.n, "running");
 ///     HandlerOutcome::ack()
@@ -88,7 +88,7 @@ use sqlx::types::Json;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(run);
+///         b.include(run)
 ///     })
 /// }
 /// # }
@@ -115,8 +115,8 @@ pub trait HeaderColumn {
     /// use sqlx::types::Json;
     /// use sqlx::{PgConnection, Postgres};
     ///
-    /// #[derive(Inbox, sqlx::FromRow)]
-    /// #[inbox(table = "jobs")]
+    /// # [derive(Inbox, sqlx::FromRow)]
+    /// # [inbox(table = "jobs")]
     /// pub struct Job {
     ///     #[field(id, generated)]
     ///     id: i64,
@@ -178,7 +178,7 @@ pub trait HeaderColumn {
 /// use sqlx::PgPool;
 /// use sqlx::types::Json;
 ///
-/// #[derive(sqlx::FromRow)]
+/// # [derive(sqlx::FromRow)]
 /// pub struct Job {
 ///     id: i64,
 ///     headers: Json<BTreeMap<String, String>>,
@@ -213,13 +213,13 @@ pub trait HeaderColumn {
 ///     }
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Task {
 ///     n: u32,
 /// }
 ///
 /// // The delivery's headers come from the `headers` column, as on any broker.
-/// #[subscriber(InboxQueue::<Job>::new("tasks"))]
+/// # [subscriber(InboxQueue::<Job>::new("tasks"))]
 /// async fn run(task: &Task, ctx: &mut Context<'_>) -> HandlerOutcome {
 ///     let tenant = ctx.headers().get_str("x-tenant").unwrap_or_default();
 ///     tracing::info!(task.n, tenant, "running");
@@ -228,7 +228,7 @@ pub trait HeaderColumn {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(run);
+///         b.include(run)
 ///     })
 /// }
 /// # }
@@ -250,7 +250,7 @@ pub trait HeaderColumn {
 /// use sqlx::types::Json;
 /// use sqlx::{PgConnection, Postgres};
 ///
-/// #[derive(sqlx::FromRow)]
+/// # [derive(sqlx::FromRow)]
 /// pub struct OrderEvent {
 ///     id: i64,
 ///     name: String,

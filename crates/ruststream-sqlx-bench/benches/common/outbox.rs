@@ -298,7 +298,7 @@ macro_rules! variants {
             let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(latch))
                 .with_broker(broker, |b| {
-                    b.include(sink);
+                    b.include(sink)
                 });
             (app, egress)
         }
@@ -311,7 +311,7 @@ macro_rules! variants {
             let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(state))
                 .with_broker(broker, |b| {
-                    b.include(sink_by_header);
+                    b.include(sink_by_header)
                 });
             (app, egress)
         }
@@ -327,8 +327,8 @@ macro_rules! variants {
                 .layer(tracking.layer())
                 .publish_layer(tracking.publish_layer())
                 .with_broker(broker, |b| {
-                    b.include(sink);
-                    b.after_startup($reply, tracking.republish());
+                    b.after_startup($reply, tracking.republish())
+                        .include(sink)
                 });
             (app, egress)
         }
@@ -338,7 +338,7 @@ macro_rules! variants {
         pub fn publishing() -> (impl App, Egress) {
             let broker = $broker.bindable();
             let egress = broker.bind($egress);
-            let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |_b| {});
+            let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |b| b);
             (app, egress)
         }
 
@@ -352,7 +352,7 @@ macro_rules! variants {
                 .layer(tracking.layer())
                 .publish_layer(tracking.publish_layer())
                 .with_broker(broker, |b| {
-                    b.after_startup($reply, republish);
+                    b.after_startup($reply, republish)
                 });
             (app, egress, tracking)
         }

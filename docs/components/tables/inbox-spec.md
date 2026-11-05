@@ -50,12 +50,14 @@ One table, `email_jobs`, described twice: `Welcome` with the derive and `Reminde
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_tables_spec.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_tables_spec.rs#table"
+
 ```
 
 </TabItem>

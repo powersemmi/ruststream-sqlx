@@ -145,12 +145,12 @@ fn service(url: &str) -> RustStream {
             // `emails.dead` group.
             let send =
                 subscriber("emails", Sender).map_source(|_| InboxQueue::<SendMail>::new("emails"));
-            b.include(send.build())
-                .max_attempts(nonzero!(5u32))
-                .dead_letter("emails.dead");
             let review = subscriber("emails.dead", Review)
                 .map_source(|_| InboxQueue::<SendMail>::new("emails.dead"));
-            b.include(review.build());
+            b.include(send.build())
+                .max_attempts(nonzero!(5u32))
+                .dead_letter("emails.dead")
+                .include(review.build())
         })
 }
 // --8<-- [end:app]

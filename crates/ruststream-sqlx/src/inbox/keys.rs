@@ -37,7 +37,7 @@ use super::transactional::{InboxMode, Lender};
 /// # #[derive(serde::Deserialize)]
 /// # struct Report { id: u64 }
 ///
-/// #[subscriber(InboxQueue::<Job>::new("reports"))]
+/// # [subscriber(InboxQueue::<Job>::new("reports"))]
 /// async fn render(report: &Report, Ctx(attempt): Ctx<Attempt>) -> HandlerOutcome {
 ///     tracing::info!(report.id, ?attempt, "rendering");
 ///     HandlerOutcome::ack()
@@ -78,7 +78,7 @@ impl<M: IncomingMessage> BuildContext<M> for InboxContext {
 /// # struct Upload { name: String }
 ///
 /// // `keys::Pool` comes first, so the handler's context is `PoolContext<Postgres>`.
-/// #[subscriber(InboxQueue::<Job>::new("uploads"))]
+/// # [subscriber(InboxQueue::<Job>::new("uploads"))]
 /// async fn scan(
 ///     upload: &Upload,
 ///     Ctx(pool): Ctx<keys::Pool<Postgres>>,
@@ -150,7 +150,7 @@ where
 ///
 /// // `keys::Tx` comes first, so the handler's context is `TxContext<Postgres>`, and the keys
 /// // after it read the same context.
-/// #[subscriber(InboxQueue::<Job>::new("transfers"))]
+/// # [subscriber(InboxQueue::<Job>::new("transfers"))]
 /// async fn transfer(
 ///     order: &Transfer,
 ///     Ctx(mut tx): Ctx<keys::Tx<Postgres>>,
@@ -182,7 +182,7 @@ where
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("bank", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(transfer.transactional());
+///         b.include(transfer.transactional())
 ///     })
 /// }
 /// # }
@@ -275,7 +275,7 @@ where
 /// # struct Charge { order: u64 }
 /// # async fn try_charge(_: &Charge) -> bool { true }
 ///
-/// #[subscriber(InboxQueue::<Job>::new("charges"))]
+/// # [subscriber(InboxQueue::<Job>::new("charges"))]
 /// async fn charge(request: &Charge, Ctx(attempt): Ctx<Attempt>) -> HandlerOutcome {
 ///     if try_charge(request).await {
 ///         return HandlerOutcome::ack();
@@ -319,7 +319,7 @@ impl ContextField for Attempt {
 /// # #[derive(serde::Deserialize)]
 /// # struct Shipment { order: i64 }
 ///
-/// #[subscriber(InboxQueue::<Job>::new("shipments"))]
+/// # [subscriber(InboxQueue::<Job>::new("shipments"))]
 /// async fn ship(shipment: &Shipment, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let shipped = sqlx::query("UPDATE orders SET shipped = true WHERE id = $1")
 ///         .bind(shipment.order)
@@ -330,7 +330,7 @@ impl ContextField for Attempt {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship.transactional());
+///         b.include(ship.transactional())
 ///     })
 /// }
 /// # }
@@ -399,7 +399,7 @@ impl<DB: QueueDatabase> ContextField for Tx<DB> {
 /// # #[derive(serde::Deserialize)]
 /// # struct Visit { page: String }
 ///
-/// #[subscriber(InboxQueue::<Job>::new("visits"))]
+/// # [subscriber(InboxQueue::<Job>::new("visits"))]
 /// async fn count(visit: &Visit, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
 ///     let counted = sqlx::query("UPDATE pages SET visits = visits + 1 WHERE path = $1")
 ///         .bind(&visit.page)

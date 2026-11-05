@@ -119,7 +119,7 @@ fn service(url: &str) -> RustStream {
             // A job whose order is gone joins no row: the default decode policy drops it.
             let send = subscriber("receipts", Receipts)
                 .map_source(|_| InboxQueue::<OrderMail>::new("receipts"));
-            b.include(send.build());
+            b.include(send.build())
         })
 }
 

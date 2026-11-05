@@ -74,12 +74,8 @@ macro_rules! outlasting_an_extension {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn a_handler_that_outlives_an_extension_commits_with_its_ack() {
             let Some(db) = database().await else { return };
-            let app = RustStream::new(AppInfo::new("transactional", "0.0.0")).with_broker(
-                broker(&db.pool),
-                |b| {
-                    b.include(outlasting.transactional());
-                },
-            );
+            let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
+                .with_broker(broker(&db.pool), |b| b.include(outlasting.transactional()));
             let tb = TestApp::start_live(app).await.expect("the app starts");
             tb.broker::<SqlxBroker<Db>>()
                 .message(&JOB)
@@ -143,10 +139,8 @@ mod postgres {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_transactional_lease_at_repeatable_read_refuses_to_start() {
         let Some(db) = database().await else { return };
-        let app =
-            RustStream::new(AppInfo::new("transactional", "0.0.0")).with_broker(broker(&db), |b| {
-                b.include(outlasting.transactional());
-            });
+        let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
+            .with_broker(broker(&db), |b| b.include(outlasting.transactional()));
         let refused = match TestApp::start_live(app).await {
             Err(TestError::Subscribe(refused)) => refused,
             Err(other) => panic!("the app failed for another reason: {other}"),
@@ -160,9 +154,8 @@ mod postgres {
             ),
             "{refused}"
         );
-        let app = RustStream::new(AppInfo::new("plain", "0.0.0")).with_broker(broker(&db), |b| {
-            b.include(plainly);
-        });
+        let app = RustStream::new(AppInfo::new("plain", "0.0.0"))
+            .with_broker(broker(&db), |b| b.include(plainly));
         let tb = TestApp::start_live(app)
             .await
             .expect("without transactional mode the table starts");

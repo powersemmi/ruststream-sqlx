@@ -397,8 +397,8 @@ live::mysql_stands! {
             .route::<SendEmail>("emails")
             .route::<SendEmail>("followups");
         let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
-            b.include(answer.batch(nonzero!(4)));
-            b.include(follow);
+            b.include(answer.batch(nonzero!(4)))
+                .include(follow)
         });
         // Far below the server's lock wait of 50 seconds, so a claim that blocks the insert fails
         // the test at once.

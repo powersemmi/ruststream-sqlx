@@ -66,8 +66,8 @@ use super::any::AnyDialect;
 /// use serde::Deserialize;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "email_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -77,12 +77,12 @@ use super::any::AnyDialect;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -95,7 +95,7 @@ use super::any::AnyDialect;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -115,8 +115,8 @@ use super::any::AnyDialect;
 ///
 /// // thumbnail_jobs: id INTEGER PRIMARY KEY, attempt INTEGER NOT NULL DEFAULT 1,
 /// // locked_until TEXT, payload BLOB NOT NULL
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "thumbnail_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "thumbnail_jobs")]
 /// pub struct MakeThumbnail {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -128,13 +128,13 @@ use super::any::AnyDialect;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// pub struct Image {
 ///     path: String,
 /// }
 ///
 /// # async fn resize(image: &Image) -> bool { !image.path.is_empty() }
-/// #[subscriber(InboxQueue::<MakeThumbnail>::new("thumbnails"))]
+/// # [subscriber(InboxQueue::<MakeThumbnail>::new("thumbnails"))]
 /// async fn thumbnail(image: &Image) -> HandlerOutcome {
 ///     if resize(image).await {
 ///         HandlerOutcome::ack()
@@ -147,7 +147,7 @@ use super::any::AnyDialect;
 /// // pool, which builds its statements from the table's description.
 /// pub fn app(pool: SqlitePool) -> RustStream {
 ///     RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(thumbnail);
+///         b.include(thumbnail)
 ///     })
 /// }
 /// # }
@@ -418,8 +418,8 @@ impl Opens<level::Exclusive> for BuiltIn<Any> {}
 /// use sqlx::AnyPool;
 ///
 /// // The columns `sqlx::Any` carries: integers, text and bytes, no time.
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "email_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "email_jobs")]
 /// pub struct SendEmail {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -431,12 +431,12 @@ impl Opens<level::Exclusive> for BuiltIn<Any> {}
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
-/// #[subscriber(InboxQueue::<SendEmail>::new("emails"))]
+/// # [subscriber(InboxQueue::<SendEmail>::new("emails"))]
 /// async fn send(email: &Email) -> HandlerOutcome {
 ///     tracing::info!(to = %email.to, "sending");
 ///     HandlerOutcome::ack()
@@ -447,7 +447,7 @@ impl Opens<level::Exclusive> for BuiltIn<Any> {}
 /// // sqlx's drivers (`sqlx::any::install_default_drivers`) before it builds the pool.
 /// pub fn app(pool: AnyPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }

@@ -52,8 +52,8 @@ use super::spec::Declaration;
 /// use sqlx::PgPool;
 ///
 /// /// The queue table: the mechanics, and the service's own headers `tenant` and `trace`.
-/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
-/// #[inbox(table = "order_jobs")]
+/// # [derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// # [inbox(table = "order_jobs")]
 /// pub struct OrderHeaders {
 ///     #[field(id, generated)]
 ///     job_id: i64,
@@ -66,7 +66,7 @@ use super::spec::Declaration;
 /// }
 ///
 /// /// The message a handler takes: the headers and the order's note, read from the same row.
-/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
 /// pub struct OrderJob {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -74,13 +74,13 @@ use super::spec::Declaration;
 ///     note: Option<String>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Tenant {
 ///     tenant: String,
 /// }
 ///
 /// // The header map is built from `OrderHeaders` on the first read: here, by `Headers<Tenant>`.
-/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// # [subscriber(InboxQueue::<OrderJob>::new("orders"))]
 /// async fn ship(job: &OrderJob, Headers(tenant): Headers<Tenant>) -> HandlerOutcome {
 ///     tracing::info!(tenant = %tenant.tenant, note = ?job.note, "shipping");
 ///     HandlerOutcome::ack()
@@ -88,7 +88,7 @@ use super::spec::Declaration;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship);
+///         b.include(ship)
 ///     })
 /// }
 /// # }
@@ -154,8 +154,8 @@ pub trait Assembled {
 /// use ruststream_sqlx::prelude::*;
 ///
 /// /// A region code the table keeps as text.
-/// #[derive(Debug, Clone, sqlx::Type)]
-/// #[sqlx(transparent)]
+/// # [derive(Debug, Clone, sqlx::Type)]
+/// # [sqlx(transparent)]
 /// pub struct Region(String);
 ///
 /// // The header carries the code in capitals, as the service's consumers read it.
@@ -165,15 +165,15 @@ pub trait Assembled {
 ///     }
 /// }
 ///
-/// #[derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
-/// #[inbox(table = "shipments")]
+/// # [derive(Debug, Clone, InboxHeaders, sqlx::FromRow)]
+/// # [inbox(table = "shipments")]
 /// pub struct ShipmentHeaders {
 ///     #[field(id, generated)]
 ///     id: i64,
 ///     region: Region,
 /// }
 ///
-/// #[derive(Debug, Clone, Inbox, sqlx::FromRow)]
+/// # [derive(Debug, Clone, Inbox, sqlx::FromRow)]
 /// pub struct Shipment {
 ///     #[field(headers)]
 ///     #[sqlx(flatten)]
@@ -181,7 +181,7 @@ pub trait Assembled {
 ///     address: String,
 /// }
 ///
-/// #[subscriber(InboxQueue::<Shipment>::new("shipments"))]
+/// # [subscriber(InboxQueue::<Shipment>::new("shipments"))]
 /// async fn ship(shipment: &Shipment, ctx: &mut Context<'_>) -> HandlerOutcome {
 ///     let region = ctx.headers().get_str("region").unwrap_or("none");
 ///     tracing::info!(region, to = %shipment.address, "shipping");
@@ -190,7 +190,7 @@ pub trait Assembled {
 ///
 /// pub fn app(pool: sqlx::PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship);
+///         b.include(ship)
 ///     })
 /// }
 /// # }

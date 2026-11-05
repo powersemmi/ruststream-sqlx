@@ -219,9 +219,8 @@ mod lease {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<LeasedImmediately>("plain");
-        let app = RustStream::new(AppInfo::new("modes", "0.0.0")).with_broker(broker, |b| {
-            b.include(immediate.transactional());
-        });
+        let app = RustStream::new(AppInfo::new("modes", "0.0.0"))
+            .with_broker(broker, |b| b.include(immediate.transactional()));
         assert_eq!(
             noted(&db, app).await,
             ["database is locked"],
@@ -233,9 +232,8 @@ mod lease {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<Plain>("plain");
-        let app = RustStream::new(AppInfo::new("modes", "0.0.0")).with_broker(broker, |b| {
-            b.include(deferred.transactional());
-        });
+        let app = RustStream::new(AppInfo::new("modes", "0.0.0"))
+            .with_broker(broker, |b| b.include(deferred.transactional()));
         assert_eq!(
             noted(&db, app).await,
             ["free"],
@@ -273,9 +271,8 @@ mod advisory {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<AdvisedImmediately>("plain");
-        let app = RustStream::new(AppInfo::new("modes", "0.0.0")).with_broker(broker, |b| {
-            b.include(immediate.transactional());
-        });
+        let app = RustStream::new(AppInfo::new("modes", "0.0.0"))
+            .with_broker(broker, |b| b.include(immediate.transactional()));
         assert_eq!(
             noted(&db, app).await,
             ["database is locked"],
@@ -287,9 +284,8 @@ mod advisory {
         let broker = SqlxBroker::new(db.pool.clone())
             .poll_interval(POLL)
             .route::<Plain>("plain");
-        let app = RustStream::new(AppInfo::new("modes", "0.0.0")).with_broker(broker, |b| {
-            b.include(deferred.transactional());
-        });
+        let app = RustStream::new(AppInfo::new("modes", "0.0.0"))
+            .with_broker(broker, |b| b.include(deferred.transactional()));
         assert_eq!(
             noted(&db, app).await,
             ["free"],

@@ -36,7 +36,7 @@ use crate::statement::{ClaimShape, Statement, StatementError};
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// // The service's one lease table, `email_jobs`, mounts on `Mssql`.
@@ -146,7 +146,7 @@ pub trait Lease: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Lease for Mssql {
@@ -223,7 +223,7 @@ pub trait Lease: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Lease for Mssql {
@@ -278,7 +278,7 @@ pub trait Lease: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Lease for Mssql {
@@ -337,7 +337,7 @@ pub trait Lease: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Lease for Mssql {
@@ -402,7 +402,7 @@ pub trait Lease: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Lease for Mssql {
@@ -481,7 +481,7 @@ pub trait Lease: Dialect {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Lease for Mssql {

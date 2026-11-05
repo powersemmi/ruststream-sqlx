@@ -58,7 +58,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
-            b.include(thumbnail);
+            b.include(thumbnail)
         })
 }
 

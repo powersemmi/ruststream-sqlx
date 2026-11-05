@@ -104,7 +104,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<SendStatement>("statements"), |b| {
             let send = subscriber("statements", SendOne)
                 .map_source(|_| InboxQueue::<SendStatement>::new("statements"));
-            b.include(send.build());
+            b.include(send.build())
         })
 }
 // --8<-- [end:database_clock]

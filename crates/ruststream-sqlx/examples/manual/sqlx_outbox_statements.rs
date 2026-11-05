@@ -180,12 +180,12 @@ fn service(pool: SqlitePool) -> impl App {
         .layer(tracking.layer())
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(subscriber("checkout", Place).reply().build())
-                .out_reply(Publish);
-            // One attempt: an order out of stock is not delivered again, and its record waits.
-            b.include(subscriber("orders", Fulfil).build())
-                .max_attempts(nonzero!(1u32));
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(subscriber("checkout", Place).reply().build())
+                .out_reply(Publish)
+                // One attempt: an order out of stock is not delivered again, and its record waits.
+                .include(subscriber("orders", Fulfil).build())
+                .max_attempts(nonzero!(1u32))
         })
 }
 

@@ -101,7 +101,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<SendMail>("mail"), |b| {
             let send =
                 subscriber("mail", SendOne).map_source(|_| InboxQueue::<SendMail>::new("mail"));
-            b.include(send.build());
+            b.include(send.build())
         })
 }
 // --8<-- [end:outcomes]

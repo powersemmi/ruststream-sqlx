@@ -21,6 +21,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#schema"
+
 ```
 
 Таблица принадлежит сервису: он создаёт её сам, в промышленной среде - собственными миграциями.
@@ -32,12 +33,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#record"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/outbox.rs#record"
+
 ```
 
 </TabItem>
@@ -53,12 +56,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#handlers"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/outbox.rs#handlers"
+
 ```
 
 </TabItem>
@@ -72,12 +77,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/outbox.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/outbox.rs#app"
+
 ```
 
 </TabItem>

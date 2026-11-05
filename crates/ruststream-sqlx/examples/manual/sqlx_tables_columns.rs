@@ -79,7 +79,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<LegacyJob>("imports"), |b| {
             let import = subscriber("imports", Importer)
                 .map_source(|_| InboxQueue::<LegacyJob>::new("imports"));
-            b.include(import.build());
+            b.include(import.build())
         })
 }
 

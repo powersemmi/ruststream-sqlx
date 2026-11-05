@@ -45,8 +45,8 @@ use crate::outbox::store::Store;
 ///     const NAME: &'static str = "orders";
 /// }
 ///
-/// #[derive(Serialize, Deserialize, Outgoing)]
-/// #[outgoing(name = "orders")]
+/// # [derive(Serialize, Deserialize, Outgoing)]
+/// # [outgoing(name = "orders")]
 /// pub struct OrderPlaced {
 ///     id: u64,
 /// }
@@ -57,8 +57,8 @@ use crate::outbox::store::Store;
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
+///             b.include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }

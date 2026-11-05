@@ -59,9 +59,7 @@ fn service(options: PgConnectOptions) -> RustStream {
             sqlx::raw_sql(ANNOUNCE).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker, |b| {
-            b.include(welcome);
-        })
+        .with_broker(broker, |b| b.include(welcome))
 }
 
 /// The trigger announces every row another program inserts: the channel is the table, the

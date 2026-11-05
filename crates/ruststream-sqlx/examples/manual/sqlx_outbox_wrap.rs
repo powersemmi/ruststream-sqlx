@@ -26,7 +26,7 @@ async fn serve(pool: SqlitePool, orders: &[u64]) -> Result<(), Box<dyn Error + S
     let egress = broker.bind(Publish);
     let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
         .publish_layer(tracking.publish_layer())
-        .with_broker(broker, |_b| {});
+        .with_broker(broker, |b| b);
     let running = app.start().await?;
 
     // The running app's publisher bypasses the publish pipeline; `wrap` gives it the tracking.

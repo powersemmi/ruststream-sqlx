@@ -27,8 +27,8 @@ use thiserror::Error;
 /// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
 /// # }
 ///
-/// #[derive(Serialize, Outgoing)]
-/// #[outgoing(name = "exports")]
+/// # [derive(Serialize, Outgoing)]
+/// # [outgoing(name = "exports")]
 /// pub struct Export {
 ///     account: u64,
 /// }

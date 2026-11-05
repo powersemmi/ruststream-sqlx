@@ -14,7 +14,7 @@ pub use error::{NameLimit, StatementError};
 /// # use ruststream_sqlx_dialect::TableName;
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -89,7 +89,7 @@ pub enum Param {
 /// # use ruststream_sqlx_dialect::TableName;
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -134,7 +134,7 @@ impl Statement {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl RowLock for Mssql {
@@ -189,7 +189,7 @@ impl Statement {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Mssql {
@@ -257,7 +257,7 @@ impl Statement {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Mssql {
@@ -329,7 +329,7 @@ impl Statement {
 /// # use ruststream_sqlx_dialect::TableName;
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl RowLock for Mssql {

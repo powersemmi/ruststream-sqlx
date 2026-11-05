@@ -67,9 +67,8 @@ async fn a_by_name_row_with_its_own_ack_settles_through_it() {
     let broker = SqlxBroker::new(db.pool.clone())
         .poll_interval(Duration::from_millis(20))
         .route::<AckedJob>("acked");
-    let app = RustStream::new(AppInfo::new("by-name", "0.0.0")).with_broker(broker, |b| {
-        b.include(acknowledge);
-    });
+    let app = RustStream::new(AppInfo::new("by-name", "0.0.0"))
+        .with_broker(broker, |b| b.include(acknowledge));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
         .message(&Task { n: 1 })

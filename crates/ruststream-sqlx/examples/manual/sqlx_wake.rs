@@ -114,12 +114,12 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker, |b| {
             let greet =
                 subscriber("signups", Greet).map_source(|_| InboxQueue::<Job>::new("signups"));
-            b.include(greet.reply().build())
-                .out_reply(Repository::<Job>::default());
             // The welcome's row wakes this subscription: no poll interval in between.
             let send = subscriber("welcome", SendWelcome)
                 .map_source(|_| InboxQueue::<Job>::new("welcome"));
-            b.include(send.build());
+            b.include(greet.reply().build())
+                .out_reply(Repository::<Job>::default())
+                .include(send.build())
         })
 }
 // --8<-- [end:service]

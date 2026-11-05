@@ -126,7 +126,7 @@ fn service(options: PgConnectOptions) -> RustStream {
                 .workers(WORKERS);
             b.include(send.build())
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("emails.dead");
+                .dead_letter("emails.dead")
         })
 }
 // --8<-- [end:service]

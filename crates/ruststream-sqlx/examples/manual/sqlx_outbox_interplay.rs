@@ -153,13 +153,13 @@ fn service(pool: SqlitePool) -> impl App {
             let take = subscriber("orders", Take)
                 .map_source(|_| InboxQueue::<OrderJob>::new("orders"))
                 .transactional();
-            b.include(take.build())
-                .out(DefaultSlot, Repository::<ReceiptJob>::default())
-                .build();
             let file = subscriber("receipts", File)
                 .map_source(|_| InboxQueue::<ReceiptJob>::new("receipts"));
-            b.include(file.build());
-            b.after_startup(Repository::<ReceiptJob>::default(), tracking.republish());
+            b.after_startup(Repository::<ReceiptJob>::default(), tracking.republish())
+                .include(take.build())
+                .out(DefaultSlot, Repository::<ReceiptJob>::default())
+                .build()
+                .include(file.build())
         })
 }
 // --8<-- [end:interplay]

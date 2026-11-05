@@ -151,7 +151,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(misread);
+                b.include(misread)
             });
         let Err(refused) = TestApp::start_live(app).await else {
             panic!("the app started with a column its table lacks");

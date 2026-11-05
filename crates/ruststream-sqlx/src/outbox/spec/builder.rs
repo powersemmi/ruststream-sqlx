@@ -35,7 +35,7 @@ use super::{Declaration, Headers, OwnEvent, ProcessedAt, Push};
 /// use ruststream_sqlx::outbox::{self, Outbox, OutboxSpec, OutboxTable, TrackedName};
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// #[derive(sqlx::FromRow)]
+/// # [derive(sqlx::FromRow)]
 /// pub struct OrderEvent {
 ///     id: i64,
 ///     name: String,
@@ -88,9 +88,9 @@ use super::{Declaration, Headers, OwnEvent, ProcessedAt, Push};
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }
@@ -426,7 +426,7 @@ impl<Settings> OutboxSpec<Settings> {
     /// use ruststream_sqlx::outbox::{self, OutboxSpec, OutboxTable};
     /// use sqlx::{PgConnection, Postgres};
     ///
-    /// #[derive(sqlx::FromRow)]
+    /// # [derive(sqlx::FromRow)]
     /// pub struct OrderEvent {
     ///     id: i64,
     ///     name: String,

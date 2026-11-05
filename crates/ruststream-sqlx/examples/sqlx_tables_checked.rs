@@ -70,12 +70,8 @@ async fn send(email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome
 fn service(options: PgConnectOptions) -> RustStream {
     // Nothing connects here: the broker builds its pool when the service starts.
     let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        broker.route::<SendEmail>("emails"),
-        |b| {
-            b.include(send);
-        },
-    )
+    RustStream::new(AppInfo::new("mailer", "0.1.0"))
+        .with_broker(broker.route::<SendEmail>("emails"), |b| b.include(send))
 }
 
 #[ruststream::app]

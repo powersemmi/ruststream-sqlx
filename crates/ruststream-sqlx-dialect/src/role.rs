@@ -15,7 +15,7 @@ use std::fmt::{self, Display, Formatter};
 /// use ruststream_sqlx_dialect::{Dialect, Param, Role, Statement, StatementError, TableSpec};
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -105,7 +105,7 @@ impl Role {
     /// # use ruststream_sqlx_dialect::TableName;
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl RowLock for Mssql {

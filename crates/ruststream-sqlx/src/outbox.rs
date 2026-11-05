@@ -43,8 +43,8 @@
 //!
 //! // outbox: id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, payload BYTEA NOT NULL,
 //! // processed_at TIMESTAMPTZ
-//! #[derive(Outbox, sqlx::FromRow)]
-//! #[outbox(table = "outbox")]
+//! # [derive(Outbox, sqlx::FromRow)]
+//! # [outbox(table = "outbox")]
 //! struct OrderOutbox {
 //!     #[field(id)]
 //!     id: i64,
@@ -66,23 +66,23 @@
 //!     }
 //! }
 //!
-//! #[derive(Deserialize)]
+//! # [derive(Deserialize)]
 //! struct PlaceOrder {
 //!     id: u64,
 //! }
 //!
-//! #[derive(Serialize, Deserialize, Outgoing)]
-//! #[outgoing(name = "orders")]
+//! # [derive(Serialize, Deserialize, Outgoing)]
+//! # [outgoing(name = "orders")]
 //! struct OrderPlaced {
 //!     id: u64,
 //! }
 //!
-//! #[subscriber("checkout", reply)]
+//! # [subscriber("checkout", reply)]
 //! async fn place(cmd: &PlaceOrder) -> OrderPlaced {
 //!     OrderPlaced { id: cmd.id }
 //! }
 //!
-//! #[subscriber("orders")]
+//! # [subscriber("orders")]
 //! async fn fulfil(order: &OrderPlaced) -> HandlerOutcome {
 //!     tracing::info!(order = order.id, "fulfilling the order");
 //!     HandlerOutcome::ack()
@@ -110,9 +110,9 @@
 //!             Ok::<_, Infallible>(())
 //!         })
 //!         .with_broker(MemoryBroker::new(), |b| {
-//!             b.include(place).out_reply(Publish);
-//!             b.include(fulfil);
-//!             b.after_startup(Publish, tracking.republish());
+//!             b.after_startup(Publish, tracking.republish())
+//!                 .include(place).out_reply(Publish)
+//!                 .include(fulfil)
 //!         })
 //! }
 //! # }
@@ -182,7 +182,7 @@ pub use wrap::TrackedPublisher;
 /// use ruststream_sqlx::outbox::OUTBOX_ID_HEADER;
 ///
 /// /// A layer of the service's own that logs the record id of every tracked delivery.
-/// #[derive(Clone, Copy)]
+/// # [derive(Clone, Copy)]
 /// pub struct RecordIds;
 ///
 /// pub struct Logged<H>(H);
@@ -215,7 +215,7 @@ pub use wrap::TrackedPublisher;
 ///         .layer(RecordIds)
 ///         .layer(tracking.layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 /// }
 /// # }

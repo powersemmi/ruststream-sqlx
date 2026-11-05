@@ -21,7 +21,7 @@ use crate::statement::StatementError;
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -135,7 +135,7 @@ impl Isolation {
 /// };
 ///
 /// /// libSQL, a fork of SQLite served over the network, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Libsql;
 ///
 /// impl Dialect for Libsql {
@@ -245,7 +245,7 @@ impl Mode {
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -318,7 +318,7 @@ impl Opening {
     /// };
     ///
     /// /// SQL Server, a database without a built-in dialect.
-    /// #[derive(Debug)]
+    /// # [derive(Debug)]
     /// pub struct Mssql;
     ///
     /// impl Dialect for Mssql {
@@ -399,7 +399,7 @@ impl Opening {
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {
@@ -461,7 +461,7 @@ pub mod level;
 /// };
 ///
 /// /// SQL Server, a database without a built-in dialect.
-/// #[derive(Debug)]
+/// # [derive(Debug)]
 /// pub struct Mssql;
 ///
 /// impl Dialect for Mssql {

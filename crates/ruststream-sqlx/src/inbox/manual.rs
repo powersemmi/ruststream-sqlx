@@ -55,7 +55,7 @@ use super::{InboxRow, InboxSpec, InboxTable, QueueRow};
 /// use ruststream_sqlx::{InboxSpec, InboxTable, KeyRow};
 /// use sqlx::{Sqlite, SqlitePool};
 ///
-/// #[derive(Debug, Clone, sqlx::FromRow)]
+/// # [derive(Debug, Clone, sqlx::FromRow)]
 /// pub struct Invoice {
 ///     id: i64,
 ///     customer: String,
@@ -89,7 +89,7 @@ use super::{InboxRow, InboxSpec, InboxTable, QueueRow};
 /// }
 ///
 /// // One customer's invoices settle in order, each customer on a lane of its own.
-/// #[subscriber(InboxQueue::<Invoice>::new("invoices"))]
+/// # [subscriber(InboxQueue::<Invoice>::new("invoices"))]
 /// async fn bill(invoice: &Invoice) -> HandlerOutcome {
 ///     if invoice.total >= 0 {
 ///         HandlerOutcome::ack()
@@ -102,7 +102,7 @@ use super::{InboxRow, InboxSpec, InboxTable, QueueRow};
 ///     RustStream::new(AppInfo::new("billing", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(bill);
+///             b.include(bill)
 ///         },
 ///     )
 /// }
@@ -142,7 +142,7 @@ pub trait KeyRow {
 /// use serde::Deserialize;
 /// use sqlx::{Sqlite, SqlitePool};
 ///
-/// #[derive(sqlx::FromRow)]
+/// # [derive(sqlx::FromRow)]
 /// pub struct EmailJob {
 ///     job_id: i64,
 ///     attempt: i16,
@@ -179,13 +179,13 @@ pub trait KeyRow {
 ///     }
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Email {
 ///     to: String,
 /// }
 ///
 /// // The third attempt gives up on an address the first two could not reach.
-/// #[subscriber(InboxQueue::<EmailJob>::new("emails"))]
+/// # [subscriber(InboxQueue::<EmailJob>::new("emails"))]
 /// async fn send(email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome {
 ///     match attempt {
 ///         Some(3..) => HandlerOutcome::drop(),
@@ -198,7 +198,7 @@ pub trait KeyRow {
 ///     RustStream::new(AppInfo::new("mailer", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }
@@ -236,7 +236,7 @@ pub trait AttemptRow {
 /// use ruststream_sqlx::{HeaderFields, InboxSpec, InboxTable, put_header};
 /// use sqlx::{Sqlite, SqlitePool};
 ///
-/// #[derive(Debug, Clone, sqlx::FromRow)]
+/// # [derive(Debug, Clone, sqlx::FromRow)]
 /// pub struct OrderJob {
 ///     job_id: i64,
 ///     tenant: String,
@@ -274,7 +274,7 @@ pub trait AttemptRow {
 /// }
 ///
 /// // The tenant's header reads like any other; the row holds the note.
-/// #[subscriber(InboxQueue::<OrderJob>::new("orders"))]
+/// # [subscriber(InboxQueue::<OrderJob>::new("orders"))]
 /// async fn ship(job: &OrderJob, ctx: &mut Context<'_>) -> HandlerOutcome {
 ///     match (ctx.headers().get_str("tenant"), job.note.as_deref()) {
 ///         (Some(_), Some("fragile")) => HandlerOutcome::retry(),
@@ -286,7 +286,7 @@ pub trait AttemptRow {
 ///     RustStream::new(AppInfo::new("shop", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(ship);
+///             b.include(ship)
 ///         },
 ///     )
 /// }

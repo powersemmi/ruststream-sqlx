@@ -34,12 +34,14 @@ An HTTP endpoint answers each order by what its publish through `wrap` returned:
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_errors.rs#errors"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_errors.rs#errors"
+
 ```
 
 </TabItem>

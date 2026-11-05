@@ -44,12 +44,14 @@ The subscription claims the row as soon as the insert commits, though its poll w
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_wake_notify.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_wake_notify.rs#service"
+
 ```
 
 </TabItem>

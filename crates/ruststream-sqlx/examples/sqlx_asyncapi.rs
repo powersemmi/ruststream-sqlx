@@ -86,11 +86,7 @@ fn service(url: &str) -> RustStream {
     RustStream::new(AppInfo::new("office", "0.1.0")).with_broker_labeled(
         "postgres",
         broker(url),
-        |b| {
-            b.include(send_email);
-            b.include(render);
-            b.include(send_mail);
-        },
+        |b| b.include(send_email).include(render).include(send_mail),
     )
 }
 

@@ -28,12 +28,14 @@ The type is also a sqlx type of its own, so the driver reads and writes the colu
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_headers_column.rs#column"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_headers_column.rs#column"
+
 ```
 
 </TabItem>

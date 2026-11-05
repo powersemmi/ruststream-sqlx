@@ -80,8 +80,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<CheckoutJob>("checkouts"), |b| {
-            b.include(checkout);
-            b.include(send_receipt);
+            b.include(checkout).include(send_receipt)
         })
 }
 

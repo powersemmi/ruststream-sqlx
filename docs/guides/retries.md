@@ -20,6 +20,7 @@ The example is a mailer that sends emails through a provider.
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#schema"
+
 ```
 
 `name` is the [group](../components/tables/roles.md) a row waits in: the subscription to `emails` reads the rows whose `name` is `emails`.
@@ -37,12 +38,14 @@ The provider refuses an email in three ways, and each needs a different outcome.
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#send"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#send"
+
 ```
 
 </TabItem>
@@ -61,12 +64,14 @@ A row whose payload does not decode spends its attempts like any other failure (
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#app"
+
 ```
 
 </TabItem>
@@ -86,12 +91,14 @@ The dead-letter group is an ordinary queue of the table, and `review` reads it l
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>

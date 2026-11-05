@@ -188,7 +188,7 @@ mod on_servers {
                 .poll_interval(Duration::from_millis(20))
                 .route::<AnyEmail>("emails");
             let app = RustStream::new(AppInfo::new("any", "0.0.0")).with_broker(broker, |b| {
-                b.include(retry_once);
+                b.include(retry_once)
             });
             retried_then_acknowledged(app, &db).await;
             pool.close().await;
@@ -204,7 +204,7 @@ mod on_servers {
                 .poll_interval(Duration::from_millis(20))
                 .route::<AnyEmail>("emails");
             let app = RustStream::new(AppInfo::new("any", "0.0.0")).with_broker(broker, |b| {
-                b.include(by_name_retry_once);
+                b.include(by_name_retry_once)
             });
             retried_then_acknowledged(app, &db).await;
             pool.close().await;
@@ -406,8 +406,8 @@ mod advisory {
             let pool = any_pool(&Db::any_url(&db.pool)).await;
             let app = RustStream::new(AppInfo::new("any", "0.0.0"))
                 .with_broker(broker(&pool), |b| {
-                    b.include(acked);
-                    b.include(keyed_acked);
+                    b.include(acked)
+                        .include(keyed_acked)
                 });
             let tb = TestApp::start_live(app).await.expect("the app starts");
             tb.broker::<SqlxBroker<Any>>()
@@ -453,7 +453,7 @@ mod advisory {
             let pool = any_pool(&Db::any_url(&db.pool)).await;
             let app = RustStream::new(AppInfo::new("any", "0.0.0"))
                 .with_broker(broker(&pool), |b| {
-                    b.include(retried_once);
+                    b.include(retried_once)
                 });
             let tb = TestApp::start_live(app).await.expect("the app starts");
             tb.broker::<SqlxBroker<Any>>()

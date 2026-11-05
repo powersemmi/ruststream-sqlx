@@ -68,10 +68,8 @@ async fn second(_job: &Job) -> HandlerOutcome {
 }
 
 fn app(pool: &PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("notified", "0.0.0")).with_broker(broker(pool), |b| {
-        b.include(first);
-        b.include(second);
-    })
+    RustStream::new(AppInfo::new("notified", "0.0.0"))
+        .with_broker(broker(pool), |b| b.include(first).include(second))
 }
 
 /// Writes a job of the group `name` from a connection of the test's own, as another process
@@ -308,9 +306,8 @@ async fn a_table_named_past_a_channel_stops_its_subscription_at_startup() {
     .execute(&db.pool)
     .await
     .expect("the table creates");
-    let app = RustStream::new(AppInfo::new("long", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(long);
-    });
+    let app = RustStream::new(AppInfo::new("long", "0.0.0"))
+        .with_broker(broker(&db.pool), |b| b.include(long));
     let Err(refused) = TestApp::start_live_within(app, WOKEN).await else {
         panic!("the subscription refuses to start");
     };
