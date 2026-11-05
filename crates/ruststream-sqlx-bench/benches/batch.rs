@@ -14,8 +14,6 @@
 
 mod common;
 
-use std::num::NonZeroUsize;
-
 use common::code::{Pending, start_and_drain};
 use common::framework;
 use common::raw::{Statements, read_payload, row_lock};
@@ -23,6 +21,7 @@ use common::stand::Table;
 use common::tables::RowLockJob;
 use common::{BATCH, MESSAGES};
 use gungraun::{library_benchmark, library_benchmark_group, main};
+use ruststream::runtime::SubscriberSettings;
 use ruststream_sqlx::InboxTable;
 use ruststream_sqlx::dialect::{ClaimShape, Postgres};
 

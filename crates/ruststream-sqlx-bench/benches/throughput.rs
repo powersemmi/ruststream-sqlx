@@ -177,8 +177,11 @@ impl Cell {
                         how,
                         framework::row_lock,
                         framework::row_lock_batch,
-                        |mount| drain(framework::postgres_row_lock(pool.clone(), latch.clone(), mount), &latch)
-                            .await
+                        |mount| drain(
+                            framework::postgres_row_lock(pool.clone(), latch.clone(), mount),
+                            &latch
+                        )
+                        .await
                     );
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, RowLockJob, tasks, self.batch, latch);
@@ -208,8 +211,11 @@ impl Cell {
                         how,
                         framework::row_lock,
                         framework::row_lock_batch,
-                        |mount| drain(framework::mysql_row_lock(pool.clone(), latch.clone(), mount), &latch)
-                            .await
+                        |mount| drain(
+                            framework::mysql_row_lock(pool.clone(), latch.clone(), mount),
+                            &latch
+                        )
+                        .await
                     );
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, RowLockJob, tasks, self.batch, latch);
@@ -234,13 +240,13 @@ impl Cell {
                 let pool = sqlite_pool(POOL, Table::Lease).await;
                 sqlite_fill(&pool, Table::Lease, rows).await;
                 if matches!(kind, Loop::Framework) {
-                    framework::mounted!(
-                        how,
-                        framework::lease,
-                        framework::lease_batch,
-                        |mount| drain(framework::sqlite_lease(pool.clone(), latch.clone(), mount), &latch)
-                            .await
-                    );
+                    framework::mounted!(how, framework::lease, framework::lease_batch, |mount| {
+                        drain(
+                            framework::sqlite_lease(pool.clone(), latch.clone(), mount),
+                            &latch,
+                        )
+                        .await
+                    });
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, LeaseJob, tasks, self.batch, latch);
                 } else {
@@ -318,7 +324,8 @@ impl OutboxCell {
                 outbox::feed_round_trip(built, &latch).await;
             }
             Loop::Adapter => {
-                let built = outbox::redis::round_trip_by_hand_on_workers(pool.clone(), state, workers);
+                let built =
+                    outbox::redis::round_trip_by_hand_on_workers(pool.clone(), state, workers);
                 outbox::feed_round_trip(built, &latch).await;
             }
             Loop::Framework if plain => {
@@ -326,8 +333,12 @@ impl OutboxCell {
                 outbox::feed_round_trip(built, &latch).await;
             }
             Loop::Framework => {
-                let built =
-                    outbox::redis::round_trip_outbox_on_workers(pool.clone(), state, TRACKED, workers);
+                let built = outbox::redis::round_trip_outbox_on_workers(
+                    pool.clone(),
+                    state,
+                    TRACKED,
+                    workers,
+                );
                 outbox::feed_round_trip(built, &latch).await;
             }
         }

@@ -65,7 +65,6 @@ use std::fmt::Write as _;
 use std::fs;
 use std::future::Future;
 use std::hint::black_box;
-use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use common::outbox::{self, Reply, TRACKED, UNTRACKED, record_header};
@@ -334,11 +333,7 @@ impl Scenario {
             }
             Self::OutboxUntracked | Self::OutboxRoundTrip => {
                 drop(pool);
-                outbox::feed_round_trip(
-                    outbox::redis::round_trip(latch.clone()),
-                    &latch,
-                )
-                .await;
+                outbox::feed_round_trip(outbox::redis::round_trip(latch.clone()), &latch).await;
             }
             Self::OutboxPublish => {
                 drop(pool);
@@ -375,8 +370,7 @@ impl Scenario {
                 deliver(app, egress, &pool, &latch).await;
             }
             Self::OutboxRoundTrip => {
-                let built =
-                    outbox::redis::round_trip_by_hand(pool, latch.clone());
+                let built = outbox::redis::round_trip_by_hand(pool, latch.clone());
                 outbox::feed_round_trip(built, &latch).await;
             }
         }
@@ -402,7 +396,8 @@ impl Scenario {
                 .await;
             }
             Self::Lease => {
-                let app = framework::postgres_lease(pool, latch.clone(), |b| b.include(framework::lease));
+                let app =
+                    framework::postgres_lease(pool, latch.clone(), |b| b.include(framework::lease));
                 drain(app, &latch).await;
             }
             Self::Advisory => {
@@ -430,8 +425,7 @@ impl Scenario {
                 } else {
                     UNTRACKED
                 };
-                let built =
-                    outbox::redis::round_trip_outbox(pool, latch.clone(), name);
+                let built = outbox::redis::round_trip_outbox(pool, latch.clone(), name);
                 outbox::feed_round_trip(built, &latch).await;
             }
             Self::OutboxPublish => {

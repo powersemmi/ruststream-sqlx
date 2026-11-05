@@ -15,8 +15,6 @@
 
 mod common;
 
-use std::num::NonZeroUsize;
-
 use common::MESSAGES;
 use common::code::{Pending, feeding, start_and_drain};
 use common::outbox::{Command, UNTRACKED, memory};

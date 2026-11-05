@@ -7,14 +7,16 @@
 //! it runs them, and nothing of the framework's runtime: against the raw loop it is what the
 //! crate itself costs, and against the service it is what the runtime adds on top.
 
+use std::future::poll_fn;
 use std::hint::black_box;
 use std::num::NonZeroUsize;
 use std::pin::pin;
 
 use futures::StreamExt;
 use ruststream::{
-    BatchSubscriber, Broker, Carries, ConnectedBroker, IncomingMessage, Lend, OutgoingMessage,
-    PublishPolicy, Publisher, Subscribe, Subscriber, SubscriptionSource,
+    BatchSlot, BatchStream, BatchSubscriber, Broker, Carries, ConnectedBroker, IncomingMessage,
+    Lend, OutgoingMessage, PublishPolicy, Publisher, Settle, Subscribe, Subscriber,
+    SubscriptionSource,
 };
 use ruststream_sqlx::{ConnectedSqlxBroker, InboxQueue, Repository, Routed, SqlxBroker};
 use sqlx::{PgPool, Postgres};
@@ -39,7 +41,7 @@ async fn shut_down(connected: Connected) {
 /// acknowledgement, in the order the runtime runs them around a handler.
 pub async fn consume<Sub>(mut subscriber: Sub, latch: &Latch, read: impl Fn(&Sub::Message))
 where
-    Sub: Subscriber,
+    Sub: Subscriber<Message: Settle>,
 {
     let mut deliveries = pin!(subscriber.stream());
     while let Some(delivery) = deliveries.next().await {
@@ -58,11 +60,14 @@ where
 /// counted and acknowledged in the order the batch yields them, as the runtime settles a batch.
 pub async fn consume_batches<Sub>(mut subscriber: Sub, size: NonZeroUsize, latch: &Latch)
 where
-    Sub: BatchSubscriber,
+    Sub: BatchSubscriber<Message: Settle>,
 {
     let mut batches = pin!(subscriber.batches(size));
-    while let Some(batch) = batches.next().await {
-        for delivery in batch.expect("the subscription delivers") {
+    // One slot for every batch, as the runtime lends each worker.
+    let mut slot = Sub::Batch::with_capacity(size);
+    while let Some(filled) = poll_fn(|cx| batches.as_mut().poll_fill(cx, &mut slot)).await {
+        filled.expect("the subscription delivers");
+        for delivery in slot.drain() {
             read_payload(delivery.payload());
             latch.arrived();
             delivery.ack().await.expect("the acknowledgement settles");

@@ -118,6 +118,8 @@ impl Mount {
 
 /// Runs `$run` with `$mount` bound to the chain that mounts `$single` or `$batch` the way `$how`
 /// says. Each way is a chain of its own type, so each runs `$run` on its own.
+// Only the throughput run mounts by a value read at run time.
+#[allow(unused_macros)]
 macro_rules! mounted {
     ($how:expr, $single:path, $batch:path, |$mount:ident| $run:expr) => {{
         let $crate::common::framework::Mount { workers, batch } = $how;
@@ -127,8 +129,9 @@ macro_rules! mounted {
                 $run
             }
             (None, _) => {
-                let $mount =
-                    move |b: $crate::common::framework::Scope<_>| b.include($single.workers(workers));
+                let $mount = move |b: $crate::common::framework::Scope<_>| {
+                    b.include($single.workers(workers))
+                };
                 $run
             }
             (Some(size), 1) => {
@@ -145,6 +148,7 @@ macro_rules! mounted {
         }
     }};
 }
+#[allow(unused_imports)]
 pub(crate) use mounted;
 
 /// The row lock form on Postgres, with what `mount` mounts.
@@ -200,7 +204,8 @@ pub fn postgres_advisory(pool: PgPool, latch: Latch) -> impl App {
 
 /// A by-name subscription on Postgres: the route leads `jobs` into [`NamedJob`]'s table.
 pub fn postgres_by_name(pool: PgPool, latch: Latch) -> impl App {
-    service!(SqlxBroker::new(pool).route::<NamedJob>(JOBS), latch, |b| b.include(by_name))
+    service!(SqlxBroker::new(pool).route::<NamedJob>(JOBS), latch, |b| b
+        .include(by_name))
 }
 
 /// Row mode in the row lock form on Postgres.

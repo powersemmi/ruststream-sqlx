@@ -16,8 +16,6 @@
 
 mod common;
 
-use std::num::NonZeroUsize;
-
 use common::MESSAGES;
 use common::code::{Pending, feeding, start_and_drain};
 use common::outbox::{Command, TRACKED, memory};
@@ -61,7 +59,9 @@ fn none_run(messages: usize) -> Pending {
 }
 
 fn by_hand_run(messages: usize) -> Pending {
-    round_trip!(messages, |latch, pool| memory::round_trip_by_hand(pool, latch))
+    round_trip!(messages, |latch, pool| memory::round_trip_by_hand(
+        pool, latch
+    ))
 }
 
 fn outbox_run(messages: usize) -> Pending {
