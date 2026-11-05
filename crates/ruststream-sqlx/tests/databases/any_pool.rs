@@ -487,7 +487,7 @@ mod advisory {
 
         use futures::StreamExt;
         use ruststream::testing::InProcess;
-        use ruststream::{ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+        use ruststream::{ConnectedBroker, Settle, Subscriber, SubscriptionSource};
         use ruststream_sqlx::Insert;
 
         use super::*;

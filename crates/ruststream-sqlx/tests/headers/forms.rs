@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::testing::TestApp;
-use ruststream::{ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{ConnectedBroker, Settle, Subscriber, SubscriptionSource};
 use ruststream_sqlx::prelude::*;
 use sqlx::{Database, Pool};
 

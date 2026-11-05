@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::error::Error;
+use std::io;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
@@ -89,6 +90,7 @@ struct OutboxId<'a> {
 }
 
 /// Stamps a reply with the tenant, a header the record keeps.
+#[derive(Clone)]
 struct Stamp;
 
 impl<C, Options> PublishTransform<ForReply<C>, Options> for Stamp {
@@ -219,24 +221,41 @@ stands! {
             .layer(tracking.layer())
             .publish_layer(tracking.publish_layer())
             .with_broker(MemoryBroker::new(), move |b| {
-                b.include(place).out_reply(Publish).transform(Stamp);
-                b.include(look_up);
-                b.include(fulfil).max_attempts(nonzero!(1u32));
-                b.include(pay_back).max_attempts(nonzero!(1u32));
-                b.include(ship).max_attempts(nonzero!(1u32));
-                b.include(read);
-                match startup {
-                    Startup::Nothing => {}
-                    Startup::Republish => b.after_startup(Publish, hook.republish()),
-                    Startup::RepublishOnly(names) => {
-                        b.after_startup(Publish, hook.republish_names(names.iter().copied()));
+                // One hook for every variant; the errors meet in `io::Error`.
+                b.after_startup(Publish, move |live| async move {
+                    match startup {
+                        Startup::Nothing => Ok(()),
+                        Startup::Republish => hook.republish()(live).await.map_err(io::Error::other),
+                        Startup::RepublishOnly(names) => hook
+                            .republish_names(names.iter().copied())(live)
+                            .await
+                            .map_err(io::Error::other),
+                        Startup::Wrap => {
+                            let publisher = hook.wrap(live);
+                            publisher
+                                .message(&Order { id: 9, outcome: Outcome::Ack })
+                                .publish()
+                                .await
+                                .map_err(io::Error::other)?;
+                            publisher
+                                .message(&Note { id: 9 })
+                                .publish()
+                                .await
+                                .map_err(io::Error::other)
+                        }
                     }
-                    Startup::Wrap => b.after_startup(Publish, move |live| async move {
-                        let publisher = hook.wrap(live);
-                        publisher.message(&Order { id: 9, outcome: Outcome::Ack }).publish().await?;
-                        publisher.message(&Note { id: 9 }).publish().await
-                    }),
-                }
+                })
+                .include(place)
+                .out_reply(Publish)
+                .transform(Stamp)
+                .include(look_up)
+                .include(fulfil)
+                .max_attempts(nonzero!(1u32))
+                .include(pay_back)
+                .max_attempts(nonzero!(1u32))
+                .include(ship)
+                .max_attempts(nonzero!(1u32))
+                .include(read)
             })
     }
 

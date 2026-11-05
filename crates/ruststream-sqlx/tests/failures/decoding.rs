@@ -19,7 +19,8 @@ use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, TestApp};
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber, SubscriptionSource,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Settle, Subscriber,
+    SubscriptionSource,
 };
 use ruststream_sqlx::{
     Claim, ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerError,

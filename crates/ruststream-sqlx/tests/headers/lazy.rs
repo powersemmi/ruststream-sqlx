@@ -7,15 +7,15 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use ruststream::{
-    BatchSubscriber, Broker, Carries, ConnectedBroker, IncomingMessage, Subscriber,
-    SubscriptionSource,
+    BatchSlot, BatchSubscriber, Broker, Carries, ConnectedBroker, IncomingMessage, Settle,
+    Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::prelude::*;
 use serde::Deserialize;
 use sqlx::Pool;
 
 use super::POLL;
-use crate::live;
+use crate::live::{self, NextBatch};
 
 /// The header contract of an order's job, as a handler reads it.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -124,9 +124,9 @@ live::matrix! {
             .expect("the subscription opens");
         {
             let mut batches = pin!(subscriber.batches(nonzero!(2_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let mut batch = batches.next().await.expect("a batch").expect("the claim");
             let mut seen = Vec::new();
-            for delivery in batch {
+            for delivery in batch.drain() {
                 let headers = delivery.headers();
                 seen.push((
                     headers.get_str("tenant").map(str::to_owned),

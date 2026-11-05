@@ -23,8 +23,7 @@ use ruststream::prelude::*;
 use ruststream::runtime::RustStreamError;
 use ruststream::testing::{InProcess, TestApp};
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber,
-    SubscriptionSource,
+    AckError, Broker, ConnectedBroker, OutgoingMessage, Settle, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::{
     Inbox, InboxQueue, Insert, Publish, QueueDatabase, SqlxBroker, SqlxBrokerError,

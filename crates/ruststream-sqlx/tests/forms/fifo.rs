@@ -20,7 +20,7 @@ use futures::future::try_join_all;
 use futures::{Stream, StreamExt};
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, TestApp};
-use ruststream::{ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource};
 use ruststream_sqlx::dialect::{Dialect, Opening, Param, Statement};
 use ruststream_sqlx::keys::Attempt;
 use ruststream_sqlx::{InboxQueue, InboxRow, Insert, SqlxBroker};

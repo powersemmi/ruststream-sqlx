@@ -8,14 +8,14 @@ use std::pin::pin;
 use futures::StreamExt;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Carries, CarriesBatch, ConnectedBroker, IncomingMessage, Subscriber,
+    BatchSlot, BatchSubscriber, Carries, CarriesBatch, ConnectedBroker, Settle, Subscriber,
     SubscriptionSource,
 };
 use ruststream_sqlx::prelude::*;
 use sqlx::{AssertSqlSafe, Pool};
 
 use super::POLL;
-use crate::live;
+use crate::live::{self, NextBatch};
 
 live::matrix! {
     fn broker(pool: &Pool<Db>) -> SqlxBroker<Db> {
@@ -122,13 +122,13 @@ live::matrix! {
             let mut orders = Vec::new();
             let mut sizes = Vec::new();
             while orders.len() < jobs.len() {
-                let batch = batches.next().await.expect("a batch").expect("the claim");
+                let mut batch = batches.next().await.expect("a batch").expect("the claim");
                 sizes.push(batch.carried().len());
                 for job in batch.carried() {
                     assert_eq!(job.note.as_deref(), Some("batched"));
                     orders.push(job.headers.order_id);
                 }
-                for delivery in batch {
+                for delivery in batch.drain() {
                     delivery.ack().await.expect("the delivery acknowledges");
                 }
             }

@@ -9,15 +9,16 @@ use std::collections::BTreeMap;
 use std::pin::pin;
 use std::time::Duration;
 
-use futures::StreamExt;
 use ruststream::testing::TestApp;
-use ruststream::{BatchSubscriber, CarriesBatch, ConnectedBroker, SubscriptionSource};
+use ruststream::{
+    BatchSlot, BatchSubscriber, CarriesBatch, ConnectedBroker, Settle, SubscriptionSource,
+};
 use ruststream_sqlx::prelude::*;
 use sqlx::Pool;
 use sqlx::types::Json;
 
 use super::{POLL, SETTLED};
-use crate::live;
+use crate::live::{self, NextBatch};
 
 /// How long a dropped batch may take to return its rows: far less than a lease, so a row that
 /// waited for its lease to run out fails the test.
@@ -69,10 +70,10 @@ live::matrix! {
             let mut lent: Vec<String> = Vec::new();
             let mut sizes = Vec::new();
             while lent.len() < written.len() {
-                let batch = batches.next().await.expect("a batch").expect("the claim");
+                let mut batch = batches.next().await.expect("a batch").expect("the claim");
                 sizes.push(batch.carried().len());
                 lent.extend(recipients(batch.carried()).into_iter().map(str::to_owned));
-                for delivery in batch {
+                for delivery in batch.drain() {
                     delivery.ack().await.expect("the delivery acknowledges");
                 }
             }
@@ -154,7 +155,7 @@ live::matrix! {
             .expect("the subscription opens");
         {
             let mut batches = pin!(subscriber.batches(nonzero!(4_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let mut batch = batches.next().await.expect("a batch").expect("the claim");
             let lent: Vec<&str> = batch
                 .carried()
                 .iter()
@@ -166,7 +167,7 @@ live::matrix! {
                 "claim order, not the fetch's"
             );
             // Four deliveries: the slice's three, then the claimed id the fetch found no row for.
-            assert_eq!(batch.into_iter().count(), 4, "every claimed id has its delivery");
+            assert_eq!(batch.drain().count(), 4, "every claimed id has its delivery");
         }
         drop(subscriber);
         connected.shutdown().await.expect("the broker shuts down");
@@ -193,7 +194,7 @@ live::matrix! {
             .expect("the subscription opens");
         {
             let mut batches = pin!(subscriber.batches(nonzero!(4_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let mut batch = batches.next().await.expect("a batch").expect("the claim");
             let lent = batch.carried().to_vec();
             // The claim took `b`'s headers into its delivery, and left its column empty.
             let [plain, tenanted]: [Mail; 2] = written.try_into().expect("two mails");
@@ -205,7 +206,7 @@ live::matrix! {
                 lent,
                 [plain.leased_as(&lent[0]), emptied.leased_as(&lent[1])],
             );
-            for delivery in batch {
+            for delivery in batch.drain() {
                 delivery.ack().await.expect("the delivery acknowledges");
             }
         }

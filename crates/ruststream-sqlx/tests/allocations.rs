@@ -22,6 +22,7 @@ mod live;
 #[path = "allocations/outbox.rs"]
 mod outbox_paths;
 
+use std::future::poll_fn;
 use std::num::NonZeroUsize;
 use std::pin::pin;
 use std::time::Duration;
@@ -29,9 +30,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use futures::{Stream, StreamExt};
 use ruststream::{
-    BatchSubscriber, Broker, Bytes, Carries, CarriesBatch, ConnectedBroker, HeaderMap,
-    IncomingMessage, Lend, OutgoingMessage, PublishPolicy, Publisher, Str, Subscribe, Subscriber,
-    SubscriptionSource, nonzero,
+    BatchSlot, BatchStream, BatchSubscriber, Broker, Bytes, Carries, CarriesBatch, ConnectedBroker,
+    HeaderMap, IncomingMessage, Lend, OutgoingMessage, PublishPolicy, Publisher, Settle, Str,
+    Subscribe, Subscriber, SubscriptionSource, nonzero,
 };
 use ruststream_sqlx::dialect::{ClaimShape, Column, Dialect, Param, RowLock, Statement};
 use ruststream_sqlx::spec::{Attempt, Lease, Payload};
@@ -248,7 +249,7 @@ async fn fill_headed(pool: &PgPool, count: u64) {
 /// after `WARMUP` of them.
 async fn claim_and_ack<Message, Deliveries>(deliveries: Deliveries, read: fn(&Message)) -> u64
 where
-    Message: IncomingMessage,
+    Message: Settle,
     Deliveries: Stream<Item = Result<Message, SqlxBrokerError>>,
 {
     let mut deliveries = pin!(deliveries);
@@ -368,24 +369,28 @@ async fn batch_cost<Source>(
 where
     Source: SubscriptionSource<ConnectedSqlxBroker<Postgres>>,
     Source::Subscriber: BatchSubscriber<Error = SqlxBrokerError>,
-    <Source::Subscriber as BatchSubscriber>::Batch:
-        IntoIterator<Item = <Source::Subscriber as Subscriber>::Message>,
 {
     let mut subscriber = source
         .subscribe(connected)
         .await
         .expect("the batch subscription opens");
     let mut batches = pin!(subscriber.batches(BATCH));
+    // One slot for every batch, as the runtime lends each worker.
+    let mut slot =
+        <<Source::Subscriber as BatchSubscriber>::Batch as BatchSlot>::with_capacity(BATCH);
     let size = BATCH.get() as u64;
     let mut start = 0;
     for batch in 0..(WARMUP + MESSAGES) / size {
         if batch == WARMUP / size {
             start = blocks();
         }
-        let batch = batches.next().await.expect("a batch").expect("a claim");
-        read(&batch);
+        poll_fn(|cx| batches.as_mut().poll_fill(cx, &mut slot))
+            .await
+            .expect("a batch")
+            .expect("a claim");
+        read(&slot);
         let mut count = 0;
-        for delivery in batch {
+        for delivery in BatchSlot::drain(&mut slot) {
             delivery.ack().await.expect("the ack");
             count += 1;
         }

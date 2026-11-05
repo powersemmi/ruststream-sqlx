@@ -6,7 +6,7 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use ruststream::{
-    Broker, Carries, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+    Broker, Carries, ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::__private::Events;
 use ruststream_sqlx::InboxRow;

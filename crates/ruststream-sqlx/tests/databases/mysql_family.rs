@@ -18,8 +18,8 @@ use futures::{StreamExt, TryStreamExt};
 use ruststream::prelude::*;
 use ruststream::testing::TestApp;
 use ruststream::{
-    AckError, Broker, ConnectedBroker, DescribeServer, IncomingMessage, RetryDeclaration,
-    Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, DescribeServer, RetryDeclaration, Settle, Subscriber,
+    SubscriptionSource,
 };
 use ruststream_sqlx::dialect::{
     self, ClaimShape, Dialect, Lease, Opening, RowLock, Statement, StatementError, TableName,

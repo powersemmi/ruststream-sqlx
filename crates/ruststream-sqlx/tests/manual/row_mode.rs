@@ -4,9 +4,7 @@
 use std::pin::pin;
 
 use futures::StreamExt;
-use ruststream::{
-    Broker, Carries, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
-};
+use ruststream::{Broker, Carries, ConnectedBroker, Settle, Subscriber, SubscriptionSource};
 use ruststream_sqlx::__private::Events;
 use ruststream_sqlx::dialect::{Dialect, Sqlite as SqliteDialect};
 use ruststream_sqlx::prelude::*;

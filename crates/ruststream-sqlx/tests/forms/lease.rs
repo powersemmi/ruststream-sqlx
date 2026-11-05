@@ -19,7 +19,7 @@ use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, Outcome, TestApp};
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::keys::Attempt;
 use ruststream_sqlx::{Clock, Inbox, InboxQueue, Insert, SqlxBroker, SqlxBrokerError};
