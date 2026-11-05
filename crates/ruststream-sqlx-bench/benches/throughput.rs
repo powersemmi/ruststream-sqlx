@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The benchmark is a binary of its own, not library surface: the framework's macros generate the
 // handler scaffolding, and a measured loop panics on a database fault rather than threading a
 // `Result` through a scenario nobody recovers from.
@@ -245,7 +247,7 @@ impl Cell {
                             framework::sqlite_lease(pool.clone(), latch.clone(), mount),
                             &latch,
                         )
-                        .await
+                        .await;
                     });
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, LeaseJob, tasks, self.batch, latch);

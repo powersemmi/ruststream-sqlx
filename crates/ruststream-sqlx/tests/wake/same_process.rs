@@ -111,6 +111,8 @@ live::matrix! {
     /// # Panics
     ///
     /// When it was not handled within [`HANDLED`].
+    // The harness's own error, which carries the unsent message back.
+    #[allow(clippy::result_large_err)]
     async fn publish<State: Send + Sync + 'static>(
         tb: &TestApp<State>,
         to: &str,

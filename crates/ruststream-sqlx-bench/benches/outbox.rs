@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The harness macros generate the group module, its items and the paths between them, and a
 // benchmark function takes its setup value by value because the harness owns the drop; the
 // crate's lints are written for the library surface, not for generated benchmark scaffolding.

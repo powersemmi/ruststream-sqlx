@@ -9,6 +9,8 @@
 //! track allocates what it does without the middlewares, and a tracked one what a raw sqlx loop
 //! does plus its id header.
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 #![cfg(all(
     feature = "inbox",
     feature = "postgres",

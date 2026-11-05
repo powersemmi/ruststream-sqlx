@@ -5,6 +5,9 @@
 //! RUSTSTREAM_SQLX_OUTBOX=on cargo run -p ruststream-sqlx --example manual_sqlx_outbox_wrap --features outbox,sqlite,testing,asyncapi
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::error::Error;
 
 use ruststream::OutgoingMessage;

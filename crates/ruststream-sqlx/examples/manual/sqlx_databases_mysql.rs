@@ -6,6 +6,9 @@
 //!     cargo run -p ruststream-sqlx --example manual_sqlx_databases_mysql --features inbox,mysql,chrono,testing,asyncapi
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::env;
 use std::future::{Future, ready};
 use std::process::ExitCode;
