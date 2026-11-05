@@ -85,7 +85,7 @@ where
                 name,
                 record: type_name::<Record>(),
                 id: record.id().to_string(),
-                source: Box::new(source),
+                source: Box::new(source.into_error()),
             });
         }
     }

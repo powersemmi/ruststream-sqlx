@@ -2,7 +2,9 @@
 //! acknowledgement commits; the step that switches a registration to it, the transaction the
 //! handler borrows, and the book a subscription lends its deliveries' transactions from.
 
-use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings, WorkersStep};
+use ruststream::runtime::{
+    AsDeclared, Declared, IntoDeclared, SubscriberBuilder, SubscriberSettings, WorkersStep,
+};
 
 use super::queue::InboxQueue;
 use super::threads::{InboxThreads, ThreadsStep};
@@ -29,8 +31,8 @@ pub use tx::Tx;
 /// use serde::Deserialize;
 /// use sqlx::PgPool;
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "report_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "report_jobs")]
 /// pub struct Report {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -40,14 +42,14 @@ pub use tx::Tx;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(Deserialize)]
+/// # [derive(Deserialize)]
 /// struct Request {
 ///     format: String,
 /// }
 ///
 /// // `InboxQueue::<Report>::new(..)` is an `InboxQueue<Report, Plain>`: the claim settles the row,
 /// // and the handler writes through connections of its own.
-/// #[subscriber(InboxQueue::<Report>::new("2026-10"))]
+/// # [subscriber(InboxQueue::<Report>::new("2026-10"))]
 /// async fn render(request: &Request) -> HandlerOutcome {
 ///     tracing::info!(format = %request.format, "rendering October");
 ///     HandlerOutcome::ack()
@@ -55,7 +57,7 @@ pub use tx::Tx;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(render);
+///         b.include(render)
 ///     })
 /// }
 /// # }
@@ -78,8 +80,8 @@ pub struct Plain;
 /// use ruststream_sqlx::prelude::*;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "signup_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "signup_jobs")]
 /// pub struct Signup {
 ///     #[field(id)]
 ///     id: i64,
@@ -87,12 +89,12 @@ pub struct Plain;
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(serde::Deserialize)]
+/// # [derive(serde::Deserialize)]
 /// struct Account {
 ///     email: String,
 /// }
 ///
-/// #[subscriber(InboxQueue::<Signup>::new("signups"))]
+/// # [subscriber(InboxQueue::<Signup>::new("signups"))]
 /// async fn open_account(account: &Account, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let opened = sqlx::query("INSERT INTO accounts (email) VALUES ($1)")
 ///         .bind(&account.email)
@@ -105,7 +107,7 @@ pub struct Plain;
 ///     RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The registration's `InboxQueue<Signup, Plain>` becomes
 ///         // `InboxQueue<Signup, Transactional>`.
-///         b.include(open_account.transactional());
+///         b.include(open_account.transactional())
 ///     })
 /// }
 /// # }
@@ -150,8 +152,8 @@ impl InboxMode for Transactional {
 /// use ruststream_sqlx::prelude::*;
 /// use sqlx::{PgPool, Postgres};
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "invoice_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "invoice_jobs")]
 /// pub struct InvoiceJob {
 ///     #[field(id)]
 ///     id: i64,
@@ -159,12 +161,12 @@ impl InboxMode for Transactional {
 ///     payload: Vec<u8>,
 /// }
 ///
-/// #[derive(serde::Deserialize)]
+/// # [derive(serde::Deserialize)]
 /// struct Invoice {
 ///     number: i64,
 /// }
 ///
-/// #[subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
+/// # [subscriber(InboxQueue::<InvoiceJob>::new("invoices"))]
 /// async fn book(invoice: &Invoice, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
 ///     let booked = sqlx::query("INSERT INTO booked (number) VALUES ($1)")
 ///         .bind(invoice.number)
@@ -176,13 +178,13 @@ impl InboxMode for Transactional {
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The inbox's step chains with the framework's.
-///         b.include(book.transactional().workers(nonzero!(4)));
+///         b.include(book.transactional().workers(nonzero!(4)))
 ///     })
 /// }
 /// # }
 /// # fn main() {}
 /// ```
-pub trait InboxSettings: Declared {
+pub trait InboxSettings<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// Switches an `InboxQueue` subscription to transactional mode: the handler takes the
     /// delivery's transaction (`Ctx<keys::Tx<DB>>`), and acknowledgement commits what it wrote.
     ///
@@ -222,8 +224,8 @@ pub trait InboxSettings: Declared {
     /// use ruststream_sqlx::prelude::*;
     /// use sqlx::{PgPool, Postgres};
     ///
-    /// #[derive(Inbox, sqlx::FromRow)]
-    /// #[inbox(table = "stock_jobs")]
+    /// # [derive(Inbox, sqlx::FromRow)]
+    /// # [inbox(table = "stock_jobs")]
     /// pub struct StockJob {
     ///     #[field(id)]
     ///     id: i64,
@@ -231,13 +233,13 @@ pub trait InboxSettings: Declared {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// #[derive(serde::Deserialize)]
+    /// # [derive(serde::Deserialize)]
     /// struct Restock {
     ///     sku: String,
     ///     count: i32,
     /// }
     ///
-    /// #[subscriber(InboxQueue::<StockJob>::new("restocks"))]
+    /// # [subscriber(InboxQueue::<StockJob>::new("restocks"))]
     /// async fn restock(order: &Restock, Ctx(mut tx): Ctx<keys::Tx<Postgres>>) -> HandlerOutcome {
     ///     let raised = sqlx::query("UPDATE stock SET count = count + $1 WHERE sku = $2")
     ///         .bind(order.count)
@@ -250,17 +252,17 @@ pub trait InboxSettings: Declared {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("stock", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(restock.transactional());
+    ///         b.include(restock.transactional())
     ///     })
     /// }
     /// # }
     /// # fn main() {}
     /// ```
-    fn transactional(self) -> <Self::Settings as TransactionalStep>::Out
+    fn transactional(self) -> <<Self::Decl as Declared>::Settings as TransactionalStep>::Out
     where
-        Self::Settings: TransactionalStep,
+        <Self::Decl as Declared>::Settings: TransactionalStep,
     {
-        self.declare().apply_transactional()
+        self.into_declared().declare().apply_transactional()
     }
 
     /// Runs an `InboxQueue` subscription's handlers on dedicated threads, as `threads(n)` does,
@@ -282,8 +284,8 @@ pub trait InboxSettings: Declared {
     /// use ruststream_sqlx::prelude::*;
     /// use sqlx::{PgPool, Postgres};
     ///
-    /// #[derive(Inbox, sqlx::FromRow)]
-    /// #[inbox(table = "scan_jobs")]
+    /// # [derive(Inbox, sqlx::FromRow)]
+    /// # [inbox(table = "scan_jobs")]
     /// pub struct ScanJob {
     ///     #[field(id)]
     ///     id: i64,
@@ -291,12 +293,12 @@ pub trait InboxSettings: Declared {
     ///     payload: Vec<u8>,
     /// }
     ///
-    /// #[derive(serde::Deserialize)]
+    /// # [derive(serde::Deserialize)]
     /// struct Image {
     ///     path: String,
     /// }
     ///
-    /// #[subscriber(InboxQueue::<ScanJob>::new("scans"))]
+    /// # [subscriber(InboxQueue::<ScanJob>::new("scans"))]
     /// async fn scan(image: &Image, Ctx(pool): Ctx<keys::Pool<Postgres>>) -> HandlerOutcome {
     ///     let noted = sqlx::query("INSERT INTO scanned (path) VALUES ($1)")
     ///         .bind(&image.path)
@@ -309,7 +311,7 @@ pub trait InboxSettings: Declared {
     ///     // The service opens 30 connections at most: the pool's and the threads' 4 x 2.
     ///     let broker = SqlxBroker::new(pool).connection_limit(nonzero!(30u32));
     ///     RustStream::new(AppInfo::new("scanner", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))));
+    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))))
     ///     })
     /// }
     /// # }
@@ -318,18 +320,19 @@ pub trait InboxSettings: Declared {
     fn on_threads(
         self,
         threads: InboxThreads,
-    ) -> <<Self::Settings as WorkersStep>::Out as ThreadsStep>::Out
+    ) -> <<<Self::Decl as Declared>::Settings as WorkersStep>::Out as ThreadsStep>::Out
     where
-        Self::Settings: WorkersStep,
-        <Self::Settings as WorkersStep>::Out: ThreadsStep,
+        <Self::Decl as Declared>::Settings: WorkersStep,
+        <<Self::Decl as Declared>::Settings as WorkersStep>::Out: ThreadsStep,
     {
-        self.declare()
+        self.into_declared()
+            .declare()
             .apply_workers(threads.workers())
             .apply_threads(threads)
     }
 }
 
-impl<Def: Declared> InboxSettings for Def {}
+impl<Def: IntoDeclared<Mk>, Mk> InboxSettings<Mk> for Def {}
 
 /// Switching a registration to transactional mode. Machinery behind
 /// [`InboxSettings::transactional`]; never named in a service.

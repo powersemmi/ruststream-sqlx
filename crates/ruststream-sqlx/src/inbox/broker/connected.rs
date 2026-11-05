@@ -126,8 +126,8 @@ impl<DB: Database> Shared<DB> {
 /// use serde::Serialize;
 /// use sqlx::{PgConnection, PgPool, Postgres};
 ///
-/// #[derive(Inbox, sqlx::FromRow)]
-/// #[inbox(table = "cleanup_jobs")]
+/// # [derive(Inbox, sqlx::FromRow)]
+/// # [inbox(table = "cleanup_jobs")]
 /// pub struct Cleanup {
 ///     #[field(id, generated)]
 ///     id: i64,
@@ -148,8 +148,8 @@ impl<DB: Database> Shared<DB> {
 ///     }
 /// }
 ///
-/// #[derive(Serialize, Outgoing)]
-/// #[outgoing(name = "cleanup")]
+/// # [derive(Serialize, Outgoing)]
+/// # [outgoing(name = "cleanup")]
 /// struct Sweep {
 ///     older_than_days: u32,
 /// }
@@ -160,7 +160,7 @@ impl<DB: Database> Shared<DB> {
 ///         // hook schedules the first sweep.
 ///         b.after_startup(Repository::<Cleanup>::default(), async move |cleanups| {
 ///             cleanups.message(&Sweep { older_than_days: 30 }).publish().await
-///         });
+///         })
 ///     })
 /// }
 /// # }
@@ -247,7 +247,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> ConnectedBroker for ConnectedSqlxB
     /// back. A settlement after shutdown that needs a new connection, as in the lease form, then
     /// fails, and its row comes back when its lease runs out. The service's own pool
     /// ([`new`](SqlxBroker::new)) stays open.
-    fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> + Send {
+    fn shutdown(self) -> impl Future<Output = Result<Self::Closed, Self::Error>> {
         // Why a flag rather than a type: a publisher handed out before shutdown may write through
         // the service's pool, which stays open, so it would otherwise keep writing.
         self.shared.closed.store(true, Ordering::Release);
