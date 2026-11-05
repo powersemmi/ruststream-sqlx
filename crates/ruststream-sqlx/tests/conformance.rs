@@ -24,6 +24,7 @@ use std::time::Duration;
 use futures::executor::block_on;
 use ruststream::conformance::helpers::unique_subject;
 use ruststream::conformance::in_process::{self, Refusal};
+use ruststream::conformance::lifecycle::Unsent;
 use ruststream::conformance::{capabilities, harness, lifecycle, message_shape, retry, settlement};
 use ruststream::testing::Backlog;
 use ruststream::{Bytes, Connected, PublishPolicy, Publisher, nonzero};
@@ -224,6 +225,27 @@ live::matrix! {
             lifecycle_publisher,
             Backlog::Delivered,
         ))
+        .await;
+        db.finish().await;
+    }
+
+    // A publisher aliasing a broker that shut down refuses the publish and hands the message back,
+    // through either policy: both only read the message, so nothing of it is consumed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_publish_hands_its_message_back() {
+        let Some(db) = database().await else { return };
+        let pool = db.pool.clone();
+        lifecycle::refused_publish_returns_message(
+            || typed_broker(&pool),
+            lifecycle_publisher,
+            Unsent::Returned,
+        )
+        .await;
+        lifecycle::refused_publish_returns_message(
+            || broker(&pool),
+            routed_publisher,
+            Unsent::Returned,
+        )
         .await;
         db.finish().await;
     }
