@@ -59,8 +59,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(acked);
-                b.include(plain_acked);
+                b.include(acked)
+                    .include(plain_acked)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -104,7 +104,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(dropped);
+                b.include(dropped)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -140,7 +140,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(flaky);
+                b.include(flaky)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -185,7 +185,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(later);
+                b.include(later)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -234,7 +234,7 @@ live::matrix! {
         // The broker's own poll interval, a second, divides the delay.
         let broker = SqlxBroker::new(db.pool.clone()).route::<SendEmail>("emails");
         let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker, |b| {
-            b.include(in_a_minute);
+            b.include(in_a_minute)
         });
         let tb = TestApp::start(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -273,7 +273,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(plain_later);
+                b.include(plain_later)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -315,7 +315,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(raw);
+                b.include(raw)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -347,7 +347,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(nothing);
+                b.include(nothing)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -392,7 +392,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(tenanted);
+                b.include(tenanted)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -424,8 +424,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(acked);
-                b.include(twin);
+                b.include(acked)
+                    .include(twin)
             });
         let refused = TestApp::start_live(app).await.map(|_| ());
         let message = format!(
@@ -448,8 +448,8 @@ live::matrix! {
         // A table without groups is one queue, whatever name a subscription gives it.
         let app =
             RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(plain_acked);
-                b.include(plain_twin);
+                b.include(plain_acked)
+                    .include(plain_twin)
             });
         let refused = TestApp::start_live(app).await.map(|_| ());
         let message = format!(
@@ -492,9 +492,8 @@ mod on_postgres {
     async fn a_missing_column_stops_the_service_naming_table_and_statement() {
         let Some(db) = database().await else { return };
         let broker = SqlxBroker::new(db.pool.clone()).poll_interval(POLL);
-        let app = RustStream::new(AppInfo::new("inbox", "0.0.0")).with_broker(broker, |b| {
-            b.include(never);
-        });
+        let app = RustStream::new(AppInfo::new("inbox", "0.0.0"))
+            .with_broker(broker, |b| b.include(never));
         let refused = TestApp::start_live(app).await.map(|_| ());
         let message = refused
             .expect_err("the startup check refuses the table")

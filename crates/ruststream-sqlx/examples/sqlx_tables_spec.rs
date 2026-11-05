@@ -102,10 +102,7 @@ fn service(url: &str) -> RustStream {
             sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker, |b| {
-            b.include(welcome);
-            b.include(remind);
-        })
+        .with_broker(broker, |b| b.include(welcome).include(remind))
 }
 
 #[ruststream::app]

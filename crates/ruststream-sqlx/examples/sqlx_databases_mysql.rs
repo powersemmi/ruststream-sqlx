@@ -6,6 +6,9 @@
 //!     cargo run -p ruststream-sqlx --example sqlx_databases_mysql --features inbox,mysql,chrono,testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::env;
 
 use chrono::{DateTime, Utc};
@@ -67,10 +70,7 @@ fn service(url: &str) -> RustStream {
             sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker, |b| {
-            b.include(welcome);
-            b.include(receipt);
-        })
+        .with_broker(broker, |b| b.include(welcome).include(receipt))
 }
 // --8<-- [end:service]
 

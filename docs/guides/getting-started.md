@@ -14,8 +14,8 @@ This guide installs `ruststream-sqlx`, creates a queue table and runs a first se
 
 ```toml title="Cargo.toml"
 [dependencies]
-ruststream = { version = "0.7", features = ["macros", "json", "logging"] }
-ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono"] }
+ruststream = { version = "0.8", features = ["macros", "json", "logging"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "sqlite", "chrono"] }
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "derive", "chrono"] }
 chrono = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 
 [dev-dependencies]
-ruststream-sqlx = { version = "0.7", features = ["inbox", "sqlite", "chrono", "testing"] }
+ruststream-sqlx = { version = "0.8", features = ["inbox", "sqlite", "chrono", "testing"] }
 ```
 
 `ruststream` is the framework: `macros` gives the attributes, `json` the default codec, and `logging` prints the service's log to the terminal.

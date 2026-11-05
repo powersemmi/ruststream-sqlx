@@ -105,30 +105,33 @@ live::matrix! {
         let broker = SqlxBroker::new(pool.clone())
             .poll_interval(POLL)
             .route::<SendEmail>("replies");
-        let app = RustStream::new(AppInfo::new("threads", "0.0.0"))
-            .on_startup(async move |()| Ok::<_, Infallible>(probe))
-            .with_broker(broker, move |b| match mount {
-                Mount::Settles => {
-                    b.include(settled);
-                }
-                Mount::Routed => {
-                    b.include(answered);
-                }
-                Mount::Typed => {
-                    b.include(answered).out_reply(Repository::<SendEmail>::default());
-                }
-                Mount::Queries => {
-                    b.include(queried);
-                }
-                Mount::TwoAtOnce => {
-                    let threads = InboxThreads::new(nonzero!(2)).connections(nonzero!(2));
-                    b.include(paired.on_threads(threads));
-                }
-            });
-        tokio::time::timeout(GUARD, app.start())
-            .await
-            .expect("the service starts in time")
-            .expect("the service starts")
+        // Each mount is its own app.
+        macro_rules! start {
+            (|$b:ident| $mount:expr) => {
+                tokio::time::timeout(
+                    GUARD,
+                    RustStream::new(AppInfo::new("threads", "0.0.0"))
+                        .on_startup(async move |()| Ok::<_, Infallible>(probe))
+                        .with_broker(broker, move |$b| $mount)
+                        .start(),
+                )
+                .await
+            };
+        }
+        match mount {
+            Mount::Settles => start!(|b| b.include(settled)),
+            Mount::Routed => start!(|b| b.include(answered)),
+            Mount::Typed => {
+                start!(|b| b.include(answered).out_reply(Repository::<SendEmail>::default()))
+            }
+            Mount::Queries => start!(|b| b.include(queried)),
+            Mount::TwoAtOnce => {
+                let threads = InboxThreads::new(nonzero!(2)).connections(nonzero!(2));
+                start!(|b| b.include(paired.on_threads(threads)))
+            }
+        }
+        .expect("the service starts in time")
+        .expect("the service starts")
     }
 
     /// The `run`th run of the service on its database: one row, handled and settled, and

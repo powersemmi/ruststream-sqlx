@@ -6,6 +6,9 @@
 //! RUSTSTREAM_SQLX_OUTBOX=on cargo run -p ruststream-sqlx --example sqlx_outbox_wrap --features outbox,sqlite,testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::error::Error;
 
 use chrono::{DateTime, Utc};
@@ -26,7 +29,7 @@ async fn serve(pool: SqlitePool, orders: &[u64]) -> Result<(), Box<dyn Error + S
     let egress = broker.bind(Publish);
     let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
         .publish_layer(tracking.publish_layer())
-        .with_broker(broker, |_b| {});
+        .with_broker(broker, |b| b);
     let running = app.start().await?;
 
     // The running app's publisher bypasses the publish pipeline; `wrap` gives it the tracking.

@@ -182,7 +182,7 @@ where
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("bank", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(transfer.transactional());
+///         b.include(transfer.transactional())
 ///     })
 /// }
 /// # }
@@ -330,7 +330,7 @@ impl ContextField for Attempt {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship.transactional());
+///         b.include(ship.transactional())
 ///     })
 /// }
 /// # }

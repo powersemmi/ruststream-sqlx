@@ -87,7 +87,7 @@ live::lease_stands! {
     fn app(pool: &Pool<Db>) -> RustStream {
         let broker = SqlxBroker::new(pool.clone()).route::<OnServiceTime>("clock");
         RustStream::new(AppInfo::new("clock", "0.0.0")).with_broker(broker, |b| {
-            b.include(postponed);
+            b.include(postponed)
         })
     }
 

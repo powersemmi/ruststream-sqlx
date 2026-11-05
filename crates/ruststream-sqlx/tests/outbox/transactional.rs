@@ -236,35 +236,35 @@ macro_rules! sqlite_forms {
 }
 
 sqlite_forms! {
-    /// The service: the inbox on `pool` with `handler`, `orders` routed to `email_jobs`, its
-    /// publishes tracked in the same database.
-    fn app(pool: &Pool<Sqlite>, handler: Handler) -> impl App<State = ()> {
-        let tracking: Tracking = Outbox::new(pool.clone()).register::<OrderRecord>("orders");
-        let broker = SqlxBroker::new(pool.clone())
-            .poll_interval(POLL)
-            .route::<Plain>("jobs")
-            .route::<Immediate>("immediate")
-            .route::<SendEmail>("orders");
-        RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .publish_layer(tracking.publish_layer())
-            .with_broker(broker, move |b| match handler {
-                Handler::PublishesFirst => {
-                    b.include(publishes_first.transactional()).out(DefaultSlot, Routed).build();
-                }
-                Handler::WritesFirst => {
-                    b.include(writes_first.transactional()).out(DefaultSlot, Routed).build();
-                }
-                Handler::PublishesInImmediate => {
-                    b.include(publishes_in_immediate.transactional())
-                        .out(DefaultSlot, Routed)
-                        .build();
-                }
-            })
+    /// The service: the inbox on `pool` with the subscriber `handler`, `orders` routed to
+    /// `email_jobs`, its publishes tracked in the same database.
+    macro_rules! app {
+        ($pool:expr, $handler:expr) => {{
+            let pool: &Pool<Sqlite> = $pool;
+            let tracking: Tracking = Outbox::new(pool.clone()).register::<OrderRecord>("orders");
+            let broker = SqlxBroker::new(pool.clone())
+                .poll_interval(POLL)
+                .route::<Plain>("jobs")
+                .route::<Immediate>("immediate")
+                .route::<SendEmail>("orders");
+            RustStream::new(AppInfo::new("shop", "0.0.0"))
+                .publish_layer(tracking.publish_layer())
+                .with_broker(broker, move |b| {
+                    b.include($handler.transactional()).out(DefaultSlot, Routed)
+                })
+        }};
     }
 
     /// Delivers `job` to `queue` and returns the audit rows once the delivery settled.
     async fn delivered(pool: &Pool<Sqlite>, handler: Handler, queue: &str, job: Job) -> Vec<String> {
-        let tb = TestApp::start_live(app(pool, handler)).await.expect("the app starts");
+        let tb = match handler {
+            Handler::PublishesFirst => TestApp::start_live(app!(pool, publishes_first)).await,
+            Handler::WritesFirst => TestApp::start_live(app!(pool, writes_first)).await,
+            Handler::PublishesInImmediate => {
+                TestApp::start_live(app!(pool, publishes_in_immediate)).await
+            }
+        }
+        .expect("the app starts");
         let delivered = tb.broker::<SqlxBroker<Sqlite>>().message(&job).to(queue).publish();
         timeout(HANG, delivered)
             .await

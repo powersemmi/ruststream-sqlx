@@ -41,12 +41,14 @@ Thumbnails in the advisory lock form: two workers each hold a row's key in the p
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_databases_sqlite.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_databases_sqlite.rs#service"
+
 ```
 
 </TabItem>

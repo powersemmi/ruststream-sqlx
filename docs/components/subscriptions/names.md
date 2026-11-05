@@ -29,12 +29,14 @@ Both names lead into one table: a signup read by name is answered by a welcome, 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_names.rs#names"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_names.rs#names"
+
 ```
 
 </TabItem>

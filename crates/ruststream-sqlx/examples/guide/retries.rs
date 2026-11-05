@@ -96,8 +96,8 @@ fn service(url: &str) -> RustStream {
             // `emails.dead` group.
             b.include(send)
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("emails.dead");
-            b.include(review);
+                .dead_letter("emails.dead")
+                .include(review)
         })
 }
 // --8<-- [end:app]

@@ -107,12 +107,12 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<Job>("orders"), |b| {
             let confirm =
                 subscriber("orders", Confirm).map_source(|_| InboxQueue::<Job>::new("orders"));
-            // The confirmation becomes a row of `jobs` in the group `emails`.
-            b.include(confirm.reply().build())
-                .out_reply(Repository::<Job>::default());
             let email =
                 subscriber("emails", Email).map_source(|_| InboxQueue::<Job>::new("emails"));
-            b.include(email.build());
+            // The confirmation becomes a row of `jobs` in the group `emails`.
+            b.include(confirm.reply().build())
+                .out_reply(Repository::<Job>::default())
+                .include(email.build())
         })
 }
 // --8<-- [end:service]

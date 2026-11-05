@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The benchmark is a binary of its own, not library surface: the framework's macros generate the
 // handler scaffolding, and a measured loop panics on a database fault rather than threading a
 // `Result` through a scenario nobody recovers from.
@@ -65,7 +67,6 @@ use std::fmt::Write as _;
 use std::fs;
 use std::future::Future;
 use std::hint::black_box;
-use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use common::outbox::{self, Reply, TRACKED, UNTRACKED, record_header};
@@ -76,7 +77,6 @@ use common::timing::{
     Stats, against, broker_bound, describe_round_trip, number, rate, round_trip, runtime,
 };
 use common::{BATCH, LEASE, Latch, OrderPlaced, adapter, framework};
-use framework::Mount;
 use ruststream_sqlx::InboxTable;
 use ruststream_sqlx::dialect::{ClaimShape, Postgres};
 use ruststream_sqlx::prelude::*;
@@ -335,11 +335,7 @@ impl Scenario {
             }
             Self::OutboxUntracked | Self::OutboxRoundTrip => {
                 drop(pool);
-                outbox::feed_round_trip(
-                    outbox::redis::round_trip(latch.clone(), NonZeroUsize::MIN),
-                    &latch,
-                )
-                .await;
+                outbox::feed_round_trip(outbox::redis::round_trip(latch.clone()), &latch).await;
             }
             Self::OutboxPublish => {
                 drop(pool);
@@ -376,8 +372,7 @@ impl Scenario {
                 deliver(app, egress, &pool, &latch).await;
             }
             Self::OutboxRoundTrip => {
-                let built =
-                    outbox::redis::round_trip_by_hand(pool, latch.clone(), NonZeroUsize::MIN);
+                let built = outbox::redis::round_trip_by_hand(pool, latch.clone());
                 outbox::feed_round_trip(built, &latch).await;
             }
         }
@@ -387,23 +382,24 @@ impl Scenario {
     async fn framework(self, pool: PgPool, latch: Latch) {
         match self {
             Self::Consume => {
-                let app = framework::postgres_row_lock(pool, latch.clone(), Mount::SEQUENTIAL);
+                let app = framework::postgres_row_lock(pool, latch.clone(), |b| {
+                    b.include(framework::row_lock)
+                });
                 drain(app, &latch).await;
             }
             Self::Reply => drain(framework::postgres_reply(pool, latch.clone()), &latch).await,
             Self::Batch => {
-                let how = Mount {
-                    batch: Some(BATCH),
-                    ..Mount::SEQUENTIAL
-                };
                 drain(
-                    framework::postgres_row_lock(pool, latch.clone(), how),
+                    framework::postgres_row_lock(pool, latch.clone(), |b| {
+                        b.include(framework::row_lock_batch.batch(BATCH))
+                    }),
                     &latch,
                 )
                 .await;
             }
             Self::Lease => {
-                let app = framework::postgres_lease(pool, latch.clone(), Mount::SEQUENTIAL);
+                let app =
+                    framework::postgres_lease(pool, latch.clone(), |b| b.include(framework::lease));
                 drain(app, &latch).await;
             }
             Self::Advisory => {
@@ -431,8 +427,7 @@ impl Scenario {
                 } else {
                     UNTRACKED
                 };
-                let built =
-                    outbox::redis::round_trip_outbox(pool, latch.clone(), name, NonZeroUsize::MIN);
+                let built = outbox::redis::round_trip_outbox(pool, latch.clone(), name);
                 outbox::feed_round_trip(built, &latch).await;
             }
             Self::OutboxPublish => {

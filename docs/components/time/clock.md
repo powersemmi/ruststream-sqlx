@@ -26,12 +26,14 @@ The reminders' table reads the host's time in whole seconds, and an acknowledgem
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_time_clock.rs#clock"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_time_clock.rs#clock"
+
 ```
 
 </TabItem>

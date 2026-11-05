@@ -68,10 +68,10 @@ live::row_lock_stands! {
         let broker = SqlxBroker::new(pool.clone()).poll_interval(Duration::from_secs(5));
         RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
             // The review opens first, so the harness counts what the batch moves to it.
-            b.include(review);
-            b.include(unanswered.batch(nonzero!(3)))
+            b.include(review)
+                .include(unanswered.batch(nonzero!(3)))
                 .max_attempts(nonzero!(1u32))
-                .dead_letter("plain_jobs_dead");
+                .dead_letter("plain_jobs_dead")
         })
     }
 

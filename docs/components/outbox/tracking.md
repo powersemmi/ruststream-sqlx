@@ -42,12 +42,14 @@ Both layers pass a message whose name is not registered after one comparison per
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_tracking.rs#tracking"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_tracking.rs#tracking"
+
 ```
 
 </TabItem>

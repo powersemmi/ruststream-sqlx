@@ -92,7 +92,7 @@ fn service(url: &str) -> RustStream {
             // `payments.failed` group instead.
             b.include(charge.build())
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("payments.failed");
+                .dead_letter("payments.failed")
         })
 }
 // --8<-- [end:dead_letter]

@@ -21,6 +21,7 @@ It sends contact changes to a CRM, which must receive them in the order they hap
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#schema"
+
 ```
 
 The index on `crm_jobs` follows the claim order, the group first.
@@ -32,12 +33,14 @@ A claim of a FIFO group reads the group's unfinished rows, and the index keeps t
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#fifo"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#fifo"
+
 ```
 
 </TabItem>
@@ -57,12 +60,14 @@ The mount caps it:
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#app"
+
 ```
 
 </TabItem>
@@ -83,12 +88,14 @@ The order that matters is within one account, and accounts may run in parallel.
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#keyed"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#keyed"
+
 ```
 
 </TabItem>

@@ -28,12 +28,14 @@ A supplier's API answers from the third attempt on, and the handler waits twice 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_context_attempt.rs#attempt"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_context_attempt.rs#attempt"
+
 ```
 
 </TabItem>

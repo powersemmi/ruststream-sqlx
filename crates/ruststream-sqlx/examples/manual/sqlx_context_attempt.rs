@@ -102,7 +102,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<SyncStock>("stock"), |b| {
             let sync = subscriber("stock", FetchLevel)
                 .map_source(|_| InboxQueue::<SyncStock>::new("stock"));
-            b.include(sync.build());
+            b.include(sync.build())
         })
 }
 // --8<-- [end:attempt]

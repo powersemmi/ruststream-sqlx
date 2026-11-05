@@ -170,14 +170,15 @@ fn service(url: &str) -> RustStream {
             let checkout = subscriber("checkouts", PlaceOrder)
                 .map_source(|_| InboxQueue::<Checkout>::new("checkouts"))
                 .transactional();
-            b.include(checkout.build());
             let relay = subscriber("order-events", Relay)
                 .map_source(|_| InboxQueue::<OrderEvent>::new("order-events"))
                 .workers_by_key(nonzero!(4))
                 .reply();
-            b.include(relay.build()).out_reply(to_bus);
+            b.include(checkout.build())
+                .include(relay.build())
+                .out_reply(to_bus)
         })
-        .with_broker(bus, |_b| {})
+        .with_broker(bus, |b| b)
 }
 // --8<-- [end:relay]
 

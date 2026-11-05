@@ -75,7 +75,7 @@ impl<DB: Database, Records: fmt::Debug> fmt::Debug for TrackingPublishLayer<DB, 
 impl<DB: Database, Records: RecordList<DB>> PublishLayer for TrackingPublishLayer<DB, Records> {
     async fn on_publish<'a, N: PublishPipeline, P: Publisher>(
         &'a self,
-        out: &'a mut Outgoing<'a>,
+        out: &'a mut Outgoing<'_>,
         next: PublishNext<'a, N, P>,
     ) -> Result<(), Box<dyn StdError + Send + Sync>> {
         if enabled() && self.records.contains(out.name()) {

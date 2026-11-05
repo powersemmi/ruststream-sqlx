@@ -23,12 +23,14 @@ The shop writes the invoice jobs with its own SQL, and the rendering service run
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/scaling.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/scaling.rs#service"
+
 ```
 
 </TabItem>
@@ -56,12 +58,14 @@ Three things bound how long a new row waits:
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/scaling.rs#notify"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/scaling.rs#notify"
+
 ```
 
 </TabItem>

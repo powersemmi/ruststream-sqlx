@@ -78,8 +78,9 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            b.include(greet).out_reply(Repository::<Job>::default());
-            b.include(send);
+            b.include(greet)
+                .out_reply(Repository::<Job>::default())
+                .include(send)
         })
 }
 // --8<-- [end:service]

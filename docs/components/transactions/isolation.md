@@ -40,12 +40,14 @@ A withdrawal reads the balance and writes it back in one transaction; `mode = im
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_transactions_isolation.rs#isolation"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_transactions_isolation.rs#isolation"
+
 ```
 
 </TabItem>

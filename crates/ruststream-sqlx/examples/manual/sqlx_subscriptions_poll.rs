@@ -82,7 +82,7 @@ fn service(url: &str) -> RustStream {
             let upload = subscriber("exports", Upload).map_source(|_| {
                 InboxQueue::<Export>::new("exports").poll_interval(Duration::from_millis(200))
             });
-            b.include(upload.build());
+            b.include(upload.build())
         })
 }
 // --8<-- [end:poll_interval]

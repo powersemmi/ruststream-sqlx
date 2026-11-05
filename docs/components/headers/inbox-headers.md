@@ -34,12 +34,14 @@ A packing job: `OrderHeaders` describes `order_jobs` and its headers `tenant`, `
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_headers_layout.rs#layout"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_headers_layout.rs#layout"
+
 ```
 
 </TabItem>

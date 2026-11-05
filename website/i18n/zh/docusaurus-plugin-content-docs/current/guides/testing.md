@@ -21,12 +21,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/testing.rs#in_process"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/testing.rs#in_process"
+
 ```
 
 </TabItem>
@@ -44,12 +46,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/testing.rs#clock"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/testing.rs#clock"
+
 ```
 
 </TabItem>
@@ -63,12 +67,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/testing.rs#live"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/testing.rs#live"
+
 ```
 
 </TabItem>

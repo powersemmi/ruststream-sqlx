@@ -32,12 +32,14 @@ An order and the task that sends its receipt go into one transaction: both commi
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_tables_insert.rs#insert"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_tables_insert.rs#insert"
+
 ```
 
 </TabItem>

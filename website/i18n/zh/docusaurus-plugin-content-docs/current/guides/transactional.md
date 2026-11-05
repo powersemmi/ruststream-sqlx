@@ -19,18 +19,21 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/transactional.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/transactional.rs#tables"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/transactional.rs#tables"
+
 ```
 
 </TabItem>
@@ -44,12 +47,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/transactional.rs#handler"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/transactional.rs#handler"
+
 ```
 
 </TabItem>

@@ -57,7 +57,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<ResizeImage>("resizes"), |b| {
-            b.include(resize.workers(nonzero!(4)));
+            b.include(resize.workers(nonzero!(4)))
         })
 }
 

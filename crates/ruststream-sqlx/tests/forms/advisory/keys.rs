@@ -6,7 +6,7 @@ use std::pin::pin;
 
 use futures::StreamExt;
 use ruststream::testing::InProcess;
-use ruststream::{ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource};
 use ruststream_sqlx::{InboxQueue, SqlxBroker};
 
 use super::{AT_ONCE, POLL};

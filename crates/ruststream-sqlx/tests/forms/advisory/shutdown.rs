@@ -23,8 +23,7 @@ use ruststream::prelude::*;
 use ruststream::runtime::RustStreamError;
 use ruststream::testing::{InProcess, TestApp};
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber,
-    SubscriptionSource,
+    AckError, Broker, ConnectedBroker, OutgoingMessage, Settle, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::{
     Inbox, InboxQueue, Insert, Publish, QueueDatabase, SqlxBroker, SqlxBrokerError,
@@ -246,7 +245,7 @@ mod in_work {
                 .poll_interval(POLL)
                 .route::<Job>("fail-fast");
             let app = RustStream::new(AppInfo::new("shutdown", "0.0.0")).with_broker(broker, |b| {
-                b.include(panics);
+                b.include(panics)
             });
             let tb = TestApp::start_live(app).await.expect("the app starts");
             // The panic tears the service down, whatever the publish reports.

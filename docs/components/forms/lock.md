@@ -30,12 +30,14 @@ Billing holds an account's key in `held_keys` while it changes the account, and 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_forms_lock.rs#lock"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_forms_lock.rs#lock"
+
 ```
 
 </TabItem>

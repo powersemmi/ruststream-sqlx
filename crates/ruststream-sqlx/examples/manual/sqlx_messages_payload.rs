@@ -79,7 +79,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<EventJob>("signups"), |b| {
             let welcome = subscriber("signups", Welcome)
                 .map_source(|_| InboxQueue::<EventJob>::new("signups"));
-            b.include(welcome.build());
+            b.include(welcome.build())
         })
 }
 

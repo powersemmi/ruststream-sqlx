@@ -43,12 +43,14 @@ A table whose identifier is longer than the database takes panics when the recor
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_record.rs#record"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_record.rs#record"
+
 ```
 
 </TabItem>

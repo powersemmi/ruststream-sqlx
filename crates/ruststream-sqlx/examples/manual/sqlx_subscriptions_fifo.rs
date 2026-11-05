@@ -93,7 +93,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<SyncChange>("crm"), |b| {
             let sync =
                 subscriber("crm", PushChange).map_source(|_| InboxQueue::<SyncChange>::new("crm"));
-            b.include(sync.build());
+            b.include(sync.build())
         })
 }
 // --8<-- [end:fifo]

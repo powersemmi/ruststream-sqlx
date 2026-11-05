@@ -106,9 +106,8 @@ async fn a_custom_fetch_assembles_rows_and_a_custom_ack_marks_them() {
     let broker = SqlxBroker::new(db.pool.clone())
         .poll_interval(Duration::from_millis(20))
         .route::<OrderJob>("orders");
-    let app = RustStream::new(AppInfo::new("custom", "0.0.0")).with_broker(broker, |b| {
-        b.include(fulfil);
-    });
+    let app =
+        RustStream::new(AppInfo::new("custom", "0.0.0")).with_broker(broker, |b| b.include(fulfil));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
         .message(&Order { id: 7 })
@@ -142,7 +141,7 @@ async fn a_claimed_id_without_a_row_is_delivered_undecodable() {
         .poll_interval(Duration::from_millis(20))
         .route::<OrderJob>("orders");
     let app = RustStream::new(AppInfo::new("custom", "0.0.0")).with_broker(broker, |b| {
-        b.include(fulfil.on_failure(FailurePolicies::default().with_decode(FailurePolicy::Drop)));
+        b.include(fulfil.on_failure(FailurePolicies::default().with_decode(FailurePolicy::Drop)))
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
@@ -207,9 +206,8 @@ async fn the_database_clock_claims_delays_and_marks_rows() {
     let broker = SqlxBroker::new(db.pool.clone())
         .poll_interval(Duration::from_millis(20))
         .route::<OnDatabaseTime>("clock");
-    let app = RustStream::new(AppInfo::new("clock", "0.0.0")).with_broker(broker, |b| {
-        b.include(on_database_time);
-    });
+    let app = RustStream::new(AppInfo::new("clock", "0.0.0"))
+        .with_broker(broker, |b| b.include(on_database_time));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
         .message(&Order { id: 1 })
@@ -267,9 +265,8 @@ async fn a_service_clock_decides_when_a_row_is_due() {
         .await
         .expect("the row writes");
     let broker = SqlxBroker::new(db.pool.clone()).poll_interval(Duration::from_millis(20));
-    let app = RustStream::new(AppInfo::new("clock", "0.0.0")).with_broker(broker, |b| {
-        b.include(behind);
-    });
+    let app =
+        RustStream::new(AppInfo::new("clock", "0.0.0")).with_broker(broker, |b| b.include(behind));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.advance(Duration::from_millis(200))
         .await

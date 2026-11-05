@@ -3,7 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use ruststream::{OutgoingFor, OutgoingMessage, Publisher};
+use ruststream::{OutgoingFor, OutgoingMessage, PublishMessageError, PublishOutcome, Publisher};
 use sqlx::Database;
 
 use super::OUTBOX_ID_HEADER;
@@ -48,7 +48,7 @@ use crate::outbox::store::Store;
 ///     let egress = broker.bind(Publish);
 ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(broker, |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 ///         .start()
 ///         .await?;
@@ -109,11 +109,11 @@ where
     type Error = TrackedPublishError<Live::Error>;
     type Options = Live::Options;
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingFor<'_, Self::Payload>,
+        msg: OutgoingFor<'msg, Self::Payload>,
         options: Option<&Self::Options>,
-    ) -> Result<(), Self::Error> {
+    ) -> PublishOutcome<'msg, Self::Error, Self::Payload> {
         let msg = if enabled() && self.records.contains(msg.name()) {
             let (name, payload, headers) = msg.into_parts();
             // The record reads a view that borrows the payload in whatever form the publisher
@@ -121,16 +121,30 @@ where
             let view = OutgoingMessage::with_payload(name, payload.as_ref()).with_headers(headers);
             let recorded = self.records.record(&self.store, &view).await;
             let (_, _, mut headers) = view.into_parts();
-            if let Some(id) = recorded {
-                headers.insert(OUTBOX_ID_HEADER, id.map_err(TrackedPublishError::Outbox)?);
+            match recorded {
+                Some(Ok(id)) => {
+                    headers.insert(OUTBOX_ID_HEADER, id);
+                }
+                Some(Err(error)) => {
+                    let msg = OutgoingMessage::with_payload(name, payload).with_headers(headers);
+                    return Err(PublishMessageError::with_message(
+                        TrackedPublishError::Outbox(error),
+                        msg,
+                    ));
+                }
+                None => {}
             }
             OutgoingMessage::with_payload(name, payload).with_headers(headers)
         } else {
             msg
         };
-        self.live
-            .publish(msg, options)
-            .await
-            .map_err(TrackedPublishError::Publish)
+        self.live.publish(msg, options).await.map_err(|refused| {
+            let (error, msg) = refused.into_parts();
+            let error = TrackedPublishError::Publish(error);
+            match msg {
+                Some(msg) => PublishMessageError::with_message(error, msg),
+                None => PublishMessageError::new(error),
+            }
+        })
     }
 }

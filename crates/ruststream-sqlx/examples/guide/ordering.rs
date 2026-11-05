@@ -104,9 +104,9 @@ fn service(url: &str) -> RustStream {
             // A change the CRM refuses three times moves out of the group, which then moves on.
             b.include(sync)
                 .max_attempts(nonzero!(3u32))
-                .dead_letter("crm.parked");
-            // Four workers, and the postings of one account on one of them, one after another.
-            b.include(post.workers_by_key(nonzero!(4)));
+                .dead_letter("crm.parked")
+                // Four workers, and the postings of one account on one of them, one after another.
+                .include(post.workers_by_key(nonzero!(4)))
         })
 }
 // --8<-- [end:app]

@@ -73,10 +73,10 @@ fn service(pool: SqlitePool) -> impl App {
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
             b.include(subscriber("checkout", Place).reply().build())
-                .out_reply(Publish);
-            // One attempt: an order out of stock is not delivered again, and its record waits.
-            b.include(subscriber("orders", Fulfil).build())
-                .max_attempts(nonzero!(1u32));
+                .out_reply(Publish)
+                // One attempt: an order out of stock is not delivered again, and its record waits.
+                .include(subscriber("orders", Fulfil).build())
+                .max_attempts(nonzero!(1u32))
         })
 }
 // --8<-- [end:tracking]

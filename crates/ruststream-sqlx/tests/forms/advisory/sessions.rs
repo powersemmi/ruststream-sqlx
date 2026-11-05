@@ -11,7 +11,7 @@ use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::InProcess;
 use ruststream::{
-    BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, Subscribe, Subscriber,
+    BatchSubscriber, Broker, ConnectedBroker, IncomingMessage, Settle, Subscribe, Subscriber,
     SubscriptionSource,
 };
 use ruststream_sqlx::{InboxQueue, SqlxBroker};
@@ -19,7 +19,7 @@ use sqlx::Pool;
 use sqlx::pool::PoolOptions;
 
 use super::{AT_ONCE, POLL, assert_no_lock, payload_id};
-use crate::live;
+use crate::live::{self, NextBatch};
 
 live::advisory_stands! {
     // A batch takes a connection per delivery: what the pool spares at once, never a wait for a

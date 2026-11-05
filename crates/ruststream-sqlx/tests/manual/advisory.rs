@@ -152,9 +152,8 @@ async fn run_manual(_task: &Task) -> HandlerOutcome {
 async fn the_derived_table_takes_each_row_under_its_lock() {
     let db = database(SCHEMA).await;
     let broker = broker(&db.pool).route::<derived::LockedJob>("jobs");
-    let app = RustStream::new(AppInfo::new("worker", "0.0.0")).with_broker(broker, |b| {
-        b.include(run_derived);
-    });
+    let app = RustStream::new(AppInfo::new("worker", "0.0.0"))
+        .with_broker(broker, |b| b.include(run_derived));
     let tb = TestApp::start(app).await.expect("the app starts");
     for n in [1, 2] {
         tb.broker::<SqlxBroker<Sqlite>>()
@@ -181,9 +180,8 @@ async fn the_derived_table_takes_each_row_under_its_lock() {
 async fn the_manual_table_takes_each_row_under_its_lock() {
     let db = database(SCHEMA).await;
     let broker = broker(&db.pool).route::<manual::LockedJob>("jobs");
-    let app = RustStream::new(AppInfo::new("worker", "0.0.0")).with_broker(broker, |b| {
-        b.include(run_manual);
-    });
+    let app = RustStream::new(AppInfo::new("worker", "0.0.0"))
+        .with_broker(broker, |b| b.include(run_manual));
     let tb = TestApp::start(app).await.expect("the app starts");
     for n in [1, 2] {
         tb.broker::<SqlxBroker<Sqlite>>()

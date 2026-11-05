@@ -38,7 +38,7 @@ live::stands! {
         let app = RustStream::new(AppInfo::new("threads", "0.0.0"))
             .on_startup(async move |()| Ok::<_, Infallible>(probe))
             .with_broker(broker, |b| {
-                b.include(computed.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))));
+                b.include(computed.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))))
             });
         let started = tokio::time::timeout(GUARD, app.start())
             .await

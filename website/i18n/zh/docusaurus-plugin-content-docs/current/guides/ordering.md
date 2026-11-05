@@ -19,6 +19,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#schema"
+
 ```
 
 `crm_jobs` 上的索引遵循领取顺序，组在最前。FIFO 组的领取会读取该组未完成的行，索引让这次读取只涉及这些行（[在生产环境中运行](production.md)）。
@@ -29,12 +30,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#fifo"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#fifo"
+
 ```
 
 </TabItem>
@@ -48,12 +51,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#app"
+
 ```
 
 </TabItem>
@@ -71,12 +76,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#keyed"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#keyed"
+
 ```
 
 </TabItem>

@@ -6,6 +6,9 @@
 //! RUSTSTREAM_SQLX_OUTBOX=on cargo run -p ruststream-sqlx --example sqlx_outbox_errors --features outbox,sqlite,testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::error::Error;
 use std::fmt::Display;
 
@@ -25,12 +28,18 @@ fn status<E: Display>(published: Result<(), PublishError<TrackedPublishError<E>>
     match published {
         Ok(()) => 202,
         // Recorded but not sent: the next startup sends it.
-        Err(PublishError::Publish(TrackedPublishError::Publish(error))) => {
+        Err(PublishError::Publish {
+            source: TrackedPublishError::Publish(error),
+            ..
+        }) => {
             tracing::warn!(%error, "the order waits for the next startup");
             202
         }
         // Neither recorded nor sent: the client sends the order again.
-        Err(PublishError::Publish(TrackedPublishError::Outbox(error))) => {
+        Err(PublishError::Publish {
+            source: TrackedPublishError::Outbox(error),
+            ..
+        }) => {
             tracing::warn!(%error, "the order was not recorded");
             503
         }
@@ -46,7 +55,7 @@ async fn serve(pool: SqlitePool, orders: &[u64]) -> Result<Vec<u16>, Box<dyn Err
     let egress = broker.bind(Publish);
     let app = RustStream::new(AppInfo::new("orders", "0.1.0"))
         .publish_layer(tracking.publish_layer())
-        .with_broker(broker, |_b| {});
+        .with_broker(broker, |b| b);
     let running = app.start().await?;
     let publisher = tracking.wrap(running.publisher(egress).await?);
     let mut answers = Vec::with_capacity(orders.len());

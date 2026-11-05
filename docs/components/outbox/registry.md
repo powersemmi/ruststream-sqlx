@@ -34,12 +34,14 @@ The registry's type lists every record type it holds, so a handle carries no loo
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_registry.rs#registry"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_registry.rs#registry"
+
 ```
 
 </TabItem>

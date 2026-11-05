@@ -115,7 +115,7 @@ fn service(url: &str) -> RustStream {
             let confirm = subscriber("orders", Confirm).map_source(|_| {
                 InboxQueue::<OrderJob>::new("orders").poll_interval(Duration::from_millis(200))
             });
-            b.include(confirm.build()).out(Receipts, Routed).build();
+            b.include(confirm.build()).out(Receipts, Routed).build()
         })
 }
 // --8<-- [end:imports]

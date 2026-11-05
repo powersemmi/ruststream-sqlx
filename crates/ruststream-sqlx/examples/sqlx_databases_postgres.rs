@@ -49,7 +49,7 @@ fn service(options: PgConnectOptions) -> RustStream {
         })
         .with_broker(broker.route::<SendInvoice>("invoices"), |b| {
             // Four claims in flight: each holds a connection of the pool while its handler runs.
-            b.include(send.workers(nonzero!(4)));
+            b.include(send.workers(nonzero!(4)))
         })
 }
 // --8<-- [end:service]

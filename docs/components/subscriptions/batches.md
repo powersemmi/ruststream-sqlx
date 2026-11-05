@@ -37,12 +37,14 @@ One claim takes up to fifty emails, and an address that cannot receive mail drop
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_batches.rs#batches"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_batches.rs#batches"
+
 ```
 
 </TabItem>

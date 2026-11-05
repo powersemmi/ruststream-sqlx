@@ -28,12 +28,14 @@ The tenant of an export rides the headers column: the handler reads it with `Hea
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_headers.rs#headers"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_headers.rs#headers"
+
 ```
 
 </TabItem>

@@ -83,7 +83,7 @@ fn service(options: PgConnectOptions) -> RustStream {
             let issue = subscriber("invoices", Issue)
                 .map_source(|_| InboxQueue::<IssueInvoice>::new("invoices"))
                 .workers(nonzero!(4));
-            b.include(issue.build());
+            b.include(issue.build())
         })
 }
 // --8<-- [end:row_lock]

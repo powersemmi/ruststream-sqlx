@@ -24,12 +24,14 @@ The channel `emails` reports `{ "table": "app.email_jobs", "group": "emails" }`,
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_asyncapi.rs#channels"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_asyncapi.rs#channels"
+
 ```
 
 </TabItem>

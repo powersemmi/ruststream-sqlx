@@ -41,12 +41,14 @@ The billing queue of a support table takes urgent tickets first, keeps each cust
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_tables_roles.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_tables_roles.rs#table"
+
 ```
 
 </TabItem>

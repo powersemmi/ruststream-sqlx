@@ -91,7 +91,7 @@ fn service(url: &str) -> RustStream {
             let render = subscriber("reports", Render).map_source(|_| {
                 InboxQueue::<RenderReport>::new("reports").lease(Duration::from_mins(1))
             });
-            b.include(render.build());
+            b.include(render.build())
         })
 }
 // --8<-- [end:lease]

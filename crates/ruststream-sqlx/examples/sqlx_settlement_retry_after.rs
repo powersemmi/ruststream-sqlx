@@ -55,9 +55,7 @@ fn service(url: &str) -> RustStream {
             sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker.route::<Webhook>("webhooks"), |b| {
-            b.include(notify);
-        })
+        .with_broker(broker.route::<Webhook>("webhooks"), |b| b.include(notify))
 }
 // --8<-- [end:retry_after]
 

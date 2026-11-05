@@ -95,7 +95,7 @@ use super::any::AnyDialect;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -147,7 +147,7 @@ use super::any::AnyDialect;
 /// // pool, which builds its statements from the table's description.
 /// pub fn app(pool: SqlitePool) -> RustStream {
 ///     RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(thumbnail);
+///         b.include(thumbnail)
 ///     })
 /// }
 /// # }
@@ -447,7 +447,7 @@ impl Opens<level::Exclusive> for BuiltIn<Any> {}
 /// // sqlx's drivers (`sqlx::any::install_default_drivers`) before it builds the pool.
 /// pub fn app(pool: AnyPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }

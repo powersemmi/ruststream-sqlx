@@ -74,8 +74,7 @@ fn service(url: &str) -> RustStream {
         })
         .with_broker(broker, |b| {
             // A reply without a policy of its own publishes through the routes.
-            b.include(roll_up);
-            b.include(file);
+            b.include(roll_up).include(file)
         })
 }
 // --8<-- [end:service]

@@ -35,12 +35,14 @@ The mail server greylists a first delivery, so the handler retries it at once; a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_settlement_outcomes.rs#outcomes"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_settlement_outcomes.rs#outcomes"
+
 ```
 
 </TabItem>

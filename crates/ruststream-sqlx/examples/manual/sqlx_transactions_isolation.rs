@@ -95,7 +95,7 @@ fn service(url: &str) -> RustStream {
             let withdraw = subscriber("withdrawals", WithdrawHandler)
                 .map_source(|_| InboxQueue::<Withdraw>::new("withdrawals"))
                 .transactional();
-            b.include(withdraw.build());
+            b.include(withdraw.build())
         })
 }
 // --8<-- [end:isolation]

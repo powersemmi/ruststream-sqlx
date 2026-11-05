@@ -7,7 +7,9 @@ use std::collections::BTreeMap;
 use std::pin::pin;
 
 use futures::StreamExt;
-use ruststream::{Carries, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{
+    Carries, ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource,
+};
 use ruststream_sqlx::prelude::*;
 use sqlx::Pool;
 use sqlx::types::Json;

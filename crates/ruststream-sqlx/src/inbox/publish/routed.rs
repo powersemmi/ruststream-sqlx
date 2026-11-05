@@ -5,7 +5,10 @@ use std::fmt;
 use std::future::{Future, ready};
 use std::sync::Arc;
 
-use ruststream::{DefaultPublish, Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{
+    DefaultPublish, Lend, OutgoingMessage, PairError, PublishMessageError, PublishOutcome,
+    PublishPolicy, Publisher,
+};
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::Database;
 
@@ -81,7 +84,7 @@ use crate::inbox::testing::QueueAt;
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     let broker = SqlxBroker::new(pool).route::<Job>("invoices");
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(broker, |b| {
-///         b.include(bill).out_reply(Routed);
+///         b.include(bill).out_reply(Routed)
 ///     })
 /// }
 /// # }
@@ -96,7 +99,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> PublishPolicy<ConnectedSqlxBroker<
     fn pair(
         self,
         connected: &ConnectedSqlxBroker<DB, D>,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> + Send {
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(RoutedPublisher {
             shared: Arc::clone(&connected.shared),
         }))
@@ -154,7 +157,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> DefaultPublish for ConnectedSqlxBr
 ///     let broker = SqlxBroker::new(pool).route::<Job>("orders").bindable();
 ///     let orders = broker.bind(Routed);
 ///     let running = RustStream::new(AppInfo::new("shop", "0.1.0"))
-///         .with_broker(broker, |_b| {})
+///         .with_broker(broker, |b| b)
 ///         .start()
 ///         .await?;
 ///
@@ -172,6 +175,15 @@ pub struct RoutedPublisher<DB: Database> {
     shared: Arc<Shared<DB>>,
 }
 
+// By hand: a derive would ask for `DB: Clone`, which the shared handle never needs.
+impl<DB: Database> Clone for RoutedPublisher<DB> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
 impl<DB: Database> fmt::Debug for RoutedPublisher<DB> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RoutedPublisher")
@@ -185,20 +197,21 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
     type Error = SqlxBrokerError;
     type Options = ();
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         _options: Option<&()>,
-    ) -> Result<(), SqlxBrokerError> {
+    ) -> PublishOutcome<'msg, SqlxBrokerError, Lend> {
         let Some((route, wake)) = self.shared.routes.find_with_wake(msg.name()) else {
             tracing::warn!(
                 target: "ruststream_sqlx",
                 name = msg.name(),
                 "no route leads the name to a table; the publish fails",
             );
-            return Err(SqlxBrokerError::NoRoute {
+            let error = SqlxBrokerError::NoRoute {
                 name: msg.name().to_owned(),
-            });
+            };
+            return Err(PublishMessageError::with_message(error, msg));
         };
         #[cfg(feature = "testing")]
         self.shared
@@ -213,6 +226,6 @@ impl<DB: QueueDatabase> Publisher for RoutedPublisher<DB> {
                 .harness
                 .refused(QueueAt::written(wake, msg.name())),
         }
-        inserted
+        inserted.map_err(|error| PublishMessageError::with_message(error, msg))
     }
 }

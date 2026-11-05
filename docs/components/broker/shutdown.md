@@ -31,12 +31,14 @@ A tool that drives the broker by hand receives the `ClosedSqlxBroker`, whose [`l
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker_shutdown.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker_shutdown.rs#service"
+
 ```
 
 </TabItem>

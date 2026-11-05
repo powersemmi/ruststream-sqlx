@@ -86,9 +86,9 @@ setting!(
     /// #         .layer(tracking.layer())
     /// #         .publish_layer(tracking.publish_layer())
     /// #         .with_broker(MemoryBroker::new(), |b| {
-    /// #             b.include(place).out_reply(Publish);
-    /// #             b.include(fulfil);
-    /// #             b.after_startup(Publish, tracking.republish());
+    /// #             b.after_startup(Publish, tracking.republish())
+    /// #                 .include(place).out_reply(Publish)
+    /// #                 .include(fulfil)
     /// #         })
     /// # }
     /// # }
@@ -155,9 +155,9 @@ setting!(
     /// #         .layer(tracking.layer())
     /// #         .publish_layer(tracking.publish_layer())
     /// #         .with_broker(MemoryBroker::new(), |b| {
-    /// #             b.include(place).out_reply(Publish);
-    /// #             b.include(fulfil);
-    /// #             b.after_startup(Publish, tracking.republish());
+    /// #             b.after_startup(Publish, tracking.republish())
+    /// #                 .include(place).out_reply(Publish)
+    /// #                 .include(fulfil)
     /// #         })
     /// # }
     /// # }
@@ -240,9 +240,9 @@ pub mod own {
         /// #         .layer(tracking.layer())
         /// #         .publish_layer(tracking.publish_layer())
         /// #         .with_broker(MemoryBroker::new(), |b| {
-        /// #             b.include(place).out_reply(Publish);
-        /// #             b.include(fulfil);
-        /// #             b.after_startup(Publish, tracking.republish());
+        /// #             b.after_startup(Publish, tracking.republish())
+        /// #                 .include(place).out_reply(Publish)
+        /// #                 .include(fulfil)
         /// #         })
         /// # }
         /// # }
@@ -320,9 +320,9 @@ pub mod own {
         /// #         .layer(tracking.layer())
         /// #         .publish_layer(tracking.publish_layer())
         /// #         .with_broker(MemoryBroker::new(), |b| {
-        /// #             b.include(place).out_reply(Publish);
-        /// #             b.include(fulfil);
-        /// #             b.after_startup(Publish, tracking.republish());
+        /// #             b.after_startup(Publish, tracking.republish())
+        /// #                 .include(place).out_reply(Publish)
+        /// #                 .include(fulfil)
         /// #         })
         /// # }
         /// # }
@@ -397,9 +397,9 @@ pub mod own {
         /// #         .layer(tracking.layer())
         /// #         .publish_layer(tracking.publish_layer())
         /// #         .with_broker(MemoryBroker::new(), |b| {
-        /// #             b.include(place).out_reply(Publish);
-        /// #             b.include(fulfil);
-        /// #             b.after_startup(Publish, tracking.republish());
+        /// #             b.after_startup(Publish, tracking.republish())
+        /// #                 .include(place).out_reply(Publish)
+        /// #                 .include(fulfil)
         /// #         })
         /// # }
         /// # }
@@ -477,9 +477,9 @@ pub mod own {
         /// #         .layer(tracking.layer())
         /// #         .publish_layer(tracking.publish_layer())
         /// #         .with_broker(MemoryBroker::new(), |b| {
-        /// #             b.include(place).out_reply(Publish);
-        /// #             b.include(fulfil);
-        /// #             b.after_startup(Publish, tracking.republish());
+        /// #             b.after_startup(Publish, tracking.republish())
+        /// #                 .include(place).out_reply(Publish)
+        /// #                 .include(fulfil)
         /// #         })
         /// # }
         /// # }
@@ -554,9 +554,9 @@ pub mod own {
         /// #         .layer(tracking.layer())
         /// #         .publish_layer(tracking.publish_layer())
         /// #         .with_broker(MemoryBroker::new(), |b| {
-        /// #             b.include(place).out_reply(Publish);
-        /// #             b.include(fulfil);
-        /// #             b.after_startup(Publish, tracking.republish());
+        /// #             b.after_startup(Publish, tracking.republish())
+        /// #                 .include(place).out_reply(Publish)
+        /// #                 .include(fulfil)
         /// #         })
         /// # }
         /// # }

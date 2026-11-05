@@ -212,9 +212,9 @@ pub trait Claim<DB: Database>: InboxRow {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(pack);
-///         // A job whose order is gone fails to decode: the default policy drops it.
-///         b.include(send_receipt);
+///         b.include(pack)
+///             // A job whose order is gone fails to decode: the default policy drops it.
+///             .include(send_receipt)
 ///     })
 /// }
 /// # }
@@ -585,7 +585,7 @@ pub trait Extend<DB: Database>: LeaseRow {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("payouts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(pay);
+///         b.include(pay)
 ///     })
 /// }
 /// # }
@@ -867,7 +867,7 @@ pub trait Publish<DB: Database>: InboxRow {
 /// # }
 /// # pub fn app(pool: PgPool) -> RustStream {
 /// #     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-/// #         b.include(send);
+/// #         b.include(send)
 /// #     })
 /// # }
 /// # }
@@ -931,7 +931,7 @@ pub trait Insert<Connection>: Sync {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(open_account.transactional());
+    ///         b.include(open_account.transactional())
     ///     })
     /// }
     /// # }

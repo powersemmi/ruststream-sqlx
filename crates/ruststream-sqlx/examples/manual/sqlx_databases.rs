@@ -85,7 +85,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker(url), |b| {
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
-            b.include(thumbnail.build());
+            b.include(thumbnail.build())
         })
 }
 // --8<-- [end:service]

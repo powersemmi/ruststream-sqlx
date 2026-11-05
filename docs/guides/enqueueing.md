@@ -20,18 +20,21 @@ A checkout subscription places each order, and an email subscription sends its c
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/enqueueing.rs#table"
+
 ```
 
 </TabItem>
@@ -50,12 +53,14 @@ In the manual form, the service writes that insert itself, as an [`Insert`](../c
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#place_order"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/enqueueing.rs#place_order"
+
 ```
 
 </TabItem>
@@ -77,12 +82,14 @@ A job that must exist once is the service's unique index and an `INSERT .. ON CO
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/enqueueing.rs#service"
+
 ```
 
 </TabItem>

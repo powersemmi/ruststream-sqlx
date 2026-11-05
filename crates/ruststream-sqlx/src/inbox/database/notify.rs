@@ -71,7 +71,7 @@ const CHANNEL_LIMIT: usize = 63;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(notified(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }

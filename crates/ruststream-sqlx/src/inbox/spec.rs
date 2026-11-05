@@ -72,7 +72,7 @@ setting!(
     /// # pub fn app(pool: SqlitePool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("scanner", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<Sqlite>::new(pool), |b| {
-    /// #             b.include(scan);
+    /// #             b.include(scan)
     /// #         })
     /// # }
     /// # }
@@ -128,7 +128,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("devices", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(flash);
+    /// #             b.include(flash)
     /// #         })
     /// # }
     /// # }
@@ -185,7 +185,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("orders", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(placed);
+    /// #         b.include(placed)
     /// #     })
     /// # }
     /// # }
@@ -249,7 +249,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("metering", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(bill);
+    /// #         b.include(bill)
     /// #     })
     /// # }
     /// # }
@@ -314,7 +314,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("callbacks", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(call);
+    /// #             b.include(call)
     /// #         })
     /// # }
     /// # }
@@ -393,7 +393,7 @@ setting!(
     /// # pub fn app(pool: SqlitePool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("relay", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<Sqlite>::new(pool), |b| {
-    /// #             b.include(forward);
+    /// #             b.include(forward)
     /// #         })
     /// # }
     /// # }
@@ -458,7 +458,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("sensors", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(record);
+    /// #         b.include(record)
     /// #     })
     /// # }
     /// # }
@@ -517,7 +517,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("webhooks", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(deliver);
+    /// #             b.include(deliver)
     /// #         })
     /// # }
     /// # }
@@ -574,7 +574,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("imports", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(import);
+    /// #         b.include(import)
     /// #     })
     /// # }
     /// # }
@@ -631,7 +631,7 @@ setting!(
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("tenants", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(migrate);
+    /// #         b.include(migrate)
     /// #     })
     /// # }
     /// # }
@@ -702,7 +702,7 @@ setting!(
     /// # pub fn app(pool: MySqlPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("digests", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<MySql>::new(pool), |b| {
-    /// #             b.include(digest);
+    /// #             b.include(digest)
     /// #         })
     /// # }
     /// # }
@@ -761,7 +761,7 @@ setting!(
     /// # pub fn app(pool: SqlitePool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("printing", "1.0.0"))
     /// #         .with_broker(SqlxBroker::<Sqlite>::new(pool), |b| {
-    /// #             b.include(print);
+    /// #             b.include(print)
     /// #         })
     /// # }
     /// # }
@@ -842,7 +842,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("callouts", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(dial);
+        /// #         b.include(dial)
         /// #     })
         /// # }
         /// # }
@@ -911,7 +911,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("documents", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(render);
+        /// #         b.include(render)
         /// #     })
         /// # }
         /// # }
@@ -982,7 +982,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("uploads", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(store);
+        /// #         b.include(store)
         /// #     })
         /// # }
         /// # }
@@ -1049,7 +1049,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("crawler", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(crawl);
+        /// #         b.include(crawl)
         /// #     })
         /// # }
         /// # }
@@ -1128,7 +1128,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("quotes", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(quote);
+        /// #         b.include(quote)
         /// #     })
         /// # }
         /// # }
@@ -1198,7 +1198,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("comments", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(moderate);
+        /// #         b.include(moderate)
         /// #     })
         /// # }
         /// # }
@@ -1274,7 +1274,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("charges", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(charge);
+        /// #         b.include(charge)
         /// #     })
         /// # }
         /// # }
@@ -1353,7 +1353,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("video", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(transcode);
+        /// #         b.include(transcode)
         /// #     })
         /// # }
         /// # }
@@ -1431,7 +1431,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("hotel", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(book);
+        /// #         b.include(book)
         /// #     })
         /// # }
         /// # }
@@ -1509,7 +1509,7 @@ pub mod own {
         /// # }
         /// # pub fn app(pool: PgPool) -> RustStream {
         /// #     RustStream::new(AppInfo::new("portfolios", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-        /// #         b.include(rebalance);
+        /// #         b.include(rebalance)
         /// #     })
         /// # }
         /// # }

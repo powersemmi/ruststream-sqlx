@@ -132,12 +132,11 @@ fn service(url: &str) -> RustStream {
             let resize = subscriber("images", ResizeImage)
                 .map_source(|_| InboxQueue::<Resize>::new("images"))
                 .workers(nonzero!(4));
-            b.include(resize.build());
             // Four workers, and the postings of one account on one of them, one after another.
             let post = subscriber("postings", PostEntry)
                 .map_source(|_| InboxQueue::<Post>::new("postings"))
                 .workers_by_key(nonzero!(4));
-            b.include(post.build());
+            b.include(resize.build()).include(post.build())
         })
 }
 // --8<-- [end:workers]

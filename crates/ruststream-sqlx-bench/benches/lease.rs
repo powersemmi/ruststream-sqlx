@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The harness macros generate the group module, its items and the paths between them, and a
 // benchmark function takes its setup value by value because the harness owns the drop; the
 // crate's lints are written for the library surface, not for generated benchmark scaffolding.
@@ -16,7 +18,7 @@
 mod common;
 
 use common::code::{Pending, start_and_drain};
-use common::framework::{self, Mount};
+use common::framework;
 use common::raw::{Statements, lease, read_payload};
 use common::stand::Table;
 use common::tables::LeaseJob;
@@ -30,7 +32,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::Lease, messages, POOL, |pool, latch| {
-        framework::postgres_lease(pool, latch, Mount::SEQUENTIAL)
+        framework::postgres_lease(pool, latch, |b| b.include(framework::lease))
     })
 }
 

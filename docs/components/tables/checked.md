@@ -35,4 +35,5 @@ Its test runs on the Postgres stand that `POSTGRES_TEST_URL` names, and skips wi
 
 {/* single-form: checked is an attribute of the derive; a table described by hand checks its own statements with sqlx::query! and keeps the startup check */}
 ```rust reference="examples/sqlx_tables_checked.rs#table"
+
 ```

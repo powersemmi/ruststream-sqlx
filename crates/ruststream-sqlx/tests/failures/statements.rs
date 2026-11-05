@@ -16,8 +16,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use ruststream::testing::InProcess;
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscribe, Subscriber,
-    SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Settle, Subscribe,
+    Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::{InboxQueue, Publish, SqlxBroker, SqlxBrokerError};
 use tokio::time::Instant;

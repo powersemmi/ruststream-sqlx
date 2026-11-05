@@ -60,7 +60,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<Ticket>("billing"), |b| {
-            b.include(triage.workers_by_key(nonzero!(4)));
+            b.include(triage.workers_by_key(nonzero!(4)))
         })
 }
 // --8<-- [end:table]

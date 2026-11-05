@@ -38,12 +38,14 @@ The tests run the same service on MySQL and on MariaDB.
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_databases_mysql.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_databases_mysql.rs#service"
+
 ```
 
 </TabItem>

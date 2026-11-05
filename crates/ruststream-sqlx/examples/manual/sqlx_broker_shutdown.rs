@@ -77,7 +77,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<Export>("exports"), |b| {
             let export = subscriber("exports", Exporter)
                 .map_source(|_| InboxQueue::<Export>::new("exports"));
-            b.include(export.build());
+            b.include(export.build())
         })
 }
 

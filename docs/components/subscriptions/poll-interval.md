@@ -29,12 +29,14 @@ The warehouse writes exports into the table with its own SQL, so the queue claim
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_poll.rs#poll_interval"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_poll.rs#poll_interval"
+
 ```
 
 </TabItem>

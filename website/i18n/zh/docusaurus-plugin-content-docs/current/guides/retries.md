@@ -19,6 +19,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#schema"
+
 ```
 
 `name` 是一行所在的[组](../components/tables/roles.md)：对 `emails` 的订阅读取 `name` 为 `emails` 的行。`attempt` 统计一行的投递次数，包括第一次。`retry_after` 是一行到期的时间；它的默认值让新行立即到期。
@@ -31,12 +32,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#send"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#send"
+
 ```
 
 </TabItem>
@@ -50,18 +53,20 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#app"
+
 ```
 
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) 读取该行的 `attempt`。第五次失败的投递不再重试：[`dead_letter`](../components/settlement/dead-letter.md) 把该行转入 `emails.dead` 组，载荷和尝试次数保持原样。延迟重试与立即重试一样计入上限。这两个步骤必须一起出现：只声明其中一个的挂载会让服务在启动时停止。没有组列的表在 `dead_letter` 中改为给出一个表名，该行转入那张表，它具有相同的列。
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) 读取该行的 `attempt`。第五次失败的投递不再重试：[`dead_letter`](../components/settlement/dead-letter.md) 把该行转入 `emails.dead` 组，载荷和尝试次数保持原样。延迟重试与立即重试一样计入上限。这两个步骤必须一起出现：只声明其中一个的挂载会让服务在启动时停止。没有组列的表在 `dead_letter` 中改为给出一个表名，该行转入那张表，它具有相同的列。
 
 ## 读取死信 {/* #reading-the-dead-letters */}
 
@@ -71,12 +76,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/retries.rs#dead_letters"
+
 ```
 
 </TabItem>

@@ -12,7 +12,9 @@ use std::pin::pin;
 use std::time::Duration;
 
 use futures::StreamExt;
-use ruststream::{Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{
+    Broker, ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource,
+};
 use ruststream_sqlx::{InboxQueue, SqlxBroker};
 
 use crate::live;

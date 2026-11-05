@@ -17,6 +17,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the migration is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/production.rs#migration"
+
 ```
 
 本 crate 不创建表：表结构属于服务，由服务的迁移创建，[`examples/outbox`](https://github.com/powersemmi/ruststream-sqlx/tree/main/examples/outbox) 中用 `sqlx::migrate!` 运行这些迁移。索引遵循领取顺序，即表中已有的列按 `(group, priority, retry_after, id)` 排列，这里是 `(name, job_id)`。领取在排序之前就锁住它读到的组中每一行，所以没有这个索引时，为处理器保持的领取会挡住组中其余的行，其他领取取不到它们。在带 [FIFO 组](ordering.md)的表中，同一个索引让领取对组的读取只涉及组自己的行。
@@ -27,12 +28,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#table"
+
 ```
 
 </TabItem>
@@ -48,12 +51,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#service"
+
 ```
 
 </TabItem>
@@ -65,12 +70,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#main"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#main"
+
 ```
 
 </TabItem>

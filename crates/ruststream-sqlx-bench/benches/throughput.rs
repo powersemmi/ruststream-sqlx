@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The benchmark is a binary of its own, not library surface: the framework's macros generate the
 // handler scaffolding, and a measured loop panics on a database fault rather than threading a
 // `Result` through a scenario nobody recovers from.
@@ -173,11 +175,16 @@ impl Cell {
                 postgres_table(&pool, Table::RowLock).await;
                 postgres_fill(&pool, Table::RowLock, rows).await;
                 if matches!(kind, Loop::Framework) {
-                    drain(
-                        framework::postgres_row_lock(pool.clone(), latch.clone(), how),
-                        &latch,
-                    )
-                    .await;
+                    framework::mounted!(
+                        how,
+                        framework::row_lock,
+                        framework::row_lock_batch,
+                        |mount| drain(
+                            framework::postgres_row_lock(pool.clone(), latch.clone(), mount),
+                            &latch
+                        )
+                        .await
+                    );
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, RowLockJob, tasks, self.batch, latch);
                 } else {
@@ -202,11 +209,16 @@ impl Cell {
                 mysql_table(&pool, Table::RowLock).await;
                 mysql_fill(&pool, Table::RowLock, rows).await;
                 if matches!(kind, Loop::Framework) {
-                    drain(
-                        framework::mysql_row_lock(pool.clone(), latch.clone(), how),
-                        &latch,
-                    )
-                    .await;
+                    framework::mounted!(
+                        how,
+                        framework::row_lock,
+                        framework::row_lock_batch,
+                        |mount| drain(
+                            framework::mysql_row_lock(pool.clone(), latch.clone(), mount),
+                            &latch
+                        )
+                        .await
+                    );
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, RowLockJob, tasks, self.batch, latch);
                 } else {
@@ -230,11 +242,13 @@ impl Cell {
                 let pool = sqlite_pool(POOL, Table::Lease).await;
                 sqlite_fill(&pool, Table::Lease, rows).await;
                 if matches!(kind, Loop::Framework) {
-                    drain(
-                        framework::sqlite_lease(pool.clone(), latch.clone(), how),
-                        &latch,
-                    )
-                    .await;
+                    framework::mounted!(how, framework::lease, framework::lease_batch, |mount| {
+                        drain(
+                            framework::sqlite_lease(pool.clone(), latch.clone(), mount),
+                            &latch,
+                        )
+                        .await;
+                    });
                 } else if matches!(kind, Loop::Adapter) {
                     adapter_drain!(pool, LeaseJob, tasks, self.batch, latch);
                 } else {
@@ -296,18 +310,37 @@ impl OutboxCell {
         postgres_table(&pool, Table::Outbox).await;
         let latch = Latch::new(rows);
         let state = latch.clone();
+        // One worker is the plain mount; more is `workers(n)`, an app of its own type.
+        let workers = self.workers;
+        let plain = workers.get() == 1;
         match kind {
+            Loop::Raw if plain => {
+                outbox::feed_round_trip(outbox::redis::round_trip(state), &latch).await;
+            }
             Loop::Raw => {
-                outbox::feed_round_trip(outbox::redis::round_trip(state, self.workers), &latch)
-                    .await;
+                let built = outbox::redis::round_trip_on_workers(state, workers);
+                outbox::feed_round_trip(built, &latch).await;
+            }
+            Loop::Adapter if plain => {
+                let built = outbox::redis::round_trip_by_hand(pool.clone(), state);
+                outbox::feed_round_trip(built, &latch).await;
             }
             Loop::Adapter => {
-                let built = outbox::redis::round_trip_by_hand(pool.clone(), state, self.workers);
+                let built =
+                    outbox::redis::round_trip_by_hand_on_workers(pool.clone(), state, workers);
+                outbox::feed_round_trip(built, &latch).await;
+            }
+            Loop::Framework if plain => {
+                let built = outbox::redis::round_trip_outbox(pool.clone(), state, TRACKED);
                 outbox::feed_round_trip(built, &latch).await;
             }
             Loop::Framework => {
-                let built =
-                    outbox::redis::round_trip_outbox(pool.clone(), state, TRACKED, self.workers);
+                let built = outbox::redis::round_trip_outbox_on_workers(
+                    pool.clone(),
+                    state,
+                    TRACKED,
+                    workers,
+                );
                 outbox::feed_round_trip(built, &latch).await;
             }
         }

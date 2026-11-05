@@ -4,6 +4,8 @@
 
 use std::convert::Infallible;
 
+use futures::future::Either;
+
 use ruststream::memory::prelude::*;
 use ruststream::runtime::{FromRef, RunningApp};
 use ruststream_sqlx::outbox::{Nil, Outbox, Registered};
@@ -92,25 +94,30 @@ stands! {
     async fn started(kit: &Kit, threads: Threads, id: u32) -> RunningApp {
         let tracking: Tracking = Outbox::new(kit.pool.clone()).register::<OrderRecord>("orders");
         let state = kit.clone();
-        let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
-            .on_startup(async move |()| Ok::<_, Infallible>(state))
-            .layer(tracking.layer())
-            .publish_layer(tracking.publish_layer())
-            .with_broker(MemoryBroker::new(), move |b| {
-                match threads {
-                    Threads::Recording => {
-                        b.include(place_on_a_thread).out_reply(Publish);
-                    }
-                    Threads::Marking => {
-                        b.include(place).out_reply(Publish);
-                        b.include(fulfil_on_a_thread);
-                    }
-                }
-                b.after_startup(Publish, move |live| async move {
-                    live.message(&Request { id }).publish().await
-                });
-            });
-        tokio::time::timeout(GUARD, app.start())
+        // Each variant mounts its own handlers, so each builds its own app.
+        macro_rules! app {
+            (|$b:ident| $mount:expr) => {
+                RustStream::new(AppInfo::new("shop", "0.0.0"))
+                    .on_startup(async move |()| Ok::<_, Infallible>(state))
+                    .layer(tracking.layer())
+                    .publish_layer(tracking.publish_layer())
+                    .with_broker(MemoryBroker::new(), move |b| {
+                        let $b = b.after_startup(Publish, move |live| async move {
+                            live.message(&Request { id }).publish().await
+                        });
+                        $mount
+                    })
+            };
+        }
+        let app = match threads {
+            Threads::Recording => {
+                Either::Left(app!(|b| b.include(place_on_a_thread).out_reply(Publish)).start())
+            }
+            Threads::Marking => Either::Right(
+                app!(|b| b.include(place).out_reply(Publish).include(fulfil_on_a_thread)).start(),
+            ),
+        };
+        tokio::time::timeout(GUARD, app)
             .await
             .expect("the service starts in time")
             .expect("the service starts")

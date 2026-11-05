@@ -100,7 +100,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker, |b| {
             let pay =
                 subscriber("payouts", Pay).map_source(|_| InboxQueue::<Payout>::new("payouts"));
-            b.include(pay.build());
+            b.include(pay.build())
         })
 }
 // --8<-- [end:lock]

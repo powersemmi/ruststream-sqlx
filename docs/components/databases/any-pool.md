@@ -33,12 +33,14 @@ An email queue in the advisory lock form, which every backend serves; the test r
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_databases_any.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_databases_any.rs#service"
+
 ```
 
 </TabItem>

@@ -52,7 +52,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<LegacyJob>("imports"), |b| {
-            b.include(run_import);
+            b.include(run_import)
         })
 }
 

@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use ruststream::codec::CodecError;
-use ruststream::{AckError, Carries, HeaderMap, IncomingMessage};
+use ruststream::{AckError, Carries, HeaderMap, IncomingMessage, Settle};
 use sync_wrapper::SyncWrapper;
 use thiserror::Error;
 use tokio::runtime::Handle;
@@ -135,7 +135,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -177,7 +177,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -226,7 +226,7 @@ pub(super) enum Hold<DB: QueueDatabase, Row: Events<DB>> {
 ///     // release that reads it ships.
 ///     let keep = FailurePolicy::RetryAfter(Duration::from_secs(600));
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send.on_failure(FailurePolicies::default().with_decode(keep)));
+///         b.include(send.on_failure(FailurePolicies::default().with_decode(keep)))
 ///     })
 /// }
 /// # }
@@ -547,7 +547,14 @@ where
             carried
         }
     }
+}
 
+impl<DB, Row, Mode> Settle for InboxDelivery<DB, Row, Mode>
+where
+    DB: QueueDatabase,
+    Row: Events<DB>,
+    Mode: InboxMode,
+{
     async fn ack(self) -> Result<(), AckError> {
         self.settle(Outcome::Ack).await
     }

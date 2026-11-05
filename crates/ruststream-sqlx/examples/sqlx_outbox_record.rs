@@ -75,6 +75,7 @@ struct OrderPlaced {
 }
 
 /// Stamps every order with the tenant it belongs to.
+#[derive(Clone)]
 struct Tenant;
 
 impl<C, Options> PublishTransform<ForReply<C>, Options> for Tenant {
@@ -107,9 +108,11 @@ fn service(pool: SqlitePool) -> impl App {
         .layer(tracking.layer())
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(place).out_reply(Publish).transform(Tenant);
-            b.include(fulfil);
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(place)
+                .out_reply(Publish)
+                .transform(Tenant)
+                .include(fulfil)
         })
 }
 

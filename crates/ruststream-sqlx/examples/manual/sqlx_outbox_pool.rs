@@ -55,10 +55,10 @@ fn service(url: String) -> impl App {
             Ok::<_, Infallible>(())
         })
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(subscriber("checkout", Place).reply().build())
-                .out_reply(Publish);
-            b.include(subscriber("orders", Fulfil).build());
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(subscriber("checkout", Place).reply().build())
+                .out_reply(Publish)
+                .include(subscriber("orders", Fulfil).build())
         })
 }
 

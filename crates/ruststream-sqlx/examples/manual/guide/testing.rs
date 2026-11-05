@@ -118,7 +118,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
-            b.include(thumbnail.build());
+            b.include(thumbnail.build())
         })
 }
 
@@ -136,7 +136,7 @@ fn service_on_postgres(url: &str) -> RustStream {
         .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
-            b.include(thumbnail.build());
+            b.include(thumbnail.build())
         })
 }
 

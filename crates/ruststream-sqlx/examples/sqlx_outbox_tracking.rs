@@ -47,9 +47,11 @@ fn service(pool: SqlitePool) -> impl App {
         // Records a message under a registered name, then sends it with the record's id.
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(place).out_reply(Publish);
-            // One attempt: an order out of stock is not delivered again, and its record waits.
-            b.include(fulfil).max_attempts(nonzero!(1u32));
+            b.include(place)
+                .out_reply(Publish)
+                // One attempt: an order out of stock is not delivered again, and its record waits.
+                .include(fulfil)
+                .max_attempts(nonzero!(1u32))
         })
 }
 // --8<-- [end:tracking]

@@ -180,9 +180,8 @@ async fn send_by_name(_email: &Email) -> HandlerOutcome {
 async fn the_derived_table_retries_then_marks_the_row() {
     let db = database(SCHEMA).await;
     let broker = broker(&db.pool).route::<derived::EmailJob>("emails");
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
-        b.include(send_derived);
-    });
+    let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
+        .with_broker(broker, |b| b.include(send_derived));
     // Live: the retry's delay passes in real time, and the harness waits for the delivery it
     // saw published and for the retry it asked.
     let tb = TestApp::start_live(app).await.expect("the app starts");
@@ -213,9 +212,8 @@ async fn the_derived_table_retries_then_marks_the_row() {
 async fn the_manual_table_retries_then_marks_the_row() {
     let db = database(SCHEMA).await;
     let broker = broker(&db.pool).route::<manual::EmailJob>("emails");
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
-        b.include(send_manual);
-    });
+    let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
+        .with_broker(broker, |b| b.include(send_manual));
     // Live: the retry's delay passes in real time, and the harness waits for the delivery it
     // saw published and for the retry it asked.
     let tb = TestApp::start_live(app).await.expect("the app starts");
@@ -246,9 +244,8 @@ async fn the_manual_table_retries_then_marks_the_row() {
 async fn a_subscription_by_name_reads_the_manual_table() {
     let db = database(SCHEMA).await;
     let broker = broker(&db.pool).route::<manual::EmailJob>("emails");
-    let app = RustStream::new(AppInfo::new("mailer", "0.0.0")).with_broker(broker, |b| {
-        b.include(send_by_name);
-    });
+    let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
+        .with_broker(broker, |b| b.include(send_by_name));
     let tb = TestApp::start(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Sqlite>>()
         .message(&email())

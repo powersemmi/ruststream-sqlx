@@ -92,7 +92,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<OpenAccount>("signups"), |b| {
-            b.include(open_account.transactional());
+            b.include(open_account.transactional())
         })
 }
 // --8<-- [end:transactional]

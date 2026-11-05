@@ -167,12 +167,12 @@ fn service(url: &str) -> RustStream {
         |b| {
             let email =
                 subscriber("emails", Mailer).map_source(|_| InboxQueue::<SendEmail>::new("emails"));
-            b.include(email.build());
             let report = subscriber("reports", Renderer)
                 .map_source(|_| InboxQueue::<RenderReport>::new("reports"));
-            b.include(report.build());
             let mail = subscriber("mail", Postman).map_source(|_| InboxQueue::<Mail>::new("mail"));
-            b.include(mail.build());
+            b.include(email.build())
+                .include(report.build())
+                .include(mail.build())
         },
     )
 }

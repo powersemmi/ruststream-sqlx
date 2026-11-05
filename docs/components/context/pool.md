@@ -27,12 +27,14 @@ Every attempt to send a text message writes a line to the delivery log through t
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_context_pool.rs#pool"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_context_pool.rs#pool"
+
 ```
 
 </TabItem>

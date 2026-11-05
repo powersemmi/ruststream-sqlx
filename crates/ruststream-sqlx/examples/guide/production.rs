@@ -85,7 +85,7 @@ fn service(options: PgConnectOptions) -> RustStream {
         .with_broker_labeled("postgres", broker, |b| {
             b.include(send.workers(WORKERS))
                 .max_attempts(nonzero!(5u32))
-                .dead_letter("emails.dead");
+                .dead_letter("emails.dead")
         })
 }
 // --8<-- [end:service]

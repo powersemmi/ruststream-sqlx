@@ -39,12 +39,14 @@ The crate registers the brokers of its built-in dialects with the test harness; 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_databases_dialect.rs#dialect"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_databases_dialect.rs#dialect"
+
 ```
 
 </TabItem>

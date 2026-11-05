@@ -33,12 +33,14 @@ The CRM receives its changes one at a time, in the order they were queued, and a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_fifo.rs#fifo"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_fifo.rs#fifo"
+
 ```
 
 </TabItem>

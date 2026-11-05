@@ -282,7 +282,7 @@ impl NamedBytes {
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     let broker = SqlxBroker::with_dialect(pool, Audited).route::<SendEmail>("emails");
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }

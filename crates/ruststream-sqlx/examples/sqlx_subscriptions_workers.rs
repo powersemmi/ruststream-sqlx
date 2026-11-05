@@ -68,9 +68,9 @@ fn service(url: &str) -> RustStream {
         })
         .with_broker(broker, |b| {
             // Up to four images in work at once.
-            b.include(resize.workers(nonzero!(4)));
-            // Four workers, and the postings of one account on one of them, one after another.
-            b.include(post.workers_by_key(nonzero!(4)));
+            b.include(resize.workers(nonzero!(4)))
+                // Four workers, and the postings of one account on one of them, one after another.
+                .include(post.workers_by_key(nonzero!(4)))
         })
 }
 // --8<-- [end:workers]

@@ -161,7 +161,7 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
 ///         broker.route::<SendEmail>("emails"),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }
@@ -238,7 +238,7 @@ pub(crate) type FormOf<D> = fn(&Arc<D>) -> FormDialect;
 ///     RustStream::new(AppInfo::new("thumbnails", "0.1.0")).with_broker(
 ///         SqlxBroker::new(pool).route::<MakeThumbnail>("thumbnails"),
 ///         |b| {
-///             b.include(thumbnail);
+///             b.include(thumbnail)
 ///         },
 ///     )
 /// }
@@ -352,7 +352,7 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     // Nothing connects here: the broker builds the pool when the service starts.
     ///     let broker = SqlxBroker::from_url(url, PgPoolOptions::new().max_connections(8));
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(send);
+    ///         b.include(send)
     ///     })
     /// }
     /// # }
@@ -413,7 +413,7 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///     let options = PgConnectOptions::new().application_name("mailer");
     ///     let broker = SqlxBroker::from_connect_options(options, PgPoolOptions::new());
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(send);
+    ///         b.include(send)
     ///     })
     /// }
     /// # }
@@ -475,7 +475,7 @@ impl<DB: BuiltInDialect> SqlxBroker<DB, BuiltIn<DB>> {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(send);
+    ///         b.include(send)
     ///     })
     /// }
     ///
@@ -587,7 +587,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     // `RowLock`, the form of `email_jobs`.
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0"))
     ///         .with_broker(SqlxBroker::with_dialect(pool, Audited), |b| {
-    ///             b.include(send);
+    ///             b.include(send)
     ///         })
     /// }
     /// # }
@@ -681,7 +681,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     // `reports.daily` and `reports.weekly` both lead into `report_jobs`.
     ///     let broker = SqlxBroker::new(pool).route::<Report>("reports.*");
     ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(roll_up);
+    ///         b.include(roll_up)
     ///     })
     /// }
     /// # }
@@ -742,7 +742,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     // Every queue on this broker checks twice a second when it runs dry.
     ///     let broker = SqlxBroker::new(pool).poll_interval(Duration::from_millis(500));
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(send);
+    ///         b.include(send)
     ///     })
     /// }
     /// # }
@@ -805,7 +805,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     // A video whose process crashed goes back to the queue once its ten-second lease runs out.
     ///     let broker = SqlxBroker::new(pool).lease(Duration::from_secs(10));
     ///     RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(transcode);
+    ///         b.include(transcode)
     ///     })
     /// }
     /// # }
@@ -853,7 +853,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///     // The database lets this service open 20 connections: the pool's and 4 threads' own.
     ///     let broker = SqlxBroker::new(pool).connection_limit(nonzero!(20u32));
     ///     RustStream::new(AppInfo::new("scanner", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4))));
+    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4))))
     ///     })
     /// }
     /// # }
@@ -930,7 +930,7 @@ impl<DB: QueueDatabase, D: Dialect + 'static> SqlxBroker<DB, D> {
     ///         .poll_interval(Duration::from_secs(60))
     ///         .listen_notify();
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(send);
+    ///         b.include(send)
     ///     })
     /// }
     /// # }

@@ -140,7 +140,7 @@ fn service(url: &str) -> RustStream {
             let issue = subscriber("refunds", Issue)
                 .map_source(|_| InboxQueue::<IssueRefund>::new("refunds"))
                 .transactional();
-            b.include(issue.build());
+            b.include(issue.build())
         })
 }
 // --8<-- [end:handler]

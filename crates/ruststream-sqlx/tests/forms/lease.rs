@@ -19,7 +19,7 @@ use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, Outcome, TestApp};
 use ruststream::{
-    AckError, Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource,
+    AckError, Broker, ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::keys::Attempt;
 use ruststream_sqlx::{Clock, Inbox, InboxQueue, Insert, SqlxBroker, SqlxBrokerError};
@@ -287,7 +287,7 @@ live::stands! {
         let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
             // A second worker claims whatever is claimable: it would take the row if the lease
             // lapsed.
-            b.include(longer_than_the_lease.workers(nonzero!(2)));
+            b.include(longer_than_the_lease.workers(nonzero!(2)))
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -331,7 +331,7 @@ live::stands! {
             .poll_interval(Duration::from_millis(50))
             .route::<Plain>("plain");
         let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
-            b.include(outlasting_the_lease.workers(nonzero!(3)));
+            b.include(outlasting_the_lease.workers(nonzero!(3)))
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(Duration::from_secs(6))
@@ -397,7 +397,7 @@ live::stands! {
         let app = RustStream::new(AppInfo::new("leases", "0.0.0")).with_broker(broker, |b| {
             b.include(retried)
                 .max_attempts(nonzero!(2u32))
-                .dead_letter("plain_jobs_dead");
+                .dead_letter("plain_jobs_dead")
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()

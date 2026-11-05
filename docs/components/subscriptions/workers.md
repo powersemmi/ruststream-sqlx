@@ -41,12 +41,14 @@ Images resize on four workers in any order, and the ledger's postings of one acc
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_workers.rs#workers"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_workers.rs#workers"
+
 ```
 
 </TabItem>

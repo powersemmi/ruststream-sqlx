@@ -88,9 +88,9 @@ pub use tracked::{Checked, Lacks, TrackedName};
 ///             Ok::<_, Infallible>(())
 ///         })
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }
@@ -152,9 +152,9 @@ impl<DB: Database> Outbox<DB, Nil> {
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     ///         .run()
     ///         .await?;
@@ -212,7 +212,7 @@ impl<DB: Database> Outbox<DB, Nil> {
     ///         })
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
+    ///             b.include(place).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -272,9 +272,9 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(cancel).out_reply(Publish);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(cancel).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -365,9 +365,9 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(cancel).out_reply(Publish);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(cancel).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -489,7 +489,7 @@ impl<DB: Database, Records: RecordNames> Outbox<DB, Records> {
     ///         })
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
+    ///             b.include(place).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -537,7 +537,7 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .layer(tracking.layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(fulfil);
+    ///             b.include(fulfil)
     ///         })
     /// }
     /// # }
@@ -582,7 +582,7 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
+    ///             b.include(place).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -626,9 +626,9 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
     ///             // Runs once the subscriptions are open; a record it cannot send fails startup.
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -678,12 +678,12 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.after_startup(Publish, tracking.republish_names(["orders"]));
+    ///             b.after_startup(Publish, tracking.republish_names(["orders"]))
+    ///                 .include(place).out_reply(Publish)
     ///         })
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(audit).out_reply(Publish);
-    ///             b.after_startup(Publish, tracking.republish_names(["audits"]));
+    ///             b.after_startup(Publish, tracking.republish_names(["audits"]))
+    ///                 .include(audit).out_reply(Publish)
     ///         })
     /// }
     /// # }
@@ -749,7 +749,7 @@ impl<DB: Database, Records: RecordList<DB>> Outbox<DB, Records> {
     ///     let egress = broker.bind(Publish);
     ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
     ///         .with_broker(broker, |b| {
-    ///             b.include(fulfil);
+    ///             b.include(fulfil)
     ///         })
     ///         .start()
     ///         .await?;

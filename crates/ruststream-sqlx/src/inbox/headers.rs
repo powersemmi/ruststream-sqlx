@@ -88,7 +88,7 @@ use super::spec::Declaration;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship);
+///         b.include(ship)
 ///     })
 /// }
 /// # }
@@ -190,7 +190,7 @@ pub trait Assembled {
 ///
 /// pub fn app(pool: sqlx::PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shipping", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship);
+///         b.include(ship)
 ///     })
 /// }
 /// # }

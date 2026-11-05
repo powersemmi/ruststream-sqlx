@@ -67,7 +67,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<Withdraw>("withdrawals"), |b| {
-            b.include(withdraw.transactional());
+            b.include(withdraw.transactional())
         })
 }
 // --8<-- [end:isolation]

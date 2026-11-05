@@ -100,7 +100,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<SendSms>("sms"), |b| {
             let send =
                 subscriber("sms", SendText).map_source(|_| InboxQueue::<SendSms>::new("sms"));
-            b.include(send.build());
+            b.include(send.build())
         })
 }
 // --8<-- [end:pool]

@@ -144,18 +144,6 @@ fn carried_id(headers: &HeaderMap) -> i64 {
 /// The reply body the hand-written relay records: what the codec encodes for the same reply.
 const REPLY_BODY: &[u8] = br#"{"id":1}"#;
 
-/// Mounts `$handler` with `$workers` workers: one is the plain mount.
-macro_rules! include_with {
-    ($b:ident, $handler:ident, $workers:expr $(, $($then:tt)+)?) => {{
-        let workers: NonZeroUsize = $workers;
-        if workers.get() == 1 {
-            $b.include($handler)$($($then)+)?;
-        } else {
-            $b.include($handler.workers(workers))$($($then)+)?;
-        }
-    }};
-}
-
 /// The handlers and the apps of the three variants over one broker. `input` and `output` are the
 /// subscriptions of the relay and the sink, `broker` builds the broker, `reply` is the policy
 /// replies and republished records go out through, and `egress` the one a command, or a message
@@ -237,20 +225,50 @@ macro_rules! variants {
         }
 
         /// A command answered and the answer consumed, with no outbox.
-        pub fn round_trip(latch: Latch, workers: NonZeroUsize) -> (impl App, Egress) {
+        pub fn round_trip(latch: Latch) -> (impl App, Egress) {
             let broker = $broker.bindable();
             let egress = broker.bind($egress);
             let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(latch))
                 .with_broker(broker, |b| {
-                    include_with!(b, relay, workers, .out_reply($reply));
-                    include_with!(b, sink, workers);
+                    b.include(relay).out_reply($reply)
+                        .include(sink)
+                });
+            (app, egress)
+        }
+
+        /// The same, with `workers` workers on each subscription.
+        pub fn round_trip_on_workers(latch: Latch, workers: NonZeroUsize) -> (impl App, Egress) {
+            let broker = $broker.bindable();
+            let egress = broker.bind($egress);
+            let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
+                .on_startup(async move |()| Ok::<_, Infallible>(latch))
+                .with_broker(broker, |b| {
+                    b.include(relay.workers(workers)).out_reply($reply)
+                        .include(sink.workers(workers))
                 });
             (app, egress)
         }
 
         /// The same with the outbox written by hand in its handlers.
         pub fn round_trip_by_hand(
+            pool: PgPool,
+            latch: Latch,
+        ) -> (impl App, Egress) {
+            let state = ByHand::new(pool, latch);
+            let broker = $broker.bindable();
+            let egress = broker.bind($egress);
+            let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
+                .on_startup(async move |()| Ok::<_, Infallible>(state))
+                .with_broker(broker, |b| {
+                    b.include(relay_by_hand).out_reply($reply)
+                        .include(sink_by_hand)
+                });
+            (app, egress)
+        }
+
+        /// The same, with `workers` workers on each subscription.
+        pub fn round_trip_by_hand_on_workers(
             pool: PgPool,
             latch: Latch,
             workers: NonZeroUsize,
@@ -261,8 +279,8 @@ macro_rules! variants {
             let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(state))
                 .with_broker(broker, |b| {
-                    include_with!(b, relay_by_hand, workers, .out_reply($reply));
-                    include_with!(b, sink_by_hand, workers);
+                    b.include(relay_by_hand.workers(workers)).out_reply($reply)
+                        .include(sink_by_hand.workers(workers))
                 });
             (app, egress)
         }
@@ -270,6 +288,27 @@ macro_rules! variants {
         /// The same with this crate's outbox recording `name`: the reply is tracked when `name`
         /// is the reply's, and every message passes untracked otherwise.
         pub fn round_trip_outbox(
+            pool: PgPool,
+            latch: Latch,
+            name: &'static str,
+        ) -> (impl App, Egress) {
+            let tracking = tracking(pool, name);
+            let broker = $broker.bindable();
+            let egress = broker.bind($egress);
+            let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
+                .on_startup(async move |()| Ok::<_, Infallible>(latch))
+                .layer(tracking.layer())
+                .publish_layer(tracking.publish_layer())
+                .with_broker(broker, |b| {
+                    b.after_startup($reply, tracking.republish())
+                        .include(relay).out_reply($reply)
+                        .include(sink)
+                });
+            (app, egress)
+        }
+
+        /// The same, with `workers` workers on each subscription.
+        pub fn round_trip_outbox_on_workers(
             pool: PgPool,
             latch: Latch,
             name: &'static str,
@@ -283,9 +322,9 @@ macro_rules! variants {
                 .layer(tracking.layer())
                 .publish_layer(tracking.publish_layer())
                 .with_broker(broker, |b| {
-                    include_with!(b, relay, workers, .out_reply($reply));
-                    include_with!(b, sink, workers);
-                    b.after_startup($reply, tracking.republish());
+                    b.after_startup($reply, tracking.republish())
+                        .include(relay.workers(workers)).out_reply($reply)
+                        .include(sink.workers(workers))
                 });
             (app, egress)
         }
@@ -298,7 +337,7 @@ macro_rules! variants {
             let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(latch))
                 .with_broker(broker, |b| {
-                    b.include(sink);
+                    b.include(sink)
                 });
             (app, egress)
         }
@@ -311,7 +350,7 @@ macro_rules! variants {
             let app = RustStream::new(AppInfo::new("bench", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(state))
                 .with_broker(broker, |b| {
-                    b.include(sink_by_header);
+                    b.include(sink_by_header)
                 });
             (app, egress)
         }
@@ -327,8 +366,8 @@ macro_rules! variants {
                 .layer(tracking.layer())
                 .publish_layer(tracking.publish_layer())
                 .with_broker(broker, |b| {
-                    b.include(sink);
-                    b.after_startup($reply, tracking.republish());
+                    b.after_startup($reply, tracking.republish())
+                        .include(sink)
                 });
             (app, egress)
         }
@@ -338,7 +377,7 @@ macro_rules! variants {
         pub fn publishing() -> (impl App, Egress) {
             let broker = $broker.bindable();
             let egress = broker.bind($egress);
-            let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |_b| {});
+            let app = RustStream::new(AppInfo::new("bench", "0.0.0")).with_broker(broker, |b| b);
             (app, egress)
         }
 
@@ -352,7 +391,7 @@ macro_rules! variants {
                 .layer(tracking.layer())
                 .publish_layer(tracking.publish_layer())
                 .with_broker(broker, |b| {
-                    b.after_startup($reply, republish);
+                    b.after_startup($reply, republish)
                 });
             (app, egress, tracking)
         }

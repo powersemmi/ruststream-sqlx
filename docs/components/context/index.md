@@ -34,12 +34,14 @@ A transactional signup handler logs every attempt through the pool and opens the
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_context.rs#context"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_context.rs#context"
+
 ```
 
 </TabItem>

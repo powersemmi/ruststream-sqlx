@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # dead_letter
 
-[`max_attempts(n)`](api:ruststream::runtime::Mounting::max_attempts) with [`dead_letter(..)`](api:ruststream::runtime::Mounting::dead_letter) moves a row whose attempts are spent into another group, or into a table with the same columns.
+[`max_attempts(n)`](api:ruststream::runtime::RouterWith::max_attempts) with [`dead_letter(..)`](api:ruststream::runtime::RouterWith::dead_letter) moves a row whose attempts are spent into another group, or into a table with the same columns.
 
 The two steps come together at the mount site, and a mount that declares one without the other stops the service at [startup](../broker/startup.md).
 The cap reads the row's `#[field(attempt)]` column, which counts the deliveries, the first one included; a cap on a table without it stops startup too.
@@ -29,12 +29,14 @@ A payment the card network keeps declining is tried three times, then moves to t
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_settlement_dead_letter.rs#dead_letter"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_settlement_dead_letter.rs#dead_letter"
+
 ```
 
 </TabItem>
