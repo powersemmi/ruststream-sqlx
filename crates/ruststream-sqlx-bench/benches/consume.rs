@@ -16,7 +16,7 @@ mod common;
 
 use common::MESSAGES;
 use common::code::{Pending, start_and_drain};
-use common::framework::{self, Mount};
+use common::framework;
 use common::raw::{Statements, read_payload, row_lock};
 use common::stand::Table;
 use common::tables::RowLockJob;
@@ -29,7 +29,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::RowLock, messages, POOL, |pool, latch| {
-        framework::postgres_row_lock(pool, latch, Mount::SEQUENTIAL)
+        framework::postgres_row_lock(pool, latch, |b| b.include(framework::row_lock))
     })
 }
 

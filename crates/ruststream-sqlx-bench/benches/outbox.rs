@@ -56,24 +56,17 @@ macro_rules! round_trip {
 fn none_run(messages: usize) -> Pending {
     round_trip!(messages, |latch, pool| {
         drop(pool);
-        memory::round_trip(latch, NonZeroUsize::MIN)
+        memory::round_trip(latch)
     })
 }
 
 fn by_hand_run(messages: usize) -> Pending {
-    round_trip!(messages, |latch, pool| memory::round_trip_by_hand(
-        pool,
-        latch,
-        NonZeroUsize::MIN
-    ))
+    round_trip!(messages, |latch, pool| memory::round_trip_by_hand(pool, latch))
 }
 
 fn outbox_run(messages: usize) -> Pending {
     round_trip!(messages, |latch, pool| memory::round_trip_outbox(
-        pool,
-        latch,
-        TRACKED,
-        NonZeroUsize::MIN
+        pool, latch, TRACKED
     ))
 }
 

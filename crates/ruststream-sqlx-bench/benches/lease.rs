@@ -16,7 +16,7 @@
 mod common;
 
 use common::code::{Pending, start_and_drain};
-use common::framework::{self, Mount};
+use common::framework;
 use common::raw::{Statements, lease, read_payload};
 use common::stand::Table;
 use common::tables::LeaseJob;
@@ -30,7 +30,7 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::Lease, messages, POOL, |pool, latch| {
-        framework::postgres_lease(pool, latch, Mount::SEQUENTIAL)
+        framework::postgres_lease(pool, latch, |b| b.include(framework::lease))
     })
 }
 
