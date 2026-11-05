@@ -380,16 +380,18 @@ where
             count,
         } = claim;
         let (queue, pool) = (subscriber.queue(), subscriber.pool());
-        // Only the harness's books read the connection the batch was claimed on.
-        #[cfg_attr(not(feature = "testing"), allow(unused_variables))]
-        let from = self.from.get_or_insert_with(|| Origin {
-            queue,
-            pool,
-            #[cfg(feature = "testing")]
-            shared: Arc::clone(&subscriber.shared),
-        });
+        // The connection the batch was claimed on keeps the harness's books in process.
         #[cfg(feature = "testing")]
-        let shared = &from.shared;
+        let shared = &self
+            .from
+            .get_or_insert_with(|| Origin {
+                queue,
+                pool,
+                shared: Arc::clone(&subscriber.shared),
+            })
+            .shared;
+        #[cfg(not(feature = "testing"))]
+        self.from.get_or_insert(Origin { queue, pool });
         let on = |delivery: InboxDelivery<DB, Row>| {
             #[cfg(feature = "testing")]
             let delivery = delivery.on(shared);
