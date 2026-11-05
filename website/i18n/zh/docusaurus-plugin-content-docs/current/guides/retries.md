@@ -66,7 +66,7 @@ import TabItem from '@theme/TabItem';
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) 读取该行的 `attempt`。第五次失败的投递不再重试：[`dead_letter`](../components/settlement/dead-letter.md) 把该行转入 `emails.dead` 组，载荷和尝试次数保持原样。延迟重试与立即重试一样计入上限。这两个步骤必须一起出现：只声明其中一个的挂载会让服务在启动时停止。没有组列的表在 `dead_letter` 中改为给出一个表名，该行转入那张表，它具有相同的列。
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) 读取该行的 `attempt`。第五次失败的投递不再重试：[`dead_letter`](../components/settlement/dead-letter.md) 把该行转入 `emails.dead` 组，载荷和尝试次数保持原样。延迟重试与立即重试一样计入上限。这两个步骤必须一起出现：只声明其中一个的挂载会让服务在启动时停止。没有组列的表在 `dead_letter` 中改为给出一个表名，该行转入那张表，它具有相同的列。
 
 ## 读取死信 {/* #reading-the-dead-letters */}
 

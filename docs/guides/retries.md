@@ -77,7 +77,7 @@ A row whose payload does not decode spends its attempts like any other failure (
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) reads the row's `attempt`.
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) reads the row's `attempt`.
 The fifth delivery that fails is not retried: [`dead_letter`](../components/settlement/dead-letter.md) moves the row into the `emails.dead` group, payload and attempt as they were.
 A delayed retry counts against the cap as an immediate one does.
 The two steps come together: a mount that declares one without the other stops the service at startup.

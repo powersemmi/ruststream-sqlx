@@ -77,7 +77,7 @@ import TabItem from '@theme/TabItem';
 </TabItem>
 </Tabs>
 
-[`max_attempts`](api:ruststream::runtime::Mounting::max_attempts) читает `attempt` строки.
+[`max_attempts`](api:ruststream::runtime::RouterWith::max_attempts) читает `attempt` строки.
 Пятая неудачная доставка не переобрабатывается: [`dead_letter`](../components/settlement/dead-letter.md) перемещает строку в группу `emails.dead` с полезной нагрузкой и попыткой в том виде, в каком они были.
 Отложенная переобработка засчитывается в предел так же, как немедленная.
 Два шага задаются вместе: точка монтирования, которая объявляет один из них без другого, останавливает сервис при старте.
