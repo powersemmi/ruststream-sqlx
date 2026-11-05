@@ -36,11 +36,16 @@ fn app(pool: PgPool) -> RustStream {
     RustStream::new(AppInfo::new("ui", "0.0.0")).with_broker(SqlxBroker::new(pool), |b| {
         // Mounted without transactional mode, the delivery lends no transaction.
         b.include(record)
-            // A subscription by name has no transactional mode.
-            .include(by_name.transactional())
+    })
+}
+
+fn by_name_app(pool: PgPool) -> RustStream {
+    RustStream::new(AppInfo::new("ui", "0.0.0")).with_broker(SqlxBroker::new(pool), |b| {
+        // A subscription by name has no transactional mode.
+        b.include(by_name.transactional())
     })
 }
 
 fn main() {
-    let _ = app;
+    let _ = (app, by_name_app);
 }
