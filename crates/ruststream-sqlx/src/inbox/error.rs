@@ -27,8 +27,8 @@ use thiserror::Error;
 /// #     async fn publish(_: &mut PgConnection, _: &OutgoingMessage<'_>) -> Result<(), sqlx::Error> { Ok(()) }
 /// # }
 ///
-/// # [derive(Serialize, Outgoing)]
-/// # [outgoing(name = "exports")]
+/// #[derive(Serialize, Outgoing)]
+/// #[outgoing(name = "exports")]
 /// pub struct Export {
 ///     account: u64,
 /// }
@@ -38,7 +38,10 @@ use thiserror::Error;
 ///     match exports.message(export).publish().await {
 ///         Ok(()) => 202,
 ///         // The service is shutting down: the client tries again later.
-///         Err(PublishError::Publish(SqlxBrokerError::Closed)) => 503,
+///         Err(PublishError::Publish {
+///             source: SqlxBrokerError::Closed,
+///             ..
+///         }) => 503,
 ///         Err(error) => {
 ///             tracing::error!(%error, "the export was not scheduled");
 ///             500

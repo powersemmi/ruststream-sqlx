@@ -25,12 +25,18 @@ fn status<E: Display>(published: Result<(), PublishError<TrackedPublishError<E>>
     match published {
         Ok(()) => 202,
         // Recorded but not sent: the next startup sends it.
-        Err(PublishError::Publish(TrackedPublishError::Publish(error))) => {
+        Err(PublishError::Publish {
+            source: TrackedPublishError::Publish(error),
+            ..
+        }) => {
             tracing::warn!(%error, "the order waits for the next startup");
             202
         }
         // Neither recorded nor sent: the client sends the order again.
-        Err(PublishError::Publish(TrackedPublishError::Outbox(error))) => {
+        Err(PublishError::Publish {
+            source: TrackedPublishError::Outbox(error),
+            ..
+        }) => {
             tracing::warn!(%error, "the order was not recorded");
             503
         }

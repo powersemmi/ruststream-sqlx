@@ -75,6 +75,7 @@ struct OrderPlaced {
 }
 
 /// Stamps every order with the tenant it belongs to.
+#[derive(Clone)]
 struct Tenant;
 
 impl<C, Options> PublishTransform<ForReply<C>, Options> for Tenant {

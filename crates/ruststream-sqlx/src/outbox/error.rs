@@ -50,9 +50,15 @@ use thiserror::Error;
 ///     let status = match publisher.message(&OrderPlaced { id: 7 }).publish().await {
 ///         Ok(()) => 202,
 ///         // Recorded but not sent: the next startup sends it.
-///         Err(PublishError::Publish(TrackedPublishError::Publish(_))) => 202,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Publish(_),
+///             ..
+///         }) => 202,
 ///         // Neither recorded nor sent: the client sends the order again.
-///         Err(PublishError::Publish(TrackedPublishError::Outbox(OutboxError::Record { .. }))) => 503,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Outbox(OutboxError::Record { .. }),
+///             ..
+///         }) => 503,
 ///         Err(_) => 500,
 ///     };
 ///     tracing::info!(status, "order answered");
@@ -231,9 +237,15 @@ pub struct PoolAlreadySet;
 ///     let status = match publisher.message(&OrderPlaced { id: 7 }).publish().await {
 ///         Ok(()) => 202,
 ///         // Recorded but not sent: the next startup sends it.
-///         Err(PublishError::Publish(TrackedPublishError::Publish(_))) => 202,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Publish(_),
+///             ..
+///         }) => 202,
 ///         // Neither recorded nor sent: the client sends the order again.
-///         Err(PublishError::Publish(TrackedPublishError::Outbox(OutboxError::Record { .. }))) => 503,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Outbox(OutboxError::Record { .. }),
+///             ..
+///         }) => 503,
 ///         Err(_) => 500,
 ///     };
 ///     tracing::info!(status, "order answered");
