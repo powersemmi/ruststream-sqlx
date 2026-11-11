@@ -154,9 +154,8 @@ async fn send_by_name(_email: &Email) -> HandlerOutcome {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dialect_of_the_services_own_takes_rows_by_row_lock_and_acknowledges_its_way() {
     let Some(db) = database().await else { return };
-    let app = RustStream::new(AppInfo::new("audit", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(send);
-    });
+    let app = RustStream::new(AppInfo::new("audit", "0.0.0"))
+        .with_broker(broker(&db.pool), |b| b.include(send));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Db, Audited>>()
         .message(&email())
@@ -187,9 +186,8 @@ async fn a_dialect_of_the_services_own_takes_rows_by_row_lock_and_acknowledges_i
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_dialect_of_the_services_own_serves_subscriptions_by_name() {
     let Some(db) = database().await else { return };
-    let app = RustStream::new(AppInfo::new("audit", "0.0.0")).with_broker(broker(&db.pool), |b| {
-        b.include(send_by_name);
-    });
+    let app = RustStream::new(AppInfo::new("audit", "0.0.0"))
+        .with_broker(broker(&db.pool), |b| b.include(send_by_name));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Db, Audited>>()
         .message(&email())

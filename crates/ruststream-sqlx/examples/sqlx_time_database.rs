@@ -61,7 +61,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<SendStatement>("statements"), |b| {
-            b.include(send);
+            b.include(send)
         })
 }
 // --8<-- [end:database_clock]

@@ -40,12 +40,14 @@ A signup opens its account and queues its welcome email through the delivery's t
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_transactions.rs#transactional"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_transactions.rs#transactional"
+
 ```
 
 </TabItem>

@@ -91,7 +91,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<Transcode>("videos"), |b| {
             let transcode = subscriber("videos", TranscodeVideo)
                 .map_source(|_| InboxQueue::<Transcode>::new("videos"));
-            b.include(transcode.build());
+            b.include(transcode.build())
         })
 }
 // --8<-- [end:advisory]

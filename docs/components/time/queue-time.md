@@ -28,12 +28,14 @@ A backup queue keeps its lease and its mark in the `time` crate's type, and the 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_time_types.rs#queue_time"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_time_types.rs#queue_time"
+
 ```
 
 </TabItem>

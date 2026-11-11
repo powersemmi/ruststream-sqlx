@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The harness macros generate the group module, its items and the paths between them, and a
 // benchmark function takes its setup value by value because the harness owns the drop; the
 // crate's lints are written for the library surface, not for generated benchmark scaffolding.
@@ -14,8 +16,6 @@
 //! nothing, so that app is the hand-written variant too.
 
 mod common;
-
-use std::num::NonZeroUsize;
 
 use common::MESSAGES;
 use common::code::{Pending, feeding, start_and_drain};
@@ -53,16 +53,13 @@ macro_rules! round_trip {
 fn none_run(messages: usize) -> Pending {
     round_trip!(messages, |latch, pool| {
         drop(pool);
-        memory::round_trip(latch, NonZeroUsize::MIN)
+        memory::round_trip(latch)
     })
 }
 
 fn outbox_run(messages: usize) -> Pending {
     round_trip!(messages, |latch, pool| memory::round_trip_outbox(
-        pool,
-        latch,
-        UNTRACKED,
-        NonZeroUsize::MIN
+        pool, latch, UNTRACKED
     ))
 }
 

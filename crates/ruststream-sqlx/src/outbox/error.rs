@@ -40,7 +40,7 @@ use thiserror::Error;
 ///     let egress = broker.bind(Publish);
 ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(broker, |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 ///         .start()
 ///         .await?;
@@ -50,9 +50,15 @@ use thiserror::Error;
 ///     let status = match publisher.message(&OrderPlaced { id: 7 }).publish().await {
 ///         Ok(()) => 202,
 ///         // Recorded but not sent: the next startup sends it.
-///         Err(PublishError::Publish(TrackedPublishError::Publish(_))) => 202,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Publish(_),
+///             ..
+///         }) => 202,
 ///         // Neither recorded nor sent: the client sends the order again.
-///         Err(PublishError::Publish(TrackedPublishError::Outbox(OutboxError::Record { .. }))) => 503,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Outbox(OutboxError::Record { .. }),
+///             ..
+///         }) => 503,
 ///         Err(_) => 500,
 ///     };
 ///     tracing::info!(status, "order answered");
@@ -175,7 +181,7 @@ pub enum OutboxError {
 ///         })
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
+///             b.include(place).out_reply(Publish)
 ///         })
 /// }
 /// # }
@@ -221,7 +227,7 @@ pub struct PoolAlreadySet;
 ///     let egress = broker.bind(Publish);
 ///     let running = RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .with_broker(broker, |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 ///         .start()
 ///         .await?;
@@ -231,9 +237,15 @@ pub struct PoolAlreadySet;
 ///     let status = match publisher.message(&OrderPlaced { id: 7 }).publish().await {
 ///         Ok(()) => 202,
 ///         // Recorded but not sent: the next startup sends it.
-///         Err(PublishError::Publish(TrackedPublishError::Publish(_))) => 202,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Publish(_),
+///             ..
+///         }) => 202,
 ///         // Neither recorded nor sent: the client sends the order again.
-///         Err(PublishError::Publish(TrackedPublishError::Outbox(OutboxError::Record { .. }))) => 503,
+///         Err(PublishError::Publish {
+///             source: TrackedPublishError::Outbox(OutboxError::Record { .. }),
+///             ..
+///         }) => 503,
 ///         Err(_) => 500,
 ///     };
 ///     tracing::info!(status, "order answered");

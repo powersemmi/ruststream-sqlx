@@ -63,9 +63,7 @@ fn service(url: &str) -> RustStream {
             sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker.route::<Remind>("reminders"), |b| {
-            b.include(remind);
-        })
+        .with_broker(broker.route::<Remind>("reminders"), |b| b.include(remind))
 }
 // --8<-- [end:clock]
 

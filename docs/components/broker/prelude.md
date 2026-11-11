@@ -28,12 +28,14 @@ The descriptor with its poll interval, the attempt key, the derive, the routes a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker_prelude.rs#imports"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker_prelude.rs#imports"
+
 ```
 
 </TabItem>

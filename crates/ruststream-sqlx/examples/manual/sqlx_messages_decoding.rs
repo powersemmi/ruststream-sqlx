@@ -98,7 +98,7 @@ fn service(url: &str) -> RustStream {
             let send = subscriber("emails", Sender)
                 .map_source(|_| InboxQueue::<SendEmail>::new("emails"))
                 .on_failure(FailurePolicies::default().with_decode(keep));
-            b.include(send.build());
+            b.include(send.build())
         })
 }
 // --8<-- [end:policy]

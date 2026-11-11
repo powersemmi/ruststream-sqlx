@@ -89,11 +89,16 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            for group in ["welcomes", "reminders"] {
-                let send = subscriber(group, Mailer)
-                    .map_source(move |_| InboxQueue::<Reminder>::new(group));
-                b.include(send.build());
-            }
+            b.include(
+                subscriber("welcomes", Mailer)
+                    .map_source(|_| InboxQueue::<Reminder>::new("welcomes"))
+                    .build(),
+            )
+            .include(
+                subscriber("reminders", Mailer)
+                    .map_source(|_| InboxQueue::<Reminder>::new("reminders"))
+                    .build(),
+            )
         })
 }
 // --8<-- [end:table]

@@ -20,18 +20,21 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/enqueueing.rs#table"
+
 ```
 
 </TabItem>
@@ -50,12 +53,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#place_order"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/enqueueing.rs#place_order"
+
 ```
 
 </TabItem>
@@ -77,12 +82,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/enqueueing.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/enqueueing.rs#service"
+
 ```
 
 </TabItem>

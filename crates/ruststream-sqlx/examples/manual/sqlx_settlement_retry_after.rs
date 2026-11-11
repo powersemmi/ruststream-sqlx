@@ -101,7 +101,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<Webhook>("webhooks"), |b| {
             let notify = subscriber("webhooks", Notify)
                 .map_source(|_| InboxQueue::<Webhook>::new("webhooks"));
-            b.include(notify.build());
+            b.include(notify.build())
         })
 }
 // --8<-- [end:retry_after]

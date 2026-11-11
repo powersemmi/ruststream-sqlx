@@ -32,12 +32,14 @@ A job whose order is gone joins no row, and the default policy drops it.
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_headers_fetch.rs#fetch"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_headers_fetch.rs#fetch"
+
 ```
 
 </TabItem>

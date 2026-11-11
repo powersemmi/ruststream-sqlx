@@ -97,7 +97,7 @@ use crate::TimeSource;
 ///     RustStream::new(AppInfo::new("mailer", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }
@@ -191,7 +191,7 @@ pub trait InboxTable: Sized + Send + Sync + 'static {
 ///     RustStream::new(AppInfo::new("sync", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(sync);
+///             b.include(sync)
 ///         },
 ///     )
 /// }
@@ -281,7 +281,7 @@ impl InboxSpec {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("hooks", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(receive);
+    /// #         b.include(receive)
     /// #     })
     /// # }
     /// # }
@@ -360,7 +360,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("shop", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(send);
+    /// #         b.include(send)
     /// #     })
     /// # }
     /// # }
@@ -420,7 +420,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("billing", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(issue);
+    /// #         b.include(issue)
     /// #     })
     /// # }
     /// # }
@@ -493,8 +493,8 @@ impl<Settings> InboxSpec<Settings> {
     /// }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("media", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(thumbnail);
-    /// #         b.include(transcode);
+    /// #         b.include(thumbnail)
+    /// #             .include(transcode)
     /// #     })
     /// # }
     /// # }
@@ -559,7 +559,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("support", "1.0.0"))
     /// #         .with_broker(SqlxBroker::new(pool), |b| {
-    /// #             b.include(triage);
+    /// #             b.include(triage)
     /// #         })
     /// # }
     /// # }
@@ -618,7 +618,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("logistics", "1.0.0"))
     /// #         .with_broker(SqlxBroker::new(pool), |b| {
-    /// #             b.include(track);
+    /// #             b.include(track)
     /// #         })
     /// # }
     /// # }
@@ -698,7 +698,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("payments", "1.0.0"))
     /// #         .with_broker(SqlxBroker::new(pool), |b| {
-    /// #             b.include(pay_back);
+    /// #             b.include(pay_back)
     /// #         })
     /// # }
     /// # }
@@ -763,7 +763,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("logistics", "1.0.0"))
     /// #         .with_broker(SqlxBroker::new(pool), |b| {
-    /// #             b.include(route);
+    /// #             b.include(route)
     /// #         })
     /// # }
     /// # }
@@ -829,7 +829,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("reports", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(render);
+    /// #         b.include(render)
     /// #     })
     /// # }
     /// # }
@@ -898,7 +898,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("ledger", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(post);
+    /// #         b.include(post)
     /// #     })
     /// # }
     /// # }
@@ -967,7 +967,7 @@ impl<Settings> InboxSpec<Settings> {
     /// #     RustStream::new(AppInfo::new("audit", "1.0.0")).with_broker(
     /// #         SqlxBroker::<MySql>::new(pool),
     /// #         |b| {
-    /// #             b.include(record);
+    /// #             b.include(record)
     /// #         },
     /// #     )
     /// # }
@@ -1045,7 +1045,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("exports", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(export);
+    /// #         b.include(export)
     /// #     })
     /// # }
     /// # }
@@ -1133,7 +1133,7 @@ impl<Settings> InboxSpec<Settings> {
     /// }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("images", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(download);
+    /// #         b.include(download)
     /// #     })
     /// # }
     /// # }
@@ -1234,7 +1234,7 @@ impl<Settings> InboxSpec<Settings> {
     /// }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("push", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(push);
+    /// #         b.include(push)
     /// #     })
     /// # }
     /// # }
@@ -1313,7 +1313,7 @@ impl<Settings> InboxSpec<Settings> {
     /// }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("sms", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(send);
+    /// #         b.include(send)
     /// #     })
     /// # }
     /// # }
@@ -1391,7 +1391,7 @@ impl<Settings> InboxSpec<Settings> {
     /// }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("crm", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(sync);
+    /// #         b.include(sync)
     /// #     })
     /// # }
     /// # }
@@ -1461,7 +1461,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("payments", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(settle);
+    /// #         b.include(settle)
     /// #     })
     /// # }
     /// # }
@@ -1535,7 +1535,7 @@ impl<Settings> InboxSpec<Settings> {
     /// }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("stock", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(berlin);
+    /// #         b.include(berlin)
     /// #     })
     /// # }
     /// # }
@@ -1609,7 +1609,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("reminders", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(remind);
+    /// #         b.include(remind)
     /// #     })
     /// # }
     /// # }
@@ -1680,7 +1680,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("payouts", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(pay);
+    /// #         b.include(pay)
     /// #     })
     /// # }
     /// # }
@@ -1759,7 +1759,7 @@ impl<Settings> InboxSpec<Settings> {
     /// # }
     /// # pub fn app(pool: PgPool) -> RustStream {
     /// #     RustStream::new(AppInfo::new("signup", "1.0.0")).with_broker(SqlxBroker::new(pool), |b| {
-    /// #         b.include(check);
+    /// #         b.include(check)
     /// #     })
     /// # }
     /// # }

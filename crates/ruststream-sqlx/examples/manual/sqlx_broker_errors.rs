@@ -105,7 +105,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker, |b| {
             let bill = subscriber("payments", Bill)
                 .map_source(|_| InboxQueue::<PaymentJob>::new("payments"));
-            b.include(bill.build()).out(Invoices, Routed).build();
+            b.include(bill.build()).out(Invoices, Routed).build()
         })
 }
 

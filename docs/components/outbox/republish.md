@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 title: republish
-description: "b.after_startup(policy, tracking.republish()) sends every unprocessed record again once the subscriptions are open; republish_names picks names."
+description: "The chain step b.after_startup(policy, tracking.republish()) sends every unprocessed record again once the subscriptions are open; republish_names picks names."
 ---
 
 import Tabs from '@theme/Tabs';
@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 # republish
 
-`b.after_startup(policy, tracking.republish())` sends every unprocessed record again once the subscriptions are open; [`republish_names`](api:ruststream_sqlx::outbox::Outbox::republish_names) picks names.
+The chain step `b.after_startup(policy, tracking.republish())` sends every unprocessed record again once the subscriptions are open; [`republish_names`](api:ruststream_sqlx::outbox::Outbox::republish_names) picks names.
 
 [`Outbox::republish`](api:ruststream_sqlx::outbox::Outbox::republish) returns a [`Republishing`](api:ruststream_sqlx::outbox::Republishing), the hook `after_startup` runs with the broker's live publisher of the policy it names.
 For each registered name it reads the unprocessed records through the record's `Recover` event and publishes each one with its id, its payload and the headers its record kept.
@@ -25,18 +25,20 @@ The republish allocates its body once per startup.
 
 ## Example
 
-The broker's `after_startup` republishes the unprocessed records of `orders` through its `Publish` policy; `fulfil` consumes them and marks each record.
+The mount's `after_startup` step, written before the `include`s, republishes the unprocessed records of `orders` through its `Publish` policy; `fulfil` consumes them and marks each record.
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_republish.rs#republish"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_republish.rs#republish"
+
 ```
 
 </TabItem>

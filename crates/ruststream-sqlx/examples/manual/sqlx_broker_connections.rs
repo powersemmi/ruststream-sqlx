@@ -87,7 +87,7 @@ fn service(url: &str) -> RustStream {
             let resize = subscriber("resizes", Resize)
                 .map_source(|_| InboxQueue::<ResizeImage>::new("resizes"))
                 .workers(nonzero!(4));
-            b.include(resize.build());
+            b.include(resize.build())
         })
 }
 

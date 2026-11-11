@@ -5,6 +5,8 @@
 //! cargo test -p ruststream-sqlx --example sqlx_testing_live --features inbox,sqlite,chrono,testing
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // A plain build compiles the service; the tests that use it exist only in the test build.
 #![cfg_attr(not(test), allow(dead_code, unused_imports))]
 
@@ -58,7 +60,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<MakeThumbnail>("thumbnails"), |b| {
-            b.include(thumbnail);
+            b.include(thumbnail)
         })
 }
 

@@ -78,7 +78,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<Backup>("backups"), |b| {
             let back_up =
                 subscriber("backups", BackUp).map_source(|_| InboxQueue::<Backup>::new("backups"));
-            b.include(back_up.build());
+            b.include(back_up.build())
         })
 }
 // --8<-- [end:queue_time]

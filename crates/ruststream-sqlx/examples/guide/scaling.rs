@@ -63,7 +63,7 @@ fn service(url: &str) -> RustStream {
         })
         .with_broker(broker, |b| {
             // Up to four invoices in work at once in this instance.
-            b.include(render.workers(nonzero!(4)));
+            b.include(render.workers(nonzero!(4)))
         })
 }
 // --8<-- [end:service]
@@ -87,9 +87,7 @@ fn service_on_postgres(url: &str) -> RustStream {
             sqlx::raw_sql(ANNOUNCE).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker, |b| {
-            b.include(render.workers(nonzero!(4)));
-        })
+        .with_broker(broker, |b| b.include(render.workers(nonzero!(4))))
 }
 
 /// The trigger announces every row another program inserts: the channel is the table, and an

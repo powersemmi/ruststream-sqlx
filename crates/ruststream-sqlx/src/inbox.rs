@@ -99,7 +99,7 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -173,9 +173,9 @@ pub use transactional::{InboxMode, InboxSettings, Plain, Transactional, Transact
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
-///         b.include(send_newsletter.batch(nonzero!(64)));
-///         b.include(send_receipt.transactional());
+///         b.include(send)
+///             .include(send_newsletter.batch(nonzero!(64)))
+///             .include(send_receipt.transactional())
 ///     })
 /// }
 /// # }
@@ -349,7 +349,7 @@ impl<Row> Lane<Row> for RowLane {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
 ///         SqlxBroker::new(pool).route::<Job>("emails"),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }
@@ -414,7 +414,7 @@ impl<Row> Lane<Row> for RowLane {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }

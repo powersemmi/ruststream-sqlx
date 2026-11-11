@@ -100,7 +100,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker.route::<Remind>("reminders"), |b| {
             let remind = subscriber("reminders", RemindHandler)
                 .map_source(|_| InboxQueue::<Remind>::new("reminders"));
-            b.include(remind.build());
+            b.include(remind.build())
         })
 }
 // --8<-- [end:clock]

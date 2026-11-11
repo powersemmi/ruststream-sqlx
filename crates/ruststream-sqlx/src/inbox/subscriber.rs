@@ -10,14 +10,14 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use futures::Stream;
-use ruststream::{BatchSubscriber, Subscriber};
+use ruststream::{BatchStream, BatchSubscriber, Subscriber};
 use ruststream_sqlx_dialect::Role;
 use sqlx::Pool;
 use sync_wrapper::SyncWrapper;
 use tokio::sync::Notify;
 use tokio_util::sync::DropGuard;
 
-use super::batch::{BatchClaim, BatchLane};
+use super::batch::{self, BatchLane};
 use super::broker::Shared;
 use super::claims::{Claims, Flow, InWork, Settled, Spread};
 use super::database::QueueDatabase;
@@ -137,7 +137,7 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Four workers, and still one change of the group at a time, in order.
-///         b.include(push.workers(nonzero!(4)));
+///         b.include(push.workers(nonzero!(4)))
 ///     })
 /// }
 /// # }
@@ -187,7 +187,7 @@ const CLAIM_RETRY: Duration = Duration::from_secs(1);
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send_all.batch(nonzero!(50)));
+///         b.include(send_all.batch(nonzero!(50)))
 ///     })
 /// }
 /// # }
@@ -917,16 +917,8 @@ where
     fn batches(
         &mut self,
         size: NonZeroUsize,
-    ) -> impl Stream<Item = Result<Self::Batch, Self::Error>> + Send + '_ {
-        futures::stream::unfold(self, move |subscriber| async move {
-            let (taken, count) = match subscriber.claim(size.get()).await? {
-                Ok(claimed) => claimed,
-                Err(error) => return Some((Err(error), subscriber)),
-            };
-            let batch =
-                <Row::Lane as BatchLane<DB, Row>>::batch(BatchClaim::new(subscriber, taken, count));
-            Some((Ok(batch), subscriber))
-        })
+    ) -> impl BatchStream<Self::Batch, Error = Self::Error> + Send + '_ {
+        batch::batches(self, size)
     }
 }
 

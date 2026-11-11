@@ -26,12 +26,14 @@ A signup queue in payload mode: the handler takes the decoded `Signup`, and the 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_messages_payload.rs#payload"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_messages_payload.rs#payload"
+
 ```
 
 </TabItem>

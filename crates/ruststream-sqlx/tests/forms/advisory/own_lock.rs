@@ -22,7 +22,9 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use ruststream::testing::InProcess;
-use ruststream::{Broker, ConnectedBroker, IncomingMessage, Subscriber, SubscriptionSource};
+use ruststream::{
+    Broker, ConnectedBroker, IncomingMessage, Settle, Subscriber, SubscriptionSource,
+};
 use ruststream_sqlx::{Inbox, InboxQueue, Lock, SqlxBroker, Unlock};
 use sqlx::FromRow;
 

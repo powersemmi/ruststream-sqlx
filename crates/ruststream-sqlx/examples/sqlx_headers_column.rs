@@ -107,7 +107,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<ExportJob>("exports"), |b| {
-            b.include(send_export);
+            b.include(send_export)
         })
 }
 

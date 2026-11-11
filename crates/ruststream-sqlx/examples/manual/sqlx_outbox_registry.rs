@@ -44,13 +44,13 @@ fn service(pool: SqlitePool) -> impl App {
         .layer(tracking.layer())
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(subscriber("checkout", Place).reply().build())
-                .out_reply(Publish);
-            b.include(subscriber("cancellations", Cancel).reply().build())
-                .out_reply(Publish);
-            b.include(subscriber("orders", Fulfil).build());
-            b.include(subscriber("refunds", PayBack).build());
-            b.after_startup(Publish, tracking.republish());
+            b.after_startup(Publish, tracking.republish())
+                .include(subscriber("checkout", Place).reply().build())
+                .out_reply(Publish)
+                .include(subscriber("cancellations", Cancel).reply().build())
+                .out_reply(Publish)
+                .include(subscriber("orders", Fulfil).build())
+                .include(subscriber("refunds", PayBack).build())
         })
 }
 // --8<-- [end:registry]

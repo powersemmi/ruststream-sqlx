@@ -31,9 +31,10 @@ async fn send(email: &SendEmail) -> HandlerOutcome {
 }
 
 pub fn app(pool: PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-        b.include(send);
-    })
+    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
+        SqlxBroker::new(pool),
+        |b| b.include(send),
+    )
 }
 ```
 
@@ -65,8 +66,9 @@ async fn send_all(emails: &[SendEmail]) -> Vec<Sent> {
 }
 
 pub fn app(pool: PgPool) -> RustStream {
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-        b.include(send_all.batch(nonzero!(64)));
-    })
+    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
+        SqlxBroker::new(pool),
+        |b| b.include(send_all.batch(nonzero!(64))),
+    )
 }
 ```

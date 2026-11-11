@@ -102,7 +102,7 @@ use super::{InboxRow, InboxSpec, InboxTable, QueueRow};
 ///     RustStream::new(AppInfo::new("billing", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(bill);
+///             b.include(bill)
 ///         },
 ///     )
 /// }
@@ -198,7 +198,7 @@ pub trait KeyRow {
 ///     RustStream::new(AppInfo::new("mailer", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }
@@ -286,7 +286,7 @@ pub trait AttemptRow {
 ///     RustStream::new(AppInfo::new("shop", "1.0.0")).with_broker(
 ///         SqlxBroker::<Sqlite>::new(pool),
 ///         |b| {
-///             b.include(ship);
+///             b.include(ship)
 ///         },
 ///     )
 /// }

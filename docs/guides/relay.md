@@ -22,18 +22,21 @@ A checkout places the order and writes its event; the relay publishes each event
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/relay.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/relay.rs#write"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/relay.rs#write"
+
 ```
 
 </TabItem>
@@ -51,12 +54,14 @@ The event row wakes no subscription in that case either: the relay finds it with
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/relay.rs#relay"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/relay.rs#relay"
+
 ```
 
 </TabItem>

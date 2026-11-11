@@ -111,6 +111,8 @@ live::matrix! {
     /// # Panics
     ///
     /// When it was not handled within [`HANDLED`].
+    // The harness's own error, which carries the unsent message back.
+    #[allow(clippy::result_large_err)]
     async fn publish<State: Send + Sync + 'static>(
         tb: &TestApp<State>,
         to: &str,
@@ -144,7 +146,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("jobs", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(handle_all.batch(nonzero!(4)));
+                b.include(handle_all.batch(nonzero!(4)))
             });
         let tb = started(app).await;
         waiting(&tb, "plain").await;
@@ -164,8 +166,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("billing", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(bill).out_reply(Repository::<SendEmail>::default());
-                b.include(file.batch(nonzero!(4)));
+                b.include(bill).out_reply(Repository::<SendEmail>::default())
+                    .include(file.batch(nonzero!(4)))
             });
         let tb = started(app).await;
         waiting(&tb, "invoices").await;
@@ -188,8 +190,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("groups", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(first);
-                b.include(second);
+                b.include(first)
+                    .include(second)
             });
         let tb = started(app).await;
         publish(&tb, "a", 1).await.expect("the publish wakes `a`");
@@ -209,7 +211,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("batches", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(handle_all.batch(nonzero!(2)));
+                b.include(handle_all.batch(nonzero!(2)))
             });
         let tb = started(app).await;
         waiting(&tb, "plain").await;
@@ -236,7 +238,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("refused", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(handle);
+                b.include(handle)
             });
         let tb = started(app).await;
         // A header the table has no column for refuses the write. In process the harness's
@@ -261,7 +263,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("worker", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(work);
+                b.include(work)
             });
         let tb = started(app).await;
         tb.broker::<SqlxBroker<Db>>()
@@ -287,8 +289,8 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("follow-ups", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(follow_up).out_reply(Repository::<Plain>::default());
-                b.include(work);
+                b.include(follow_up).out_reply(Repository::<Plain>::default())
+                    .include(work)
             });
         let tb = started(app).await;
         tb.broker::<SqlxBroker<Db>>()

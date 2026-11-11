@@ -26,12 +26,14 @@ The tests need the `testing` feature of `ruststream-sqlx` in `[dev-dependencies]
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/testing.rs#in_process"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/testing.rs#in_process"
+
 ```
 
 </TabItem>
@@ -57,12 +59,14 @@ A test of such a handler checks the row with `with_value` and `received_values` 
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/testing.rs#clock"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/testing.rs#clock"
+
 ```
 
 </TabItem>
@@ -81,12 +85,14 @@ A table on the [database's clock](../components/time/database-clock.md) reads th
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/testing.rs#live"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/testing.rs#live"
+
 ```
 
 </TabItem>

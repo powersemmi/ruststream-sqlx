@@ -54,7 +54,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<SendEmail>("emails"), |b| {
-            b.include(send.on_failure(FailurePolicies::default().with_decode(keep)));
+            b.include(send.on_failure(FailurePolicies::default().with_decode(keep)))
         })
 }
 // --8<-- [end:policy]

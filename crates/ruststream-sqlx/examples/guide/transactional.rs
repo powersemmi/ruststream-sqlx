@@ -116,7 +116,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<IssueRefund>("refunds"), |b| {
-            b.include(issue.transactional());
+            b.include(issue.transactional())
         })
 }
 // --8<-- [end:handler]

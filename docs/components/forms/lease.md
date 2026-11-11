@@ -34,12 +34,14 @@ A report takes minutes to render under a one-minute lease, which the subscriptio
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_forms_lease.rs#lease"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_forms_lease.rs#lease"
+
 ```
 
 </TabItem>

@@ -134,7 +134,7 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker, |b| {
             let audit = subscriber("shipments", Audit)
                 .map_source(|_| InboxQueue::<Shipment>::new("shipments"));
-            b.include(audit.build());
+            b.include(audit.build())
         })
 }
 

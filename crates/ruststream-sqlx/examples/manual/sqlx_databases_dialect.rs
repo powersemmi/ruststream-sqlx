@@ -181,7 +181,7 @@ fn service(broker: SqlxBroker<Sqlite, Audited>) -> RustStream {
     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker, |b| {
         let send =
             subscriber("emails", Mailer).map_source(|_| InboxQueue::<SendEmail>::new("emails"));
-        b.include(send.build());
+        b.include(send.build())
     })
 }
 

@@ -130,6 +130,7 @@ impl MessageHeaders for OrderPlaced {
 }
 
 /// Stamps every order with the tenant it belongs to.
+#[derive(Clone)]
 struct Tenant;
 
 impl<C, Options> PublishTransform<ForReply<C>, Options> for Tenant {
@@ -178,11 +179,11 @@ fn service(pool: SqlitePool) -> impl App {
         .layer(tracking.layer())
         .publish_layer(tracking.publish_layer())
         .with_broker(MemoryBroker::new(), |b| {
-            b.include(subscriber("checkout", Place).reply().build())
+            b.after_startup(Publish, tracking.republish())
+                .include(subscriber("checkout", Place).reply().build())
                 .out_reply(Publish)
-                .transform(Tenant);
-            b.include(subscriber("orders", Fulfil).build());
-            b.after_startup(Publish, tracking.republish());
+                .transform(Tenant)
+                .include(subscriber("orders", Fulfil).build())
         })
 }
 

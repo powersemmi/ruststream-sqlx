@@ -95,11 +95,11 @@ fn service(pool: SqlitePool) -> impl App {
         .layer(tracking.layer())
         .publish_layer(tracking.publish_layer())
         .with_broker(broker, |b| {
-            b.include(take.transactional())
+            b.after_startup(Repository::<ReceiptJob>::default(), tracking.republish())
+                .include(take.transactional())
                 .out(DefaultSlot, Repository::<ReceiptJob>::default())
-                .build();
-            b.include(file);
-            b.after_startup(Repository::<ReceiptJob>::default(), tracking.republish());
+                .build()
+                .include(file)
         })
 }
 // --8<-- [end:interplay]

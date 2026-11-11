@@ -80,7 +80,7 @@ live::lease_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(holding.transactional());
+                b.include(holding.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -119,7 +119,7 @@ live::lease_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(overtaken.transactional());
+                b.include(overtaken.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()

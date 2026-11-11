@@ -6,7 +6,9 @@ use std::future::{Future, ready};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use ruststream::{Lend, OutgoingMessage, PairError, PublishPolicy, Publisher};
+use ruststream::{
+    Lend, OutgoingMessage, PairError, PublishMessageError, PublishOutcome, PublishPolicy, Publisher,
+};
 use ruststream_sqlx_dialect::Dialect;
 use sqlx::Database;
 
@@ -78,7 +80,7 @@ use crate::inbox::events::Publish;
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("signup", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The welcome becomes a row of `jobs` in group `welcome`, with no route to look up.
-///         b.include(greet).out_reply(Repository::<Job>::default());
+///         b.include(greet).out_reply(Repository::<Job>::default())
 ///     })
 /// }
 /// # }
@@ -117,7 +119,7 @@ where
     fn pair(
         self,
         connected: &ConnectedSqlxBroker<DB, D>,
-    ) -> impl Future<Output = Result<Self::Live, PairError>> + Send {
+    ) -> impl Future<Output = Result<Self::Live, PairError>> {
         ready(Ok(RepositoryPublisher {
             shared: Arc::clone(&connected.shared),
             wake: connected.shared.wakes.table(&Row::SPEC),
@@ -172,7 +174,7 @@ where
 ///     let broker = SqlxBroker::new(pool).bindable();
 ///     let reports = broker.bind(Repository::<ReportJob>::default());
 ///     let running = RustStream::new(AppInfo::new("reports", "0.1.0"))
-///         .with_broker(broker, |_b| {})
+///         .with_broker(broker, |b| b)
 ///         .start()
 ///         .await?;
 ///
@@ -194,6 +196,18 @@ pub struct RepositoryPublisher<DB: Database, Row> {
     _row: PhantomData<fn() -> Row>,
 }
 
+// By hand: a derive would ask for `DB: Clone` and `Row: Clone`, which the shared handle never
+// needs.
+impl<DB: Database, Row> Clone for RepositoryPublisher<DB, Row> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            wake: self.wake,
+            _row: PhantomData,
+        }
+    }
+}
+
 impl<DB: Database, Row> fmt::Debug for RepositoryPublisher<DB, Row> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "RepositoryPublisher<{}>", type_name::<Row>())
@@ -209,11 +223,14 @@ where
     type Error = SqlxBrokerError;
     type Options = ();
 
-    async fn publish(
+    async fn publish<'msg>(
         &self,
-        msg: OutgoingMessage<'_>,
+        msg: OutgoingMessage<'msg>,
         _options: Option<&()>,
-    ) -> Result<(), SqlxBrokerError> {
-        write::<DB, Row>(&self.shared, self.wake, &msg).await
+    ) -> PublishOutcome<'msg, SqlxBrokerError, Lend> {
+        match write::<DB, Row>(&self.shared, self.wake, &msg).await {
+            Ok(()) => Ok(()),
+            Err(error) => Err(PublishMessageError::with_message(error, msg)),
+        }
     }
 }

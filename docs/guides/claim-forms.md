@@ -37,18 +37,21 @@ The [advisory lock](../components/forms/advisory.md) holds each job by a key: a 
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/claim_forms.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="Macros">
 
 ```rust title="src/main.rs" reference="examples/guide/claim_forms.rs#lease"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/claim_forms.rs#lease"
+
 ```
 
 </TabItem>

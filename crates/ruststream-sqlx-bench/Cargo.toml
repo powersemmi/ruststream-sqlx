@@ -39,7 +39,7 @@ ruststream-sqlx = { path = "../ruststream-sqlx", features = [
 ruststream = { workspace = true, features = ["macros", "json", "memory"] }
 # The outbox's wall clock runs over Redis Pub/Sub, as the crate's outbox example does: a networked
 # broker, so the outbox's statements are timed beside a transport a service really uses.
-ruststream-fred = "0.7"
+ruststream-fred = ">=0.8.0-rc.1, <0.9.0"
 sqlx = { workspace = true, features = ["postgres", "mysql", "sqlite", "chrono", "derive"] }
 chrono.workspace = true
 futures.workspace = true

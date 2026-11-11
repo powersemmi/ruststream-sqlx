@@ -56,10 +56,7 @@ fn service(url: &str) -> RustStream {
             sqlx::raw_sql(SCHEMA).execute(&mut conn).await?;
             conn.close().await
         })
-        .with_broker(broker, |b| {
-            b.include(send_email);
-            b.include(send_sms);
-        })
+        .with_broker(broker, |b| b.include(send_email).include(send_sms))
 }
 // --8<-- [end:queue]
 

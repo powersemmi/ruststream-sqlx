@@ -32,18 +32,21 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/claim_forms.rs#schema"
+
 ```
 
 <Tabs groupId="api">
 <TabItem value="macros" label="宏">
 
 ```rust title="src/main.rs" reference="examples/guide/claim_forms.rs#lease"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="手写">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/claim_forms.rs#lease"
+
 ```
 
 </TabItem>

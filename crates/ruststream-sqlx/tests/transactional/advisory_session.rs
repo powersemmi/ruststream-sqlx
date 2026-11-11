@@ -35,9 +35,8 @@ async fn a_transactional_session_holds_its_lock_while_the_handler_writes() {
     let broker = SqlxBroker::new(db.pool.clone())
         .poll_interval(POLL)
         .route::<Plain>("plain");
-    let app = RustStream::new(AppInfo::new("transactional", "0.0.0")).with_broker(broker, |b| {
-        b.include(watched.transactional());
-    });
+    let app = RustStream::new(AppInfo::new("transactional", "0.0.0"))
+        .with_broker(broker, |b| b.include(watched.transactional()));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
         .message(&JOB)

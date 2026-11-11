@@ -37,8 +37,8 @@ live::matrix! {
         db.mail(&[Mail::queued("requests", "ops@example.com", None)]).await;
         let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(forward).out_reply(Repository::<Mail>::default());
-                b.include(send);
+                b.include(forward).out_reply(Repository::<Mail>::default())
+                    .include(send)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("both rows settle");

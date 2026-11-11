@@ -61,7 +61,7 @@ fn service(url: &str, pool: SqlitePoolOptions) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            b.include(scan.on_threads(InboxThreads::new(nonzero!(4))));
+            b.include(scan.on_threads(InboxThreads::new(nonzero!(4))))
         })
 }
 // --8<-- [end:on_threads]

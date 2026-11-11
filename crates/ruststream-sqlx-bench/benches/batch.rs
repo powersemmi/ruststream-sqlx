@@ -1,3 +1,5 @@
+// A bench drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
 // The harness macros generate the group module, its items and the paths between them, and a
 // benchmark function takes its setup value by value because the harness owns the drop; the
 // crate's lints are written for the library surface, not for generated benchmark scaffolding.
@@ -14,15 +16,14 @@
 
 mod common;
 
-use std::num::NonZeroUsize;
-
 use common::code::{Pending, start_and_drain};
-use common::framework::{self, Mount};
+use common::framework;
 use common::raw::{Statements, read_payload, row_lock};
 use common::stand::Table;
 use common::tables::RowLockJob;
 use common::{BATCH, MESSAGES};
 use gungraun::{library_benchmark, library_benchmark_group, main};
+use ruststream::runtime::SubscriberSettings;
 use ruststream_sqlx::InboxTable;
 use ruststream_sqlx::dialect::{ClaimShape, Postgres};
 
@@ -31,11 +32,9 @@ const POOL: u32 = 4;
 
 fn service_run(messages: usize) -> Pending {
     Pending::service(Table::RowLock, messages, POOL, |pool, latch| {
-        let how = Mount {
-            workers: NonZeroUsize::MIN,
-            batch: Some(BATCH),
-        };
-        framework::postgres_row_lock(pool, latch, how)
+        framework::postgres_row_lock(pool, latch, |b| {
+            b.include(framework::row_lock_batch.batch(BATCH))
+        })
     })
 }
 

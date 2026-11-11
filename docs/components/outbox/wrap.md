@@ -28,12 +28,14 @@ The service starts its app by hand, takes the live publisher of a bound `Publish
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_wrap.rs#wrap"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_wrap.rs#wrap"
+
 ```
 
 </TabItem>

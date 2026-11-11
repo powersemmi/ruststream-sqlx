@@ -6,6 +6,9 @@
 //!     cargo run -p ruststream-sqlx --example manual_sqlx_databases_mysql --features inbox,mysql,chrono,testing,asyncapi
 //! ```
 
+// A test drives the app on its own task; the app's cold path carries no Send.
+#![allow(clippy::future_not_send)]
+
 use std::env;
 use std::future::{Future, ready};
 use std::process::ExitCode;
@@ -91,11 +94,16 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            for group in ["welcome", "receipts"] {
-                let mail = subscriber(group, Mail)
-                    .map_source(move |_| InboxQueue::<SendEmail>::new(group));
-                b.include(mail.build());
-            }
+            b.include(
+                subscriber("welcome", Mail)
+                    .map_source(|_| InboxQueue::<SendEmail>::new("welcome"))
+                    .build(),
+            )
+            .include(
+                subscriber("receipts", Mail)
+                    .map_source(|_| InboxQueue::<SendEmail>::new("receipts"))
+                    .build(),
+            )
         })
 }
 // --8<-- [end:service]

@@ -20,6 +20,9 @@ allow = [
     "Unicode-3.0",
     # foldhash, behind sqlx's hash maps: OSI-approved and permissive.
     "Zlib",
+    # assert_no_alloc, the failing allocator of the core's no-heap test leg, reached through the
+    # framework's `testing` feature; permissive.
+    "BSD-1-Clause",
 ]
 
 [bans]

@@ -43,12 +43,14 @@ The service answers a request on `checkout` with an `OrderPlaced` on `orders`, a
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox.rs#service"
+
 ```
 
 </TabItem>

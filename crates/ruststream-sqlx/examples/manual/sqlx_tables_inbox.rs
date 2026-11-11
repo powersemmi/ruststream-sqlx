@@ -92,11 +92,16 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker, |b| {
-            for channel in ["email", "sms"] {
-                let deliver = subscriber(channel, Deliver)
-                    .map_source(move |_| InboxQueue::<Notification>::new(channel));
-                b.include(deliver.build());
-            }
+            b.include(
+                subscriber("email", Deliver)
+                    .map_source(|_| InboxQueue::<Notification>::new("email"))
+                    .build(),
+            )
+            .include(
+                subscriber("sms", Deliver)
+                    .map_source(|_| InboxQueue::<Notification>::new("sms"))
+                    .build(),
+            )
         })
 }
 // --8<-- [end:table]

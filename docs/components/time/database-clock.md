@@ -27,12 +27,14 @@ Statements written by hosts whose clocks drift wait a second by the database's c
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_time_database.rs#database_clock"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_time_database.rs#database_clock"
+
 ```
 
 </TabItem>

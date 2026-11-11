@@ -19,7 +19,7 @@
 
 // The suite and the allocation counts each use the part of this module their features turn on, so
 // what one of them leaves alone, a macro included, is not dead code.
-#![allow(dead_code, unused_macros)]
+#![allow(dead_code, unused_imports, unused_macros)]
 
 use std::future::Future;
 use std::process;
@@ -28,6 +28,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sqlx::{Database as Backend, Pool};
 
+pub(crate) use batches::NextBatch;
+
+mod batches;
 #[cfg(feature = "mysql")]
 pub(crate) mod mysql;
 #[cfg(feature = "postgres")]

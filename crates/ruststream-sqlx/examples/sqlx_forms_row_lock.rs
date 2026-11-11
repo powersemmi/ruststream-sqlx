@@ -51,7 +51,7 @@ fn service(options: PgConnectOptions) -> RustStream {
         })
         .with_broker(broker.route::<IssueInvoice>("invoices"), |b| {
             // Each of the four workers holds a connection while its invoice is in work.
-            b.include(issue.workers(nonzero!(4)));
+            b.include(issue.workers(nonzero!(4)))
         })
 }
 // --8<-- [end:row_lock]

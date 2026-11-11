@@ -139,7 +139,7 @@ pub mod __private {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -201,7 +201,7 @@ pub mod __private {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("transcoder", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(transcode);
+///         b.include(transcode)
 ///     })
 /// }
 /// # }
@@ -256,7 +256,7 @@ pub mod __private {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(post.transactional());
+///         b.include(post.transactional())
 ///     })
 /// }
 /// # }
@@ -349,7 +349,7 @@ pub mod __private {
 ///     RustStream::new(AppInfo::new("support", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         b.include(triage.workers_by_key(nonzero!(4)))
 ///             .max_attempts(nonzero!(5u32))
-///             .dead_letter("escalated");
+///             .dead_letter("escalated")
 ///     })
 /// }
 /// # }
@@ -401,7 +401,7 @@ pub mod __private {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("crm-sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(sync);
+///         b.include(sync)
 ///     })
 /// }
 /// # }
@@ -458,7 +458,7 @@ pub mod __private {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship);
+///         b.include(ship)
 ///     })
 /// }
 /// # }
@@ -527,7 +527,7 @@ pub mod __private {
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0"))
 ///         .with_broker(SqlxBroker::new(pool), |b| {
-///             b.include(send);
+///             b.include(send)
 ///         })
 /// }
 /// # }
@@ -589,7 +589,7 @@ pub mod __private {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(send);
+///         b.include(send)
 ///     })
 /// }
 /// # }
@@ -693,7 +693,7 @@ pub use ruststream_sqlx_macros::Inbox;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("shop", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(ship);
+///         b.include(ship)
 ///     })
 /// }
 /// # }
@@ -910,9 +910,9 @@ pub use ruststream_sqlx_macros::Outbox;
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 ///
@@ -922,7 +922,7 @@ pub use ruststream_sqlx_macros::Outbox;
 ///     RustStream::new(AppInfo::new("orders", "0.1.0"))
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
+///             b.include(place).out_reply(Publish)
 ///         })
 /// }
 /// # }

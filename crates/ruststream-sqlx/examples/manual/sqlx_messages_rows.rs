@@ -84,7 +84,7 @@ fn service(url: &str) -> RustStream {
         })
         .with_broker(broker, |b| {
             let send = subscriber("mail", Sender).map_source(|_| InboxQueue::<Mail>::new("mail"));
-            b.include(send.build());
+            b.include(send.build())
         })
 }
 

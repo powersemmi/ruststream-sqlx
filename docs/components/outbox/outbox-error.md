@@ -23,7 +23,7 @@ Each variant names the registered name, and the record type where one is involve
 
 A publish through the publish middleware fails with `NoPool`, `Record` or `WriteLockHeld`, as the error of the publisher a handler holds.
 A publish through [`wrap`](./wrap.md) fails with [`TrackedPublishError`](api:ruststream_sqlx::outbox::TrackedPublishError): `Outbox` carries the `OutboxError`, and `Publish` the wrapped publisher's own error after the record was written, which leaves the record for the next startup.
-The publish builder wraps either in its own `PublishError::Publish`.
+The publish builder wraps either in its own `PublishError::Publish { source, message, .. }`, which hands the unsent message back; match `PublishError::Publish { source: TrackedPublishError::Publish(..), .. }` or `TrackedPublishError::Outbox(..)`.
 [`PoolAlreadySet`](api:ruststream_sqlx::outbox::PoolAlreadySet) is what a second [`set_pool`](./set-pool.md) returns.
 
 ## Example
@@ -34,12 +34,14 @@ An HTTP endpoint answers each order by what its publish through `wrap` returned:
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_outbox_errors.rs#errors"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_outbox_errors.rs#errors"
+
 ```
 
 </TabItem>

@@ -110,9 +110,9 @@
 //!             Ok::<_, Infallible>(())
 //!         })
 //!         .with_broker(MemoryBroker::new(), |b| {
-//!             b.include(place).out_reply(Publish);
-//!             b.include(fulfil);
-//!             b.after_startup(Publish, tracking.republish());
+//!             b.after_startup(Publish, tracking.republish())
+//!                 .include(place).out_reply(Publish)
+//!                 .include(fulfil)
 //!         })
 //! }
 //! # }
@@ -215,7 +215,7 @@ pub use wrap::TrackedPublisher;
 ///         .layer(RecordIds)
 ///         .layer(tracking.layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(fulfil);
+///             b.include(fulfil)
 ///         })
 /// }
 /// # }

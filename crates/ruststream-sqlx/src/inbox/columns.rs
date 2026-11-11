@@ -37,7 +37,7 @@
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("orders", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Four workers, and the orders of one customer keep their order on one of them.
-///         b.include(fulfil.workers_by_key(nonzero!(4)));
+///         b.include(fulfil.workers_by_key(nonzero!(4)))
 ///     })
 /// }
 /// # }
@@ -108,7 +108,7 @@ impl<T: KeyColumn> KeyColumn for Option<T> {
 ///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The attempt counts the deliveries: the fifth failure moves the row into
 ///         // `failed_charge_jobs`, a table with the same columns.
-///         b.include(charge).max_attempts(nonzero!(5u32)).dead_letter("failed_charge_jobs");
+///         b.include(charge).max_attempts(nonzero!(5u32)).dead_letter("failed_charge_jobs")
 ///     })
 /// }
 /// # }

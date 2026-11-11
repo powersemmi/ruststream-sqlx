@@ -28,12 +28,14 @@ Two subscriptions read the two groups of one table, and a notice published to `s
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_subscriptions_queue.rs#queue"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_subscriptions_queue.rs#queue"
+
 ```
 
 </TabItem>

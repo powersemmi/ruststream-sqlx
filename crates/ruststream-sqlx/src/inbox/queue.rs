@@ -115,7 +115,7 @@ pub(crate) use open::{Registration, open};
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Five attempts, then the row moves to the `emails.failed` group.
-///         b.include(send).max_attempts(nonzero!(5u32)).dead_letter("emails.failed");
+///         b.include(send).max_attempts(nonzero!(5u32)).dead_letter("emails.failed")
 ///     })
 /// }
 /// # }
@@ -157,7 +157,7 @@ pub(crate) use open::{Registration, open};
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("pager", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // Three attempts, then the row moves to the `pages.failed` group.
-///         b.include(notify).max_attempts(nonzero!(3u32)).dead_letter("pages.failed");
+///         b.include(notify).max_attempts(nonzero!(3u32)).dead_letter("pages.failed")
 ///     })
 /// }
 /// # }
@@ -213,7 +213,7 @@ impl<Row> InboxQueue<Row> {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(send);
+    ///         b.include(send)
     ///     })
     /// }
     /// # }
@@ -270,7 +270,7 @@ impl<Row> InboxQueue<Row> {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("alerts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(notify);
+    ///         b.include(notify)
     ///     })
     /// }
     /// # }
@@ -332,7 +332,7 @@ impl<Row> InboxQueue<Row> {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(render);
+    ///         b.include(render)
     ///     })
     /// }
     /// # }

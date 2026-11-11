@@ -40,12 +40,14 @@ Four workers resize images, and each handler records its image through the pool;
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker_connections.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker_connections.rs#service"
+
 ```
 
 </TabItem>

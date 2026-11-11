@@ -19,7 +19,8 @@ use futures::StreamExt;
 use ruststream::prelude::*;
 use ruststream::testing::{InProcess, TestApp};
 use ruststream::{
-    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Subscriber, SubscriptionSource,
+    Broker, ConnectedBroker, IncomingMessage, OutgoingMessage, Settle, Subscriber,
+    SubscriptionSource,
 };
 use ruststream_sqlx::{
     Claim, ConnectedSqlxBroker, Fetch, Inbox, InboxQueue, Publish, SqlxBroker, SqlxBrokerError,
@@ -107,7 +108,7 @@ async fn a_row_that_does_not_decode_is_settled_by_the_decode_policy() {
         .poll_interval(Duration::from_millis(20))
         .route::<Mistyped>("mistyped");
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(never_decoded.on_failure(decode_drops()));
+        b.include(never_decoded.on_failure(decode_drops()))
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     for n in 0..2 {
@@ -169,7 +170,7 @@ async fn a_row_that_does_not_decode_reports_the_attempt_its_field_converts() {
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
         b.include(never_converted.on_failure(retries))
             .max_attempts(nonzero!(2u32))
-            .dead_letter("unreadable_jobs_dead");
+            .dead_letter("unreadable_jobs_dead")
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.broker::<SqlxBroker<Postgres>>()
@@ -272,7 +273,7 @@ async fn a_by_name_row_is_held_to_the_types_of_its_struct() {
         .poll_interval(Duration::from_millis(20))
         .route::<Mistyped>("mistyped");
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(never_decoded_by_name.on_failure(decode_drops()));
+        b.include(never_decoded_by_name.on_failure(decode_drops()))
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     for n in 0..2 {
@@ -318,7 +319,7 @@ async fn one_row_that_does_not_decode_leaves_its_batch_alone() {
     }
     let broker = SqlxBroker::new(db.pool.clone()).poll_interval(Duration::from_millis(20));
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(settle_batch.batch(nonzero!(3)).on_failure(decode_drops()));
+        b.include(settle_batch.batch(nonzero!(3)).on_failure(decode_drops()))
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.advance(Duration::from_millis(300))
@@ -383,7 +384,7 @@ async fn a_row_fetched_by_its_id_that_does_not_decode_is_settled_by_the_decode_p
         .expect("the row writes");
     let broker = SqlxBroker::new(db.pool.clone()).poll_interval(Duration::from_millis(20));
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(fetched_by_id.on_failure(decode_drops()));
+        b.include(fetched_by_id.on_failure(decode_drops()))
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.advance(Duration::from_millis(300))
@@ -435,9 +436,8 @@ async fn a_flattened_row_that_does_not_decode_is_found_by_its_id_column() {
         .await
         .expect("the row writes");
     let broker = SqlxBroker::new(db.pool.clone()).poll_interval(Duration::from_millis(20));
-    let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(flattened.on_failure(decode_drops()));
-    });
+    let app = RustStream::new(AppInfo::new("decoding", "0.0.0"))
+        .with_broker(broker, |b| b.include(flattened.on_failure(decode_drops())));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.advance(Duration::from_millis(300))
         .await
@@ -496,9 +496,8 @@ async fn a_claimed_id_without_a_row_never_reaches_an_input_that_takes_no_bytes()
     let Some(db) = database().await else { return };
     db.plain(&[b"{}"]).await;
     let broker = SqlxBroker::new(db.pool.clone()).poll_interval(Duration::from_millis(20));
-    let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(took_bytes);
-    });
+    let app = RustStream::new(AppInfo::new("decoding", "0.0.0"))
+        .with_broker(broker, |b| b.include(took_bytes));
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.advance(Duration::from_millis(300))
         .await
@@ -566,8 +565,7 @@ async fn a_by_name_delivery_without_its_row_never_reaches_an_input_that_takes_no
         .route::<Vanished>("vanished")
         .route::<Mistyped>("mistyped");
     let app = RustStream::new(AppInfo::new("decoding", "0.0.0")).with_broker(broker, |b| {
-        b.include(took_bytes_by_name);
-        b.include(took_text_by_name);
+        b.include(took_bytes_by_name).include(took_text_by_name)
     });
     let tb = TestApp::start_live(app).await.expect("the app starts");
     tb.advance(Duration::from_millis(300))

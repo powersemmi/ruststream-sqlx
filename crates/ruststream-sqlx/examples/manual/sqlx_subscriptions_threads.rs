@@ -93,7 +93,7 @@ fn service(url: &str, pool: SqlitePoolOptions) -> RustStream {
             let scan = subscriber("scans", Scan)
                 .map_source(|_| InboxQueue::<ScanJob>::new("scans"))
                 .on_threads(InboxThreads::new(nonzero!(4)));
-            b.include(scan.build());
+            b.include(scan.build())
         })
 }
 // --8<-- [end:on_threads]

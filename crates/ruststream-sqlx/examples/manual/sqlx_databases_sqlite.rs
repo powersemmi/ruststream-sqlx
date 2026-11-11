@@ -87,7 +87,7 @@ fn service(url: &str) -> RustStream {
             // The keys live in this process: one process serves the database file.
             let thumbnail = subscriber("thumbnails", Thumbnail)
                 .map_source(|_| InboxQueue::<MakeThumbnail>::new("thumbnails"));
-            b.include(thumbnail.workers(nonzero!(2)).build());
+            b.include(thumbnail.workers(nonzero!(2)).build())
         })
 }
 

@@ -170,8 +170,7 @@ async fn cost(pool: &PgPool, service: Service) -> u64 {
     let tb = match service {
         Service::Bare => {
             TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
-                b.include(relay).out_reply(Publish);
-                b.include(sink);
+                b.include(relay).out_reply(Publish).include(sink)
             }))
             .await
         }
@@ -180,33 +179,29 @@ async fn cost(pool: &PgPool, service: Service) -> u64 {
                 app.layer(tracking.layer())
                     .publish_layer(tracking.publish_layer())
                     .with_broker(MemoryBroker::new(), |b| {
-                        b.include(relay).out_reply(Publish);
-                        b.include(sink);
+                        b.include(relay).out_reply(Publish).include(sink)
                     }),
             )
             .await
         }
         Service::TrackedPublish => {
-            TestApp::start(app.publish_layer(tracking.publish_layer()).with_broker(
-                MemoryBroker::new(),
-                |b| {
-                    b.include(relay).out_reply(Publish);
-                    b.include(sink);
-                },
-            ))
+            TestApp::start(
+                app.publish_layer(tracking.publish_layer())
+                    .with_broker(MemoryBroker::new(), |b| {
+                        b.include(relay).out_reply(Publish).include(sink)
+                    }),
+            )
             .await
         }
         Service::RawPublish => {
             TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
-                b.include(relay_raw).out_reply(Publish);
-                b.include(sink);
+                b.include(relay_raw).out_reply(Publish).include(sink)
             }))
             .await
         }
         Service::Raw => {
             TestApp::start(app.with_broker(MemoryBroker::new(), |b| {
-                b.include(relay_raw).out_reply(Publish);
-                b.include(sink_raw);
+                b.include(relay_raw).out_reply(Publish).include(sink_raw)
             }))
             .await
         }

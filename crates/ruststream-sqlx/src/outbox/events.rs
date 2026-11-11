@@ -63,9 +63,9 @@ use super::spec::{Declaration, OutboxTable};
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }
@@ -147,9 +147,9 @@ pub trait Publish<DB: Database>: OutboxRow {
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }
@@ -258,9 +258,9 @@ outcome_event!(
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     /// }
     /// # }
@@ -329,9 +329,9 @@ outcome_event!(
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     /// }
     /// # }
@@ -400,9 +400,9 @@ outcome_event!(
     ///         .layer(tracking.layer())
     ///         .publish_layer(tracking.publish_layer())
     ///         .with_broker(MemoryBroker::new(), |b| {
-    ///             b.include(place).out_reply(Publish);
-    ///             b.include(fulfil);
-    ///             b.after_startup(Publish, tracking.republish());
+    ///             b.after_startup(Publish, tracking.republish())
+    ///                 .include(place).out_reply(Publish)
+    ///                 .include(fulfil)
     ///         })
     /// }
     /// # }
@@ -472,9 +472,9 @@ outcome_event!(
 ///         .layer(tracking.layer())
 ///         .publish_layer(tracking.publish_layer())
 ///         .with_broker(MemoryBroker::new(), |b| {
-///             b.include(place).out_reply(Publish);
-///             b.include(fulfil);
-///             b.after_startup(Publish, tracking.republish());
+///             b.after_startup(Publish, tracking.republish())
+///                 .include(place).out_reply(Publish)
+///                 .include(fulfil)
 ///         })
 /// }
 /// # }

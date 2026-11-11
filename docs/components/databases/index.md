@@ -42,12 +42,14 @@ The broker's type names the built-in SQLite dialect, the default of `SqlxBroker:
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_databases.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_databases.rs#service"
+
 ```
 
 </TabItem>

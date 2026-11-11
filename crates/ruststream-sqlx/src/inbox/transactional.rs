@@ -2,7 +2,9 @@
 //! acknowledgement commits; the step that switches a registration to it, the transaction the
 //! handler borrows, and the book a subscription lends its deliveries' transactions from.
 
-use ruststream::runtime::{Declared, SubscriberBuilder, SubscriberSettings, WorkersStep};
+use ruststream::runtime::{
+    AsDeclared, Declared, IntoDeclared, SubscriberBuilder, SubscriberSettings, WorkersStep,
+};
 
 use super::queue::InboxQueue;
 use super::threads::{InboxThreads, ThreadsStep};
@@ -55,7 +57,7 @@ pub use tx::Tx;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(render);
+///         b.include(render)
 ///     })
 /// }
 /// # }
@@ -105,7 +107,7 @@ pub struct Plain;
 ///     RustStream::new(AppInfo::new("accounts", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The registration's `InboxQueue<Signup, Plain>` becomes
 ///         // `InboxQueue<Signup, Transactional>`.
-///         b.include(open_account.transactional());
+///         b.include(open_account.transactional())
 ///     })
 /// }
 /// # }
@@ -176,13 +178,13 @@ impl InboxMode for Transactional {
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
 ///         // The inbox's step chains with the framework's.
-///         b.include(book.transactional().workers(nonzero!(4)));
+///         b.include(book.transactional().workers(nonzero!(4)))
 ///     })
 /// }
 /// # }
 /// # fn main() {}
 /// ```
-pub trait InboxSettings: Declared {
+pub trait InboxSettings<Mk = AsDeclared>: IntoDeclared<Mk> {
     /// Switches an `InboxQueue` subscription to transactional mode: the handler takes the
     /// delivery's transaction (`Ctx<keys::Tx<DB>>`), and acknowledgement commits what it wrote.
     ///
@@ -250,17 +252,17 @@ pub trait InboxSettings: Declared {
     ///
     /// pub fn app(pool: PgPool) -> RustStream {
     ///     RustStream::new(AppInfo::new("stock", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-    ///         b.include(restock.transactional());
+    ///         b.include(restock.transactional())
     ///     })
     /// }
     /// # }
     /// # fn main() {}
     /// ```
-    fn transactional(self) -> <Self::Settings as TransactionalStep>::Out
+    fn transactional(self) -> <<Self::Decl as Declared>::Settings as TransactionalStep>::Out
     where
-        Self::Settings: TransactionalStep,
+        <Self::Decl as Declared>::Settings: TransactionalStep,
     {
-        self.declare().apply_transactional()
+        self.into_declared().declare().apply_transactional()
     }
 
     /// Runs an `InboxQueue` subscription's handlers on dedicated threads, as `threads(n)` does,
@@ -309,7 +311,7 @@ pub trait InboxSettings: Declared {
     ///     // The service opens 30 connections at most: the pool's and the threads' 4 x 2.
     ///     let broker = SqlxBroker::new(pool).connection_limit(nonzero!(30u32));
     ///     RustStream::new(AppInfo::new("scanner", "0.1.0")).with_broker(broker, |b| {
-    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))));
+    ///         b.include(scan.on_threads(InboxThreads::new(nonzero!(4)).connections(nonzero!(2))))
     ///     })
     /// }
     /// # }
@@ -318,18 +320,19 @@ pub trait InboxSettings: Declared {
     fn on_threads(
         self,
         threads: InboxThreads,
-    ) -> <<Self::Settings as WorkersStep>::Out as ThreadsStep>::Out
+    ) -> <<<Self::Decl as Declared>::Settings as WorkersStep>::Out as ThreadsStep>::Out
     where
-        Self::Settings: WorkersStep,
-        <Self::Settings as WorkersStep>::Out: ThreadsStep,
+        <Self::Decl as Declared>::Settings: WorkersStep,
+        <<Self::Decl as Declared>::Settings as WorkersStep>::Out: ThreadsStep,
     {
-        self.declare()
+        self.into_declared()
+            .declare()
             .apply_workers(threads.workers())
             .apply_threads(threads)
     }
 }
 
-impl<Def: Declared> InboxSettings for Def {}
+impl<Def: IntoDeclared<Mk>, Mk> InboxSettings<Mk> for Def {}
 
 /// Switching a registration to transactional mode. Machinery behind
 /// [`InboxSettings::transactional`]; never named in a service.

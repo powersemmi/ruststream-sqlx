@@ -27,12 +27,14 @@ The broker builds its pool from the URL a deployment configures, password includ
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_asyncapi.rs#server"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_asyncapi.rs#server"
+
 ```
 
 </TabItem>

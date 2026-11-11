@@ -37,8 +37,8 @@ live::advisory_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("advisory", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(acked);
-                b.include(keyed_acked);
+                b.include(acked)
+                    .include(keyed_acked)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -90,7 +90,7 @@ live::advisory_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("advisory", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(retried_once);
+                b.include(retried_once)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -121,7 +121,7 @@ live::advisory_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("advisory", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(retried_once);
+                b.include(retried_once)
             });
         let tb = TestApp::start(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -160,10 +160,10 @@ live::advisory_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("advisory", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(later);
-                b.include(always_retried)
+                b.include(later)
+                    .include(always_retried)
                     .max_attempts(nonzero!(2u32))
-                    .dead_letter("plain_jobs_dead");
+                    .dead_letter("plain_jobs_dead")
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
@@ -212,7 +212,7 @@ live::advisory_stands! {
         let Some(db) = database().await else { return };
         let app = RustStream::new(AppInfo::new("advisory", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(fails_first);
+                b.include(fails_first)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()

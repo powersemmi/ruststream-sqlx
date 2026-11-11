@@ -111,11 +111,10 @@ fn service(url: &str) -> RustStream {
         .with_broker(broker, |b| {
             let roll_up = subscriber("reports.daily", RollUp)
                 .map_source(|_| InboxQueue::<Report>::new("reports.daily"));
-            // A reply without a policy of its own publishes through the routes.
-            b.include(roll_up.reply().build());
             let file = subscriber("reports.weekly", File)
                 .map_source(|_| InboxQueue::<Report>::new("reports.weekly"));
-            b.include(file.build());
+            // A reply without a policy of its own publishes through the routes.
+            b.include(roll_up.reply().build()).include(file.build())
         })
 }
 // --8<-- [end:service]

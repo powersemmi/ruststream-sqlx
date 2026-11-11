@@ -41,12 +41,14 @@ A sent email stays in its table for an audit: the acknowledgement moves it to th
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_tables_events.rs#events"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_tables_events.rs#events"
+
 ```
 
 </TabItem>

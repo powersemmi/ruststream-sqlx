@@ -10,14 +10,14 @@ use std::pin::pin;
 use futures::StreamExt;
 use ruststream::testing::TestApp;
 use ruststream::{
-    BatchSubscriber, Broker, Carries, CarriesBatch, ConnectedBroker, IncomingMessage, Subscriber,
-    SubscriptionSource,
+    BatchSlot, BatchSubscriber, Broker, Carries, CarriesBatch, ConnectedBroker, IncomingMessage,
+    Settle, Subscriber, SubscriptionSource,
 };
 use ruststream_sqlx::prelude::*;
 use sqlx::{AssertSqlSafe, Pool};
 
 use super::{POLL, SETTLED};
-use crate::live;
+use crate::live::{self, NextBatch};
 
 live::matrix! {
     fn broker(pool: &Pool<Db>) -> SqlxBroker<Db> {
@@ -95,7 +95,7 @@ live::matrix! {
         write(&db, &[8], &[]).await;
         let app = RustStream::new(AppInfo::new("shop", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(take);
+                b.include(take)
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("the job settles");
@@ -123,9 +123,9 @@ live::matrix! {
             .expect("the subscription opens");
         {
             let mut batches = pin!(subscriber.batches(nonzero!(2_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let mut batch = batches.next().await.expect("a batch").expect("the claim");
             let mut seen = Vec::new();
-            for delivery in batch {
+            for delivery in batch.drain() {
                 let headers = delivery.headers();
                 seen.push((headers.len(), headers.get_str("order_id").map(str::to_owned)));
                 delivery.ack().await.expect("the delivery settles");
@@ -151,7 +151,7 @@ live::matrix! {
             .expect("the subscription opens");
         {
             let mut batches = pin!(subscriber.batches(nonzero!(3_usize)));
-            let batch = batches.next().await.expect("a batch").expect("the claim");
+            let mut batch = batches.next().await.expect("a batch").expect("the claim");
             let lent: Vec<(i64, &str)> = batch
                 .carried()
                 .iter()
@@ -159,7 +159,7 @@ live::matrix! {
                 .collect();
             assert_eq!(lent, [(7, "ada"), (9, "grace")], "the joined rows");
             let mut settled = 0;
-            for delivery in batch {
+            for delivery in batch.drain() {
                 delivery.ack().await.expect("the delivery acknowledges");
                 settled += 1;
             }

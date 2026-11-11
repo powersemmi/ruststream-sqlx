@@ -32,7 +32,7 @@
 //!
 //! pub fn app(pool: PgPool) -> RustStream {
 //!     RustStream::new(AppInfo::new("worker", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-//!         b.include(run);
+//!         b.include(run)
 //!     })
 //! }
 //! # }

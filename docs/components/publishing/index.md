@@ -37,12 +37,14 @@ An order's confirmation becomes a row of `jobs` in the group `emails`, and the s
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_publishing_repository.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_publishing_repository.rs#service"
+
 ```
 
 </TabItem>

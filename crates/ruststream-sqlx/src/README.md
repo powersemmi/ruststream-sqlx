@@ -76,12 +76,9 @@ async fn send(email: &Email, Ctx(attempt): Ctx<keys::Attempt>) -> HandlerOutcome
 fn app() -> impl App {
     // The options read the `PG*` environment variables.
     let broker = SqlxBroker::from_connect_options(PgConnectOptions::new(), PgPoolOptions::new());
-    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
-        broker.route::<SendEmail>("emails"),
-        |b| {
-            b.include(send);
-        },
-    )
+    RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(broker.route::<SendEmail>("emails"), |b| {
+        b.include(send)
+    })
 }
 # }
 # fn main() {}

@@ -69,7 +69,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(always_retry)
                     .max_attempts(nonzero!(3u32))
-                    .dead_letter("emails.dead");
+                    .dead_letter("emails.dead")
             });
         let tb = run(app, "emails").await;
         tb.broker::<SqlxBroker<Db>>()
@@ -94,7 +94,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(plain_always_retry)
                     .max_attempts(nonzero!(2u32))
-                    .dead_letter("plain_jobs_dead");
+                    .dead_letter("plain_jobs_dead")
             });
         let tb = run(app, "plain").await;
         tb.broker::<SqlxBroker<Db>>()
@@ -116,7 +116,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(always_retry)
                     .max_attempts(nonzero!(1u32))
-                    .dead_letter("emails.dead");
+                    .dead_letter("emails.dead")
             });
         let tb = run(app, "emails").await;
         tb.broker::<SqlxBroker<Db>>()
@@ -140,7 +140,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(always_retry).max_attempts(nonzero!(2u32));
+                b.include(always_retry).max_attempts(nonzero!(2u32))
             });
         let message = refusal(app).await;
         assert!(message.contains("emails"), "names the subscription: {message}");
@@ -156,7 +156,7 @@ live::matrix! {
         let Some(db) = database().await else { return };
         let app =
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
-                b.include(always_retry).dead_letter("emails.dead");
+                b.include(always_retry).dead_letter("emails.dead")
             });
         let message = refusal(app).await;
         assert!(message.contains("emails"), "names the subscription: {message}");
@@ -208,7 +208,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(always_later)
                     .max_attempts(nonzero!(2u32))
-                    .dead_letter("emails.dead");
+                    .dead_letter("emails.dead")
             });
         let tb = run(app, "emails").await;
         tb.broker::<SqlxBroker<Db>>()
@@ -233,7 +233,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(never_decoded.on_failure(retries))
                     .max_attempts(nonzero!(2u32))
-                    .dead_letter("unreadable_jobs_dead");
+                    .dead_letter("unreadable_jobs_dead")
             });
         let tb = run(app, "unreadable").await;
         let outcomes = tb
@@ -289,7 +289,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(uncounted)
                     .max_attempts(nonzero!(3u32))
-                    .dead_letter("plain_jobs_dead");
+                    .dead_letter("plain_jobs_dead")
             });
         let message = format!(
             "{:?}",
@@ -304,7 +304,7 @@ live::matrix! {
             RustStream::new(AppInfo::new("retries", "0.0.0")).with_broker(broker(&db.pool), |b| {
                 b.include(plain_once)
                     .max_attempts(nonzero!(3u32))
-                    .dead_letter("a.b.c");
+                    .dead_letter("a.b.c")
             });
         let message = format!(
             "{:?}",

@@ -38,6 +38,7 @@ The database's own error is its `source`.
 A service meets the error in three places.
 A failed startup carries it as the source of the runtime's error, and the service exits before it reads a row.
 A publish from a handler returns it inside the core's `PublishError`, and the handler decides how its delivery settles.
+A publish the runtime makes for the handler (a retry copy, a dead-letter copy, an `out_reply` reply) that fails reaches the handler's `.error(async move |failures: Failures| ..)`; a failed reply acknowledges the delivery instead of returning it to the table.
 A settlement that fails, such as `LeaseLost`, goes to the log with the row's id.
 The enum is `#[non_exhaustive]`, so a `match` on it ends with a wildcard arm.
 
@@ -49,12 +50,14 @@ An invoice the database refuses to write is logged with its cause, and the payme
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker_errors.rs#handler"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker_errors.rs#handler"
+
 ```
 
 </TabItem>

@@ -75,7 +75,7 @@ use crate::inbox::tx::PoolTx;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("payments", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(post.transactional());
+///         b.include(post.transactional())
 ///     })
 /// }
 /// # }

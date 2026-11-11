@@ -58,7 +58,7 @@ use super::InboxRow;
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("webhooks", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(notify);
+///         b.include(notify)
 ///     })
 /// }
 /// # }
@@ -164,7 +164,7 @@ impl QueueTime for time::OffsetDateTime {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(issue);
+///         b.include(issue)
 ///     })
 /// }
 /// # }
@@ -233,7 +233,7 @@ impl<T: QueueTime> TimeColumn for Option<T> {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(render);
+///         b.include(render)
 ///     })
 /// }
 /// # }
@@ -304,7 +304,7 @@ pub trait LeaseRow: InboxRow {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("reminders", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(remind);
+///         b.include(remind)
 ///     })
 /// }
 /// # }
@@ -373,8 +373,8 @@ pub trait Clock: Send + Sync + 'static {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("billing", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(charge);
-///         b.include(send_statement);
+///         b.include(charge)
+///             .include(send_statement)
 ///     })
 /// }
 /// # }
@@ -446,7 +446,7 @@ impl<C: Clock> TimeSource for C {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("staging", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(replay);
+///         b.include(replay)
 ///     })
 /// }
 /// # }
@@ -511,7 +511,7 @@ impl Clock for SystemClock {
 ///
 /// pub fn app(pool: PgPool) -> RustStream {
 ///     RustStream::new(AppInfo::new("sync", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(sync);
+///         b.include(sync)
 ///     })
 /// }
 /// # }

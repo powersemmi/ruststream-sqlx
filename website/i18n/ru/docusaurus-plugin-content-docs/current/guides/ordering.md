@@ -21,6 +21,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the schema is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#schema"
+
 ```
 
 Индекс по `crm_jobs` повторяет порядок захвата, начиная с группы.
@@ -32,12 +33,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#fifo"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#fifo"
+
 ```
 
 </TabItem>
@@ -57,12 +60,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#app"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#app"
+
 ```
 
 </TabItem>
@@ -83,12 +88,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/ordering.rs#keyed"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/ordering.rs#keyed"
+
 ```
 
 </TabItem>

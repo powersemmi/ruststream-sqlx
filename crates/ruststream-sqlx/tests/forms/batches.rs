@@ -10,13 +10,14 @@
 use std::pin::pin;
 use std::time::Duration;
 
-use futures::StreamExt;
 use ruststream::prelude::*;
-use ruststream::{AckError, BatchSubscriber, ConnectedBroker, IncomingMessage, SubscriptionSource};
+use ruststream::{
+    AckError, BatchSubscriber, ConnectedBroker, IncomingMessage, Settle, SubscriptionSource,
+};
 use ruststream_sqlx::{InboxQueue, SqlxBroker, SqlxBrokerError};
 use serde::{Deserialize, Serialize};
 
-use crate::live;
+use crate::live::{self, NextBatch};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Outgoing)]
 struct Line {

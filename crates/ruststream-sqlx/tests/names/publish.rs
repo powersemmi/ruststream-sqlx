@@ -4,7 +4,10 @@
 #![cfg(all(feature = "inbox", feature = "chrono", feature = "json"))]
 
 use chrono::{TimeDelta, Utc};
-use ruststream::{Broker, ConnectedBroker, HeaderMap, OutgoingMessage, PublishPolicy, Publisher};
+use ruststream::{
+    Broker, ConnectedBroker, HeaderMap, OutgoingMessage, PublishMessageError, PublishPolicy,
+    Publisher,
+};
 use ruststream_sqlx::{Insert, Repository, Routed, SqlxBroker, SqlxBrokerError};
 
 use crate::live;
@@ -86,7 +89,8 @@ live::matrix! {
             .expect("the route table pairs");
         let refused = publisher
             .publish(OutgoingMessage::new("orders", b"{}".as_slice()), None)
-            .await;
+            .await
+            .map_err(|refused| handed_back(refused, "orders"));
         assert!(
             matches!(&refused, Err(SqlxBrokerError::NoRoute { name }) if name == "orders"),
             "a publish to a name no route leads anywhere must fail, got {refused:?}"
@@ -118,6 +122,7 @@ live::matrix! {
             .publish(message(), None)
             .await
             .expect_err("an insert into a table that moved fails");
+        let refused = handed_back(refused, "plain");
         assert!(
             matches!(&refused, SqlxBrokerError::Publish { name, table, row, .. }
                 if name == "plain" && table == "plain_jobs" && row.ends_with("Plain")),
@@ -131,6 +136,7 @@ live::matrix! {
             .publish(message(), None)
             .await
             .expect_err("a publish without a connection fails");
+        let refused = handed_back(refused, "plain");
         assert!(
             matches!(&refused, SqlxBrokerError::Publish { table, source, .. }
                 if table == "plain_jobs" && matches!(**source, sqlx::Error::PoolClosed)),
@@ -167,6 +173,12 @@ live::matrix! {
             )
             .await
             .expect_err("a header the table has no column for refuses the publish");
+        // The headers ride the message back too: a publisher borrows them.
+        assert_eq!(
+            refused.message().and_then(|message| message.headers().get_str("x-tenant")),
+            Some("acme"),
+        );
+        let refused = handed_back(refused, "plain");
         assert!(
             matches!(&refused, SqlxBrokerError::Header { header, .. } if header == "x-tenant"),
             "{refused}"
@@ -182,6 +194,7 @@ live::matrix! {
             )
             .await
             .expect_err("a header value the column would rewrite refuses the publish");
+        let refused = handed_back(refused, "emails");
         assert!(
             matches!(&refused, SqlxBrokerError::Header { header, .. } if header == "x-blob"),
             "{refused}"
@@ -215,11 +228,17 @@ live::matrix! {
         assert!(!db.pool.is_closed());
         let message = || OutgoingMessage::new("emails", b"late".as_slice());
         assert!(matches!(
-            typed.publish(message(), None).await,
+            typed
+                .publish(message(), None)
+                .await
+                .map_err(|refused| handed_back(refused, "emails")),
             Err(SqlxBrokerError::Closed)
         ));
         assert!(matches!(
-            routed.publish(message(), None).await,
+            routed
+                .publish(message(), None)
+                .await
+                .map_err(|refused| handed_back(refused, "emails")),
             Err(SqlxBrokerError::Closed)
         ));
         assert_eq!(db.email_rows("email_jobs").await, []);
@@ -321,4 +340,15 @@ mod on_sqlite {
             assert!(!format!("{server:?}").contains("jobs"), "{server:?}");
         }
     }
+}
+
+/// The broker's error of a refused publish, once the refusal handed back the message, named `name`.
+fn handed_back(
+    refused: PublishMessageError<SqlxBrokerError, OutgoingMessage<'_>>,
+    name: &str,
+) -> SqlxBrokerError {
+    let (error, message) = refused.into_parts();
+    let message = message.unwrap_or_else(|| panic!("the refusal ({error}) hands the message back"));
+    assert_eq!(message.name(), name, "the message handed back");
+    error
 }

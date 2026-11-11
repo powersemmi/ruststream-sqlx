@@ -95,7 +95,7 @@ fn service(url: &str) -> RustStream {
             let render = subscriber("invoices", Render)
                 .map_source(|_| InboxQueue::<RenderInvoice>::new("invoices"))
                 .workers(nonzero!(4));
-            b.include(render.build());
+            b.include(render.build())
         })
 }
 // --8<-- [end:service]
@@ -123,7 +123,7 @@ fn service_on_postgres(url: &str) -> RustStream {
             let render = subscriber("invoices", Render)
                 .map_source(|_| InboxQueue::<RenderInvoice>::new("invoices"))
                 .workers(nonzero!(4));
-            b.include(render.build());
+            b.include(render.build())
         })
 }
 

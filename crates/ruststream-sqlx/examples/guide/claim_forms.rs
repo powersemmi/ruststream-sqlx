@@ -67,7 +67,7 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<RenderReport>("reports"), |b| {
-            b.include(render);
+            b.include(render)
         })
 }
 // --8<-- [end:lease]

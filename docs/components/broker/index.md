@@ -36,12 +36,14 @@ A test hands `service` a database of its own.
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_broker.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_broker.rs#service"
+
 ```
 
 </TabItem>

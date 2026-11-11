@@ -109,11 +109,11 @@ fn service(url: &str) -> RustStream {
             conn.close().await
         })
         .with_broker(broker.route::<Checkout>("checkouts"), |b| {
-            b.include(checkout.transactional());
-            b.include(relay.workers_by_key(nonzero!(4)))
-                .out_reply(to_bus);
+            b.include(checkout.transactional())
+                .include(relay.workers_by_key(nonzero!(4)))
+                .out_reply(to_bus)
         })
-        .with_broker(bus, |_b| {})
+        .with_broker(bus, |b| b)
 }
 // --8<-- [end:relay]
 

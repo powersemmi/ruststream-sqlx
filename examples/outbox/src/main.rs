@@ -153,11 +153,13 @@ fn app() -> impl App {
             Ok::<_, Infallible>(())
         })
         .with_broker(RedisBroker::standalone(redis), |b| {
-            b.include(place).out_reply(Publish::default());
-            b.include(cancel).out_reply(Publish::default());
-            b.include(fulfil);
-            b.include(refund);
             // The subscriptions are open by now: the unmarked records of both names go out again.
-            b.after_startup(Publish::default(), tracking.republish());
+            b.after_startup(Publish::default(), tracking.republish())
+                .include(place)
+                .out_reply(Publish::default())
+                .include(cancel)
+                .out_reply(Publish::default())
+                .include(fulfil)
+                .include(refund)
         })
 }

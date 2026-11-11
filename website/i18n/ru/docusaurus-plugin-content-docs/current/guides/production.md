@@ -16,6 +16,7 @@ import TabItem from '@theme/TabItem';
 
 {/* single-form: the migration is SQL, the same for both forms */}
 ```rust title="src/main.rs" reference="examples/guide/production.rs#migration"
+
 ```
 
 Крейт не создаёт таблиц: схема принадлежит сервису, и создают её его миграции, как `sqlx::migrate!` запускает их в [`examples/outbox`](https://github.com/powersemmi/ruststream-sqlx/tree/main/examples/outbox).
@@ -29,12 +30,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#table"
+
 ```
 
 </TabItem>
@@ -57,12 +60,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#service"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#service"
+
 ```
 
 </TabItem>
@@ -79,12 +84,14 @@ import TabItem from '@theme/TabItem';
 <TabItem value="macros" label="Макросы">
 
 ```rust title="src/main.rs" reference="examples/guide/production.rs#main"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Вручную">
 
 ```rust title="src/main.rs" reference="examples/manual/guide/production.rs#main"
+
 ```
 
 </TabItem>

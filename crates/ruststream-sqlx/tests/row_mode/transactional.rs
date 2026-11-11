@@ -55,7 +55,7 @@ live::matrix! {
         let written: Mail = db.mails().await.remove(0);
         let app = RustStream::new(AppInfo::new("mailer", "0.0.0"))
             .with_broker(broker(&db.pool), |b| {
-                b.include(sent.transactional());
+                b.include(sent.transactional())
             });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.advance(SETTLED).await.expect("both deliveries settle");

@@ -19,7 +19,8 @@ use futures::future::{BoxFuture, Either};
 use futures::{Stream, StreamExt};
 use ruststream::codec::CodecError;
 use ruststream::{
-    AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Subscribe, Subscriber,
+    AckError, BrokerMoves, HeaderMap, IncomingMessage, RetryDeclaration, Settle, Subscribe,
+    Subscriber,
 };
 use sync_wrapper::SyncWrapper;
 
@@ -77,19 +78,19 @@ where
     }
 
     fn supports_nack_after(&self) -> bool {
-        IncomingMessage::supports_nack_after(self)
+        Settle::supports_nack_after(self)
     }
 
     fn ack(self: Box<Self>) -> BoxFuture<'static, Result<(), AckError>> {
-        Box::pin(IncomingMessage::ack(*self))
+        Box::pin(Settle::ack(*self))
     }
 
     fn nack(self: Box<Self>, requeue: bool) -> BoxFuture<'static, Result<(), AckError>> {
-        Box::pin(IncomingMessage::nack(*self, requeue))
+        Box::pin(Settle::nack(*self, requeue))
     }
 
     fn nack_after(self: Box<Self>, delay: Duration) -> BoxFuture<'static, Result<(), AckError>> {
-        Box::pin(IncomingMessage::nack_after(*self, delay))
+        Box::pin(Settle::nack_after(*self, delay))
     }
 }
 
@@ -155,7 +156,7 @@ where
 ///     RustStream::new(AppInfo::new("mailer", "0.1.0")).with_broker(
 ///         SqlxBroker::new(pool).route::<SendEmail>("emails"),
 ///         |b| {
-///             b.include(send);
+///             b.include(send)
 ///         },
 ///     )
 /// }
@@ -270,31 +271,37 @@ where
             Delivered::Erased { delivery, .. } => delivery.redelivery_count(),
         }
     }
+}
 
+impl<DB, D> Settle for NamedDelivery<DB, D>
+where
+    DB: QueueDatabase + RoleColumns,
+    D: ByName<DB> + 'static,
+{
     async fn ack(self) -> Result<(), AckError> {
         match self.delivered {
-            Delivered::Described(delivery) => IncomingMessage::ack(delivery).await,
+            Delivered::Described(delivery) => Settle::ack(delivery).await,
             Delivered::Erased { delivery, .. } => delivery.ack().await,
         }
     }
 
     async fn nack(self, requeue: bool) -> Result<(), AckError> {
         match self.delivered {
-            Delivered::Described(delivery) => IncomingMessage::nack(delivery, requeue).await,
+            Delivered::Described(delivery) => Settle::nack(delivery, requeue).await,
             Delivered::Erased { delivery, .. } => delivery.nack(requeue).await,
         }
     }
 
     fn supports_nack_after(&self) -> bool {
         match &self.delivered {
-            Delivered::Described(delivery) => IncomingMessage::supports_nack_after(delivery),
+            Delivered::Described(delivery) => Settle::supports_nack_after(delivery),
             Delivered::Erased { delivery, .. } => delivery.supports_nack_after(),
         }
     }
 
     async fn nack_after(self, delay: Duration) -> Result<(), AckError> {
         match self.delivered {
-            Delivered::Described(delivery) => IncomingMessage::nack_after(delivery, delay).await,
+            Delivered::Described(delivery) => Settle::nack_after(delivery, delay).await,
             Delivered::Erased { delivery, .. } => delivery.nack_after(delay).await,
         }
     }
@@ -382,8 +389,8 @@ pub(crate) type ErasedStream =
 ///     RustStream::new(AppInfo::new("reports", "0.1.0")).with_broker(
 ///         SqlxBroker::new(pool).route::<Report>("reports.*"),
 ///         |b| {
-///             b.include(daily);
-///             b.include(weekly);
+///             b.include(daily)
+///                 .include(weekly)
 ///         },
 ///     )
 /// }

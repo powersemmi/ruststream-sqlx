@@ -107,7 +107,7 @@ mod keyed {
             let app = RustStream::new(AppInfo::new("threads", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(state))
                 .with_broker(SqlxBroker::new(db.pool.clone()).poll_interval(POLL), |b| {
-                    b.include(keyed);
+                    b.include(keyed)
                 });
             let running = tokio::time::timeout(GUARD, app.start())
                 .await
@@ -152,7 +152,7 @@ mod fifo {
             let app = RustStream::new(AppInfo::new("threads", "0.0.0"))
                 .on_startup(async move |()| Ok::<_, Infallible>(state))
                 .with_broker(SqlxBroker::new(db.pool.clone()).poll_interval(POLL), |b| {
-                    b.include(booked);
+                    b.include(booked)
                 });
             let running = tokio::time::timeout(GUARD, app.start())
                 .await

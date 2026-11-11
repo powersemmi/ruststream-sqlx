@@ -44,7 +44,7 @@ use super::queue::InboxQueue;
 ///     // Eight threads, an account's entries on one of them, one connection each.
 ///     let threads = InboxThreads::new(nonzero!(8)).by_key();
 ///     RustStream::new(AppInfo::new("ledger", "0.1.0")).with_broker(SqlxBroker::new(pool), |b| {
-///         b.include(post.on_threads(threads));
+///         b.include(post.on_threads(threads))
 ///     })
 /// }
 /// # }

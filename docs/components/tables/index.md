@@ -39,12 +39,14 @@ One table holds the notifications of every channel: its `channel` column is the 
 <TabItem value="macros" label="Macros">
 
 ```rust reference="examples/sqlx_tables_inbox.rs#table"
+
 ```
 
 </TabItem>
 <TabItem value="manual" label="Manual">
 
 ```rust reference="examples/manual/sqlx_tables_inbox.rs#table"
+
 ```
 
 </TabItem>

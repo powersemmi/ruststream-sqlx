@@ -95,7 +95,7 @@ live::row_lock_stands! {
             .poll_interval(Duration::from_millis(20))
             .route::<OnDatabaseTime>("clock");
         let app = RustStream::new(AppInfo::new("clock", "0.0.0")).with_broker(broker, |b| {
-            b.include(postponed);
+            b.include(postponed)
         });
         let tb = TestApp::start_live(app).await.expect("the app starts");
         tb.broker::<SqlxBroker<Db>>()
